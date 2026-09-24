@@ -70,13 +70,14 @@ FORM_ABSTRACT_EDITS = (
 SOURCE_DATE_EPOCH = int(os.environ.get("SOURCE_DATE_EPOCH", "1780185600"))
 
 #: Where a reader of the preprint can obtain the replication materials.
-#: The Paper-JSS repository is private, so the default does not point at
-#: it; override with --replication-note once a public archive (e.g. a
-#: Zenodo DOI) exists.
+#: The Paper-JSS repository is private; its public replication snapshot
+#: (export_public_replication.py) keeps the same Paper-JSS/ layout, so the
+#: paths printed in the text resolve there. Override with
+#: --replication-note if the materials move (e.g. to a Zenodo DOI).
 DEFAULT_REPLICATION_NOTE = (
-    "Paths of the form \\texttt{Paper-JSS/\\ldots} refer to the replication "
-    "package submitted with the manuscript; it is available from the "
-    "corresponding author on request."
+    "Replication materials, including every path of the form "
+    "\\texttt{Paper-JSS/\\ldots} cited in the text, are available at "
+    "\\url{https://github.com/brycewang-stanford/StatsPAI-JSS-replication}."
 )
 
 INPUT_RE = re.compile(r"\\input\{([^}]+)\}")
@@ -177,7 +178,8 @@ def _write_metadata(pages: int) -> int:
         "Title: StatsPAI: Validation-Tiered Python Workflows for Causal Inference\n"
         "Authors: Biaoyue Wang, Scott Rozelle\n"
         f"Comments: {pages} pages. Submitted to the Journal of Statistical Software. "
-        "Software: https://github.com/brycewang-stanford/StatsPAI\n"
+        "Software: https://github.com/brycewang-stanford/StatsPAI ; "
+        "replication: https://github.com/brycewang-stanford/StatsPAI-JSS-replication\n"
         "Primary category: stat.CO\n"
         "Cross-list: econ.EM, stat.ME\n"
         "License: CC BY 4.0\n\n"
