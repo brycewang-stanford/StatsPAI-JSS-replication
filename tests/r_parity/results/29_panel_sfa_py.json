@@ -1,0 +1,68 @@
+{
+  "module": "29_panel_sfa",
+  "side": "py",
+  "rows": [
+    {
+      "module": "29_panel_sfa",
+      "side": "py",
+      "statistic": "beta_intercept",
+      "estimate": 2.063441388893637,
+      "se": 0.049579796934403536,
+      "ci_lo": null,
+      "ci_hi": null,
+      "n": 300,
+      "extra": {}
+    },
+    {
+      "module": "29_panel_sfa",
+      "side": "py",
+      "statistic": "beta_lnk",
+      "estimate": 0.5833187832516157,
+      "se": 0.019697960533193448,
+      "ci_lo": null,
+      "ci_hi": null,
+      "n": 300,
+      "extra": {}
+    },
+    {
+      "module": "29_panel_sfa",
+      "side": "py",
+      "statistic": "beta_lnl",
+      "estimate": 0.36000889303371564,
+      "se": 0.01812869253590369,
+      "ci_lo": null,
+      "ci_hi": null,
+      "n": 300,
+      "extra": {}
+    },
+    {
+      "module": "29_panel_sfa",
+      "side": "py",
+      "statistic": "sigma_u",
+      "estimate": 0.6231540495506122,
+      "se": null,
+      "ci_lo": null,
+      "ci_hi": null,
+      "n": 300,
+      "extra": {}
+    },
+    {
+      "module": "29_panel_sfa",
+      "side": "py",
+      "statistic": "sigma_v",
+      "estimate": 0.2971850521955285,
+      "se": null,
+      "ci_lo": null,
+      "ci_hi": null,
+      "n": 300,
+      "extra": {}
+    }
+  ],
+  "extra": {
+    "distribution": "half-normal",
+    "panel_model": "Pitt-Lee 1981 (ti)",
+    "reference_note": "Stata xtfrontier, ti is fit with the constraint [mu]_cons = 0 so all three sides share the half-normal likelihood; Stata's analytic-Hessian SEs match StatsPAI to ~3e-6, R frontier::sfa's mleCov differs by 0.1%-1.8%.",
+    "n_units": 50,
+    "T": 6
+  }
+}

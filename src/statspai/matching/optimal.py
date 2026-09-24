@@ -1,0 +1,542 @@
+"""Optimal and cardinality matching.
+
+Two approaches that go beyond the "nearest-neighbour" heuristic:
+
+- :func:`optimal_match` — 1:1 matching that minimises the **total**
+  distance across all matched pairs, solved exactly via the
+  Hungarian / Kuhn-Munkres algorithm
+  (``scipy.optimize.linear_sum_assignment``).
+
+- :func:`cardinality_match` — Zubizarreta et al. (2014) cardinality
+  matching: keep as many treated units matched to at least one control
+  as possible, subject to covariate-balance constraints solved by
+  linear programming.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import List, Optional
+
+import numpy as np
+import pandas as pd
+from scipy import optimize
+from scipy.spatial.distance import cdist
+
+from .._result_serialize import ResultProtocolMixin
+
+
+@dataclass
+class OptimalMatchResult(ResultProtocolMixin):
+    """Result of :func:`optimal_match` (optimal 1:1 Hungarian matching).
+
+    Attributes
+    ----------
+    pairs : pandas.DataFrame
+        One row per matched pair with columns
+        ``treated_idx``, ``control_idx``, ``distance``.
+    distances : numpy.ndarray
+        Matching distance for each matched pair.
+    ate : float
+        Matched-pair average treatment effect on the treated (ATT).
+    se : float
+        Analytic standard error of ``ate`` over the matched pairs.
+    n_treated, n_matched : int
+        Number of treated units and number of retained matched pairs.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> import pandas as pd
+    >>> import statspai as sp
+    >>> rng = np.random.default_rng(42)
+    >>> n = 300
+    >>> x1 = rng.normal(size=n)
+    >>> x2 = rng.normal(size=n)
+    >>> p = 1.0 / (1.0 + np.exp(-(0.5 * x1 - 0.5 * x2 - 0.5)))
+    >>> d = rng.binomial(1, p)
+    >>> y = 1.0 + 2.0 * d + x1 + x2 + rng.normal(size=n)
+    >>> df = pd.DataFrame({'y': y, 'd': d, 'x1': x1, 'x2': x2})
+    >>> res = sp.optimal_match(df, treatment='d', outcome='y',
+    ...                        covariates=['x1', 'x2'])
+    >>> isinstance(res, sp.OptimalMatchResult)
+    True
+    >>> res.n_matched
+    111
+    >>> round(res.ate, 2)
+    1.88
+    >>> res.pairs.columns.tolist()
+    ['treated_idx', 'control_idx', 'distance']
+    >>> bool(len(res.distances) == res.n_matched)
+    True
+    """
+
+    pairs: pd.DataFrame  # (n_matched, 2) treated_idx + control_idx
+    distances: np.ndarray  # (n_matched,) matching distances
+    ate: float  # average treatment effect (ATT)
+    se: float  # (rough) analytic SE on matched pairs
+    n_treated: int
+    n_matched: int
+
+    @property
+    def att(self) -> float:
+        """Matched-pair effect, named for the estimand it actually targets.
+
+        1:1 matching on the treated retains every treated unit and reweights
+        controls to them, so the estimand is the ATT. ``ate`` is retained as
+        an alias for backward compatibility.
+        """
+        return self.ate
+
+    @property
+    def estimate(self) -> float:
+        """Alias used by the shared result protocol."""
+        return self.ate
+
+    def summary(self) -> str:
+        lines = [
+            "Optimal 1:1 Matching (Hungarian algorithm)",
+            "-" * 40,
+            f"Treated (T=1) : {self.n_treated}",
+            f"Matched       : {self.n_matched}",
+            f"Mean distance : {self.distances.mean():.4f}",
+            f"ATT           : {self.ate:.4f}  (SE = {self.se:.4f})",
+        ]
+        return "\n".join(lines)
+
+    def __repr__(self) -> str:
+        return self.summary()
+
+
+def _logit_propensity(X: np.ndarray, t: np.ndarray) -> np.ndarray:
+    """Unpenalised logistic propensity score, matching R's ``glm`` fit."""
+    import warnings as _warnings
+
+    Xd = np.column_stack([np.ones(len(X)), X])
+    try:
+        import statsmodels.api as sm  # type: ignore
+
+        with _warnings.catch_warnings():
+            _warnings.simplefilter("ignore")
+            fit = sm.Logit(t.astype(float), Xd).fit(disp=False, maxiter=200)
+        return np.asarray(fit.predict(Xd), dtype=float)
+    except ImportError:
+        from sklearn.linear_model import LogisticRegression
+
+        m = LogisticRegression(
+            max_iter=5000, solver="lbfgs", C=1e10, fit_intercept=False
+        )
+        m.fit(Xd, t)
+        return np.asarray(m.predict_proba(Xd)[:, 1], dtype=float)
+
+
+def _distance_matrix(
+    X_treat: np.ndarray,
+    X_ctrl: np.ndarray,
+    metric: str,
+    ps_treat: Optional[np.ndarray] = None,
+    ps_ctrl: Optional[np.ndarray] = None,
+) -> np.ndarray:
+    if metric == "mahalanobis":
+        # Pooled *within-group* covariance (Rubin 1980): the full-sample
+        # covariance is inflated along the direction the group means differ
+        # in, which is precisely the direction matching must resolve. This
+        # is also the metric MatchIt uses.
+        n1, n0 = len(X_treat), len(X_ctrl)
+        if n1 >= 2 and n0 >= 2:
+            s1 = np.atleast_2d(np.cov(X_treat, rowvar=False))
+            s0 = np.atleast_2d(np.cov(X_ctrl, rowvar=False))
+            cov = ((n1 - 1) * s1 + (n0 - 1) * s0) / (n1 + n0 - 2)
+        else:  # pragma: no cover - degenerate arm, guarded upstream
+            cov = np.atleast_2d(np.cov(np.vstack([X_treat, X_ctrl]), rowvar=False))
+        cov = cov + 1e-8 * np.eye(cov.shape[0])
+        cov_inv = np.linalg.inv(cov)
+        # cdist computes the identical sqrt((x-y)' VI (x-y)) in C, ~3-5x faster
+        # than the per-treated-unit Python loop and without materialising the
+        # (n_treat, n_ctrl, k) difference tensor a full broadcast would need.
+        return np.asarray(cdist(X_treat, X_ctrl, metric="mahalanobis", VI=cov_inv))
+    if metric == "euclidean":
+        diff = X_treat[:, None, :] - X_ctrl[None, :, :]
+        return np.asarray(np.linalg.norm(diff, axis=2))
+    if metric == "propensity":
+        if ps_treat is None or ps_ctrl is None:  # pragma: no cover - internal
+            raise ValueError("metric='propensity' requires fitted scores")
+        return np.abs(ps_treat[:, None] - ps_ctrl[None, :])
+    raise ValueError(
+        f"unknown metric {metric!r}; expected 'mahalanobis', 'euclidean' "
+        "or 'propensity'"
+    )
+
+
+def optimal_match(
+    data: pd.DataFrame,
+    treatment: str,
+    outcome: str,
+    covariates: List[str],
+    metric: str = "mahalanobis",
+    caliper: Optional[float] = None,
+) -> OptimalMatchResult:
+    """Optimal 1:1 matching via the Hungarian algorithm.
+
+    Each treated unit is matched to exactly one control; the total
+    sum of matched distances is globally minimised. Requires
+    ``n_treated ≤ n_control``.
+
+    Parameters
+    ----------
+    caliper : float, optional
+        Drop any pair with distance greater than ``caliper``.
+
+    Examples
+    --------
+    Simulated observational data with two confounders (true ATT = 2):
+
+    >>> import numpy as np
+    >>> import pandas as pd
+    >>> import statspai as sp
+    >>> rng = np.random.default_rng(42)
+    >>> n = 300
+    >>> x1 = rng.normal(size=n)
+    >>> x2 = rng.normal(size=n)
+    >>> p = 1.0 / (1.0 + np.exp(-(0.5 * x1 - 0.5 * x2 - 0.5)))
+    >>> d = rng.binomial(1, p)
+    >>> y = 1.0 + 2.0 * d + x1 + x2 + rng.normal(size=n)
+    >>> df = pd.DataFrame({'y': y, 'd': d, 'x1': x1, 'x2': x2})
+    >>> res = sp.optimal_match(df, treatment='d', outcome='y',
+    ...                        covariates=['x1', 'x2'])
+    >>> res.n_matched
+    111
+    >>> round(res.ate, 2)
+    1.88
+    >>> res.pairs.columns.tolist()
+    ['treated_idx', 'control_idx', 'distance']
+    """
+    df = data.dropna(subset=[treatment, outcome] + covariates).reset_index(drop=True)
+    t = df[treatment].to_numpy().astype(int)
+    y = df[outcome].to_numpy(dtype=float)
+    X = df[covariates].to_numpy(dtype=float)
+    treated_idx = np.where(t == 1)[0]
+    ctrl_idx = np.where(t == 0)[0]
+    if len(treated_idx) == 0 or len(ctrl_idx) == 0:
+        from statspai.exceptions import DataInsufficient
+
+        raise DataInsufficient(
+            "Need both treated and control units.",
+            recovery_hint=(
+                "All observations have the same treatment value. "
+                "Re-check the treatment column / sample filter."
+            ),
+            diagnostics={
+                "n_treated": int(len(treated_idx)),
+                "n_control": int(len(ctrl_idx)),
+            },
+            alternative_functions=[],
+        )
+    if len(treated_idx) > len(ctrl_idx):
+        raise ValueError(
+            "Optimal 1:1 matching requires n_control ≥ n_treated. "
+            f"Got n_treated={len(treated_idx)}, n_control={len(ctrl_idx)}."
+        )
+    ps_t = ps_c = None
+    if metric == "propensity":
+        # Logistic propensity score on the same covariates, matching the
+        # `MatchIt(distance = "glm", link = "logit")` / `optmatch` idiom of
+        # doing optimal matching on a fitted score rather than on X.
+        ps_all = _logit_propensity(X, t)
+        ps_t, ps_c = ps_all[treated_idx], ps_all[ctrl_idx]
+    D = _distance_matrix(
+        X[treated_idx], X[ctrl_idx], metric=metric, ps_treat=ps_t, ps_ctrl=ps_c
+    )
+    row_ind, col_ind = optimize.linear_sum_assignment(D)
+    dists = D[row_ind, col_ind]
+
+    if caliper is not None:
+        keep = dists <= caliper
+        row_ind = row_ind[keep]
+        col_ind = col_ind[keep]
+        dists = dists[keep]
+
+    pairs = pd.DataFrame(
+        {
+            "treated_idx": treated_idx[row_ind],
+            "control_idx": ctrl_idx[col_ind],
+            "distance": dists,
+        }
+    )
+    if len(pairs) == 0:
+        raise ValueError("Caliper dropped all pairs; try a larger value.")
+    diffs = y[pairs["treated_idx"].values] - y[pairs["control_idx"].values]
+    ate = float(diffs.mean())
+    se = float(diffs.std(ddof=1) / np.sqrt(len(diffs)))
+    _result = OptimalMatchResult(
+        pairs=pairs,
+        distances=dists,
+        ate=ate,
+        se=se,
+        n_treated=len(treated_idx),
+        n_matched=len(pairs),
+    )
+    try:
+        from ..output._lineage import attach_provenance as _attach_prov
+
+        _attach_prov(
+            _result,
+            function="sp.matching.optimal_match",
+            params={
+                "treatment": treatment,
+                "outcome": outcome,
+                "covariates": list(covariates),
+                "metric": metric,
+                "caliper": caliper,
+            },
+            data=data,
+            overwrite=False,
+        )
+    except Exception:  # pragma: no cover
+        pass
+    return _result
+
+
+# --------------------------------------------------------------------- #
+#  Cardinality matching (Zubizarreta 2012, 2014)
+# --------------------------------------------------------------------- #
+
+
+@dataclass
+class CardinalityMatchResult(ResultProtocolMixin):
+    """Result of :func:`cardinality_match` (Zubizarreta cardinality matching).
+
+    Attributes
+    ----------
+    treated_matched, control_matched : numpy.ndarray
+        Row indices (into the cleaned data) of the matched treated and
+        control units making up each pair.
+    ate : float
+        Matched-pair average treatment effect on the treated (ATT).
+    se : float
+        Analytic standard error of ``ate`` over the matched pairs.
+    n_matched_pairs : int
+        Number of matched pairs retained.
+    balance : pandas.DataFrame
+        Post-match balance table with columns ``covariate``, ``SMD``,
+        ``|SMD|`` (standardised mean differences).
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> import pandas as pd
+    >>> import statspai as sp
+    >>> rng = np.random.default_rng(42)
+    >>> n = 300
+    >>> x1 = rng.normal(size=n)
+    >>> x2 = rng.normal(size=n)
+    >>> p = 1.0 / (1.0 + np.exp(-(0.5 * x1 - 0.5 * x2 - 0.5)))
+    >>> d = rng.binomial(1, p)
+    >>> y = 1.0 + 2.0 * d + x1 + x2 + rng.normal(size=n)
+    >>> df = pd.DataFrame({'y': y, 'd': d, 'x1': x1, 'x2': x2})
+    >>> res = sp.cardinality_match(df, treatment='d', outcome='y',
+    ...                            covariates=['x1', 'x2'],
+    ...                            smd_tolerance=0.1)
+    >>> isinstance(res, sp.CardinalityMatchResult)
+    True
+    >>> res.n_matched_pairs
+    107
+    >>> round(res.ate, 2)
+    1.86
+    >>> res.balance['|SMD|'].round(3).tolist()
+    [0.111, 0.082]
+    """
+
+    treated_matched: np.ndarray  # indices of matched treated
+    control_matched: np.ndarray  # indices of matched controls
+    ate: float
+    se: float
+    n_matched_pairs: int
+    balance: pd.DataFrame  # post-match standardised mean diffs
+
+    def summary(self) -> str:
+        lines = [
+            "Cardinality Matching (Zubizarreta 2014)",
+            "-" * 40,
+            f"Matched pairs : {self.n_matched_pairs}",
+            f"ATT           : {self.ate:.4f}  (SE = {self.se:.4f})",
+            "",
+            "Post-match balance (|SMD|):",
+            self.balance.round(3).to_string(index=False),
+        ]
+        return "\n".join(lines)
+
+    def __repr__(self) -> str:
+        return self.summary()
+
+
+def cardinality_match(
+    data: pd.DataFrame,
+    treatment: str,
+    outcome: str,
+    covariates: List[str],
+    smd_tolerance: float = 0.1,
+    time_limit: float = 30.0,
+) -> CardinalityMatchResult:
+    """Cardinality matching — maximise the number of matched pairs subject
+    to a standardised-mean-difference tolerance on every covariate.
+
+    Formulation (Zubizarreta 2014):
+
+        maximise   sum_j z_j
+        s.t.       |mean(X_k | T=1) - sum_j z_j X_{jk} / sum_j z_j|
+                    <= smd_tolerance * SD(X_k)   ∀ k
+                   z_j ∈ {0, 1}  for each control j
+
+    Solved exactly as a binary integer program (``scipy.optimize.milp``,
+    HiGHS), so the returned set always satisfies the tolerance. Matched
+    pairs are the matched controls each assigned to a treated unit by
+    optimal (Hungarian) assignment on the Mahalanobis distance.
+
+    .. versionchanged:: 1.22
+       Previously relaxed to a continuous LP and rounded the weights by a
+       threshold. Rounding does not preserve the balance constraints, so
+       the returned sample could — and usually did — violate
+       ``smd_tolerance``: on a 12-cell seed x tolerance grid, 9 solutions
+       were infeasible, by up to 26% of the requested tolerance. Matched
+       sets and effect estimates therefore change.
+
+    Examples
+    --------
+    Simulated observational data with two confounders (true ATT = 2):
+
+    >>> import numpy as np
+    >>> import pandas as pd
+    >>> import statspai as sp
+    >>> rng = np.random.default_rng(42)
+    >>> n = 300
+    >>> x1 = rng.normal(size=n)
+    >>> x2 = rng.normal(size=n)
+    >>> p = 1.0 / (1.0 + np.exp(-(0.5 * x1 - 0.5 * x2 - 0.5)))
+    >>> d = rng.binomial(1, p)
+    >>> y = 1.0 + 2.0 * d + x1 + x2 + rng.normal(size=n)
+    >>> df = pd.DataFrame({'y': y, 'd': d, 'x1': x1, 'x2': x2})
+    >>> res = sp.cardinality_match(df, treatment='d', outcome='y',
+    ...                            covariates=['x1', 'x2'],
+    ...                            smd_tolerance=0.1)
+    >>> res.n_matched_pairs
+    107
+    >>> round(res.ate, 2)
+    1.86
+    >>> res.balance['|SMD|'].round(3).tolist()
+    [0.111, 0.082]
+    """
+    df = data.dropna(subset=[treatment, outcome] + covariates).reset_index(drop=True)
+    t = df[treatment].to_numpy().astype(int)
+    y = df[outcome].to_numpy(dtype=float)
+    X = df[covariates].to_numpy(dtype=float)
+    treated = X[t == 1]
+    ctrl = X[t == 0]
+    n_t, n_c = len(treated), len(ctrl)
+    k = X.shape[1]
+
+    # target: treated means
+    mu_t = treated.mean(axis=0)
+    sd_all = X.std(axis=0) + 1e-12
+    tol = smd_tolerance * sd_all
+
+    # Integer program: maximise sum(z), z in {0, 1}^n_c, subject to
+    #   |mu_t_k * sum(z) - X_c[:, k] @ z| <= tol_k * sum(z)
+    # which is linear in z once written as
+    #   (X_c - (mu_t + tol)) @ z <= 0
+    #   -(X_c - (mu_t - tol)) @ z <= 0
+    # plus sum(z) <= n_t so the matched control set can be paired 1:1.
+    #
+    # This is solved *exactly* rather than by relaxing to a continuous LP and
+    # rounding.  The relaxation is genuinely wrong here, not merely
+    # approximate: the balance constraints are not preserved by rounding, so
+    # the greedy "keep the top round(sum z) weights" step returned solutions
+    # that violate the tolerance the function exists to enforce -- measured
+    # on 12 seed x tolerance cells, 9 were infeasible, by up to 26% of the
+    # requested tolerance, and in some cells the relaxation matched the exact
+    # optimum's *count* while still breaching balance. See
+    # tests/reference_parity/test_cardinality_match_parity.py.
+    A_ub = np.vstack(
+        [
+            (ctrl - (mu_t + tol)).T,
+            -(ctrl - (mu_t - tol)).T,
+            np.ones((1, n_c)),
+        ]
+    )  # (2k + 1, n_c)
+    b_ub = np.concatenate([np.zeros(2 * k), [float(n_t)]])
+    c = -np.ones(n_c)  # maximise sum(z) = minimise -sum(z)
+    res = optimize.milp(
+        c=c,
+        constraints=optimize.LinearConstraint(A_ub, -np.inf, b_ub),
+        integrality=np.ones(n_c),
+        bounds=optimize.Bounds(0, 1),
+        options={"time_limit": float(time_limit)},
+    )
+    if not res.success or res.x is None:
+        raise RuntimeError(
+            "cardinality matching integer program did not solve: "
+            f"{res.message}. Loosen smd_tolerance, drop a covariate, or "
+            "raise time_limit."
+        )
+    z = np.asarray(res.x)
+
+    kept_z = z > 0.5
+
+    ctrl_global = np.where(t == 0)[0]
+    treat_global = np.where(t == 1)[0]
+    matched_ctrl_global = ctrl_global[kept_z]
+
+    # Pair up each matched control with the nearest treated by Mahalanobis
+    # distance; fall back to Euclidean if singular.
+    pair_treated = []
+    pair_control = []
+    # nearest treated for each matched control
+    if len(matched_ctrl_global):
+        D = _distance_matrix(ctrl[kept_z], treated, metric="mahalanobis")
+        row, col = optimize.linear_sum_assignment(D)
+        # row indexes matched_ctrl subset; col indexes treated subset
+        pair_treated = treat_global[col]
+        pair_control = matched_ctrl_global[row]
+
+    diffs = y[pair_treated] - y[pair_control]
+    ate = float(diffs.mean()) if len(diffs) else float("nan")
+    se = (
+        float(diffs.std(ddof=1) / np.sqrt(len(diffs)))
+        if len(diffs) > 1
+        else float("nan")
+    )
+
+    # Post-match balance
+    bal_rows = []
+    for j, cv in enumerate(covariates):
+        mu_c_post = ctrl[kept_z, j].mean() if kept_z.sum() else np.nan
+        smd = (mu_t[j] - mu_c_post) / (sd_all[j] + 1e-12)
+        bal_rows.append({"covariate": cv, "SMD": float(smd), "|SMD|": abs(float(smd))})
+    balance = pd.DataFrame(bal_rows)
+
+    _result = CardinalityMatchResult(
+        treated_matched=np.asarray(pair_treated),
+        control_matched=np.asarray(pair_control),
+        ate=ate,
+        se=se,
+        n_matched_pairs=len(pair_treated),
+        balance=balance,
+    )
+    try:
+        from ..output._lineage import attach_provenance as _attach_prov
+
+        _attach_prov(
+            _result,
+            function="sp.matching.cardinality_match",
+            params={
+                "treatment": treatment,
+                "outcome": outcome,
+                "covariates": list(covariates),
+                "smd_tolerance": smd_tolerance,
+            },
+            data=data,
+            overwrite=False,
+        )
+    except Exception:  # pragma: no cover
+        pass
+    return _result

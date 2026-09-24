@@ -1,0 +1,57 @@
+{
+  "sim_cia_m1": {
+    "data": "ebalance_sim_cia.csv",
+    "covariates": ["X1", "X2"],
+    "moments": 1,
+    "att": 2.0584406681818,
+    "se": 0.0797894590130055
+  },
+  "sim_cia_m2": {
+    "data": "ebalance_sim_cia.csv",
+    "covariates": ["X1", "X2"],
+    "moments": 2,
+    "att": 2.06927997652549,
+    "se": 0.0794524648621943
+  },
+  "sim_cia_m3": {
+    "data": "ebalance_sim_cia.csv",
+    "covariates": ["X1", "X2"],
+    "moments": 3,
+    "att": 2.0665834409032,
+    "se": 0.080083139969677
+  },
+  "sim_het_m1": {
+    "data": "ebalance_sim_het.csv",
+    "covariates": ["X1", "X2"],
+    "moments": 1,
+    "att": 1.35819013313876,
+    "se": 0.121581685454797
+  },
+  "sim_het_m2": {
+    "data": "ebalance_sim_het.csv",
+    "covariates": ["X1", "X2"],
+    "moments": 2,
+    "att": 1.32099624404848,
+    "se": 0.106834612056416
+  },
+  "sim_het_m3": {
+    "data": "ebalance_sim_het.csv",
+    "covariates": ["X1", "X2"],
+    "moments": 3,
+    "att": 1.32195901331251,
+    "se": 0.105209322120548
+  },
+  "lalonde_m1": {
+    "data": "ebalance_lalonde.csv",
+    "covariates": ["age", "educ", "black", "hispan", "married", "nodegree", "re74", "re75"],
+    "moments": 1,
+    "att": 1273.26181391054,
+    "se": 789.744800031065
+  },
+  "_provenance": {
+    "WeightIt": "1.7.0",
+    "MatchIt": "4.7.2",
+    "R": "R version 4.5.2 (2025-10-31)",
+    "vcov": "asympt"
+  }
+}

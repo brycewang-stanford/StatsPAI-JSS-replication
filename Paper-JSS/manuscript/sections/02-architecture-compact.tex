@@ -1,0 +1,167 @@
+\section{Software architecture}\label{sec:architecture}
+
+\statspai{} is implemented in \proglang{Python} on top of
+\pkg{NumPy} \citep{harris2020array}, \pkg{SciPy}
+\citep{virtanen2020scipy}, \pkg{pandas} \citep{mckinney2010data},
+\pkg{statsmodels} \citep{seabold2010statsmodels}, \pkg{scikit-learn}
+\citep{pedregosa2011scikit}, and \pkg{linearmodels}, with optional
+backends kept behind extras and lazy imports. The architecture has four layers:
+registry, dispatcher, result object, and output pipeline.
+
+\subsection{Design principles}\label{sec:design-principles}
+
+Seven principles govern the public API. A single flat namespace exposes
+routine calls through \code{sp.<function>}. Mature estimator paths return
+structured result objects rather than raw tuples, while auxiliary
+helpers -- visualization and data-inspection utilities such as
+\code{sp.panel\_view}, which returns Matplotlib handles plus an
+\code{info} dictionary rather than an estimator result -- remain
+registered with explicit stability and validation
+metadata. Method families use dispatchers
+(\code{sp.synth(method=...)}, \code{sp.dml(model=...)},
+\code{sp.did(...)}). Reference parity is
+attempted before broadening a validated claim. Failures are loud:
+assumption violations raise typed exceptions or warnings and record
+diagnostics. Output-changing changes go through the changelog and
+\code{MIGRATION.md}. Finally, every public function must be
+discoverable through the same registry used by human help functions and
+agent schemas.
+
+\subsection{Why an integration package?}\label{sec:why-integration}
+
+A reasonable alternative is to compose \pkg{statsmodels},
+\pkg{linearmodels}, \pkg{DoubleML}, \pkg{EconML}, \pkg{DoWhy}, and
+method-specific \proglang{R} or \proglang{Stata} bridges directly,
+which is often right for a single specialized model. The friction
+appears when an applied project moves across identification designs:
+diagnostics, citations, validation status, error handling, export
+formats, and agent schemas no longer share one contract. \statspai{}
+therefore treats wrapping as insufficient unless a method enters the
+common registry, result-object surface, typed-error envelope, and
+evidence ledger. Specialized packages remain the reference
+implementations; the contribution here is to make cross-family handoffs
+auditable and reproducible. The package is organized by identification
+layer rather than by the historical boundaries of \proglang{R} and
+\proglang{Stata} packages -- each layer reports its own design
+diagnostics (balance and overlap, first-stage strength, cohort support
+and event-study paths, bandwidth and density checks, donor weights and
+placebos, cross-fit diagnostics) -- and the common point is not shared
+identification assumptions but a shared post-estimation contract.
+
+\subsection{Registry and discovery layer}\label{sec:registry}
+
+The central data structure is a registry of \code{FunctionSpec}
+records. Each entry carries a canonical function path, category, tags,
+stability and validation status, parameter metadata, result class,
+reference key, example call, and optional agent-card fields such as
+assumptions, preconditions, failure modes, alternatives, limitations,
+and typical sample-size guidance. The registry powers
+\code{sp.help()}, \code{sp.list\_functions()},
+\code{sp.search\_functions()}, \code{sp.describe\_function()},
+\code{sp.function\_schema()}, \code{sp.agent\_card()}, the import-free
+\code{schemas/} bundle, and the MCP tool catalogue. Tests assert that
+exported public callables are registered and that validated/certified
+entries expose their evidence status.
+
+The validation tier is therefore not a paper-only artifact: it is
+queryable from the running software for \emph{every} registered
+function. \code{sp.help()} prints a per-tier census and points the user
+to \code{sp.list\_functions(validation\_status="certified")} for the
+validated core, while \code{sp.describe\_function(name)} prints a
+\code{Stability}/\code{Validation} header with the attached evidence
+notes before the description, so a user or agent landing on an
+\code{api\_stable} or \code{experimental} helper sees its trust tier
+before relying on its output.
+
+\begin{lstlisting}[caption={The validation tier is visible through the
+same discovery surface used by users and agents; this excerpt is
+generated from \code{sp.describe\_function("callaway\_santanna")}.},%
+label={lst:validation-tier-output},captionpos=b]
+>>> spec = sp.describe_function("callaway_santanna")
+>>> spec["stability"], spec["validation_status"]
+('stable', 'certified')
+>>> for note in spec["validation_notes"][:3]:
+...     print(note)
+Track A parity seed
+R parity module 04_csdid
+Stata parity module 04_csdid
+>>> import textwrap
+>>> print(textwrap.fill(spec["limitations"][0], width=64))
+clustervars is not yet supported with bstrap=False; the analytic
+standard errors do not account for within-cluster dependence, so
+the multiplier bootstrap is required
+\end{lstlisting}
+
+\subsection{Family dispatchers}\label{sec:dispatcher}
+
+Family dispatchers reduce method sprawl without hiding assumptions.
+\code{sp.synth} dispatches classical, SDID, augmented, generalized,
+matrix-completion, penalized, and related synthetic-control variants.
+\code{sp.decompose} covers Blinder--Oaxaca, Gelbach, Fairlie, RIF,
+DFL, Machado--Mata, Melly, counterfactual-distribution, and related
+decompositions. \code{sp.dml} dispatches partially-linear,
+partially-linear IV, interactive, and LATE-style DML variants. The
+dispatcher contract is explicit: allowed \code{method=} values are
+enumerated in the registry schema, and validated or mature variants
+return compatible result surfaces so that summary, plotting, audit,
+citation, and export calls do not change downstream.
+
+The same uniformity extends to inference. Across the regression family
+(\code{regress}, \code{feols}, \code{ivreg}, \code{panel},
+\code{hdfe\_ols}), one canonical keyword, \code{vce=}, spells the full
+standard-error menu: classical, heteroskedasticity-robust, one- and
+two-way clustering, bias-reduced CR2/CR3
+\citep{pustejovsky2018small}, the wild cluster bootstrap
+\citep{cameron2008bootstrap, roodman2019fast}, and Conley spatial HAC
+\citep{conley1999estimation}; fixed-effects Poisson and GLM
+additionally expose CR2/CR3 and the restricted score wild bootstrap.
+Each option is pinned to an external reference implementation ---
+\proglang{Stata}'s \code{reghdfe}, \code{boottest}, \code{acreg}, and
+\code{ppmlhdfe} \citep{correia2020fast}, and \proglang{R}'s
+\pkg{clubSandwich} and
+\pkg{sandwich} \citep{zeileis2020sandwich} --- and a coverage matrix in the package's continuous
+integration ratchets the count of natively wired, externally validated
+cells monotonically upward.
+
+\subsection{Result-object hierarchy}\label{sec:results}
+
+Most estimators return either \code{EconometricResults} or
+\code{CausalResult}; specialized classes must implement the same public
+surface. The standard contract covers summaries, plotting, dictionary
+and JSON payloads, LaTeX/DOCX export, citations, audits, diagnostics,
+and degradation records. This is why a mixed OLS/IV/DML/forest
+table can be passed to \code{sp.regtable} (or its \proglang{R}-style
+alias \code{sp.modelsummary}), and
+why an MCP agent can keep only a result handle rather than copying
+coefficient and covariance arrays between tool calls.
+
+\subsection{Performance backbone}\label{sec:perfbackbone}
+
+The performance-critical path is high-dimensional fixed-effect
+absorption for fixed-effect and panel estimators. The submitted artifact
+uses the reproducible \proglang{Python} path built on \pkg{NumPy} and
+\pkg{Numba} \citep{lam2015numba}. An experimental Rust crate and selected \pkg{JAX} and
+\pkg{PyTorch} paths exist behind extras, but the numerical and timing
+claims in this paper do not depend on a compiled native extension.
+Optional acceleration is treated as a backend choice, not as a separate
+estimator or a hidden requirement.
+
+\subsection{Output pipeline}\label{sec:output}
+
+Publication output is unified through \code{sp.regtable},
+\code{sp.modelsummary}, and result-level exporters. Mixed
+\code{EconometricResults} and \code{CausalResult} objects can be
+rendered as LaTeX, Markdown, HTML, Word, Excel, or JSON-safe agent
+payloads. \code{sp.outreg2} gives a Stata-like migration surface, while
+\code{sp.paper()} uses the same rendering layer to assemble tables,
+figures, citations, and a report.
+
+\subsection{The four-stage workflow}\label{sec:workflow}
+
+The layers combine into a four-stage workflow -- detect
+(\code{sp.detect\_design}, \code{sp.preflight}, \code{sp.recommend}),
+fit (the estimator dispatchers), inspect (\code{summary()},
+\code{plot()}, \code{sp.audit()}, sensitivity wrappers), and report
+(\code{sp.regtable}, export methods, \code{cite()},
+\code{sp.paper()}) -- with the same
+boundaries available to human users and to MCP agents.

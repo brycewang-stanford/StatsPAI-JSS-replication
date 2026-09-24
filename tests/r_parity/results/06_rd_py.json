@@ -1,0 +1,124 @@
+{
+  "module": "06_rd",
+  "side": "py",
+  "rows": [
+    {
+      "module": "06_rd",
+      "side": "py",
+      "statistic": "default_conventional_est",
+      "estimate": 7.414130822948906,
+      "se": 1.4587160216774084,
+      "ci_lo": 4.555099956789636,
+      "ci_hi": 10.273161689108175,
+      "n": 1390,
+      "extra": {}
+    },
+    {
+      "module": "06_rd",
+      "side": "py",
+      "statistic": "default_robust_est",
+      "estimate": 7.5065024835301415,
+      "se": 1.7412584138682448,
+      "ci_lo": 4.093698704571041,
+      "ci_hi": 10.919306262489242,
+      "n": 1390,
+      "extra": {}
+    },
+    {
+      "module": "06_rd",
+      "side": "py",
+      "statistic": "default_bandwidth_h",
+      "estimate": 17.75439729605877,
+      "se": null,
+      "ci_lo": null,
+      "ci_hi": null,
+      "n": 1390,
+      "extra": {}
+    },
+    {
+      "module": "06_rd",
+      "side": "py",
+      "statistic": "default_bandwidth_b",
+      "estimate": 28.028087178624308,
+      "se": null,
+      "ci_lo": null,
+      "ci_hi": null,
+      "n": 1390,
+      "extra": {}
+    },
+    {
+      "module": "06_rd",
+      "side": "py",
+      "statistic": "cct_port_default_conventional_est",
+      "estimate": 7.414130822948856,
+      "se": 1.4587160216775097,
+      "ci_lo": 4.5550999567893875,
+      "ci_hi": 10.273161689108324,
+      "n": 1390,
+      "extra": {}
+    },
+    {
+      "module": "06_rd",
+      "side": "py",
+      "statistic": "cct_port_default_robust_est",
+      "estimate": 7.506502483530383,
+      "se": 1.7412584138683658,
+      "ci_lo": 4.093698704571047,
+      "ci_hi": 10.91930626248972,
+      "n": 1390,
+      "extra": {}
+    },
+    {
+      "module": "06_rd",
+      "side": "py",
+      "statistic": "cct_port_default_bandwidth_h",
+      "estimate": 17.754397296055835,
+      "se": null,
+      "ci_lo": null,
+      "ci_hi": null,
+      "n": 1390,
+      "extra": {}
+    },
+    {
+      "module": "06_rd",
+      "side": "py",
+      "statistic": "cct_port_default_bandwidth_b",
+      "estimate": 28.028087178619835,
+      "se": null,
+      "ci_lo": null,
+      "ci_hi": null,
+      "n": 1390,
+      "extra": {}
+    },
+    {
+      "module": "06_rd",
+      "side": "py",
+      "statistic": "forced_h15_conventional_est",
+      "estimate": 7.487285884935929,
+      "se": 1.5597317898725471,
+      "ci_lo": 4.430267751243541,
+      "ci_hi": 10.544304018628317,
+      "n": 1390,
+      "extra": {}
+    },
+    {
+      "module": "06_rd",
+      "side": "py",
+      "statistic": "forced_h15_robust_est",
+      "estimate": 9.085628222780656,
+      "se": 2.2406720605116153,
+      "ci_lo": 4.6939916830127375,
+      "ci_hi": 13.477264762548575,
+      "n": 1390,
+      "extra": {}
+    }
+  ],
+  "extra": {
+    "kernel": "triangular",
+    "p": 1,
+    "q": 2,
+    "bwselect": "mserd",
+    "backend": "native",
+    "bandwidth_parity_note": "Track A headline rows run the native sp.rdrobust(...) default (bwselect='mserd', StatsPAI's own CCT cascade), which matches R/Stata rdrobust default mserd bandwidths and robust estimates on the Lee-2008 fixture. The cct_port_default_* rows record sp.rdrobust(..., bwselect='cct'), which delegates to the official rdrobust Python port; they are a port-vs-native convergence check with no R or Stata counterpart and never enter the parity join."
+  }
+}

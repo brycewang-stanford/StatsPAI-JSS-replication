@@ -1,0 +1,41 @@
+{
+  "dataset": "sp.datasets.card_1995() (calibrated replica)",
+  "n": 3010,
+  "ols": {
+    "beta_educ": 0.07400899420057876,
+    "se_educ": 0.0035054349569210367
+  },
+  "iv_2sls": {
+    "beta_educ": 0.13228883999818208,
+    "se_educ": 0.04923323611949153
+  },
+  "dml_plr": {
+    "theta": 0.07411211761583836,
+    "se": 0.0037484013505153183
+  },
+  "causal_forest": {
+    "method": "aipw_continuous",
+    "ate": 0.07865486334201836,
+    "ate_se": 0.0048614601763837355,
+    "cate_mean": 0.07647822398423358,
+    "cate_sd": 0.01637845253893716,
+    "cate_q25": 0.06329801758878086,
+    "cate_q75": 0.08594180259612565
+  },
+  "causal_forest_grf_reference": {
+    "grf_version": "2.6.1",
+    "ate": 0.0786647084756597,
+    "ate_se": 0.00487362624698586,
+    "cate_sd": 0.0168427130016602,
+    "cate_q25": 0.0633512683925244,
+    "cate_q75": 0.0869438044557006,
+    "ate_z": -0.0014301989772885434
+  },
+  "replica_target": {
+    "ols_target": 0.11,
+    "iv_target": 0.142,
+    "ols_published_original_nlsym": 0.075,
+    "iv_published_original_nlsym": 0.132
+  },
+  "puzzle_preserved": true
+}

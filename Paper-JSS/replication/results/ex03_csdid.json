@@ -1,0 +1,105 @@
+{
+  "dataset": "sp.datasets.mpdta() (calibrated replica)",
+  "n_rows": 2500,
+  "n_units": 500,
+  "cohorts": [
+    2004,
+    2006,
+    2007
+  ],
+  "replica_target_simple_att": -0.04,
+  "published_simple_att_original": -0.03995,
+  "cs_simple_att": {
+    "estimate": -0.03297651380965374,
+    "se": 0.0077645425356625665,
+    "method": "Callaway and Sant'Anna (2021)",
+    "estimand": "ATT"
+  },
+  "pinned_check": {
+    "att_diff": 2.3486190346262703e-05,
+    "se_diff": 2.454253566256618e-05,
+    "passes_at_1e-3": true
+  },
+  "neighbourhood_check": {
+    "in_range": true,
+    "lower": -0.06,
+    "upper": -0.02,
+    "published_original": -0.03995
+  },
+  "modern_did_snapshot": {
+    "callaway_santanna": {
+      "estimate": -0.03297651380965374,
+      "se": 0.0077645425356625665
+    },
+    "sun_abraham": {
+      "estimate": -0.03378251905457596,
+      "se": 0.00902440487413861
+    },
+    "bjs_imputation": {
+      "estimate": -0.035108276607944876,
+      "se": 0.006898757445167703
+    },
+    "bacon_decomposition": {
+      "twfe_estimate": -0.037505076590874424,
+      "n_comparisons": 9,
+      "forbidden_weight_share": 0.0
+    },
+    "honest_did": {
+      "event_time": 0,
+      "max_rejecting_m": 0.005,
+      "rows": [
+        {
+          "M": 0.0,
+          "ci_lower": -0.05457837858415523,
+          "ci_upper": -0.02143394212816136,
+          "rejects_zero": true
+        },
+        {
+          "M": 0.005,
+          "ci_lower": -0.057454324713494244,
+          "ci_upper": -0.009081994033125075,
+          "rejects_zero": true
+        },
+        {
+          "M": 0.01,
+          "ci_lower": -0.058989817156691715,
+          "ci_upper": 0.004136997193658527,
+          "rejects_zero": false
+        },
+        {
+          "M": 0.015,
+          "ci_lower": -0.0632776890333947,
+          "ci_upper": 0.010714056754636634,
+          "rejects_zero": false
+        },
+        {
+          "M": 0.02,
+          "ci_lower": -0.06827140283361194,
+          "ci_upper": 0.01570777055485387,
+          "rejects_zero": false
+        }
+      ]
+    },
+    "handoff_covariance": {
+      "max_abs_correlation": 0.6057023225413988,
+      "breakdown_joint": 0.007999178080916491,
+      "breakdown_diagonal": 0.010073658521067593,
+      "ci_m0_joint": [
+        -0.05457837858415523,
+        -0.02143394212816136
+      ],
+      "ci_m0_diagonal": [
+        -0.04765318985603224,
+        -0.015619083911087316
+      ]
+    },
+    "drdid": {
+      "dispatcher": "sp.callaway_santanna(..., estimator=\"dr\") or sp.drdid(...)",
+      "role": "doubly robust 2x2/cell-level DiD estimator"
+    },
+    "sdid": {
+      "dispatcher": "sp.synth(..., method=\"sdid\")",
+      "role": "weighted synthetic-control x DiD estimator"
+    }
+  }
+}

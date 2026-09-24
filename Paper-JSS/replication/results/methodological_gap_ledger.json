@@ -1,0 +1,127 @@
+{
+  "failures": [],
+  "generated_at_unix": 1780185600,
+  "ledger": [
+    {
+      "category": "classical_scm_reference_disagreement",
+      "evidence_notes": {
+        "native_note": "Headline row uses backend='native'. The Basque donor-weight solution is not unique under the ADH special-predictor nested-V specification: deterministic multi-start diagnostics find multiple near-best donor-weight classes, native tracks Stata synth on the same CSV, and R Synth and Stata synth choose measurably different local optima. Native correctness is separately certified on a uniquely identified DGP in module 52_scm_unique; backend='synth' is available when exact R Synth numbers are required."
+      },
+      "fields": {
+        "backend": "native",
+        "implementation": "native",
+        "method": "classic",
+        "n_donors": "16",
+        "native_note": "Headline row uses backend='native'. The Basque donor-weight solution is not unique under the ADH special-predictor nested-V specification: deterministic multi-start diagnostics find multiple near-best donor-weight classes, native tracks Stata synth on the same CSV, and R Synth and Stata synth choose measurably different local optima. Native correctness is separately certified on a uniquely identified DGP in module 52_scm_unique; backend='synth' is available when exact R Synth numbers are required.",
+        "placebo": "False",
+        "reference_backend": "Synth",
+        "solver_best_start": "dirichlet_3",
+        "solver_near_best_start_count": "4",
+        "solver_near_best_weight_class_count": "2",
+        "solver_near_best_weight_l1_max": "0.00513",
+        "stata_command": "synth gdppc gdppc(1955..1969), trunit(.) trperiod(1970) nested",
+        "strictness_tier": "`methodological` (methodological/T4 disclosure (T3/T4, not deterministic T2))",
+        "tier": "T4",
+        "treated_unit": "Basque Country",
+        "treatment_time": "1970",
+        "validation_tier": "identification_dependent_native",
+        "weight_solution_nonunique": "True"
+      },
+      "metadata_checks": [
+        {
+          "expected": "identification_dependent_native",
+          "field": "validation_tier",
+          "observed": "identification_dependent_native",
+          "ok": true
+        },
+        {
+          "expected": "Synth",
+          "field": "reference_backend",
+          "observed": "Synth",
+          "ok": true
+        },
+        {
+          "expected": "dirichlet_3",
+          "field": "solver_best_start",
+          "observed": "dirichlet_3",
+          "ok": true
+        },
+        {
+          "expected": "4",
+          "field": "solver_near_best_start_count",
+          "observed": "4",
+          "ok": true
+        },
+        {
+          "expected": "2",
+          "field": "solver_near_best_weight_class_count",
+          "observed": "2",
+          "ok": true
+        },
+        {
+          "expected": "0.00513",
+          "field": "solver_near_best_weight_l1_max",
+          "observed": "0.00513",
+          "ok": true
+        },
+        {
+          "expected": "True",
+          "field": "weight_solution_nonunique",
+          "observed": "True",
+          "ok": true
+        }
+      ],
+      "module": "07_scm",
+      "name": "scm",
+      "next_action": "Keep the native Basque row as a T4 disclosure with deterministic multi-start diagnostics; use module 52_scm_unique and backend='synth' to separate solver correctness from exact Synth-number reproduction.",
+      "non_circular_guard": {
+        "evidence": "module 52 certifies the native classical-SCM solver on a uniquely identified convex-hull DGP",
+        "ok": true,
+        "path": "tests/r_parity/52_scm_unique.py",
+        "snippet": "unique convex-hull SCM"
+      },
+      "reference_disagreement_guard": {
+        "evidence": "native tracks Stata synth on the same ADH special-predictor spec, while R Synth and Stata synth choose measurably different local optima",
+        "failure": "",
+        "observed": {
+          "py_est": -0.704244,
+          "py_r_rel": 0.0239,
+          "py_stata_rel": 0.000417,
+          "r_est": -0.687789,
+          "r_stata_rel": 0.02295898436112742,
+          "stata_est": -0.703951,
+          "statistic": "avg_post_gap"
+        },
+        "ok": true,
+        "py_stata_ok": true,
+        "py_stata_rel_max": 0.001,
+        "r_stata_ok": true,
+        "r_stata_rel_min": 0.01,
+        "statistic": "avg_post_gap"
+      },
+      "representative_rows": [
+        "| `avg_post_gap` | -0.704244 | -0.687789 | -0.703951 | 0.0239 | 0.000417 | 0.101069 | \u2014 | \u2014 | \u2014 | \u2014 |",
+        "| `pre_treatment_rmse` | 0.07921 | 0.0793738 | 0.0792101 | 0.00206 | 8.08e-07 | \u2014 | \u2014 | \u2014 | \u2014 | \u2014 |",
+        "| `weight_Andalucia` | 0.000000 | 5.14847e-05 | 0.000000 | 1.000 | 0.000 | \u2014 | \u2014 | \u2014 | \u2014 | \u2014 |"
+      ],
+      "reviewer_risk": "Basque donor weights are not uniquely identified; R Synth and Stata synth choose measurably different optima, so native-vs-Synth equality is the wrong claim.",
+      "strictness_tier": "methodological"
+    }
+  ],
+  "source": "tests/r_parity/results/parity_table_3way.md",
+  "status": "PASS",
+  "summary": {
+    "category_counts": {
+      "classical_scm_reference_disagreement": 1
+    },
+    "classified_gap_count": 1,
+    "metadata_guard_count": 7,
+    "metadata_guard_failures": 0,
+    "methodological_gap_count": 1,
+    "non_circular_guard_count": 1,
+    "non_circular_guard_failures": 0,
+    "reference_disagreement_guard_count": 1,
+    "reference_disagreement_guard_failures": 0,
+    "uncategorized_gap_count": 0
+  }
+}

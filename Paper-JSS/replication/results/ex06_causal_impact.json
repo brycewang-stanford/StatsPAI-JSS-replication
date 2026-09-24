@@ -1,0 +1,34 @@
+{
+  "dataset": "deterministic Brodersen-style advertising-lift simulation",
+  "n_days": 90,
+  "intervention_day": 61,
+  "n_pre": 60,
+  "n_post": 30,
+  "covariates": [
+    "search",
+    "category",
+    "competitor",
+    "organic"
+  ],
+  "true_avg_effect": 4.2,
+  "estimated_avg_effect": 4.305563804845598,
+  "se_avg_effect": 0.13952821634773624,
+  "ci95": [
+    4.032093525976922,
+    4.579034083714275
+  ],
+  "pvalue": 4.373228950961626e-209,
+  "estimated_cumulative_effect": 129.16691414536794,
+  "true_cumulative_effect": 126.0,
+  "relative_effect_pct": 5.313537574528818,
+  "pre_period_rmse": 0.5622134214482705,
+  "post_actual_sum": 2560.0693465389495,
+  "post_counterfactual_sum": 2430.902432393582,
+  "pinned_checks": {
+    "avg_effect_abs_diff_to_truth": 0.10556380484559824,
+    "avg_effect_passes_abs_0_25": true,
+    "pre_rmse_below_0_75": true,
+    "ci_contains_truth": true,
+    "cumulative_effect_positive": true
+  }
+}

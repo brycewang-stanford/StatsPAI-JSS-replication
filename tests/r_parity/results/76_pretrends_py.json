@@ -1,0 +1,97 @@
+{
+  "module": "76_pretrends",
+  "side": "py",
+  "rows": [
+    {
+      "module": "76_pretrends",
+      "side": "py",
+      "statistic": "power_slope_0p02",
+      "estimate": 0.33164958918859855,
+      "se": null,
+      "ci_lo": null,
+      "ci_hi": null,
+      "n": 1000,
+      "extra": {}
+    },
+    {
+      "module": "76_pretrends",
+      "side": "py",
+      "statistic": "bayes_factor_slope_0p02",
+      "estimate": 0.7675375390137575,
+      "se": null,
+      "ci_lo": null,
+      "ci_hi": null,
+      "n": 1000,
+      "extra": {}
+    },
+    {
+      "module": "76_pretrends",
+      "side": "py",
+      "statistic": "likelihood_ratio_slope_0p02",
+      "estimate": 0.3691806693974927,
+      "se": null,
+      "ci_lo": null,
+      "ci_hi": null,
+      "n": 1000,
+      "extra": {}
+    },
+    {
+      "module": "76_pretrends",
+      "side": "py",
+      "statistic": "power_slope_0p05",
+      "estimate": 0.9015031747370538,
+      "se": null,
+      "ci_lo": null,
+      "ci_hi": null,
+      "n": 1000,
+      "extra": {}
+    },
+    {
+      "module": "76_pretrends",
+      "side": "py",
+      "statistic": "bayes_factor_slope_0p05",
+      "estimate": 0.11311471777109196,
+      "se": null,
+      "ci_lo": null,
+      "ci_hi": null,
+      "n": 1000,
+      "extra": {}
+    },
+    {
+      "module": "76_pretrends",
+      "side": "py",
+      "statistic": "likelihood_ratio_slope_0p05",
+      "estimate": 0.004482694940487286,
+      "se": null,
+      "ci_lo": null,
+      "ci_hi": null,
+      "n": 1000,
+      "extra": {}
+    },
+    {
+      "module": "76_pretrends",
+      "side": "py",
+      "statistic": "slope_for_power_0p5",
+      "estimate": 0.02791381840904554,
+      "se": null,
+      "ci_lo": null,
+      "ci_hi": null,
+      "n": 1000,
+      "extra": {}
+    },
+    {
+      "module": "76_pretrends",
+      "side": "py",
+      "statistic": "slope_for_power_0p8",
+      "estimate": 0.04243447348475456,
+      "se": null,
+      "ci_lo": null,
+      "ci_hi": null,
+      "n": 1000,
+      "extra": {}
+    }
+  ],
+  "extra": {
+    "estimator": "pretrends_power"
+  }
+}

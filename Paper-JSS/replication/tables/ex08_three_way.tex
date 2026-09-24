@@ -1,0 +1,19 @@
+\begin{tabular}{@{}p{0.34\linewidth}rrrrr@{}}
+    \toprule
+    Quantity & \statspai{} & \proglang{R} & \proglang{Stata} & rel(sp,R) & rel(sp,Stata) \\
+    \midrule
+    \multicolumn{6}{@{}l}{\emph{fect counterfactual estimators (module 86, staggered two-factor panel)}} \\
+    ATT, two-way FE (imputation) & 2.500105 & 2.500105 & 2.500105 & $1.8\times10^{-13}$ & $9.8\times10^{-10}$ \\
+    ATT, interactive FE, r = 2 & 2.241884 & 2.241884 & 2.241884 & $4.0\times10^{-16}$ & $2.8\times10^{-10}$ \\
+    ATT, matrix completion, lambda = 0.002 & 2.398529 & 2.398529 & 2.398529 & $2.8\times10^{-15}$ & $2.1\times10^{-10}$ \\
+    \multicolumn{6}{@{}l}{\emph{interflex marginal effects (module 87, binary treatment, moderator $X$, covariate $Z$)}} \\
+    linear ME at the grid midpoint & 3.05408 & 3.05408 & 3.05408 & $5.8\times10^{-16}$ & $2.0\times10^{-15}$ \\
+    binning effect, bin 1 (median x = -0.27) & 1.51604 & 1.51604 & 1.51604 & $3.2\times10^{-15}$ & $5.9\times10^{-16}$ \\
+    binning effect, bin 2 (median x = 1.06) & 3.18212 & 3.18212 & 3.18212 & $2.8\times10^{-16}$ & $0$ \\
+    binning effect, bin 3 (median x = 2.25) & 4.10838 & 4.10838 & 4.10838 & $1.1\times10^{-15}$ & $4.3\times10^{-16}$ \\
+    Wald p-value, linear vs binning (R convention) & $7.121\times10^{-7}$ & $7.121\times10^{-7}$ & --- & $6.5\times10^{-13}$ & --- \\
+    Wald p-value (Stata convention: no covariate-by-bin terms, F) & $2.249\times10^{-7}$ & --- & $2.249\times10^{-7}$ & --- & $1.2\times10^{-12}$ \\
+    kernel ME at the midpoint, adaptive bandwidth (R convention) & 3.34108 & 3.34108 & --- & $2.0\times10^{-15}$ & --- \\
+    kernel ME at the midpoint, fixed bandwidth (Stata convention) & 3.27765 & --- & 3.27765 & --- & $1.1\times10^{-15}$ \\
+    \bottomrule
+\end{tabular}

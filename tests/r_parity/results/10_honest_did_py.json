@@ -1,0 +1,273 @@
+{
+  "module": "10_honest_did",
+  "side": "py",
+  "rows": [
+    {
+      "module": "10_honest_did",
+      "side": "py",
+      "statistic": "breakdown_m_e0",
+      "estimate": 0.3160997738548176,
+      "se": null,
+      "ci_lo": null,
+      "ci_hi": null,
+      "n": 1000,
+      "extra": {}
+    },
+    {
+      "module": "10_honest_did",
+      "side": "py",
+      "statistic": "ci_lower_M_0",
+      "estimate": 0.301547089171849,
+      "se": null,
+      "ci_lo": null,
+      "ci_hi": null,
+      "n": 1000,
+      "extra": {}
+    },
+    {
+      "module": "10_honest_did",
+      "side": "py",
+      "statistic": "ci_upper_M_0",
+      "estimate": 0.6970243350222534,
+      "se": null,
+      "ci_lo": null,
+      "ci_hi": null,
+      "n": 1000,
+      "extra": {}
+    },
+    {
+      "module": "10_honest_did",
+      "side": "py",
+      "statistic": "shipped_ci_lower_M_0",
+      "estimate": 0.301547089171849,
+      "se": null,
+      "ci_lo": null,
+      "ci_hi": null,
+      "n": 1000,
+      "extra": {}
+    },
+    {
+      "module": "10_honest_did",
+      "side": "py",
+      "statistic": "shipped_ci_upper_M_0",
+      "estimate": 0.6970243350222534,
+      "se": null,
+      "ci_lo": null,
+      "ci_hi": null,
+      "n": 1000,
+      "extra": {}
+    },
+    {
+      "module": "10_honest_did",
+      "side": "py",
+      "statistic": "analytic_ci_lower_M_0",
+      "estimate": 0.301547089171849,
+      "se": null,
+      "ci_lo": null,
+      "ci_hi": null,
+      "n": 1000,
+      "extra": {}
+    },
+    {
+      "module": "10_honest_did",
+      "side": "py",
+      "statistic": "analytic_ci_upper_M_0",
+      "estimate": 0.6970243350222534,
+      "se": null,
+      "ci_lo": null,
+      "ci_hi": null,
+      "n": 1000,
+      "extra": {}
+    },
+    {
+      "module": "10_honest_did",
+      "side": "py",
+      "statistic": "ci_lower_M_0.05",
+      "estimate": 0.261043541202698,
+      "se": null,
+      "ci_lo": null,
+      "ci_hi": null,
+      "n": 1000,
+      "extra": {}
+    },
+    {
+      "module": "10_honest_did",
+      "side": "py",
+      "statistic": "ci_upper_M_0.05",
+      "estimate": 0.7311532186714307,
+      "se": null,
+      "ci_lo": null,
+      "ci_hi": null,
+      "n": 1000,
+      "extra": {}
+    },
+    {
+      "module": "10_honest_did",
+      "side": "py",
+      "statistic": "shipped_ci_lower_M_0.05",
+      "estimate": 0.261043541202698,
+      "se": null,
+      "ci_lo": null,
+      "ci_hi": null,
+      "n": 1000,
+      "extra": {}
+    },
+    {
+      "module": "10_honest_did",
+      "side": "py",
+      "statistic": "shipped_ci_upper_M_0.05",
+      "estimate": 0.7311532186714307,
+      "se": null,
+      "ci_lo": null,
+      "ci_hi": null,
+      "n": 1000,
+      "extra": {}
+    },
+    {
+      "module": "10_honest_did",
+      "side": "py",
+      "statistic": "ci_lower_M_0.1",
+      "estimate": 0.21577970099994104,
+      "se": null,
+      "ci_lo": null,
+      "ci_hi": null,
+      "n": 1000,
+      "extra": {}
+    },
+    {
+      "module": "10_honest_did",
+      "side": "py",
+      "statistic": "ci_upper_M_0.1",
+      "estimate": 0.7842202990000589,
+      "se": null,
+      "ci_lo": null,
+      "ci_hi": null,
+      "n": 1000,
+      "extra": {}
+    },
+    {
+      "module": "10_honest_did",
+      "side": "py",
+      "statistic": "shipped_ci_lower_M_0.1",
+      "estimate": 0.21577970099994104,
+      "se": null,
+      "ci_lo": null,
+      "ci_hi": null,
+      "n": 1000,
+      "extra": {}
+    },
+    {
+      "module": "10_honest_did",
+      "side": "py",
+      "statistic": "shipped_ci_upper_M_0.1",
+      "estimate": 0.7842202990000589,
+      "se": null,
+      "ci_lo": null,
+      "ci_hi": null,
+      "n": 1000,
+      "extra": {}
+    },
+    {
+      "module": "10_honest_did",
+      "side": "py",
+      "statistic": "ci_lower_M_0.2",
+      "estimate": 0.11609967820808675,
+      "se": null,
+      "ci_lo": null,
+      "ci_hi": null,
+      "n": 1000,
+      "extra": {}
+    },
+    {
+      "module": "10_honest_did",
+      "side": "py",
+      "statistic": "ci_upper_M_0.2",
+      "estimate": 0.8839003217919131,
+      "se": null,
+      "ci_lo": null,
+      "ci_hi": null,
+      "n": 1000,
+      "extra": {}
+    },
+    {
+      "module": "10_honest_did",
+      "side": "py",
+      "statistic": "shipped_ci_lower_M_0.2",
+      "estimate": 0.11609967820808675,
+      "se": null,
+      "ci_lo": null,
+      "ci_hi": null,
+      "n": 1000,
+      "extra": {}
+    },
+    {
+      "module": "10_honest_did",
+      "side": "py",
+      "statistic": "shipped_ci_upper_M_0.2",
+      "estimate": 0.8839003217919131,
+      "se": null,
+      "ci_lo": null,
+      "ci_hi": null,
+      "n": 1000,
+      "extra": {}
+    },
+    {
+      "module": "10_honest_did",
+      "side": "py",
+      "statistic": "ci_lower_M_0.5",
+      "estimate": -0.18390022614502394,
+      "se": null,
+      "ci_lo": null,
+      "ci_hi": null,
+      "n": 1000,
+      "extra": {}
+    },
+    {
+      "module": "10_honest_did",
+      "side": "py",
+      "statistic": "ci_upper_M_0.5",
+      "estimate": 1.1839002261450238,
+      "se": null,
+      "ci_lo": null,
+      "ci_hi": null,
+      "n": 1000,
+      "extra": {}
+    },
+    {
+      "module": "10_honest_did",
+      "side": "py",
+      "statistic": "shipped_ci_lower_M_0.5",
+      "estimate": -0.18390022614502394,
+      "se": null,
+      "ci_lo": null,
+      "ci_hi": null,
+      "n": 1000,
+      "extra": {}
+    },
+    {
+      "module": "10_honest_did",
+      "side": "py",
+      "statistic": "shipped_ci_upper_M_0.5",
+      "estimate": 1.1839002261450238,
+      "se": null,
+      "ci_lo": null,
+      "ci_hi": null,
+      "n": 1000,
+      "extra": {}
+    }
+  ],
+  "extra": {
+    "method": "smoothness",
+    "backend": "native",
+    "interval": "flci",
+    "alpha": 0.05,
+    "M_grid": [
+      0.0,
+      0.05,
+      0.1,
+      0.2,
+      0.5
+    ],
+    "implementation": "native Python FLCI (statspai.did._flci.flci_delta_sd) with the exact folded-normal quantile; no R call. The same native values are emitted under three statistic prefixes so they join the three R references (HonestDiD with the exact quantile, HonestDiD as shipped, closed form at M = 0)."
+  }
+}

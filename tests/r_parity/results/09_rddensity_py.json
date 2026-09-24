@@ -1,0 +1,81 @@
+{
+  "module": "09_rddensity",
+  "side": "py",
+  "rows": [
+    {
+      "module": "09_rddensity",
+      "side": "py",
+      "statistic": "density_diff",
+      "estimate": -0.0035482073141483994,
+      "se": null,
+      "ci_lo": null,
+      "ci_hi": null,
+      "n": 1390,
+      "extra": {}
+    },
+    {
+      "module": "09_rddensity",
+      "side": "py",
+      "statistic": "density_left",
+      "estimate": 0.021685914550628738,
+      "se": null,
+      "ci_lo": null,
+      "ci_hi": null,
+      "n": 1390,
+      "extra": {}
+    },
+    {
+      "module": "09_rddensity",
+      "side": "py",
+      "statistic": "density_right",
+      "estimate": 0.018137707236480338,
+      "se": null,
+      "ci_lo": null,
+      "ci_hi": null,
+      "n": 1390,
+      "extra": {}
+    },
+    {
+      "module": "09_rddensity",
+      "side": "py",
+      "statistic": "bandwidth_left",
+      "estimate": 19.84110835486285,
+      "se": null,
+      "ci_lo": null,
+      "ci_hi": null,
+      "n": 1390,
+      "extra": {}
+    },
+    {
+      "module": "09_rddensity",
+      "side": "py",
+      "statistic": "bandwidth_right",
+      "estimate": 27.118786434918533,
+      "se": null,
+      "ci_lo": null,
+      "ci_hi": null,
+      "n": 1390,
+      "extra": {}
+    },
+    {
+      "module": "09_rddensity",
+      "side": "py",
+      "statistic": "test_pvalue",
+      "estimate": 0.3814253876241098,
+      "se": null,
+      "ci_lo": null,
+      "ci_hi": null,
+      "n": 1390,
+      "extra": {}
+    }
+  ],
+  "extra": {
+    "polynomial_order": 2,
+    "backend": "native",
+    "validation_tier": "T2_native_reference_parity",
+    "reference_backend": "rddensity",
+    "test_kind": "Cattaneo-Jansson-Ma (2020)",
+    "tier": "T2",
+    "native_note": "Headline row is the NATIVE Python CJM density test (backend='native'). The native path ports rddensity's default unrestricted triangular-kernel CJM estimator, including rdbwdensity combination bandwidths, mass-point ECDF handling, and jackknife inference, so the Lee row is graded T2 native reference parity. The optional backend='r' bridge remains a convenience feature, not the comparator."
+  }
+}

@@ -1,0 +1,88 @@
+cff-version: 1.2.0
+message: "If you use StatsPAI in your research, please cite it using the metadata below."
+title: "StatsPAI: A Unified, Agent-Native Python Toolkit for Causal Inference and Applied Econometrics"
+abstract: >-
+  StatsPAI is a validation-tiered Python toolkit for applied econometrics and
+  causal inference covering difference-in-differences, instrumental variables,
+  regression discontinuity, synthetic control, double machine learning,
+  meta-learners, causal forests, causal discovery, structural estimation,
+  panel data, spatial models, and time-series analysis. Public estimators return
+  structured result objects with common summary, plotting, export, citation,
+  audit, and serialization methods where supported. The registry records
+  stability and validation status separately, so API breadth is not presented as
+  numerical validation evidence, and the callable surface is exposed through a
+  single ``import statspai as sp`` entry point plus machine-readable schemas.
+type: software
+authors:
+  - family-names: "Wang"
+    given-names: "Biaoyue"
+    affiliation: "Rural Education Action Program, Stanford Center on China's Economy and Institutions, Stanford University, United States; StatsPAI Inc., United States"
+    email: "brycew6m@stanford.edu"
+    orcid: "https://orcid.org/0000-0002-1828-2208"
+  - family-names: "Rozelle"
+    given-names: "Scott"
+    affiliation: "Rural Education Action Program, Stanford Center on China's Economy and Institutions, Stanford University, United States; StatsPAI Inc., United States"
+    email: "rozelle@stanford.edu"
+    orcid: "https://orcid.org/0000-0001-5053-0243"
+version: "1.30.1"
+date-released: "2026-09-24"
+license: MIT
+# Zenodo concept DOI; always resolves to the latest archived version.
+# For a specific-version DOI (e.g. for replication packages), follow the
+# concept DOI link below and pick the matching release in the version
+# history sidebar on Zenodo.
+doi: "10.5281/zenodo.19933900"
+url: "https://github.com/brycewang-stanford/StatsPAI"
+repository-code: "https://github.com/brycewang-stanford/StatsPAI"
+repository-artifact: "https://pypi.org/project/StatsPAI/"
+identifiers:
+  - type: doi
+    value: "10.5281/zenodo.19933900"
+    description: "Zenodo concept DOI; always resolves to the latest version."
+keywords:
+  - econometrics
+  - causal-inference
+  - difference-in-differences
+  - regression-discontinuity
+  - synthetic-control
+  - instrumental-variables
+  - double-machine-learning
+  - meta-learners
+  - panel-data
+  - bayesian-causal-forest
+  - causal-discovery
+  - tmle
+  - python
+  - agent-facing
+# JOSS paper — preferred citation. Published 2026-09-03 in the Journal of Open
+# Source Software 11(125), 10604. Verified against the Crossref deposit in
+# openjournals/joss-papers (joss.10604/10.21105.joss.10604.crossref.xml) and
+# the review issue openjournals/joss-reviews#10604 (accepted + published).
+# The software entry above (Zenodo concept DOI) remains the citation for a
+# specific release.
+preferred-citation:
+  type: article
+  authors:
+    - family-names: "Wang"
+      given-names: "Biaoyue"
+      affiliation: "Rural Education Action Program, Stanford Center on China's Economy and Institutions, Stanford University, United States; StatsPAI Inc., United States"
+      email: "brycew6m@stanford.edu"
+      orcid: "https://orcid.org/0000-0002-1828-2208"
+    - family-names: "Rozelle"
+      given-names: "Scott"
+      affiliation: "Rural Education Action Program, Stanford Center on China's Economy and Institutions, Stanford University, United States; StatsPAI Inc., United States"
+      email: "rozelle@stanford.edu"
+      orcid: "https://orcid.org/0000-0001-5053-0243"
+  title: "StatsPAI: A Unified, Agent-Native Python Toolkit for Causal Inference and Applied Econometrics"
+  journal: "Journal of Open Source Software"
+  issn: "2475-9066"
+  publisher:
+    name: "The Open Journal"
+  year: 2026
+  month: 9
+  volume: 11
+  issue: 125
+  start: 10604
+  date-published: "2026-09-03"
+  doi: "10.21105/joss.10604"
+  url: "https://doi.org/10.21105/joss.10604"

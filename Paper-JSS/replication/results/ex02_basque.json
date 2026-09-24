@@ -1,0 +1,36 @@
+{
+  "dataset": "sp.datasets.basque_terrorism() (calibrated replica)",
+  "n_rows": 731,
+  "n_units": 17,
+  "years": [
+    1955,
+    1997
+  ],
+  "treated_unit": "Basque Country",
+  "treatment_time": 1970,
+  "published_original_att_approx": -0.855,
+  "synth_classic": {
+    "estimate": -0.7731573762487142,
+    "se": 0.6034111549085615,
+    "pre_treatment_rmse": 0.082579,
+    "pre_treatment_mspe": 0.006819,
+    "weight_hhi": 0.5078,
+    "treated_post_pre_ratio": 11.580806790769254,
+    "v_method": "equal",
+    "n_donors": 16,
+    "n_active_donors": 2,
+    "n_pre_periods": 15,
+    "n_post_periods": 28,
+    "n_placebos": 16,
+    "active_weights": {
+      "Madrid": 0.5622545701005365,
+      "Cataluna": 0.43774542989946363
+    }
+  },
+  "neighbourhood_check": {
+    "negative_gap": true,
+    "in_range": true,
+    "lower": -1.05,
+    "upper": -0.55
+  }
+}

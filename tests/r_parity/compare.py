@@ -1,0 +1,2531 @@
+"""Parity comparator: read all results/<module>_{py,R}.json pairs and
+(optionally) the sister Stata-side JSONs in
+``tests/stata_parity/results/<module>_Stata.json``, then emit:
+
+  * parity_table.md       -- human-readable Markdown (3-way when Stata available)
+  * parity_table.tex      -- LaTeX longtable, 4-col R-only baseline (legacy)
+  * parity_table_3way.tex -- LaTeX longtable, 5-col with Stata column;
+                             this is the version the JSS appendix \\input{}s.
+
+Tolerance budget (pre-registered, NEXT-STEPS / JSS plan §5.2):
+
+  * machine-level point-estimate references:   rel_diff < 1e-6
+  * iterative / cross-fit (DiD, RD, SCM, DML): rel_diff < 1e-3
+  * bootstrap / placebo CI half-widths:        abs_diff < 0.05 * SE
+  * Honest-DiD CI bounds:                      abs_diff < 0.05
+
+The same tolerance applies to the StatsPAI <-> Stata comparison: we
+do not register a separate budget for the Stata side; one budget per
+module is the single source of truth. Stata-side implementation
+convention gaps that exceed that budget must be explicitly listed in
+``STATA_HEADLINE_GAP_EXCEPTIONS``.
+
+Verdict assignment is per-module, not per-row, because some rows
+(e.g. SE-with-documented-convention-gap, default-h selector) are
+expected NOT to pass at the strict tolerance and are recorded with
+an explicit rationale in the module's `extra` block.
+"""
+
+from __future__ import annotations
+
+import json
+import math
+import re
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+HERE = Path(__file__).resolve().parent
+ROOT = HERE.parents[1]
+
+
+def _release_version() -> str:
+    """Package version from pyproject.toml, for the generated table captions.
+
+    Read by regex rather than imported so this comparison script stays
+    importable without the package on ``sys.path``.
+    """
+    text = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    m = re.search(r'^version\s*=\s*"([^"]+)"', text, flags=re.MULTILINE)
+    return m.group(1) if m else "unknown"
+
+
+RESULTS_DIR = HERE / "results"
+PAPER_TABLES_DIR = ROOT / "Paper-JSS" / "manuscript" / "tables"
+# The sister Stata-side harness lives at tests/stata_parity/. Stata
+# results are emitted for modules with a canonical Stata reference or a
+# deliberately labelled audited Stata/Mata bridge; modules without an
+# authoritative or portable bridge implementation are flagged with explicit
+# reasons in the 3-way table.
+STATA_RESULTS_DIR = HERE.parent / "stata_parity" / "results"
+STATA_SKIP_REASON: dict[str, str] = {
+    # Every entry below was re-measured on 2026-08-06 against a licensed
+    # Stata 18 runtime with SSC reachable, so a reviewer who installs the
+    # named package cannot falsify the stated reason. Seven modules that
+    # previously appeared here (71, 73, 74, 75, 76, 78, 81) were closed in
+    # that pass and now carry materialized Stata artifacts.
+    "80_contdid": (
+        "no Stata implementation: the CGS continuous-treatment estimator "
+        "ships as the R package contdid (GitHub only, not CRAN). Re-checked "
+        "2026-08-06: `ssc describe contdid` returns r(601), not found."
+    ),
+    "79_didff": (
+        "no Stata implementation: the Roth-Sant'Anna functional-form test "
+        "ships as the R package didFF (GitHub only, not CRAN). Re-checked "
+        "2026-08-06: `ssc describe didff` returns r(601), not found."
+    ),
+    "77_ddd": (
+        "no Stata implementation: the Ortiz-Villavicencio/Sant'Anna DDD "
+        "estimator ships as the R package triplediff. Re-checked 2026-08-06: "
+        "neither `triplediff` nor `ddd` resolves locally and `ssc describe "
+        "triplediff` returns r(601)."
+    ),
+    "13_causal_forest": (
+        "bridge artifact not materialized: Stata 19's official cate command "
+        "is the candidate causal-forest/AIPW reference, but the verified local "
+        "runtime is Stata 18 and `which cate` fails."
+    ),
+}
+
+TRACK_A_SNAPSHOT_ROWS: list[dict[str, Any]] = [
+    {
+        "module": "03_hdfe",
+        "statistic": "beta_x1",
+        "estimator": r"\code{sp.fast.feols}",
+        "label": r"\(\hat\beta_{x1}\)",
+        "data": r"2-way HDFE, \(N{=}10^4\)",
+        "tol": r"\(10^{-6}\)",
+        "verdict": "T2; fixest ssc",
+    },
+    {
+        "module": "01_ols",
+        "statistic": "beta_educ",
+        "estimator": r"\code{sp.regress}",
+        "label": r"\(\hat\beta_{\mathrm{educ}}\)",
+        "data": "Card replica",
+        "tol": r"\(10^{-6}\)",
+        "verdict": "T2",
+    },
+    {
+        "module": "02_iv",
+        "statistic": "beta_educ",
+        "estimator": r"\code{sp.iv}",
+        "label": r"\(\hat\beta_{\mathrm{educ}}\)",
+        "data": "Card replica",
+        "tol": r"\(10^{-6}\)",
+        "verdict": "T2",
+    },
+    {
+        "module": "04_csdid",
+        "statistic": "simple_ATT",
+        "estimator": r"\code{sp.callaway\_santanna}",
+        "label": "simple ATT",
+        "data": r"\texttt{mpdta} replica",
+        "tol": r"\(10^{-6}\)",
+        "verdict": "T2",
+    },
+    {
+        "module": "06_rd",
+        "statistic": "default_robust_est",
+        "estimator": r"\code{sp.rdrobust}",
+        "label": r"robust RD, default CCT \(h\)",
+        "data": "RDsenate",
+        "tol": r"\(10^{-6}\)",
+        "verdict": r"T2; native, default \(h\)",
+    },
+    {
+        "module": "08_dml",
+        "statistic": "theta_DML_PLR",
+        "estimator": r"\code{sp.dml}",
+        "label": r"\(\hat\theta_{\mathrm{DML}}\)",
+        "data": "Card replica",
+        "tol": r"\(10^{-10}\)",
+        "verdict": "T2; ddml bridge",
+    },
+    {
+        "module": "13_causal_forest",
+        "statistic": "ate_causal_forest",
+        "estimator": r"\code{sp.causal\_forest}",
+        "label": "AIPW ATE",
+        "data": "clean-overlap DGP",
+        "tol": "0.01",
+        "verdict": "T3; seed-replicated, operator exact",
+    },
+    {
+        "module": "11_psm",
+        "statistic": "att_psm",
+        "estimator": r"\code{sp.psm}",
+        "label": "ATT",
+        "data": "NSW--DW replica",
+        "tol": r"\(10^{-6}\)",
+        "verdict": "T2; SE convention",
+    },
+    {
+        "module": "52_scm_unique",
+        "statistic": "avg_post_gap",
+        "estimator": r"\code{sp.synth} (unique)",
+        "label": "avg post gap",
+        "data": "identified SCM DGP",
+        "tol": r"\(10^{-6}\)",
+        "verdict": "T1+T2; identified DGP",
+    },
+    {
+        "module": "07_scm",
+        "statistic": "avg_post_gap",
+        "estimator": r"\code{sp.synth} (classic)",
+        "label": "avg post gap",
+        "data": "Basque replica",
+        "tol": "0.05",
+        "verdict": r"T4; reference disagreement",
+    },
+    {
+        "module": "28_frontier",
+        "statistic": "beta_intercept",
+        "estimator": r"\code{sp.frontier}",
+        "label": "intercept",
+        "data": "frontier DGP",
+        "tol": r"\(10^{-6}\)",
+        "verdict": "T2",
+    },
+    {
+        "module": "30_oaxaca",
+        "statistic": "gap",
+        "estimator": r"\code{sp.decompose}",
+        "label": "Oaxaca gap",
+        "data": "Oaxaca DGP",
+        "tol": r"\(10^{-6}\)",
+        "verdict": "T2",
+    },
+]
+
+# Modules where the R headline is inside the registered tolerance but the
+# Stata headline deliberately records a known implementation convention gap.
+# Keeping this explicit prevents the 3-way PASS column from silently masking
+# Stata-side drift.
+#: Modules whose Stata artifact deliberately joins no *headline* row. A Stata
+#: column that compares nothing is a finding, not coverage, so the audit
+#: demands the reason be written down rather than inferred from a blank cell.
+STATA_NO_HEADLINE_JOIN_REASON: dict[str, str] = {}
+
+#: Python statistics with no counterpart on either reference side. Not an
+#: error -- some are Python-only diagnostics -- but they must be visible,
+#: because "emitted and never compared" is precisely how an unpinned
+#: object hides.
+UNMATCHED_ROWS: dict[str, list[str]] = {}
+
+
+STATA_HEADLINE_GAP_EXCEPTIONS: dict[str, str] = {
+    "74_cic": (
+        "cic (Kranker) vs qte::CiC inverse-CDF tie-break. Under the "
+        "like-for-like discrete_ci estimator eight of the nine decile "
+        "treatment effects are bit-identical to qte::CiC; qte_50 differs at "
+        "rel 6.0e-3 and cic_ATT -- which integrates the same counterfactual "
+        "distribution -- at rel 1.2e-3. The disagreement is localised to the "
+        "tie rule at a probability where the empirical CDF is flat, not to "
+        "the estimator: the alternative `continuous` estimator is ~1% away on "
+        "every row and is recorded in the module's extra block so the choice "
+        "is auditable. py<->R remains at 4.4e-15 throughout."
+    ),
+}
+
+
+# Stata-side standard-error gaps on rows whose *point estimates* are the
+# headline metric. The R side of every PASS module is inside its rel_se
+# budget on every row; these are the Stata rows that are not, each with
+# the reconstruction that earns it a convention label rather than a
+# widened budget. Enforced by tests/test_parity_harness_contract.py::
+# test_every_stata_se_row_is_inside_budget_or_registered.
+STATA_SE_GAP_NOTES: dict[str, str] = {
+    "04_csdid": (
+        "group_overall only (0.27%): csdid's `estat group` GAverage "
+        "aggregates the per-cohort influence functions with the cohort "
+        "shares held fixed, while did::aggte(type='group') and sp.aggte "
+        "add the share-estimation term (did:::wif). The convention is "
+        "pinned, not just explained: the group_overall_fixedshare row "
+        "runs sp.aggte(share_variance=False) and joins csdid's GAverage "
+        "SE at rel 6e-15 (no R side by construction -- did has no "
+        "fixed-share option); the other 18 rows are three-way machine "
+        "level."
+    ),
+    "71_dml_family": (
+        "theta_DML_PLIV only (5.0e-4): ddml's PLIV final stage runs "
+        "`ivreg ..., robust`, whose sandwich carries Stata's N/(N-K) "
+        "small-sample factor (N=1000, K=1: sqrt(1000/999) = 1.00050), while "
+        "DoubleML Python/R and StatsPAI report the HC0 sandwich; IRM and "
+        "IIVM are at 4e-10 because ddml's `regress` final stage on the "
+        "orthogonalised score has no such factor."
+    ),
+}
+
+
+#: What the StatsPAI side of each Track A module actually executes. A parity
+#: row is evidence about a StatsPAI-native algorithm only when the Python side
+#: ran one; a row whose Python side hands the computation to the R reference
+#: itself would compare R with R, and a row served by a third-party Python
+#: library or by an official port tests StatsPAI's wrapper, argument mapping
+#: and conventions -- worth recording, but a different kind of evidence.
+#:
+#: Every module not listed is ``"native"``. The classification is not taken
+#: on trust: ``scripts/trace_parity_provenance.py`` runs each module under a
+#: profiler that records every call from StatsPAI into a non-substrate
+#: package and every subprocess, and
+#: ``tests/test_parity_implementation_provenance.py`` fails if this table and
+#: the committed trace disagree. Kinds:
+#:
+#: * ``native`` -- StatsPAI's own implementation (NumPy/SciPy substrate only;
+#:   scikit-learn only as user-chosen nuisance learners).
+#: * ``official_python_port`` -- a Python port maintained by the method's
+#:   authors.
+#: * ``third_party_python`` -- an estimator implemented by another Python
+#:   library, wrapped by StatsPAI.
+#: * ``reference_backend`` -- the R (or Stata) reference itself, called from
+#:   Python. Never counted as parity; none remain since 1.31 (modules 10 and
+#:   21 moved to native HonestDiD implementations).
+IMPLEMENTATION_PROVENANCE: dict[str, tuple[str, str]] = {
+    "35_panel": (
+        "third_party_python",
+        "sp.panel(method='fe'/'re') fits through linearmodels PanelOLS / "
+        "RandomEffects (a core dependency); the Hausman statistic is computed "
+        "by StatsPAI from those fits.",
+    ),
+    "39_arima": (
+        "third_party_python",
+        "sp.arima wraps statsmodels' ARIMA / SARIMAX likelihood "
+        "(method='innovations_mle' here).",
+    ),
+    "67_panel_glm": (
+        "third_party_python",
+        "sp.feglm / sp.fepois route to pyfixest's feglm / fepois.",
+    ),
+}
+
+#: Packages a *native* module may still touch, but only to produce rows that
+#: never join a reference (so they cannot enter a parity verdict). Declared
+#: here so the provenance test can tell a side check from a delegated
+#: headline; the module's own contract test pins that those rows stay
+#: unjoined.
+IMPLEMENTATION_SIDE_CHECKS: dict[str, dict[str, str]] = {
+    "06_rd": {
+        "rdrobust": "cct_port_default_* rows: port-vs-native convergence check",
+    },
+}
+
+#: Modules whose cross-language comparison is stochastic by construction and
+#: is graded T3 (seed-replicated equivalence), not T2. The single draw in the
+#: module is interpreted through the named seed-replication artifact.
+STOCHASTIC_T3_MODULES: dict[str, str] = {
+    "13_causal_forest": "tests/reference_parity/test_grf_seed_mc_equivalence.py",
+}
+
+
+def evidence_grade(module: str) -> str:
+    """T2 / T3 / T4 grade of a Track A module's headline comparison."""
+    if tolerance_tier(module) == "methodological":
+        return "T4"
+    if module in STOCHASTIC_T3_MODULES:
+        return "T3"
+    return "T2"
+
+
+IMPLEMENTATION_KINDS = (
+    "native",
+    "official_python_port",
+    "third_party_python",
+    "reference_backend",
+)
+
+
+def implementation_kind(module: str) -> str:
+    """Evidence kind of a Track A module's StatsPAI side (default native)."""
+    return IMPLEMENTATION_PROVENANCE.get(module, ("native", ""))[0]
+
+
+def implementation_census(modules: list[str]) -> dict[str, int]:
+    """Count of rendered modules by implementation kind."""
+    out = {k: 0 for k in IMPLEMENTATION_KINDS}
+    for m in modules:
+        out[implementation_kind(m)] += 1
+    return out
+
+
+# Pre-registered tolerance per module. Every entry with rel_est or
+# rel_se >= 5e-2 carries a graded justification (A mechanistic /
+# B empirical / C unjustified) in docs/dev/r_parity_tolerances.md,
+# together with the observed worst gap recomputed from the committed
+# golden JSONs. Audit rules:
+#   * NEVER loosen a value without re-registering it in that document.
+#   * "sentinel" rel_se entries mark point-only modules whose SE rows
+#     are deliberately side-specific (distinct statistic names, or
+#     se=None) and therefore never join: the budget is vacuous today
+#     and is pinned at the 1e-6 machine floor so that any future
+#     joined SE row fails loudly and must be consciously re-budgeted.
+TOLERANCES: dict[str, dict[str, float]] = {
+    "01_ols": {"rel_est": 1e-6, "rel_se": 1e-6},
+    # RD bandwidth selection across the full selector surface: all ten CCT
+    # methods at p=1, plus polynomial order, kernel, covariates, clustering
+    # and the RKD derivative. Sixty-eight bandwidths, no standard errors --
+    # a selector returns h and b, not an estimate with a variance -- so
+    # rel_se is deliberately absent rather than set to a vacuous budget.
+    #
+    # Observed: 1.8e-12 against R across every cell, 3.7e-9 against Stata.
+    # The Stata gap is the two references' own disagreement (both are
+    # Cattaneo-group code and neither is a bridge), four orders inside the
+    # registered budget, and it sits on the msesum/cersum bias bandwidth.
+    #
+    # Packaging this module is what exposed two silent defects in the
+    # published selector; both are fixed in-branch and neither is papered
+    # over here. See PARITY_SWEEP_FINDINGS.md F1-F4.
+    "88_rdbwselect": {"rel_est": 1e-6},
+    # Multi-score / geographic RD at three boundary points along one
+    # boundary. Fifteen rows: the bias-corrected and conventional point
+    # estimates with their standard errors, the selected bandwidth, and the
+    # effective sample size on each side.
+    #
+    # Observed: 7.6e-12 against R, 3.3e-9 against Stata. The six effective
+    # sample sizes agree *exactly* on all three sides, which is the row that
+    # matters most here -- they are integers, so they cannot be argued into
+    # agreement by a tolerance, and they are what the previous
+    # implementation got wrong by a factor of thirty.
+    #
+    # Packaging this module is what exposed that sp.rdms was not computing
+    # rdmulti::rdms at all (PARITY_SWEEP_FINDINGS.md O8 -> F12).
+    "89_rdms": {"rel_est": 1e-6, "rel_se": 1e-6},
+    # dCDH 2020 DID_M: the static effect, the horizon-1 dynamic effect and
+    # the lag-1 placebo all match at 5e-15 on a panel where treatment
+    # switches both on and off. Pinned against the ARCHIVED 0.1.4 -- the
+    # 2.x rewrite's mode="old" returns NaN even on its own example. No
+    # rel_se: the R side runs brep=0.
+    "81_didm": {"rel_est": 1e-6},
+    # LP-DiD: the R side is a direct transcription rather than a package, so
+    # both sides solve the same OLS on the same rows and only summation order
+    # separates them. The per-horizon sample sizes match exactly, which is the
+    # real check on the clean-control window.
+    "83_lpdid": {"rel_est": 1e-10, "rel_se": 1e-10},
+    # BJS pre-trend vector, and the estimator's whole variance path.
+    # The three leads reproduce Stata did_imputation, pretrends(3) at
+    # ~1e-14 on estimate and SE. The four horizons reproduce BOTH
+    # references at ~1e-8 on the estimate and ~3e-8 on the SE.
+    #
+    # That SE agreement is new. Packaging this module is what exposed the
+    # gap: StatsPAI's analytic standard errors were built from a
+    # balanced-panel approximation to the fixed-effect projection and a
+    # global rather than within-cell centring, which put the headline 36%
+    # low here and 18% low on mpdta, and moved the horizons 4.9-13% with
+    # non-uniform sign. R didimputation and Stata agreed with each other
+    # throughout, which is what made it diagnosable. did/_bjs_variance.py
+    # now computes the exact weights v with tau = v'y, as both references
+    # do. rel_se is 1e-6 rather than machine because the y0 fit reaches
+    # the weights through an iterative sparse solve.
+    "84_bjs_pretrends": {"rel_est": 1e-6, "rel_se": 1e-6},
+    # Dynamic TWFE event study. The benchmark every other event study is
+    # read AGAINST -- "TWFE-comparable" is defined in terms of it -- and
+    # it had no pinned reference value of any kind.
+    #
+    # Non-staggered by construction, and that is a scope statement. A
+    # saturated dynamic TWFE event study on a staggered panel is the
+    # object Sun-Abraham says is contaminated by already-treated
+    # comparisons, and with few cohorts fixest drops the extreme leads
+    # and lags to collinearity outright. Non-staggered is where this
+    # specification is a benchmark rather than a casualty.
+    #
+    # The R side needs ssc(fixef.K = "none"): fixest's default counts the
+    # absorbed fixed effects in the d.f. adjustment and sp.event_study
+    # does not. Reconstructed rather than asserted -- with the default the
+    # two differ by a constant variance factor of 1.005614 on every
+    # coefficient, and fixef.K = "none" reproduces sp bit for bit.
+    # Dynamic TWFE event study: the benchmark specification the modern
+    # DiD literature states its "TWFE-comparable" claims against, and
+    # previously the largest block of unpinned objects in the audit.
+    # Three-way machine level with DEFAULT settings on every side since
+    # 1.24.0: sp.event_study applies the fixest/reghdfe nested rule to
+    # the small-sample K (8 event-time coefficients + 9 absorbed time
+    # effects not nested in the unit cluster = 17), which is what both
+    # references count. Before that the R side had to be run with
+    # ssc(fixef.K = "none") and reghdfe sat a uniform 2.8e-3 away on
+    # every SE, reconstructed from the two K values by a contract test.
+    # Observed: 9e-14 (R) / 2.4e-15 (Stata) on estimates and SEs.
+    "85_twfe_event_study": {"rel_est": 1e-9, "rel_se": 1e-9},
+    # fect counterfactual estimators (Liu, Wang and Xu 2024) -- fe / ife
+    # (r = 2) / mc (lambda = 0.002) on a staggered two-factor panel, all
+    # three specifications with se = FALSE, CV = FALSE, tol = 1e-8. The
+    # Python port runs fect's EM map (fixest two-way initial fit, E-step
+    # fill, two-way demeaning, panel_factor SVD with the sqrt(T)/sqrt(N)
+    # normalisation or the soft-threshold on E/(T*N), relative
+    # convergence on the fitted surface and on the interactive component)
+    # step for step, so both sides stop at the same iteration (490 for
+    # ife, 204 for mc) and agree at 1e-12 on all 33 rows per method. The
+    # fe rows are at ~1e-9 absolute because fect's one-pass fe path
+    # inherits fixest's fixef.tol = 1e-6 demeaning while the Python
+    # initial fit is an exact least-squares solve. No SE rows: fect's
+    # inference is resampling-based and optional.
+    "86_fect": {"rel_est": 1e-6, "rel_se": 1e-6},  # rel_se sentinel: no SE row
+    # interflex (Hainmueller, Mummolo and Xu 2019): linear, binning and
+    # kernel marginal effects of a binary treatment across a moderator on
+    # one simulated sample. Closed-form (W)LS with HC1 delta-method SEs on
+    # the linear and binning rows; the kernel rows port R's density()
+    # grid conventions (bw.nrd0, n = 512, cut = 3, linear binning + FFT,
+    # old.coords = FALSE) so the adaptive bandwidth is bit-identical.
+    # Observed 6.5e-14 (est) / 5.3e-15 (SE) on all 20 rows.
+    "87_interflex": {"rel_est": 1e-6, "rel_se": 1e-6},
+    # Design-based staggered rollout, reconciled against staggered::staggered
+    # / staggered_cs / staggered_sa -- Roth and Sant'Anna's own package for
+    # their 2023 JPE Micro paper, and the only module here whose
+    # identification comes from random adoption timing rather than parallel
+    # trends. 33 rows: the efficient and plug-in estimators across the
+    # simple / cohort / calendar / event-study (e0-e2) aggregations, plus the
+    # CS and SA comparisons, each carrying both the conservative Neyman
+    # standard error and the randomisation-adjusted one. Worst row is
+    # 3.5e-15. The standard errors travel as their own statistic rows rather
+    # than in the se columns, so there is no rel_se to budget -- pinning
+    # rel_est alone would leave them unchecked if that ever changed, which is
+    # why they are emitted as estimates.
+    "82_staggered": {"rel_est": 1e-10},
+    # CGS continuous treatment: the dose curves at four grid points and
+    # both overall quantities, across three spline specifications, match
+    # contdid at 1e-12. The curves are compared under
+    # curve_basis="reference" -- contdid fits on the treated dose range but
+    # reports on a basis re-anchored to the dose grid, so its reported
+    # curves are a rescaled version of the fitted dose response and do not
+    # line up with the overall ACRT it returns alongside them. StatsPAI
+    # defaults to one consistent basis.
+    # No rel_se: contdid's standard errors come from the pte aggregation
+    # layer, which is not replicated.
+    "80_contdid": {"rel_est": 1e-6},
+    # Functional-form test: the sixteen implied-density bins across both
+    # designs agree at 1.2e-15. The 1e-3 budget exists for ONE row per
+    # design -- the p-value, which is a 100k-draw simulation of the
+    # least-favourable critical value on each side with different RNGs
+    # (observed gap 1e-5, i.e. one draw). Iterative tier for that reason
+    # alone; the substantive quantities are machine-exact.
+    "79_didff": {"rel_est": 1e-3},
+    # dCDH intertemporal event study: across TWO designs -- absorbing, and
+    # one where treatment switches off as well as on -- every effect,
+    # placebo, aggregate and switcher count matches DIDmultiplegtDYN at
+    # 5e-15. The switch-off design is what exercises the baseline-matched
+    # control group and the divide-by-delta-D sign convention. No rel_se:
+    # sp.did_multiplegt_dyn's analytic variance is not the paper's formula
+    # (see its limitations) and its bootstrap is a different estimator.
+    "78_multiplegt_dyn": {"rel_est": 1e-6},
+    # Triple differences: the post-treatment ATT(g,t) cells and the
+    # cohort-weighted aggregate match triplediff::ddd at 1e-12, across the
+    # unconditional design and all three conditional nuisance combinations
+    # (dr / ipw / reg). rel_se applies to the conditional rows, where
+    # sp.ddd_heterogeneous(se='analytic') uses the same influence-function
+    # variance the reference does; the unconditional rows emit no SE
+    # because that path reports a cluster bootstrap instead.
+    "77_ddd": {"rel_est": 1e-6, "rel_se": 1e-6},
+    # Pre-trends power: iterative tier on purpose. pretrends gets its
+    # rejection probability from mvtnorm::pmvnorm, whose Genz-Bretz
+    # integrator is randomised -- twenty repeated R calls on this fixture
+    # spread over ~5e-4 (sd 1.3e-4). Worst observed gap 4.3e-4, on
+    # slope_for_power, which root-finds through that same noise. The
+    # likelihood ratio is closed-form and agrees at 1e-15.
+    "76_pretrends": {"rel_est": 1e-3},
+    # Stacked DiD: event-study coefficients and the post mean match a
+    # hand-written fixest stack at 1.3e-13 under both control-group
+    # conventions. No rel_se -- the R side clusters on the raw unit id
+    # while sp.stacked_did clusters on the stacked unit-cohort id, so the
+    # SEs answer slightly different questions by design.
+    "75_stacked": {"rel_est": 1e-6},
+    # CIC: ATT and all nine QTEs match qte::CiC at machine precision
+    # (worst 4.4e-15). No rel_se -- the R call runs se=FALSE.
+    "74_cic": {"rel_est": 1e-6},
+    # Gardner two-stage: point estimate matches did2s at 4.8e-08 and the
+    # SE at 2.7e-10 (Stata did2s: 2.4e-12 / 1.3e-14). sp.gardner_did's
+    # vce='analytic' is the did2s corrected clustered variance -- the
+    # stage-2 sandwich built from the two-stage influence function
+    # (X2'X2)^-1 [sum_g s_g s_g'] (X2'X2)^-1 with
+    # s_g = sum_{i in g} (x2_i e2_i - gamma' x10_i e1_i),
+    # gamma = (X10'X10)^-1 X1'X2, no small-sample factor -- so stage-1
+    # fixed-effect estimation error is propagated exactly as both
+    # references do. The residual against R is fixest's iterative
+    # demeaning tolerance in the first stage (the same source as the
+    # point-estimate gap); Stata solves the first stage exactly and lands
+    # at machine level. The pre-correction stage-2-only SE (~26% low) is
+    # still emitted as the unjoined `static_ATT_stage2_se` diagnostic row.
+    "73_did2s": {"rel_est": 1e-6, "rel_se": 1e-6},
+    "02_iv": {"rel_est": 1e-6, "rel_se": 1e-6},
+    # Tightened 2026-06-10 from 1e-2 ("1-df conv. gap" was stale): with
+    # ssc='fixest' the IID SEs match fixest/reghdfe at machine level
+    # (observed worst rel_se 8.4e-15 incl. Stata side).
+    "03_hdfe": {"rel_est": 1e-6, "rel_se": 1e-6},
+    # B: analytic IF SE incl. control-regression uncertainty; observed
+    # 0.32% vs both did::aggte and csdid (3.1x margin).
+    # rel_se was 1e-2 while sp.aggte dropped the cohort-share weight-estimation
+    # term; the simple ATT now reproduces did::aggte to ~4e-16, so a 1% band is
+    # slack a future regression could hide in. Same failure mode the DiD
+    # reconciliation study documents: the tolerance, not the number, was the bug.
+    #
+    # The module now pins the AGGREGATION VECTORS, not just the headline
+    # scalar: the dynamic event study, the group vector and the calendar
+    # vector, on estimate and SE -- 18 statistics where there was 1.
+    # base_period is pinned explicitly on all three sides (R defaults to
+    # "varying"; StatsPAI and csdid long2 to "universal"). The simple ATT
+    # averages post-treatment cells only and so cannot see that option,
+    # which is why this module matched for years without it being set;
+    # the event-study rows can, and would disagree on every pre-treatment
+    # cell. 17 of 18 rows are three-way machine precision. The
+    # eighteenth, group_overall, has py == R to 1.2e-16 with Stata 0.27%
+    # away on the SE alone; it is recorded in the module's extra block
+    # rather than absorbed here, because widening rel_se to cover it
+    # would hide the other seventeen.
+    "04_csdid": {"rel_est": 1e-6, "rel_se": 1e-9},
+    # A: the default att_rel_<e> rows carry the Sun & Abraham (2021,
+    # Prop. 3) cohort-share term (Stata eventstudyinteract convention;
+    # py == Stata to 8e-12 on every row) while fixest::sunab treats the
+    # shares as fixed, so R differs by exactly that positive term at the
+    # multi-cohort relative times (worst 0.93% at e=1 on mpdta; zero at
+    # single-cohort times and on the agg='att' ATT, both 8e-12). The
+    # att_rel_<e>_fixedshare rows re-run with share_variance=False and
+    # pin the fixest convention itself to 8e-12, which is what closes the
+    # mechanism. Degrees of freedom follow the fixest/reghdfe nested K
+    # rule on both sides. Budget = ~3x the worst share-term gap.
+    "05_sunab": {"rel_est": 1e-6, "rel_se": 3e-2},
+    "06_rd": {
+        "rel_est": 1e-6,
+        "rel_se": 1e-6,
+    },  # native CCT cascade: default-h and forced-h rows machine-level
+    # (observed rel <= 7e-14 on estimates, SEs and bandwidths). The 0.10 SE
+    # budget carried until 1.31 was bound by legacy forced-h diagnostic
+    # rows that have agreed to 2e-15 since the 1.24 selector port.
+    "07_scm": {
+        "rel_est": 1.0,  # A/T4: Basque weight non-uniqueness; R Synth and
+        # Stata synth land on different local optima (donor weights rel
+        # gap up to 1.78 vs R); native tracks Stata; exact-recovery
+        # counterpart is module 52.
+        "rel_se": 1e-6,  # sentinel: all rows are point-only (se=None)
+    },  # native classical SCM: T4 R/Stata reference-disagreement disclosure
+    "08_dml": {
+        "rel_est": 1e-10,
+        "rel_se": 1e-10,
+    },  # explicit folds; audited linear PLR bridge
+    "09_rddensity": {
+        "rel_est": 1e-6,
+        "rel_se": 1e-6,
+    },  # native CJM/rddensity default parity
+    # Native FLCI (no R call) vs HonestDiD with the exact folded-normal
+    # quantile for M > 0 (<= 1.4e-8) and vs the closed form at M = 0
+    # (2.2e-9). Shipped HonestDiD simulates that quantile (~3e-4) and its
+    # cone solver misses the M = 0 closed form by 5.7e-6; both are
+    # displayed rows, not headline rows. Tightened from 5e-4 when the
+    # module stopped calling backend="honestdid" (1.31).
+    "10_honest_did": {
+        "abs_est": 1e-6,
+        "abs_se": 1e-6,  # sentinel: CI-bound rows are point-only
+    },
+    # A + sentinel (tightened 2026-06-10 from 5.0): att_psm carries
+    # se=None on all three sides by design -- SE estimators differ by
+    # construction (sp matched-pair effect dispersion vs MatchIt
+    # post-matching weighted-lm diagnostic vs teffects Abadie-Imbens)
+    # and live under side-specific statistic names that never join.
+    "11_psm": {"rel_est": 1e-6, "rel_se": 1e-6},
+    "12_sdid": {
+        "rel_est": 1e-6,
+        "rel_se": 1e-6,  # sentinel (was 5e-2): att_sdid is point-only;
+        # placebo SEs are backend-native diagnostics under distinct names.
+    },  # point-only native FW/zeta ATT parity
+    "13_causal_forest": {
+        "rel_est": 0.01,  # B/T3: a single draw per engine. The T3 grade rests
+        # on the seed-replicated comparison on fixed data
+        # (tests/reference_parity/test_grf_seed_mc_equivalence.py: equivalence
+        # within 0.1 sampling SE at 500-8,000 trees on two designs); this budget only bounds
+        # the one draw. Since 1.29 sp.causal_forest runs its
+        # own GRF engine (gradient splits, OOB nuisances, little bags);
+        # observed ATE 0.03% / ATT 0.26% (3.9x margin) since 1.31's engine
+        # seeding fix (independent per-group seeds and nuisance streams;
+        # before it: 0.24% / 0.38%). The engine's
+        # statistical parity with grf (RMSE, pointwise variances, coverage)
+        # is gated in tests/reference_parity/test_grf_engine_statistical_parity.py.
+        "rel_se": 0.05,  # B: the AIPW *operator* is pinned exactly (see
+        # tests/reference_parity/test_grf_aipw_operator_parity.py and the
+        # clustered operator parity), so this band covers forest RNG only.
+        # Tightened from 0.25 in 1.29: with the GRF engine the observed
+        # worst is 0.68% (ATT; ATE 0.16%) after 1.31's seeding fix (0.63%
+        # before; 7.7% under the pre-1.29 engine), a 7.3x margin.
+    },  # clean-overlap AIPW vs grf (post-nuisance-regularisation MC gap)
+    "14_ols_cluster": {
+        "rel_est": 1e-6,
+        "rel_se": 1e-6,
+    },  # obs worst 6.1e-9 (machine); 2026-06 tighten
+    # Tightened 2026-06-10 from 5e-2 ("ssc convention" was stale): with
+    # ssc='fixest' the CR1 nested-FE cluster SEs match fixest/reghdfe
+    # (observed worst rel_se 1.25e-11 incl. Stata side).
+    "15_hdfe_cluster": {"rel_est": 1e-6, "rel_se": 1e-6},
+    "16_bjs": {
+        "rel_est": 1e-6,
+        "rel_se": 1e-6,  # sentinel (was 0.25): SE rows are side-specific
+        # (se_cluster_if / se_didimputation / se_stata_did_imputation).
+    },  # point row; side-specific SE diagnostics
+    "17_etwfe": {"rel_est": 1e-6, "rel_se": 1e-3},  # emfx + cluster SE
+    # parity; B: observed worst 6.0e-4 on the Stata side (1.7x margin).
+    # A on est: the 7.9e-6 R-side residual is augsynth's OSQP solver
+    # tolerance (synth_qp runs OSQP at eps=1e-8); with OSQP tightened to
+    # 1e-13 augsynth returns -0.36277067318038575, which agrees with the
+    # exact active-set simplex QP used by StatsPAI (1.7e-8) and by the
+    # audited Stata/Mata bridge (18_augsynth.do, same lambda path and
+    # 1-SE rule recomputed in Mata) to 1e-11. Budget kept at 2e-5
+    # (2.5x margin on the OSQP-limited R row); rel_se sentinel (was 1.0):
+    # the R augsynth fixture emits no joinable SE.
+    "18_augsynth": {"rel_est": 2e-5, "rel_se": 1e-6},
+    "19_gsynth": {
+        "rel_est": 1e-6,
+        "rel_se": 1e-6,  # sentinel (was 1.0): no SE row joins.
+    },  # native gsynth/fect factor convention parity
+    # rel_se sentinel (was 1.0): the Goodman-Bacon decomposition emits
+    # no SEs on any side.
+    "20_bacon": {"rel_est": 1e-6, "rel_se": 1e-6},  # TWFE-only headline
+    # Native ARP conditional set (no R call since 1.31): identical accepted
+    # grid points to HonestDiD's Conditional method.
+    "21_honest_relmags": {"abs_est": 1e-6, "abs_se": 1e-6},
+    "22_sensemakr": {"rel_est": 1e-6, "rel_se": 1e-6},
+    "23_evalue": {"rel_est": 1e-6, "rel_se": 1e-6},
+    "24_coxph": {
+        "rel_est": 1e-6,
+        "rel_se": 1e-6,
+    },  # obs worst 2.6e-15 (machine); 2026-06 tighten
+    "25_lmm": {
+        "rel_est": 1e-6,
+        "rel_se": 1e-6,
+    },  # REML criterion + tight optimiser parity
+    # B: since 1.24.0 the fixed-effect covariance is the beta block of the
+    # inverse observed-information Hessian of the marginal (Laplace)
+    # log-likelihood, the Stata melogit vce(oim) construction; py == Stata
+    # to 3.5e-6 on both SE rows. lme4's nAGQ=1 optimum sits 1.5e-4 away in
+    # beta (logLik 2.8e-7 higher on the Python/Stata side) and its SEs are
+    # 0.12%-0.27% off that optimum; 3.7x margin on the R side.
+    "26_glmm_logit": {"rel_est": 2e-4, "rel_se": 1e-2},  # tightened GLMM optimiser tol
+    # A (machine): same OIM construction as above at the tight AGHQ
+    # optimum; observed 4.8e-7 (R) / 4.2e-6 (Stata) SE, ~5x margin. Was
+    # 5e-2 with a 1.9% "information-matrix convention" gap that turned
+    # out to be the missing variance-component uncertainty on the
+    # StatsPAI side, not a convention.
+    # B (iterative): the three sides maximise the SAME 8-point adaptive
+    # Gauss-Hermite likelihood -- the logLik row joins R at 1e-13 and
+    # lme4's deviance function evaluated at StatsPAI's optimum is within
+    # 5e-11 of its value at lme4's own optimum -- but that objective is
+    # flat along the (intercept, sqrt(var)) direction: a 5e-11 deviance
+    # step moves the intercept by 5e-7. lme4's own optimisers scatter by
+    # 1.1e-6 (optimx/nlminb) to 1.5e-6 (nloptwrap) to 1.4e-5
+    # (Nelder-Mead) around bobyqa on this fixture, and Stata melogit's
+    # mvaghermite lands 2e-8 from StatsPAI while its logLik differs by
+    # 5e-6 (a different quadrature grid at 8 points; all sides agree to
+    # 3e-8 at 30 points). The budget is therefore optimiser noise on the
+    # reference side, measured, not a convention: 5e-6 = ~3x the widest
+    # lme4-vs-lme4 spread that still reproduces the deviance to 1e-10.
+    # SE budget unchanged (2e-5; observed 4.8e-7 R / 4.2e-6 Stata).
+    "27_glmm_aghq": {
+        "rel_est": 5e-6,
+        "rel_se": 2e-5,
+    },  # AGHQ tight optimiser, full OIM covariance
+    "28_frontier": {
+        "rel_est": 1e-6,
+        "rel_se": 5e-5,
+    },  # obs worst 1.3e-5, ~4x margin; 2026-06 tighten
+    # B: all three sides now fit the same half-normal Pitt-Lee model
+    # (the Stata do-file constrains xtfrontier's truncated-normal mu to
+    # 0; before 2026-09 the Stata rows were a different likelihood and
+    # were mislabelled as a "scale" difference). Stata's analytic-Hessian
+    # OIM matches the StatsPAI central-difference OIM to 3e-6 on every SE
+    # row, which pins the Python Hessian; frontier::sfa's mleCov (Coelli's
+    # FRONTIER 4.1 routine) is 0.1%-1.8% off on the R side (worst: the
+    # intercept). Budget = ~3x the worst R-side row.
+    "29_panel_sfa": {"rel_est": 1e-3, "rel_se": 5e-2},
+    # A (tightened 2026-06-10 from 1.0): sp reports closed-form
+    # delta-method SEs while oaxaca::oaxaca reports seeded R=100
+    # bootstrap SEs; observed 1.25% (R) / 1.22% (Stata), 4x margin.
+    "30_oaxaca": {"rel_est": 1e-6, "rel_se": 0.05},  # gap-only headline
+    # rel_se sentinel (was 1.0): point-only decomposition rows.
+    "31_dfl": {"rel_est": 1e-6, "rel_se": 1e-6},  # ddecompose reference_0 mapping
+    "32_rif": {
+        "rel_est": 1e-6,
+        "rel_se": 1e-6,
+    },  # dineq/Hmisc + stats::density convention
+    # A (machine on both sides): the eq_* rows use the conditional-MLE
+    # divisor T (Stata var) and the eq_*__Tk rows use the per-equation
+    # lm() divisor T-k (R vars::VAR); each reference side emits only its
+    # own convention, so every compared SE is like-for-like (obs 1e-15).
+    "33_var": {"rel_est": 1e-6, "rel_se": 1e-6},
+    "34_lp": {"rel_est": 1e-6, "rel_se": 1e-6},  # lpirfs Cholesky/unit shock
+    "35_panel": {"rel_est": 1e-6, "rel_se": 1e-3},  # FE/RE + plm-style Hausman
+    # A: sp bootstrap B=1000 vs mediate's quasi-Bayesian MC (sims=200,
+    # ~5% MC noise by itself); observed 7.0% (1.4x margin). Frozen by
+    # the contract test.
+    "36_mediation": {
+        "rel_est": 1e-6,
+        "rel_se": 0.10,
+    },  # point exact; bootstrap/delta SE convention
+    # Modules added in the 2026-05-28 parity expansion session.
+    # A (machine on both sides): beta_* rows use ssc="stata" (N/(N-1),
+    # Stata glm/ppmlhdfe vce(robust)) against Stata; beta_*__fixestK rows
+    # use ssc="fixest" (N/(N-K), K = slopes + absorbed FE levels) against
+    # fixest::fepois. Obs 1.3e-11 (Stata) / 4.6e-7 (R).
+    "37_ppmlhdfe": {"rel_est": 1e-6, "rel_se": 2e-6},
+    "38_drdid": {"rel_est": 1e-6, "rel_se": 1e-6},  # panel DRDID calibrated PS
+    # rel_se sentinel (was 1e-2): no SE row joins on this fixture.
+    "39_arima": {"rel_est": 1e-6, "rel_se": 1e-6},  # innovations-MLE exact convention
+    # A: sp uses a Powell-type iid kernel sandwich
+    # (regression/quantile.py) while quantreg reports se='nid'
+    # (Hendricks-Koenker difference-quotient sandwich, chosen to match
+    # Stata qreg); different sparsity estimators by construction.
+    # Observed 7.3% (R) / 3.0% (Stata), 1.4x margin.
+    "40_qreg": {"rel_est": 1e-6, "rel_se": 1e-1},  # Powell SE method choice
+    "41_tobit": {
+        "rel_est": 1e-6,
+        "rel_se": 1e-5,
+    },  # observed-info Hessian; obs worst 2.0e-6 (2026-06 tighten)
+    "42_nbreg": {
+        "rel_est": 1e-6,
+        "rel_se": 5e-3,
+    },  # obs worst 1.4e-3, 3x margin (2026-06 tighten)
+    "43_heckman": {
+        "rel_est": 1e-6,
+        "rel_se": 5e-4,
+    },  # obs worst 8.6e-5, ~6x margin (2026-06 tighten)
+    "44_mlogit": {
+        "rel_est": 1e-6,
+        "rel_se": 5e-5,
+    },  # multinom tight optimiser + observed-info Hessian; obs 1.2e-5 (2026-06 tighten)
+    "45_ologit": {
+        "rel_est": 1e-6,
+        "rel_se": 1e-5,
+    },  # polr tight optimiser + observed-info Hessian; obs 2.0e-6, 5.1x
+    #     (at rule boundary)
+    "46_clogit": {
+        "rel_est": 1e-6,
+        "rel_se": 1e-6,
+    },  # obs worst 2.7e-9 (machine); 2026-06 tighten
+    # Modules added in the second 2026-05-28 fix-and-extend pass.
+    # A (machine on both sides): same two-convention row design as 37;
+    # fixest's K here is 2 + (5 + 5 + 10 - 2) = 20. Obs 2.5e-12 (Stata)
+    # / 1.1e-8 (R). The old 1.8% (R) / 0.10% (Stata) gaps were StatsPAI
+    # applying (N-1)/(N-k) with k = slopes only, matching neither.
+    "47_ppmlhdfe_3fe": {"rel_est": 1e-6, "rel_se": 1e-6},
+    "48_probit": {"rel_est": 1e-6, "rel_se": 1e-2},
+    "49_oprobit": {
+        "rel_est": 1e-6,
+        "rel_se": 1e-6,
+    },  # obs worst 3.0e-7 (machine floor); 2026-06 tighten
+    "50_xtabond": {"rel_est": 1e-6, "rel_se": 1e-6},  # R/Stata dynamic-panel fixture
+    "51_newey": {"rel_est": 1e-6, "rel_se": 1e-2},  # post HAC fix
+    # Unique-solution SCM: strict-parity counterpart to module 07.
+    "52_scm_unique": {
+        "rel_est": 1e-6,
+        "rel_se": 1e-6,  # sentinel (was 1.0): all rows point-only (se=None).
+    },  # identified convex SCM; sp/Stata exact, Synth fixed-V QP at machine level
+    # CR2 / CR3 cluster-robust SE: both headline rows use the
+    # clubSandwich-compatible analytic corrections. Exact delete-one-cluster
+    # jackknife remains a separate API.
+    "53_cr2": {"rel_est": 1e-6, "rel_se": 1e-6},
+    # Two-way cluster-robust SE (Cameron-Gelbach-Miller). sp uses the
+    # per-dimension Liang-Zeger correction = sandwich::vcovCL defaults
+    # (HC1, cadjust), so the headline two-way SE is a machine-precision
+    # match (rel_se ~1e-16). fixest's single min-G df factor differs at
+    # ~1e-3 and is NOT the convention reference here.
+    "54_twoway_cluster": {"rel_est": 1e-6, "rel_se": 1e-6},
+    # HC2/HC3 (MacKinnon-White) heteroskedasticity-robust SE. sp.regress
+    # robust="hc2"/"hc3" matches sandwich::vcovHC(type="HC2"/"HC3") to
+    # machine precision (module 01 covers HC1).
+    "55_hc2_hc3": {"rel_est": 1e-6, "rel_se": 1e-6},
+    # Three-way cluster-robust SE (Cameron-Gelbach-Miller). sp.multiway_cluster_vcov
+    # matches sandwich::vcovCL(~g1+g2+g3, HC1, cadjust) to machine precision after
+    # the v1.16.1 intersection-key fix.
+    "56_multiway_cluster": {"rel_est": 1e-6, "rel_se": 1e-6},
+    # Plain binary logit ML (sister of 48_probit). glm IRLS is run at
+    # epsilon=1e-12 so all three sides sit on the same optimum; observed
+    # diffs are ~1e-11 est / ~1e-9 SE.
+    "57_logit": {"rel_est": 1e-6, "rel_se": 1e-6},
+    # Plain Poisson ML (no FE; the HDFE robust Poisson is 37/47).
+    "58_poisson": {"rel_est": 1e-6, "rel_se": 1e-6},
+    # LIML k-class. sp.liml matches ivmodel::LIML at machine precision;
+    # Stata ivregress liml runs with `small` so all three sides share the
+    # RSS/(n-k) error-variance divisor.
+    "59_liml": {"rel_est": 1e-6, "rel_se": 1e-6},
+    # Two-equation SUR, one-step FGLS with Sigma divisor n (Stata sureg
+    # default; systemfit methodResidCov='noDfCor', maxiter=1).
+    "60_sureg": {"rel_est": 1e-6, "rel_se": 1e-6},
+    # Beta regression (logit mean link, log-link precision). Point
+    # estimates are machine-level across all three sides; the SE budget
+    # is 1e-2 because betareg reports expected-(Fisher-)information SEs
+    # while sp/Stata report observed-information SEs (documented
+    # convention gap <=0.7% on this fixture; py<->Stata SEs agree at
+    # ~1e-6).
+    "61_betareg": {"rel_est": 1e-6, "rel_se": 1e-2},
+    # Left-truncated normal regression. truncreg runs maxLik method='NR'
+    # to converge past the BFGS default stopping point; sigma rows are
+    # compared on the natural scale (sp delta-maps exp(ln_sigma)).
+    # Since the vce-grammar rewrite sp.truncreg Newton-polishes the optimum
+    # and takes SEs from the exact Hessian: vs R 3.5e-10 est / 5.4e-10 SE,
+    # vs Stata 7.9e-8 / 2.4e-7 (Stata's ml stopping rule). SE budget
+    # tightened from 1e-4, which had admitted the ~1e-5 drift of the former
+    # finite-difference Hessian.
+    "62_truncreg": {"rel_est": 1e-6, "rel_se": 1e-6},
+    # Zero-inflated Poisson (logit inflation). zeroinfl runs at
+    # reltol=1e-14; worst observed gap ~1e-7 est / ~6e-6 SE.
+    "63_zip": {"rel_est": 1e-6, "rel_se": 1e-4},
+    # Zero-inflated negative binomial. The ZINB likelihood is flat near
+    # the optimum (R EM vs BFGS refinements move coefficients ~3e-7 at
+    # identical logLik to 1e-10), so the point budget is 1e-5 instead of
+    # machine; worst observed gap is ~1.1e-6 est / ~4e-5 SE.
+    "64_zinb": {"rel_est": 1e-5, "rel_se": 1e-3},
+    # Spatial ML: SAR/SEM/SDM coefficients, spatial parameter (rho/lambda),
+    # and full-information asymptotic SEs vs spatialreg::lagsarlm /
+    # errorsarlm / lagsarlm(Durbin=TRUE) on a 12x12 row-standardised rook
+    # lattice. Machine tier: worst observed 8.3e-8 est / 2.0e-8 SE after the
+    # bounded rho/lambda optimiser was tightened (xatol=1e-10).
+    "65_spatial": {"rel_est": 1e-6, "rel_se": 1e-6},
+    # Spatial GMM: SAR spatial 2SLS (Kelejian-Prucha) vs spatialreg::stsls
+    # (W2X=FALSE) — closed-form projection, coefficients and n-k SEs agree to
+    # machine precision (~1e-15). SEM generalized-moments coefficients +
+    # lambda vs spatialreg::GMerrorsar are bit-exact (worst 4.6e-8), emitted
+    # point-only because the coefficient-SE variance estimators differ.
+    "66_spatial_gmm": {"rel_est": 1e-6, "rel_se": 1e-6},
+    # Panel GLM: sp.feglm(family='logit') vs fixest::feglm and sp.fepois vs
+    # fixest::fepois, both absorbing a single entity FE (id). Coefficients
+    # agree to ~1e-8 (machine); SEs differ at ~1e-5 because the two IWLS
+    # implementations iterate to slightly different working-weight roots.
+    "67_panel_glm": {"rel_est": 1e-6, "rel_se": 5e-5},
+    # Within transformation (sp.demean solver='map') vs textbook mean-within.
+    # Pure algorithmic, agrees to machine tier (~3.5e-15 worst on a 20x8
+    # balanced panel). Emitted point-only (no SE — it's a linear projection).
+    "68_demean_within": {"rel_est": 1e-6, "rel_se": 1e-6},
+    # Panel balance filter: sp.balance_panel keeps only entities observed
+    # in every period, matching base R's counts == n_periods filter. The
+    # estimator is a row-filter + sort, so all rows agree to 0.0.
+    "69_balance_panel": {"rel_est": 1e-6, "rel_se": 1e-6},
+    # Policy tree: shared AIPW score vector, so both engines maximise the
+    # identical finite objective over the identical grid of distinct
+    # covariate values. Exact optimisers on the same problem agree to the
+    # floating-point floor (observed worst 9.6e-16 across value, treated
+    # fraction, and root split at depths 1 and 2). Point-only: policytree
+    # reports no SE for the tree itself.
+    "70_policy_tree": {"rel_est": 1e-6, "rel_se": 1e-6},
+    # DML family (IRM / PLIV / IIVM) against their DoubleML model classes
+    # on a shared explicit fold partition, so cross-fitting contributes no
+    # Monte Carlo term. PLIV is all closed-form least squares and lands at
+    # the floating-point floor (6.5e-16); IRM and IIVM carry an unpenalised
+    # logistic nuisance solved by lbfgs on one side and IRLS on the other,
+    # which sets the observed worst at 1.1e-10.
+    "71_dml_family": {"rel_est": 1e-6, "rel_se": 1e-6},
+    # TMLE targeting step on a shared initial fit (Q and g1W supplied to
+    # both engines), binary outcome so neither side rescales Y. The
+    # residual is Newton-iteration tolerance on the fluctuation
+    # parameters: observed 1.9e-9 on psi and 1.4e-11 on the SE.
+    "72_tmle": {"rel_est": 1e-6, "rel_se": 1e-6},
+}
+
+
+# Strictness tiers. A single PASS/GAP verdict column flattens a
+# machine-level point-estimate match and a methodological T3/T4
+# tolerance into the same word, which a JSS
+# reviewer is right to find dilutive. We therefore classify each module by
+# the *registered* point-estimate tolerance (the forced strict tolerance
+# when one exists, e.g. RD at a common bandwidth) so the parity tables can
+# report the strictness breakdown explicitly. This is data-driven: it stays
+# correct if a module's verdict later flips (e.g. when the RD bandwidth
+# regularisation is ported and 06_rd tightens).
+TIER_ORDER = ["machine", "iterative", "moderate", "methodological"]
+TIER_LABEL = {
+    "machine": "machine-level point estimate ($\\le 10^{-6}$)",
+    "iterative": "iterative/cross-fit ($\\le 10^{-3}$)",
+    "moderate": "moderate ($\\le 5\\times10^{-2}$)",
+    "methodological": "methodological/T4 disclosure (T3/T4, not deterministic T2)",
+    "unclassified": "unclassified",
+}
+TIER_LABEL_MD = {
+    "machine": "machine-level point estimate (≤1e-6)",
+    "iterative": "iterative/cross-fit (≤1e-3)",
+    "moderate": "moderate (≤5e-2)",
+    "methodological": "methodological/T4 disclosure (T3/T4, not deterministic T2)",
+    "unclassified": "unclassified",
+}
+
+METHODOLOGICAL_DISCLOSURE_NOTES = {
+    "13_causal_forest": (
+        "T3 seed-replicated equivalence, with the estimator's two "
+        "factors graded separately. (1) The AIPW *operator* -- the "
+        "closed-form map from (Y, W, tau.hat, Y.hat, W.hat) to the score "
+        "vector, point estimate and influence-function SE -- is pinned "
+        "exactly: fed grf's own forest outputs, sp.causal_forest "
+        "reproduces grf::get_scores elementwise to 2.3e-14 and grf's "
+        "reported ATE and ATT (estimate and std.err) to 1e-15 "
+        "(tests/reference_parity/test_grf_aipw_operator_parity.py). "
+        "(2) The *forest* is not pinnable across implementations. The rows "
+        "below are one draw from each engine; the grade rests on refitting "
+        "both engines under 50 seeds on fixed data "
+        "(tests/reference_parity/test_grf_seed_mc_equivalence.py): their "
+        "gap is below 0.1 sampling SE (TOST) at 500, 2,000 and 8,000 trees on "
+        "this design and a second fixture, and the two engines' seed-to-seed "
+        "SDs agree within a factor of two at every tree count. Because the "
+        "operator is exact, the residual gap is attributable to the forest "
+        "algorithm rather than to an unresolved formula difference."
+    ),
+}
+
+
+def _display_meta_value(module: str, key: str, value: Any) -> Any:
+    """Normalise the causal-forest note to the T3 seed-replicated framing."""
+    if (
+        module == "13_causal_forest"
+        and key == "note"
+        and isinstance(value, str)
+        and "must agree within combined Monte Carlo error" in value
+    ):
+        return value.replace(
+            "so they are like-for-like and must agree within combined "
+            "Monte Carlo error",
+            "so they are like-for-like; this row is one draw per engine "
+            "(worst rel gap below 0.3%), and the T3 grade rests on the "
+            "seed-replicated comparison in "
+            "tests/reference_parity/test_grf_seed_mc_equivalence.py",
+        )
+    return value
+
+
+def tolerance_tier(module: str) -> str:
+    """Classify a module's headline strictness from its registered tolerance.
+
+    Uses the point-estimate ``rel_est``/``abs_est``. Returns one of
+    ``machine`` / ``iterative`` / ``moderate`` / ``methodological`` /
+    ``unclassified``.
+    """
+    tol = TOLERANCES.get(module, {})
+    key = tol.get("rel_est", tol.get("abs_est"))
+    if key is None:
+        return "unclassified"
+    if key <= 1e-6:
+        return "machine"
+    if key <= 1e-3:
+        return "iterative"
+    if key <= 5e-2:
+        return "moderate"
+    return "methodological"
+
+
+def tier_breakdown(modules: list[str]) -> dict[str, int]:
+    """Count how many of ``modules`` fall in each strictness tier."""
+    counts: dict[str, int] = {}
+    for m in modules:
+        counts[tolerance_tier(m)] = counts.get(tolerance_tier(m), 0) + 1
+    return counts
+
+
+def _tier_breakdown_sentence(modules: list[str], *, md: bool = False) -> str:
+    counts = tier_breakdown(modules)
+    labels = TIER_LABEL_MD if md else TIER_LABEL
+    parts = [
+        f"{counts[t]} {labels[t]}"
+        for t in TIER_ORDER + ["unclassified"]
+        if counts.get(t)
+    ]
+    return "; ".join(parts)
+
+
+@dataclass
+class RowDiff:
+    module: str
+    statistic: str
+    py_est: float | None
+    R_est: float | None
+    abs_est: float | None
+    rel_est: float | None
+    py_se: float | None
+    R_se: float | None
+    abs_se: float | None
+    rel_se: float | None
+    # Stata-side fields. None when no Stata reference exists for the
+    # module (or no row with this statistic).
+    Stata_est: float | None = None
+    Stata_se: float | None = None
+    abs_est_st: float | None = None
+    rel_est_st: float | None = None
+    abs_se_st: float | None = None
+    rel_se_st: float | None = None
+
+
+def _diff(a: float | None, b: float | None) -> tuple[float | None, float | None]:
+    if a is None or b is None:
+        return None, None
+    abs_d = abs(a - b)
+    rel_d = abs_d / abs(b) if abs(b) > 1e-12 else (abs_d if abs(b) < 1e-12 else 0.0)
+    return abs_d, rel_d
+
+
+def _load_stata(module: str) -> dict[str, dict] | None:
+    """Return {statistic -> row_dict} from the Stata harness, or None
+    if the module has no Stata reference."""
+    path = STATA_RESULTS_DIR / f"{module}_Stata.json"
+    if not path.exists():
+        return None
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    return {r["statistic"]: r for r in payload["rows"]}
+
+
+def collect(module: str) -> list[RowDiff]:
+    py_path = RESULTS_DIR / f"{module}_py.json"
+    R_path = RESULTS_DIR / f"{module}_R.json"
+    if not py_path.exists() or not R_path.exists():
+        return []
+    py = json.loads(py_path.read_text(encoding="utf-8"))
+    R = json.loads(R_path.read_text(encoding="utf-8"))
+    R_by = {r["statistic"]: r for r in R["rows"]}
+    Stata_by = _load_stata(module) or {}
+    out: list[RowDiff] = []
+    for pr in py["rows"]:
+        rr = R_by.get(pr["statistic"])
+        sr = Stata_by.get(pr["statistic"])
+        # A statistic the R side does not emit used to be dropped here
+        # without a word, which silently discarded every py-vs-Stata pin
+        # whose R package cannot express the same option. That threw away
+        # real cross-software evidence in four modules (31_dfl, 59_liml,
+        # 28_frontier, 84_bjs_pretrends -- nine rows, all of which agree
+        # at machine precision). Keep the row whenever *either* reference
+        # carries the statistic; skip only when neither does, and report
+        # those as unmatched rather than dropping them in silence.
+        if rr is None and sr is None:
+            UNMATCHED_ROWS.setdefault(module, []).append(pr["statistic"])
+            continue
+        abs_e, rel_e = _diff(pr["estimate"], rr["estimate"] if rr else None)
+        abs_s, rel_s = _diff(pr.get("se"), rr.get("se") if rr else None)
+        Stata_est = sr.get("estimate") if sr else None
+        Stata_se = sr.get("se") if sr else None
+        abs_est_st, rel_est_st = _diff(pr["estimate"], Stata_est)
+        abs_se_st, rel_se_st = _diff(pr.get("se"), Stata_se)
+        out.append(
+            RowDiff(
+                module=module,
+                statistic=pr["statistic"],
+                py_est=pr["estimate"],
+                R_est=rr["estimate"] if rr else None,
+                abs_est=abs_e,
+                rel_est=rel_e,
+                py_se=pr.get("se"),
+                R_se=rr.get("se") if rr else None,
+                abs_se=abs_s,
+                rel_se=rel_s,
+                Stata_est=Stata_est,
+                Stata_se=Stata_se,
+                abs_est_st=abs_est_st,
+                rel_est_st=rel_est_st,
+                abs_se_st=abs_se_st,
+                rel_se_st=rel_se_st,
+            )
+        )
+    return out
+
+
+def _has_any_stata(modules: list[str]) -> bool:
+    return any(_load_stata(m) is not None for m in modules)
+
+
+def fmt(x: float | None, prec: int = 6) -> str:
+    if x is None:
+        return "—"
+    if abs(x) >= 1 or x == 0.0:
+        return f"{x:.{prec}f}"
+    return f"{x:.{prec}g}"
+
+
+def _snapshot_number(x: float | None) -> str:
+    if x is None:
+        return "---"
+    if abs(x) >= 100:
+        return f"{x:.6f}"
+    return f"{x:.9f}"
+
+
+def _snapshot_rel(x: float | None) -> str:
+    if x is None:
+        return "---"
+    if x == 0:
+        return "0"
+    if x < 1e-4:
+        exp = int(math.floor(math.log10(abs(x))))
+        mant = x / (10**exp)
+        mant_s = f"{mant:.2g}"
+        return rf"\({mant_s}\times10^{{{exp}}}\)"
+    return f"{x:.3g}"
+
+
+def _select_snapshot_diff(spec: dict[str, Any]) -> RowDiff:
+    diffs = collect(spec["module"])
+    if "statistic" in spec:
+        selected = [d for d in diffs if d.statistic == spec["statistic"]]
+    else:
+        prefix = spec.get("statistic_prefix", "")
+        suffix = spec.get("statistic_suffix", "")
+        selected = [
+            d
+            for d in diffs
+            if d.statistic.startswith(prefix) and d.statistic.endswith(suffix)
+        ]
+    if not selected:
+        raise KeyError(f"snapshot row not found: {spec}")
+    return selected[0]
+
+
+def render_track_a_snapshot_tex() -> str:
+    """Render the compact Track-A snapshot consumed by the main manuscript."""
+    rows: list[str] = []
+    for spec in TRACK_A_SNAPSHOT_ROWS:
+        d = _select_snapshot_diff(spec)
+        max_rel = max(value for value in (d.rel_est, d.rel_est_st) if value is not None)
+        rows.append(
+            f"{spec['estimator']} & {spec['label']} & {spec['data']} & "
+            f"{_snapshot_number(d.py_est)} & {_snapshot_number(d.R_est)} & "
+            f"{_snapshot_number(d.Stata_est)} & {_snapshot_rel(max_rel)} & "
+            f"{spec['verdict']} \\\\"
+        )
+    body = "\n".join(rows)
+    # Eight columns, the last one wrapping, and no \resizebox.
+    #
+    # The manuscript used to wrap this table in \resizebox{\textwidth}{!},
+    # which scales a table to fit by shrinking its type: at nine columns
+    # and three eleven-digit numbers per row the result printed at roughly
+    # five points, smaller than a footnote and past the point of being
+    # readable. Scaling type to fit a page is the wrong lever. Instead the
+    # per-row tolerance column is dropped -- it is a single order of
+    # magnitude that the caption already states, and the exception (DML at
+    # 1e-10) is called out there too -- and the verdict column wraps, so
+    # the table fits at \scriptsize with its own font intact.
+    return (
+        "% AUTO-GENERATED by tests/r_parity/compare.py\n"
+        "% Compact main-manuscript Track A snapshot; do not hand edit.\n"
+        "\\setlength{\\tabcolsep}{2pt}\n"
+        "\\begin{tabular}{@{}"
+        # The estimator column is wide enough for the longest entry point
+        # set solid: \code{sp.callaway_santanna} is one unbreakable
+        # typewriter word, and a narrower column overflows by its excess
+        # rather than wrapping.
+        ">{\\raggedright\\arraybackslash}p{0.195\\linewidth}"
+        ">{\\raggedright\\arraybackslash}p{0.106\\linewidth}"
+        # Wide enough for "RDsenate" set solid; the Data column has no
+        # break opportunity in that entry.
+        ">{\\raggedright\\arraybackslash}p{0.084\\linewidth}"
+        "r@{\\hspace{3pt}}r@{\\hspace{3pt}}r@{\\hspace{4pt}}r@{\\hspace{4pt}}"
+        ">{\\raggedright\\arraybackslash}p{0.115\\linewidth}@{}}\n"
+        "\\toprule\n"
+        "Estimator & Statistic & Data & \\statspai{} & "
+        "\\proglang{R} ref. & \\proglang{Stata} ref. & "
+        "Max rel. err. & Verdict \\\\\n"
+        "\\midrule\n"
+        f"{body}\n"
+        "\\bottomrule\n"
+        "\\end{tabular}\n"
+    )
+
+
+def render_md(modules: list[str]) -> str:
+    lines: list[str] = [
+        "# Track A parity report",
+        "",
+        "Generated by `tests/r_parity/compare.py` on the "
+        "`results/<module>_{py,R}.json` artefacts. Tolerance budget per "
+        "module is pre-registered in `compare.py::TOLERANCES`. Documented "
+        "convention gaps, common-specification passes, and small-sample "
+        "SE conventions (HDFE 1-df, legacy RD bandwidth diagnostics, "
+        "SCM non-uniqueness) are flagged "
+        "in the per-module `extra` block of the JSON.",
+        "",
+    ]
+    for m in modules:
+        diffs = collect(m)
+        if not diffs:
+            continue
+        meta_path = RESULTS_DIR / f"{m}_py.json"
+        meta = json.loads(meta_path.read_text(encoding="utf-8")).get("extra", {})
+        lines.append(f"## Module {m}")
+        if m in METHODOLOGICAL_DISCLOSURE_NOTES:
+            lines.append(
+                f"- **methodological_disclosure**: "
+                f"{METHODOLOGICAL_DISCLOSURE_NOTES[m]}"
+            )
+        if meta:
+            for k, v in meta.items():
+                v = _display_meta_value(m, k, v)
+                if isinstance(v, str) and len(v) > 80:
+                    lines.append(f"- **{k}**: {v}")
+                else:
+                    lines.append(f"- **{k}**: `{v}`")
+        lines.append("")
+        lines.append(
+            "| stat | py est | R est | abs Δ | rel Δ "
+            "| py SE | R SE | abs Δ SE | rel Δ SE |"
+        )
+        lines.append("|---|---:|---:|---:|---:|---:|---:|---:|---:|")
+        for d in diffs:
+            lines.append(
+                f"| `{d.statistic}` "
+                f"| {fmt(d.py_est)} | {fmt(d.R_est)} "
+                f"| {fmt(d.abs_est, 3)} | {fmt(d.rel_est, 3)} "
+                f"| {fmt(d.py_se)} | {fmt(d.R_se)} "
+                f"| {fmt(d.abs_se, 3)} | {fmt(d.rel_se, 3)} |"
+            )
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+# Per-module headline: a (rows-to-summarise, label, verdict, gap-note)
+# tuple that the TeX renderer uses to pick the most informative row to
+# show. The headline uses the *strictest* row that the module is
+# expected to pass, not the worst-case row -- so a documented
+# convention gap doesn't shadow the bit-equal point-estimate result.
+HEADLINE: dict[str, dict[str, Any]] = {
+    "89_rdms": {
+        "name": "Multi-score / geographic RD at boundary points",
+        # The headline is the bias-corrected point estimate at each of the
+        # three boundary points -- the quantity rdmulti::rdms reports as
+        # its own coefficient. The conventional estimates, the selected
+        # bandwidths and the per-side effective sample sizes are all still
+        # compared and budgeted; the effective sample sizes in particular
+        # are integers and agree exactly on all three sides, which is the
+        # check the superseded implementation would have failed outright
+        # (it used 8-27 observations where the reference used 519-743).
+        "headline_filter": lambda d: d.statistic.endswith("_biascorrected_est"),
+        "metric": "rel_est",
+        "verdict": "\\textbf{PASS}",
+        "gap_note": (
+            "three boundary points along one boundary; bias-corrected and "
+            "conventional estimates, standard errors, selected bandwidths "
+            "and per-side effective sample sizes agree with \\pkg{rdmulti} "
+            "to 7.6e-12 and with Stata to 3.3e-9, and the six effective "
+            "sample sizes are exactly equal on all three sides"
+        ),
+    },
+    "88_rdbwselect": {
+        "name": "RD bandwidth selection (all ten CCT selectors)",
+        # The headline is the main bandwidth h on both sides at the p=1
+        # default, across every selector -- including the four `comb`
+        # variants, which is where the defect this module exposed lived.
+        # The bias bandwidth b and the p / kernel / covariate / cluster /
+        # deriv cells are all still compared and still budgeted; they are
+        # simply not the number the table leads with.
+        "headline_filter": lambda d: d.statistic
+        in {
+            f"{m}_h_{side}"
+            for m in (
+                "mserd",
+                "msetwo",
+                "msesum",
+                "msecomb1",
+                "msecomb2",
+                "cerrd",
+                "certwo",
+                "cersum",
+                "cercomb1",
+                "cercomb2",
+            )
+            for side in ("left", "right")
+        },
+        "metric": "rel_est",
+        "verdict": "\\textbf{PASS}",
+        "gap_note": (
+            "all 68 bandwidths agree with \\pkg{rdrobust} to 1.8e-12 and "
+            "with Stata to 3.7e-9; \\code{certwo} is pinned against R only "
+            "because Stata \\code{rdbwselect} 10.0.0 exits \\code{r(3200)} "
+            "on that selector, including on the package authors' own "
+            "\\code{rdrobust\\_senate.dta}"
+        ),
+    },
+    "85_twfe_event_study": {
+        "name": "Dynamic TWFE event study (benchmark specification)",
+        "headline_filter": lambda d: d.statistic in {"es_+0", "es_+1"},
+        "metric": "rel_est",
+        "verdict": "\\textbf{PASS}",
+        "gap_note": (
+            "estimates three-way to 5.7e-14; SE matches "
+            '\\code{fixest} to 9.3e-14 under \\code{ssc(fixef.K="none")}, '
+            "and \\code{reghdfe}'s SE is reproduced from it by the exact "
+            "$(N-K_{py})/(N-K_{St})$ d.f. scalar"
+        ),
+    },
+    "01_ols": {
+        "name": "OLS + HC1 SE",
+        "headline_filter": lambda d: d.statistic.startswith("beta_"),
+        "metric": "rel_est",
+        "verdict": "\\textbf{PASS}",
+        "gap_note": "",
+    },
+    "02_iv": {
+        "name": "2SLS + HC1 SE",
+        "headline_filter": lambda d: d.statistic.startswith("beta_"),
+        "metric": "rel_est",
+        "verdict": "\\textbf{PASS}",
+        "gap_note": "",
+    },
+    "03_hdfe": {
+        "name": "HDFE 2-way FE",
+        "headline_filter": lambda d: d.statistic.startswith("beta_"),
+        "metric": "rel_est",
+        "verdict": "\\textbf{PASS}",
+        "gap_note": "fixest/reghdfe small-sample correction",
+    },
+    "04_csdid": {
+        "name": "CS-DiD simple ATT",
+        "headline_filter": lambda d: d.statistic == "simple_ATT",
+        "metric": "rel_est",
+        "verdict": "\\textbf{PASS}",
+        "gap_note": "estimate and SE both rel $<$ 1e-9",
+    },
+    "73_did2s": {
+        "name": "Gardner two-stage DiD",
+        "headline_filter": lambda d: d.statistic == "static_ATT",
+        "metric": "rel_est",
+        "verdict": "\\textbf{PASS}",
+        "gap_note": (
+            "estimate rel 4.8e-8 and SE rel 2.7e-10 against did2s "
+            "(Stata did2s: 2.4e-12 / 1.3e-14); vce='analytic' is the did2s "
+            "corrected two-stage clustered variance, so stage-1 estimation "
+            "error is propagated on all three sides"
+        ),
+    },
+    "84_bjs_pretrends": {
+        "name": "BJS pre-treatment lead vector (Borusyak-Jaravel-Spiess)",
+        "headline_filter": lambda d: d.statistic in {"tau0_att", "tau1_att"},
+        "metric": "rel_est",
+        "verdict": "\\textbf{PASS}",
+        "gap_note": (
+            "point estimates rel $<$ 1e-7 against both references; the three "
+            "leads match Stata \\texttt{pretrends(3)} at rel $<$ 1e-14 on "
+            "estimate and SE, and are a py$\\leftrightarrow$Stata pin because "
+            "R exposes no equivalent option; horizon SEs are an open gap"
+        ),
+    },
+    "83_lpdid": {
+        "name": "LP-DiD event study (Dube-Girardi-Jorda-Taylor)",
+        "headline_filter": lambda d: d.statistic in {"lpdid_h0_att", "lpdid_h1_att"},
+        "metric": "rel_est",
+        "verdict": "\\textbf{PASS}",
+        "gap_note": "estimate and SE both rel $<$ 1e-14 vs a direct transcription",
+    },
+    "82_staggered": {
+        "name": "Design-based staggered rollout (Roth-Sant'Anna)",
+        "headline_filter": lambda d: d.statistic
+        in {"simple_efficient", "simple_plugin"},
+        "metric": "rel_est",
+        "verdict": "\\textbf{PASS}",
+        "gap_note": (
+            "machine precision on all 33 rows (worst 3.7e-15) against both "
+            "staggered 1.2.2 in R and the SSC staggered port in Stata, "
+            "including both the Neyman and adjusted standard errors"
+        ),
+    },
+    "81_didm": {
+        "name": "dCDH 2020 DID_M (on/off switching)",
+        "headline_filter": lambda d: d.statistic
+        in {"effect", "dynamic_1", "placebo_1"},
+        "metric": "rel_est",
+        "verdict": "\\textbf{PASS}",
+        "gap_note": "machine precision vs archived DIDmultiplegt 0.1.4",
+    },
+    "80_contdid": {
+        "name": "Continuous-treatment DiD (CGS)",
+        "headline_filter": lambda d: d.statistic.endswith(
+            ("_overall_att", "_overall_acrt")
+        ),
+        "metric": "rel_est",
+        "verdict": "\\textbf{PASS}",
+        "gap_note": "machine precision vs contdid::cont_did (worst 1e-12)",
+    },
+    "79_didff": {
+        "name": "Functional-form test (Roth--Sant'Anna)",
+        "headline_filter": lambda d: "_density_" in d.statistic,
+        "metric": "rel_est",
+        "verdict": "\\textbf{PASS}",
+        "gap_note": (
+            "machine precision vs didFF (worst 1.2e-15); the module's 1e-3 "
+            "budget covers only the simulated p-value"
+        ),
+    },
+    "78_multiplegt_dyn": {
+        "name": "dCDH intertemporal event study",
+        "headline_filter": lambda d: (
+            d.statistic.startswith("Effect_") or d.statistic == "Av_tot_eff"
+        ),
+        "metric": "rel_est",
+        "verdict": "\\textbf{PASS}",
+        "gap_note": (
+            "machine precision vs DIDmultiplegtDYN (worst 5e-15), across "
+            "absorbing and switch-off designs"
+        ),
+    },
+    "77_ddd": {
+        "name": "Triple differences ATT(g,t)",
+        "headline_filter": lambda d: d.statistic.startswith("ddd_g"),
+        "metric": "rel_est",
+        "verdict": "\\textbf{PASS}",
+        "gap_note": (
+            "machine precision vs triplediff::ddd (worst 1e-12), estimates "
+            "and analytic SEs, across dr / ipw / reg"
+        ),
+    },
+    "76_pretrends": {
+        "name": "Pre-trends power (Roth 2022)",
+        "headline_filter": lambda d: d.statistic.startswith("power_slope_"),
+        "metric": "rel_est",
+        "verdict": "\\textbf{PASS}",
+        "gap_note": (
+            "rel < 1e-4 vs pretrends::pretrends; the 1e-3 budget covers "
+            "mvtnorm::pmvnorm's randomised integrator"
+        ),
+    },
+    "75_stacked": {
+        "name": "Stacked DiD (never-treated controls)",
+        "headline_filter": lambda d: (
+            d.statistic == "never_ATT_post" or d.statistic.startswith("never_att_rel_")
+        ),
+        "metric": "rel_est",
+        "verdict": "\\textbf{PASS}",
+        "gap_note": "rel < 1e-6 vs a hand-written fixest stack",
+    },
+    "74_cic": {
+        "name": "Changes-in-Changes (ATT + QTE)",
+        "headline_filter": lambda d: (
+            d.statistic == "cic_ATT" or d.statistic.startswith("qte_")
+        ),
+        "metric": "rel_est",
+        "verdict": "\\textbf{PASS}",
+        "gap_note": "machine precision vs qte::CiC (worst 4.4e-15)",
+    },
+    "05_sunab": {
+        "name": "Sun--Abraham event study",
+        "headline_filter": lambda d: (
+            d.statistic == "weighted_avg_ATT" or d.statistic.startswith("att_rel_")
+        ),
+        "metric": "rel_est",
+        "verdict": "\\textbf{PASS}",
+        "gap_note": "fixest agg='att' summary parity",
+    },
+    "06_rd": {
+        "name": "RD CCT bias-corrected",
+        "headline_filter": lambda d: d.statistic
+        in (
+            "default_conventional_est",
+            "default_robust_est",
+        ),
+        "metric": "rel_est",
+        "verdict": "\\textbf{PASS}",
+        "gap_note": "native CCT default-$h$; official Py port recorded separately",
+    },
+    "07_scm": {
+        "name": "Classical SCM",
+        "headline_filter": lambda d: d.statistic == "avg_post_gap",
+        "metric": "rel_est",
+        "verdict": "\\textit{GAP}",
+        "gap_note": (
+            "T4 reference disagreement: native tracks Stata; R Synth differs; "
+            "exact recovery on identified DGP \\code{52}"
+        ),
+    },
+    "08_dml": {
+        "name": "DML PLR (LinReg learners)",
+        "headline_filter": lambda d: d.statistic == "theta_DML_PLR",
+        "metric": "rel_est",
+        "verdict": "\\textbf{PASS}",
+        "gap_note": "shared explicit fold_id",
+    },
+    "09_rddensity": {
+        "name": "RD density (CJM)",
+        "headline_filter": lambda d: d.statistic == "test_pvalue",
+        "metric": "rel_est",
+        "verdict": "\\textbf{PASS}",
+        "gap_note": "native CJM/rddensity default parity",
+    },
+    "10_honest_did": {
+        "name": "Honest DiD bounds",
+        # M > 0: HonestDiD with the exact quantile; M = 0: the closed form,
+        # which adjudicates HonestDiD's own 5.7e-6 cone-solver error there.
+        "headline_filter": lambda d: (
+            d.statistic.startswith("ci_") and not d.statistic.endswith("_M_0")
+        )
+        or d.statistic.startswith("analytic_"),
+        "metric": "abs_est",
+        "verdict": "\\textbf{PASS}",
+        "gap_note": (
+            "native FLCI; vs HonestDiD with exact quantile, and closed form "
+            "at M=0; shipped HonestDiD's simulated quantile shown separately"
+        ),
+    },
+    "11_psm": {
+        "name": "PSM 1:1 NN",
+        "headline_filter": lambda d: d.statistic == "att_psm",
+        "metric": "rel_est",
+        "verdict": "\\textbf{PASS}",
+        "gap_note": (
+            "se_teffects_ai joins Stata teffects psmatch's Abadie-Imbens "
+            "2016 estimated-score variance at rel 7e-8 via the "
+            "abadie_imbens_2016 SE option; the default psmatch2 ai(1) "
+            "SE is a documented convention (sample vs population ATT, no "
+            "score term)"
+        ),
+    },
+    "12_sdid": {
+        "name": "Synthetic DID",
+        "headline_filter": lambda d: d.statistic == "att_sdid",
+        "metric": "rel_est",
+        "verdict": "\\textbf{PASS}",
+        "gap_note": (
+            "native Frank-Wolfe/zeta ATT parity; "
+            "backend-native placebo SE diagnostics"
+        ),
+    },
+    "13_causal_forest": {
+        "name": "Causal forest (AIPW)",
+        "headline_filter": lambda d: d.statistic == "ate_causal_forest",
+        "metric": "rel_est",
+        "verdict": "\\textbf{PASS}",
+        "gap_note": (
+            "T3; single draw per engine, graded by seed-replicated "
+            "equivalence within 0.1 sampling SE"
+        ),
+    },
+    "14_ols_cluster": {
+        "name": "OLS + cluster-robust SE",
+        "headline_filter": lambda d: d.statistic.startswith("beta_"),
+        "metric": "rel_est",
+        "verdict": "\\textbf{PASS}",
+        "gap_note": "",
+    },
+    "15_hdfe_cluster": {
+        "name": "HDFE + cluster SE",
+        "headline_filter": lambda d: d.statistic.startswith("beta_"),
+        "metric": "rel_est",
+        "verdict": "\\textbf{PASS}",
+        "gap_note": "fixest/reghdfe nested-FE cluster correction",
+    },
+    "16_bjs": {
+        "name": "BJS imputation",
+        "headline_filter": lambda d: d.statistic == "att_bjs",
+        "metric": "rel_est",
+        "verdict": "\\textbf{PASS}",
+        "gap_note": "R/Stata simple-ATT point parity; SE rows side-specific",
+    },
+    "20_bacon": {
+        "name": "Goodman--Bacon decomposition",
+        "headline_filter": lambda d: d.statistic == "beta_twfe",
+        "metric": "rel_est",
+        "verdict": "\\textbf{PASS}",
+        "gap_note": "R/Stata bacondecomp dyad parity",
+    },
+    "21_honest_relmags": {
+        "name": "Honest-DiD relative-mags",
+        "headline_filter": lambda d: d.statistic.startswith("ci_"),
+        "metric": "abs_est",
+        "verdict": "\\textbf{PASS}",
+        "gap_note": "native ARP conditional set; identical grid points",
+    },
+    "22_sensemakr": {
+        "name": "sensemakr robustness",
+        "headline_filter": lambda d: d.statistic in ("beta_treat", "rv_q"),
+        "metric": "rel_est",
+        "verdict": "\\textbf{PASS}",
+        "gap_note": "sensemakr RV and benchmark bound-scale parity",
+    },
+    "25_lmm": {
+        "name": "Linear mixed model",
+        "headline_filter": lambda d: d.statistic.startswith("beta_"),
+        "metric": "rel_est",
+        "verdict": "\\textbf{PASS}",
+        "gap_note": "",
+    },
+    "28_frontier": {
+        "name": "Stochastic frontier (cross-sec.)",
+        "headline_filter": lambda d: d.statistic.startswith("beta_"),
+        "metric": "rel_est",
+        "verdict": "\\textbf{PASS}",
+        "gap_note": "",
+    },
+    "30_oaxaca": {
+        "name": "Blinder--Oaxaca decomposition",
+        "headline_filter": lambda d: d.statistic == "gap",
+        "metric": "rel_est",
+        "verdict": "\\textbf{PASS}",
+        "gap_note": "twofold vs threefold split convention",
+    },
+    "17_etwfe": {
+        "name": "Wooldridge ETWFE",
+        "headline_filter": lambda d: d.statistic == "att_etwfe",
+        "metric": "rel_est",
+        "verdict": "\\textbf{PASS}",
+        "gap_note": "emfx aggregation and cluster SE matched",
+    },
+    "18_augsynth": {
+        "name": "Augmented SCM",
+        "headline_filter": lambda d: d.statistic == "att_augmented",
+        "metric": "rel_est",
+        "verdict": "\\textbf{PASS}",
+        "gap_note": (
+            "native centered Ridge+SCM parity; "
+            "backend='augsynth' is a migration bridge"
+        ),
+    },
+    "87_interflex": {
+        "name": "interflex marginal effects (linear / binning / kernel)",
+        "headline_filter": lambda d: (
+            d.statistic.startswith("linear_me_")
+            or d.statistic.startswith("binning_me_")
+        ),
+        "metric": "rel_est",
+        "verdict": "\\textbf{PASS}",
+        "gap_note": (
+            "native port incl. R's density() grid for the adaptive kernel bandwidth"
+        ),
+    },
+    "86_fect": {
+        "name": "fect counterfactual estimators (fe / ife / mc)",
+        "headline_filter": lambda d: d.statistic.endswith("_att_avg"),
+        "metric": "rel_est",
+        "verdict": "\\textbf{PASS}",
+        "gap_note": (
+            "native port of fect's EM map; three outcome models on one staggered panel"
+        ),
+    },
+    "19_gsynth": {
+        "name": "Generalized SCM (Xu 2017)",
+        "headline_filter": lambda d: d.statistic == "att_gsynth",
+        "metric": "rel_est",
+        "verdict": "\\textbf{PASS}",
+        "gap_note": "native gsynth/fect two-way FE factor convention parity",
+    },
+    "23_evalue": {
+        "name": "E-value (closed form)",
+        "headline_filter": lambda d: d.statistic.startswith("evalue_"),
+        "metric": "rel_est",
+        "verdict": "\\textbf{PASS}",
+        "gap_note": "",
+    },
+    "24_coxph": {
+        "name": "Cox proportional hazards",
+        "headline_filter": lambda d: d.statistic.startswith("beta_"),
+        "metric": "rel_est",
+        "verdict": "\\textbf{PASS}",
+        "gap_note": "",
+    },
+    "26_glmm_logit": {
+        "name": "GLMM logit (Laplace)",
+        "headline_filter": lambda d: d.statistic.startswith("beta_"),
+        "metric": "rel_est",
+        "verdict": "\\textbf{PASS}",
+        "gap_note": "",
+    },
+    "27_glmm_aghq": {
+        "name": "GLMM logit (AGHQ, n=8)",
+        "headline_filter": lambda d: d.statistic.startswith("beta_"),
+        "metric": "rel_est",
+        "verdict": "\\textbf{PASS}",
+        "gap_note": (
+            "same 8-point AGQ likelihood (logLik rel 1e-13); intercept "
+            "within reference optimiser scatter on a flat objective"
+        ),
+    },
+    "29_panel_sfa": {
+        "name": "Panel SFA (Pitt--Lee)",
+        "headline_filter": lambda d: d.statistic in {"beta_lnk", "beta_lnl"},
+        "metric": "rel_est",
+        "verdict": "\\textbf{PASS}",
+        "gap_note": "slope parity; intercept/sigma rows are scale diagnostics",
+    },
+    "31_dfl": {
+        "name": "DFL reweighting",
+        "headline_filter": lambda d: d.statistic
+        in {
+            "gap",
+            "composition",
+            "structure",
+        },
+        "metric": "rel_est",
+        "verdict": "\\textbf{PASS}",
+        "gap_note": "",
+    },
+    "32_rif": {
+        "name": "RIF / UQR (median)",
+        "headline_filter": lambda d: d.statistic == "total_diff",
+        "metric": "rel_est",
+        "verdict": "\\textbf{PASS}",
+        "gap_note": "",
+    },
+    "33_var": {
+        "name": "VAR (vars::VAR)",
+        "headline_filter": lambda d: d.statistic.startswith("eq_"),
+        "metric": "rel_est",
+        "verdict": "\\textbf{PASS}",
+        "gap_note": "",
+    },
+    "34_lp": {
+        "name": "Local projections",
+        # Both paths are headline. The Cholesky rows (irf_h*) are the
+        # lpirfs comparison and are py<->R only: Stata's lpirf normalises
+        # the shock differently and its coefficients are kept in the
+        # module's extra block rather than joined. The direct-OLS rows are
+        # the textbook Jorda regression, which all three sides compute, so
+        # they are where the Stata column earns its place.
+        "headline_filter": lambda d: d.statistic.startswith(
+            ("irf_h", "irf_direct_ols_h")
+        ),
+        "metric": "rel_est",
+        "verdict": "\\textbf{PASS}",
+        "gap_note": (
+            "lpirfs Cholesky/unit-shock path (py-R) plus the direct-OLS "
+            "Jorda regression (3-way); SEs are not joined on the direct "
+            "rows because sp.local_projections applies Newey-West while "
+            "lm/regress report classical OLS"
+        ),
+    },
+    "35_panel": {
+        "name": "Panel FE/RE + Hausman",
+        "headline_filter": lambda d: d.statistic.startswith(
+            ("fe_beta_", "re_beta_", "hausman_chi2", "hausman_pvalue")
+        ),
+        "metric": "rel_est",
+        "verdict": "\\textbf{PASS}",
+        "gap_note": (
+            "FE/RE and plm-style Hausman parity; Stata sigmamore diagnostic row"
+        ),
+    },
+    "36_mediation": {
+        "name": "Causal mediation (IKT)",
+        "headline_filter": lambda d: d.statistic in ("acme", "ade", "total_effect"),
+        "metric": "rel_est",
+        "verdict": "\\textbf{PASS}",
+        "gap_note": "",
+    },
+    # Modules added 2026-05-28
+    "37_ppmlhdfe": {
+        "name": "PPML + HDFE",
+        "headline_filter": lambda d: d.statistic.startswith("beta_"),
+        "metric": "rel_est",
+        "verdict": "\\textbf{PASS}",
+        "gap_note": "post PPML FE-score fix; robust SE within 0.5\\% of fixest",
+    },
+    "38_drdid": {
+        "name": "DR-DID (SZ 2020)",
+        "headline_filter": lambda d: d.statistic == "att",
+        "metric": "rel_est",
+        "verdict": "\\textbf{PASS}",
+        "gap_note": "panel DR-DID calibrated propensity parity with R/Stata",
+    },
+    "39_arima": {
+        "name": "ARIMA(2,0,0)",
+        "headline_filter": lambda d: d.statistic.startswith("ar"),
+        "metric": "rel_est",
+        "verdict": "\\textbf{PASS}",
+        "gap_note": "stats::arima ML / tightly converged Stata arima",
+    },
+    "40_qreg": {
+        "name": "Quantile reg (median)",
+        "headline_filter": lambda d: d.statistic.startswith("beta_"),
+        "metric": "rel_est",
+        "verdict": "\\textbf{PASS}",
+        "gap_note": "post sqrt(n) sandwich-scaling fix",
+    },
+    "41_tobit": {
+        "name": "Tobit (left-censored)",
+        "headline_filter": lambda d: d.statistic.startswith("beta_"),
+        "metric": "rel_est",
+        "verdict": "\\textbf{PASS}",
+        "gap_note": "post observed-information Hessian fix",
+    },
+    "42_nbreg": {
+        "name": "Negative binomial",
+        "headline_filter": lambda d: d.statistic.startswith("beta_"),
+        "metric": "rel_est",
+        "verdict": "\\textbf{PASS}",
+        "gap_note": "",
+    },
+    "43_heckman": {
+        "name": "Heckman 2-step",
+        "headline_filter": lambda d: d.statistic.startswith("beta_"),
+        "metric": "rel_est",
+        "verdict": "\\textbf{PASS}",
+        "gap_note": "",
+    },
+    "44_mlogit": {
+        "name": "Multinomial logit",
+        "headline_filter": lambda d: d.statistic.startswith("class"),
+        "metric": "rel_est",
+        "verdict": "\\textbf{PASS}",
+        "gap_note": "post observed-information Hessian fix",
+    },
+    "45_ologit": {
+        "name": "Ordered logit",
+        "headline_filter": lambda d: d.statistic.startswith("beta_"),
+        "metric": "rel_est",
+        "verdict": "\\textbf{PASS}",
+        "gap_note": "post observed-information Hessian fix",
+    },
+    "46_clogit": {
+        "name": "Conditional logit",
+        "headline_filter": lambda d: d.statistic.startswith("beta_"),
+        "metric": "rel_est",
+        "verdict": "\\textbf{PASS}",
+        "gap_note": "",
+    },
+    "47_ppmlhdfe_3fe": {
+        "name": "PPML + 3-way HDFE",
+        "headline_filter": lambda d: d.statistic.startswith("beta_"),
+        "metric": "rel_est",
+        "verdict": "\\textbf{PASS}",
+        "gap_note": "Post Gauss-Seidel multi-FE fix; sp matches at 1e-15",
+    },
+    "48_probit": {
+        "name": "Binary probit",
+        "headline_filter": lambda d: d.statistic.startswith("beta_"),
+        "metric": "rel_est",
+        "verdict": "\\textbf{PASS}",
+        "gap_note": "",
+    },
+    "49_oprobit": {
+        "name": "Ordered probit",
+        "headline_filter": lambda d: d.statistic.startswith("beta_"),
+        "metric": "rel_est",
+        "verdict": "\\textbf{PASS}",
+        "gap_note": "",
+    },
+    "50_xtabond": {
+        "name": "Arellano-Bond GMM",
+        "headline_filter": lambda d: d.statistic.startswith("beta_"),
+        "metric": "rel_est",
+        "verdict": "\\textbf{PASS}",
+        "gap_note": (
+            "R/Stata dynamic-panel fixture; block-diagonal instruments and "
+            "one-step GMM weights match"
+        ),
+    },
+    "51_newey": {
+        "name": "Newey-West HAC OLS",
+        "headline_filter": lambda d: d.statistic.startswith("beta_"),
+        "metric": "rel_est",
+        "verdict": "\\textbf{PASS}",
+        "gap_note": "post HAC sandwich sqrt(n) scaling fix",
+    },
+    "52_scm_unique": {
+        "name": "Classical SCM (unique solution)",
+        "headline_filter": lambda d: d.statistic == "avg_post_gap",
+        "metric": "rel_est",
+        "verdict": "\\textbf{PASS}",
+        "gap_note": (
+            "identified convex SCM; sp and Stata synth recover exact weights+gap"
+        ),
+    },
+    "53_cr2": {
+        "name": "Cluster-robust CR2 / CR3 SE",
+        "headline_filter": lambda d: d.statistic.startswith(("cr2_", "cr3_")),
+        "metric": "rel_se",
+        "verdict": "\\textbf{PASS}",
+        "gap_note": "CR2 and analytic CR3 match clubSandwich",
+    },
+    "54_twoway_cluster": {
+        "name": "Two-way cluster-robust SE",
+        # Headline is the two-way SE vs sandwich::vcovCL (same per-dimension
+        # Liang-Zeger convention) -- a machine-precision match.
+        "headline_filter": lambda d: d.statistic.startswith("beta_"),
+        "metric": "rel_se",
+        "verdict": "\\textbf{PASS}",
+        "gap_note": (
+            "matches sandwich::vcovCL(HC1,cadjust); "
+            "fixest min-G df convention differs $\\sim10^{-3}$"
+        ),
+    },
+    "55_hc2_hc3": {
+        "name": "HC2 / HC3 robust SE",
+        # Both the HC2 and HC3 SE rows match sandwich::vcovHC at machine
+        # precision (MacKinnon-White small-sample heteroskedasticity-robust).
+        "headline_filter": lambda d: d.statistic.startswith("hc"),
+        "metric": "rel_se",
+        "verdict": "\\textbf{PASS}",
+        "gap_note": "",
+    },
+    "56_multiway_cluster": {
+        "name": "Three-way cluster-robust SE",
+        # Three-way SE vs sandwich::vcovCL -- machine-precision match; exercises
+        # the full inclusion-exclusion (triple-intersection term) of the fixed
+        # multiway_cluster_vcov.
+        "headline_filter": lambda d: d.statistic.startswith("beta_"),
+        "metric": "rel_se",
+        "verdict": "\\textbf{PASS}",
+        "gap_note": "",
+    },
+    "57_logit": {
+        "name": "Binary logit ML",
+        "headline_filter": lambda d: d.statistic.startswith("beta_"),
+        "metric": "rel_est",
+        "verdict": "\\textbf{PASS}",
+        "gap_note": "",
+    },
+    "58_poisson": {
+        "name": "Poisson ML",
+        "headline_filter": lambda d: d.statistic.startswith("beta_"),
+        "metric": "rel_est",
+        "verdict": "\\textbf{PASS}",
+        "gap_note": "",
+    },
+    "59_liml": {
+        "name": "LIML k-class IV",
+        # ivmodel::LIML pins the endogenous coefficient; the exogenous
+        # coefficients are py<->Stata rows (ivregress liml, small).
+        "headline_filter": lambda d: d.statistic.startswith("beta_"),
+        "metric": "rel_est",
+        "verdict": "\\textbf{PASS}",
+        "gap_note": "ivregress runs with `small` (RSS/(n-k))",
+    },
+    "60_sureg": {
+        "name": "SUR one-step FGLS",
+        "headline_filter": lambda d: d.statistic.startswith("beta_"),
+        "metric": "rel_est",
+        "verdict": "\\textbf{PASS}",
+        "gap_note": "Sigma divisor n (sureg default / noDfCor)",
+    },
+    "61_betareg": {
+        "name": "Beta regression ML",
+        "headline_filter": lambda d: d.statistic.startswith("beta_")
+        or d.statistic == "ln_phi",
+        "metric": "rel_est",
+        "verdict": "\\textbf{PASS}",
+        "gap_note": "betareg SEs are expected-information (documented)",
+    },
+    "62_truncreg": {
+        "name": "Truncated regression ML",
+        "headline_filter": lambda d: d.statistic.startswith("beta_")
+        or d.statistic == "sigma",
+        "metric": "rel_est",
+        "verdict": "\\textbf{PASS}",
+        "gap_note": "",
+    },
+    "63_zip": {
+        "name": "Zero-inflated Poisson",
+        "headline_filter": lambda d: d.statistic.startswith("beta_"),
+        "metric": "rel_est",
+        "verdict": "\\textbf{PASS}",
+        "gap_note": "",
+    },
+    "64_zinb": {
+        "name": "Zero-inflated NB",
+        "headline_filter": lambda d: d.statistic.startswith("beta_"),
+        "metric": "rel_est",
+        "verdict": "\\textbf{PASS}",
+        "gap_note": "flat ZINB likelihood near optimum (1e-5 budget)",
+    },
+    "65_spatial": {
+        "name": "Spatial ML (SAR/SEM/SDM)",
+        "headline_filter": lambda d: True,
+        "metric": "rel_est",
+        "verdict": "\\textbf{PASS}",
+        "gap_note": "vs spatialreg::lagsarlm/errorsarlm/Durbin, row-std rook W",
+    },
+    "66_spatial_gmm": {
+        "name": "Spatial GMM (SAR-2SLS/SEM-GMM)",
+        "headline_filter": lambda d: True,
+        "metric": "rel_est",
+        "verdict": "\\textbf{PASS}",
+        "gap_note": "vs spatialreg::stsls(W2X=F)/GMerrorsar; SEM point-only",
+    },
+    "67_panel_glm": {
+        "name": "Panel GLM (feglm / fepois)",
+        "headline_filter": lambda d: True,
+        "metric": "rel_est",
+        "verdict": "\\textbf{PASS}",
+        "gap_note": "vs fixest::feglm/fepois, absorbed id FE; IWLS SE 1e-5",
+    },
+    "68_demean_within": {
+        "name": "Within transformation",
+        "headline_filter": lambda d: True,
+        "metric": "rel_est",
+        "verdict": "\\textbf{PASS}",
+        "gap_note": "sp.demean(solver='map') vs textbook mean-within",
+    },
+    "69_balance_panel": {
+        "name": "Panel balance filter",
+        "headline_filter": lambda d: True,
+        "metric": "rel_est",
+        "verdict": "\\textbf{PASS}",
+        "gap_note": "sp.balance_panel vs base R counts == n_periods",
+    },
+    "72_tmle": {
+        "name": "TMLE (targeting step)",
+        "headline_filter": lambda d: d.statistic == "psi_tmle_ate",
+        "metric": "rel_est",
+        "verdict": "\\textbf{PASS}",
+        "gap_note": (
+            "shared initial Q / g1W; per-arm fluctuation matching "
+            "tmle::tmle's submodel"
+        ),
+    },
+    "71_dml_family": {
+        "name": "DML family (IRM / PLIV / IIVM)",
+        "headline_filter": lambda d: d.statistic.startswith("theta_DML_"),
+        "metric": "rel_est",
+        "verdict": "\\textbf{PASS}",
+        "gap_note": (
+            "shared explicit fold_id across all three DoubleML model "
+            "classes; PLIV at the floating-point floor, IRM/IIVM limited "
+            "by the logistic-MLE optimiser"
+        ),
+    },
+    "70_policy_tree": {
+        "name": "Policy tree (exact, depth 1--2)",
+        "headline_filter": lambda d: d.statistic.startswith("value_policy_"),
+        "metric": "rel_est",
+        "verdict": "\\textbf{PASS}",
+        "gap_note": (
+            "shared AIPW scores; exact welfare optimum vs policytree, "
+            "all 1200 per-row policy decisions identical at both depths"
+        ),
+    },
+}
+
+
+def _tex_free_text(text: str) -> str:
+    """Escape LaTeX specials in a free-text cell without double-escaping.
+
+    ``STATA_SKIP_REASON`` and the per-module ``gap_note`` strings are prose
+    written for humans: they carry percentages ("21% away"), snake_case
+    identifiers (``rel_se``, ``fold_id``), and occasionally an ampersand. An
+    unescaped ``%`` comments out the rest of the row, and an unescaped ``&``
+    silently shifts every following column, so a reader compiling the appendix
+    sees a broken table rather than the disclosure the row exists to make.
+
+    Some notes already carry deliberate escapes (``SE within 1\\% analytic
+    tolerance``) or intentional markup (``\\code{50\\_xtabond}``), so this only
+    escapes characters that are not already preceded by a backslash.
+    """
+    return re.sub(r"(?<!\\)([%_#&])", r"\\\1", text)
+
+
+def render_tex(modules: list[str]) -> str:
+    rows: list[str] = []
+    for m in modules:
+        diffs = collect(m)
+        if not diffs:
+            continue
+        cfg = HEADLINE.get(
+            m,
+            {
+                "name": m,
+                "headline_filter": lambda d: True,
+                "metric": "rel_est",
+                "verdict": "\\textit{review}",
+                "gap_note": "",
+            },
+        )
+        filtered = [d for d in diffs if cfg["headline_filter"](d)]
+        if not filtered:
+            filtered = diffs
+        metric = cfg["metric"]
+        vals = [getattr(d, metric) for d in filtered if getattr(d, metric) is not None]
+        if not vals:
+            continue
+        worst = max(vals)
+        if metric == "rel_est":
+            primary = f"rel $\\le {worst:.2g}$"
+        else:
+            primary = f"abs $\\le {worst:.3g}$"
+        gap_note = cfg.get("gap_note", "")
+        gap_cell = (
+            f" {{\\footnotesize ({_tex_free_text(gap_note)})}}" if gap_note else ""
+        )
+        # Escape underscores inside \code{...} so the texttt rendering
+        # does not trip the LaTeX scanner.
+        m_safe = m.replace("_", r"\_")
+        rows.append(
+            f"\\code{{{m_safe}}} & {cfg['name']} & {primary}{gap_cell} & "
+            f"{cfg['verdict']} \\\\"
+        )
+
+    body = "\n".join(rows)
+    return (
+        "% AUTO-GENERATED by tests/r_parity/compare.py\n"
+        "% Re-run after any module change to refresh.\n"
+        "\\begin{longtable}{p{0.10\\linewidth}p{0.27\\linewidth}"
+        "p{0.40\\linewidth}p{0.16\\linewidth}}\n"
+        f"\\caption{{Track A parity headline for \\statspai{{}} "
+        f"{_release_version()} vs the "
+        "canonical \\proglang{R} reference on the calibrated replicas. The "
+        "``Worst diff'' column reports the worst residual gap across the "
+        "module's headline rows (point estimates only; per-row SE diffs "
+        "and documented gap rows are reported in the Markdown source). "
+        "Verdicts use PASS and GAP; common-specification passes, "
+        "small-sample SE conventions, and convention gaps are explained "
+        "in the parenthetical notes and per-module \\code{extra} block in "
+        "\\code{tests/r\\_parity/results/}.}\n"
+        "\\label{tab:track-a-parity}\\\\\n"
+        "\\toprule\n"
+        "Module & Method & Worst headline diff & Verdict \\\\\n"
+        "\\midrule\n"
+        "\\endfirsthead\n"
+        "\\multicolumn{4}{c}{\\textit{(continued)}}\\\\\n"
+        "\\toprule\n"
+        "Module & Method & Worst headline diff & Verdict \\\\\n"
+        "\\midrule\n"
+        "\\endhead\n"
+        "\\bottomrule\n"
+        "\\endlastfoot\n"
+        f"{body}\n"
+        "\\end{longtable}\n"
+    )
+
+
+_IMPLEMENTATION_MARKER = {
+    "official_python_port": "$^{\\ddagger}$",
+    "third_party_python": "$^{\\dagger}$",
+    "reference_backend": "$^{\\ast}$",
+}
+
+
+def _implementation_sentence(modules: list[str]) -> str:
+    rendered = [m for m in modules if collect(m)]
+    c = implementation_census(rendered)
+    parts = [
+        f"Of the {len(rendered)} modules, {c['native']} exercise a "
+        "\\statspai{}-native implementation on the \\proglang{Python} side"
+    ]
+    if c["third_party_python"]:
+        parts.append(
+            f"{c['third_party_python']} (marked $^{{\\dagger}}$) are served by a "
+            "third-party \\proglang{Python} estimation library that \\statspai{} wraps, "
+            "so they validate the wrapper and its conventions rather than a native algorithm"
+        )
+    if c["official_python_port"]:
+        parts.append(
+            f"{c['official_python_port']} (marked $^{{\\ddagger}}$) run a port "
+            "maintained by the method's authors"
+        )
+    parts.append(
+        f"{c['reference_backend']} call the reference implementation itself; "
+        "the classification is checked against a call trace of every module "
+        "(\\code{scripts/trace\\_parity\\_provenance.py})"
+    )
+    return "; ".join(parts) + "."
+
+
+def render_tex_3way(modules: list[str]) -> str:
+    """Five-column 3-way table: ID / Method / vs R / vs Stata / Verdict."""
+    rows: list[str] = []
+    tier_sentence = _tier_breakdown_sentence([m for m in modules if collect(m)])
+    for m in modules:
+        diffs = collect(m)
+        if not diffs:
+            continue
+        cfg = HEADLINE.get(
+            m,
+            {
+                "name": m,
+                "headline_filter": lambda d: True,
+                "metric": "rel_est",
+                "verdict": "\\textit{review}",
+                "gap_note": "",
+            },
+        )
+        filtered = [d for d in diffs if cfg["headline_filter"](d)]
+        if not filtered:
+            filtered = diffs
+        metric = cfg["metric"]
+        # vs-R column.
+        vals_r = [
+            getattr(d, metric) for d in filtered if getattr(d, metric) is not None
+        ]
+        if not vals_r:
+            continue
+        worst_r = max(vals_r)
+        if metric == "rel_est":
+            primary_r = f"rel $\\le {worst_r:.2g}$"
+        else:
+            primary_r = f"abs $\\le {worst_r:.3g}$"
+        # vs-Stata column.
+        st_metric = "rel_est_st" if metric == "rel_est" else "abs_est_st"
+        st_vals = [
+            getattr(d, st_metric) for d in filtered if getattr(d, st_metric) is not None
+        ]
+        if st_vals:
+            worst_s = max(st_vals)
+            if metric == "rel_est":
+                primary_s = f"rel $\\le {worst_s:.2g}$"
+            else:
+                primary_s = f"abs $\\le {worst_s:.3g}$"
+            if m in STATA_HEADLINE_GAP_EXCEPTIONS:
+                primary_s += " {\\footnotesize (Stata convention gap)}"
+        else:
+            reason = STATA_SKIP_REASON.get(m, "n/a")
+            primary_s = f"\\emph{{{_tex_free_text(reason)}}}"
+        gap_note = cfg.get("gap_note", "")
+        gap_cell = (
+            f" {{\\footnotesize ({_tex_free_text(gap_note)})}}" if gap_note else ""
+        )
+        m_safe = m.split("_", 1)[0]
+        marker = _IMPLEMENTATION_MARKER.get(implementation_kind(m), "")
+        rows.append(
+            f"\\code{{{m_safe}}} & {_tex_free_text(cfg['name'])}{marker} & "
+            f"{primary_r}{gap_cell} & {primary_s} & "
+            f"{cfg['verdict']} \\\\"
+        )
+
+    body = "\n".join(rows)
+    return (
+        "% AUTO-GENERATED by tests/r_parity/compare.py\n"
+        "% Re-run after any module change to refresh.\n"
+        "\\begingroup\n"
+        "\\small\n"
+        "\\setlength{\\tabcolsep}{2pt}\n"
+        "\\begin{longtable}{@{}p{0.055\\linewidth}p{0.205\\linewidth}"
+        "p{0.30\\linewidth}p{0.30\\linewidth}p{0.10\\linewidth}@{}}\n"
+        f"\\caption{{Track A parity headline for \\statspai{{}} {_release_version()} "
+        "against the canonical "
+        "\\proglang{R} reference \\emph{and} (where one exists) a canonical or audited "
+        "\\proglang{Stata} bridge reference, on the calibrated replicas. "
+        "The ID column is the two-digit module prefix; "
+        "the two diff columns report the worst residual "
+        "gap across each module's headline rows (point estimates only; "
+        "per-row SE diffs and "
+        "documented gap rows are reported in "
+        "\\code{tests/r\\_parity/results/parity\\_table\\_3way.md}). "
+        "Italic text in the \\proglang{Stata} column records the explicit "
+        "non-materialized bridge or no-canonical-reference reason when no "
+        "portable \\proglang{Stata} artifact is available. Verdicts use PASS "
+        "and GAP; common-specification passes, small-sample SE conventions, and "
+        "convention gaps are explained in the parenthetical notes and per-module "
+        "\\code{extra} block in "
+        "\\code{tests/r\\_parity/results/} and \\code{tests/stata\\_parity/results/}. "
+        "Strictness-tier breakdown by registered point-estimate tolerance: "
+        f"{tier_sentence}. {_implementation_sentence(modules)}}}\n"
+        "\\label{tab:track-a-parity}\\\\\n"
+        "\\toprule\n"
+        "ID & Method & Worst diff vs \\proglang{R} & "
+        "Worst diff vs \\proglang{Stata} & Verdict \\\\\n"
+        "\\midrule\n"
+        "\\endfirsthead\n"
+        "\\multicolumn{5}{c}{\\textit{(continued)}}\\\\\n"
+        "\\toprule\n"
+        "ID & Method & Worst diff vs \\proglang{R} & "
+        "Worst diff vs \\proglang{Stata} & Verdict \\\\\n"
+        "\\midrule\n"
+        "\\endhead\n"
+        "\\bottomrule\n"
+        "\\endlastfoot\n"
+        f"{body}\n"
+        "\\end{longtable}\n"
+        "\\endgroup\n"
+    )
+
+
+def render_md_3way(modules: list[str]) -> str:
+    """Markdown with Stata column when available."""
+    lines: list[str] = [
+        "# Track A parity report (3-way: \\proglang{Python} <-> R <-> Stata)",
+        "",
+        "Generated by `tests/r_parity/compare.py` on the "
+        "`results/<module>_{py,R}.json` and "
+        "`tests/stata_parity/results/<module>_Stata.json` artefacts. "
+        "Tolerance budget per module is pre-registered in "
+        "`compare.py::TOLERANCES`. Documented convention gaps, "
+        "common-specification passes, and small-sample SE conventions are flagged "
+        "in the per-module `extra` block of each JSON.",
+        "",
+        "**Strictness-tier breakdown** (by registered point-estimate "
+        "tolerance, so machine-level point-estimate matches are not flattened together "
+        "with methodological T3/T4 tolerances): "
+        + _tier_breakdown_sentence([m for m in modules if collect(m)], md=True)
+        + ".",
+        "",
+    ]
+    for m in modules:
+        diffs = collect(m)
+        if not diffs:
+            continue
+        meta_path = RESULTS_DIR / f"{m}_py.json"
+        meta = json.loads(meta_path.read_text(encoding="utf-8")).get("extra", {})
+        st_meta_path = STATA_RESULTS_DIR / f"{m}_Stata.json"
+        st_meta = (
+            json.loads(st_meta_path.read_text(encoding="utf-8")).get("extra", {})
+            if st_meta_path.exists()
+            else {}
+        )
+        lines.append(f"## Module {m}")
+        lines.append(
+            f"- **strictness_tier**: `{tolerance_tier(m)}` "
+            f"({TIER_LABEL_MD[tolerance_tier(m)]})"
+        )
+        kind = implementation_kind(m)
+        lines.append(
+            f"- **implementation**: `{kind}`"
+            + (f" -- {IMPLEMENTATION_PROVENANCE[m][1]}" if m in IMPLEMENTATION_PROVENANCE else "")
+        )
+        if m in METHODOLOGICAL_DISCLOSURE_NOTES:
+            lines.append(
+                f"- **methodological_disclosure**: "
+                f"{METHODOLOGICAL_DISCLOSURE_NOTES[m]}"
+            )
+        if meta:
+            for k, v in meta.items():
+                v = _display_meta_value(m, k, v)
+                if isinstance(v, str) and len(v) > 80:
+                    lines.append(f"- **{k}**: {v}")
+                else:
+                    lines.append(f"- **{k}**: `{v}`")
+        if st_meta:
+            for k, v in st_meta.items():
+                if k.startswith("stata"):
+                    lines.append(f"- **{k}**: `{v}`")
+        elif m in STATA_SKIP_REASON:
+            lines.append(f"- **stata_status**: {STATA_SKIP_REASON[m]}")
+        if m in STATA_HEADLINE_GAP_EXCEPTIONS:
+            lines.append(f"- **stata_gap_note**: {STATA_HEADLINE_GAP_EXCEPTIONS[m]}")
+        lines.append("")
+        lines.append(
+            "| stat | py est | R est | Stata est | rel py-R | rel py-Stata "
+            "| py SE | R SE | Stata SE | rel SE py-R | rel SE py-Stata |"
+        )
+        lines.append("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
+        for d in diffs:
+            lines.append(
+                f"| `{d.statistic}` "
+                f"| {fmt(d.py_est)} | {fmt(d.R_est)} | {fmt(d.Stata_est)} "
+                f"| {fmt(d.rel_est, 3)} | {fmt(d.rel_est_st, 3)} "
+                f"| {fmt(d.py_se)} | {fmt(d.R_se)} | {fmt(d.Stata_se)} "
+                f"| {fmt(d.rel_se, 3)} | {fmt(d.rel_se_st, 3)} |"
+            )
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def stata_headline_audit() -> list[str]:
+    """Return unregistered py<->Stata headline-budget violations.
+
+    The R leg has always been a contract: every module registers a tolerance
+    in ``TOLERANCES`` and the parity index fails loudly when a committed
+    golden exceeds it. The Stata leg was only ever *displayed* --- the
+    three-way table printed ``rel py-Stata`` and nothing compared it to the
+    budget. That is how ``10_honest_did`` sat at 1.5e-3 against a registered
+    5e-4 for as long as the module has existed without anyone noticing.
+
+    This function closes that asymmetry. A module fails when its headline
+    rows join a Stata column that exceeds the module's own registered
+    point-estimate tolerance, unless it is registered in
+    ``STATA_HEADLINE_GAP_EXCEPTIONS`` with the measurement and the reason.
+    Registering is deliberately not the same as passing: the exception text
+    is rendered into the three-way table and the paper appendix, so the cost
+    of claiming one is that a reviewer reads it.
+
+    A module whose Stata artifact exists but joins no headline row is also a
+    finding, not a pass: it means the Stata column is decorative. Those are
+    reported separately so a bridge cannot be counted as coverage while
+    comparing nothing.
+    """
+    problems: list[str] = []
+    for module_id in sorted(TOLERANCES):
+        if _load_stata(module_id) is None:
+            continue
+        diffs = collect(module_id)
+        if not diffs:
+            continue
+        cfg = HEADLINE.get(module_id, {})
+        filt = cfg.get("headline_filter")
+        hrows = [d for d in diffs if filt(d)] if filt else list(diffs)
+        metric = cfg.get("metric", "rel_est")
+        est_attr = "rel_est_st" if metric == "rel_est" else "abs_est_st"
+        tol_key = "rel_est" if metric == "rel_est" else "abs_est"
+        tol = TOLERANCES.get(module_id, {}).get(tol_key)
+
+        joined = [
+            getattr(d, est_attr)
+            for d in hrows
+            if getattr(d, est_attr, None) is not None
+        ]
+        if not joined:
+            if module_id not in STATA_NO_HEADLINE_JOIN_REASON:
+                problems.append(
+                    f"{module_id}: has a Stata artifact but no headline row "
+                    "joins it; either emit the joining statistics or register "
+                    "the module in STATA_NO_HEADLINE_JOIN_REASON"
+                )
+            continue
+
+        worst = max(joined)
+        if tol is None or worst <= tol * (1 + 1e-9):
+            continue
+        if module_id in STATA_HEADLINE_GAP_EXCEPTIONS:
+            continue
+        problems.append(
+            f"{module_id}: headline py-Stata {metric}={worst:.3g} exceeds "
+            f"registered {tol_key}<={tol:g} and is not registered in "
+            "STATA_HEADLINE_GAP_EXCEPTIONS"
+        )
+    return problems
+
+
+def main() -> int:
+    modules = sorted(p.stem.replace("_py", "") for p in RESULTS_DIR.glob("*_py.json"))
+    rendered_modules = [m for m in modules if collect(m)]
+    md = render_md(modules)
+    tex = render_tex(modules)
+    (RESULTS_DIR / "parity_table.md").write_text(md, encoding="utf-8")
+    (RESULTS_DIR / "parity_table.tex").write_text(tex, encoding="utf-8")
+    print("OK -- wrote parity_table.md and parity_table.tex")
+
+    stata_problems = stata_headline_audit()
+    if stata_problems:
+        print("FAIL -- unregistered py<->Stata headline gaps:")
+        for problem in stata_problems:
+            print(f"     {problem}")
+    else:
+        print(
+            "     py<->Stata headline budgets: all within tolerance or "
+            f"registered ({len(STATA_HEADLINE_GAP_EXCEPTIONS)} registered "
+            "exception(s))"
+        )
+    print(
+        "     strictness tiers: " + _tier_breakdown_sentence(rendered_modules, md=True)
+    )
+    # Only refresh the manuscript snapshot where the manuscript actually
+    # lives. Paper-JSS/ is a git-ignored, local-only tree that exists in the
+    # main checkout and not in a worktree, and several JSS test modules skip
+    # themselves on `Paper-JSS/.exists()`. Creating the directory here to
+    # drop one .tex into it turned that designed skip into two failures in
+    # every worktree -- a phantom Paper-JSS with no replication scripts under
+    # it. Writing only into an existing manuscript tree keeps the main
+    # checkout's behaviour identical and stops manufacturing the half-tree.
+    if PAPER_TABLES_DIR.parent.is_dir():
+        PAPER_TABLES_DIR.mkdir(parents=True, exist_ok=True)
+        snapshot_tex = render_track_a_snapshot_tex()
+        (PAPER_TABLES_DIR / "track_a_cross_language_snapshot.tex").write_text(
+            snapshot_tex, encoding="utf-8"
+        )
+        print(
+            "OK -- wrote Paper-JSS/manuscript/tables/"
+            "track_a_cross_language_snapshot.tex"
+        )
+    else:
+        print(
+            "-- skipped Paper-JSS snapshot: no Paper-JSS/manuscript tree here "
+            "(regenerate from the main checkout)"
+        )
+
+    # 3-way Stata extension. Always emitted; Stata-empty modules show
+    # the explicit skip/materialization reason rather than a blank.
+    if _has_any_stata(modules) or STATA_SKIP_REASON:
+        md3 = render_md_3way(modules)
+        tex3 = render_tex_3way(modules)
+        (RESULTS_DIR / "parity_table_3way.md").write_text(md3, encoding="utf-8")
+        (RESULTS_DIR / "parity_table_3way.tex").write_text(tex3, encoding="utf-8")
+        print("OK -- wrote parity_table_3way.md and parity_table_3way.tex")
+        n_stata = sum(1 for m in rendered_modules if _load_stata(m) is not None)
+        n_py_stata_only = sum(
+            1
+            for m in modules
+            if _load_stata(m) is not None and m not in rendered_modules
+        )
+        suffix = (
+            f"; {n_py_stata_only} Py-Stata-only module omitted from R-joined table"
+            if n_py_stata_only
+            else ""
+        )
+        print(
+            f"     ({n_stata} of {len(rendered_modules)} rendered modules "
+            f"have a Stata reference{suffix})"
+        )
+    print(
+        f"     ({len(rendered_modules)} rendered modules from {len(modules)} "
+        f"Python result files: {', '.join(rendered_modules)})"
+    )
+    return 1 if stata_problems else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

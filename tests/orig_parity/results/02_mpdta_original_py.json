@@ -1,0 +1,32 @@
+{
+  "module": "02_mpdta_original",
+  "side": "py",
+  "rows": [
+    {
+      "module": "02_mpdta_original",
+      "side": "py",
+      "statistic": "simple_ATT",
+      "estimate": -0.039951275155176276,
+      "se": 0.012034012770185353,
+      "n": 2500,
+      "published": null,
+      "citation": "did::aggte(type='simple') on the same bytes; no printed vignette anchor",
+      "extra": {}
+    },
+    {
+      "module": "02_mpdta_original",
+      "side": "py",
+      "statistic": "dynamic_overall_ATT",
+      "estimate": -0.07723982145731487,
+      "se": 0.02108563218542083,
+      "n": 2500,
+      "published": -0.0772,
+      "citation": "Callaway-Sant'Anna 'did' vignette (did-basics), overall dynamic ATT, xformla=~1",
+      "extra": {}
+    }
+  ],
+  "extra": {
+    "data_source": "did::mpdta",
+    "n_obs": 2500
+  }
+}

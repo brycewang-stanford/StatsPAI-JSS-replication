@@ -1,0 +1,93 @@
+{
+  "checked_files": [
+    "Paper-JSS/manuscript/sections/01-introduction-compact.tex",
+    "Paper-JSS/manuscript/sections/05-parity-compact.tex",
+    "Paper-JSS/manuscript/sections/appendix.tex",
+    "Paper-JSS/manuscript/sections/08-computational-details-compact.tex",
+    "Paper-JSS/README.md",
+    "Paper-JSS/cover-letter.md",
+    "Paper-JSS/REVIEWER-HARDENING-AUDIT.md",
+    "Paper-JSS/manuscript/README.md",
+    "docs/jss_source_audit_dossier.md"
+  ],
+  "failures": [],
+  "generated_at_unix": 1780185600,
+  "required_disclosure_files": [
+    "Paper-JSS/README.md",
+    "Paper-JSS/REVIEWER-HARDENING-AUDIT.md",
+    "Paper-JSS/cover-letter.md",
+    "Paper-JSS/manuscript/README.md",
+    "Paper-JSS/manuscript/sections/01-introduction-compact.tex",
+    "Paper-JSS/manuscript/sections/05-parity-compact.tex",
+    "Paper-JSS/manuscript/sections/08-computational-details-compact.tex",
+    "Paper-JSS/manuscript/sections/appendix.tex",
+    "docs/jss_source_audit_dossier.md"
+  ],
+  "status": "PASS",
+  "summary": {
+    "contains_unreleased_source_changes": true,
+    "generated_dirty_count": 52,
+    "manuscript_version_macro": "1.30.1",
+    "package_version": "1.30.1",
+    "paper_release_blocker_count": 29,
+    "ready_for_final_publication": false,
+    "release_blocker_breakdown": {
+      "generated_status_counts": {
+        "??": 2,
+        "M": 45,
+        "MM": 5
+      },
+      "hand_edited_status_counts": {
+        "??": 27,
+        "M": 70,
+        "MM": 12
+      },
+      "package_code_paths": 18,
+      "package_docs_paths": 10,
+      "paper_manuscript_paths": 11,
+      "paper_other_paths": 4,
+      "paper_replication_paths": 14,
+      "validation_test_paths": 47
+    },
+    "release_blocker_count": 109,
+    "release_gate_checks": [
+      {
+        "check": "clean_combined_worktree",
+        "detail": "109 hand-edited final-publication gate paths; 52 generated dirty paths",
+        "ok": false
+      },
+      {
+        "check": "package_tag_at_head",
+        "detail": "no package-source tag at HEAD",
+        "ok": false
+      },
+      {
+        "check": "versions_consistent",
+        "detail": "pyproject, __version__, and schema bundle agree",
+        "ok": true
+      },
+      {
+        "check": "unreleased_changelog_finalized",
+        "detail": "444 non-empty lines across 7 headings",
+        "ok": false
+      },
+      {
+        "check": "source_paths_finalized",
+        "detail": "80 source/test/docs paths still dirty",
+        "ok": false
+      },
+      {
+        "check": "paper_paths_finalized",
+        "detail": "29 Paper-JSS paths still dirty",
+        "ok": false
+      }
+    ],
+    "schema_bundle_version": "1.30.1",
+    "source_release_blocker_count": 80,
+    "source_version": "1.30.1",
+    "strict_release_command": "python Paper-JSS/replication/scripts/source_snapshot_manifest.py --strict-release",
+    "submission_archive_status": "Audited source-snapshot submission archive; the failing final-publication release gate is a tag/changelog synchronization gate, not a JSS upload reproducibility failure.",
+    "unreleased_changelog_nonempty": true,
+    "version_consistent": true
+  }
+}

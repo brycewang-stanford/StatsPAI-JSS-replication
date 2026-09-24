@@ -1,0 +1,269 @@
+{
+  "active_archival_only_keys": [],
+  "active_cited_key_count": 72,
+  "active_cited_keys": [
+    "abadie2003economic",
+    "abadie2010synthetic",
+    "abadie2011synth",
+    "andrews2023inference",
+    "angrist2009mostly",
+    "anthropic2024mcp",
+    "arkhangelsky2021synthetic",
+    "athey2019generalized",
+    "bach2022doubleml",
+    "bach2024doubleml",
+    "baker2026difference",
+    "benmichael2021augmented",
+    "berge2018efficient",
+    "blackwell2014selection",
+    "borusyak2024revisiting",
+    "brodersen2015inferring",
+    "callaway2021difference",
+    "calonico2014robust",
+    "calonico2015rdrobust",
+    "cameron2008bootstrap",
+    "card1995using",
+    "cattaneo2018manipulation",
+    "cattaneo2020simple",
+    "chen2020causalml",
+    "chen2025efficient",
+    "chernozhukov2018double",
+    "clarke2024synthetic",
+    "conley1999estimation",
+    "correia2020fast",
+    "dehejia1999causal",
+    "econml",
+    "ghanem2026selection",
+    "goodmanbacon2021difference",
+    "hainmueller2012entropy",
+    "hainmueller2019much",
+    "hansen2006optimal",
+    "harris2020array",
+    "ho2011matchit",
+    "hunter2007matplotlib",
+    "imai2014covariate",
+    "imbens2009recent",
+    "kleiber2008applied",
+    "lalonde1986evaluating",
+    "lam2015numba",
+    "lee2008randomized",
+    "li2025benchmarking",
+    "liang2023helm",
+    "liu2024practical",
+    "mckinney2010data",
+    "mou2023panel",
+    "patil2023gorilla",
+    "pedregosa2011scikit",
+    "pustejovsky2018small",
+    "rambachan2023more",
+    "rios2022csdid",
+    "roodman2019fast",
+    "roth2023whats",
+    "roth2026interpreting",
+    "santanna2020doubly",
+    "seabold2010statsmodels",
+    "sekhon2011multivariate",
+    "sharma2020dowhy",
+    "staiger1997instrumental",
+    "stock2005testing",
+    "sun2021estimating",
+    "virtanen2020scipy",
+    "wager2018estimation",
+    "wang2020minimal",
+    "wang2026statspaijoss",
+    "wing2024designing",
+    "xu2017generalized",
+    "zeileis2020sandwich"
+  ],
+  "active_missing_from_submission_bib": [],
+  "active_tex_files": [
+    "manuscript/main.tex",
+    "manuscript/generated_claims.tex",
+    "manuscript/sections/01-introduction-compact.tex",
+    "manuscript/sections/02-architecture-compact.tex",
+    "manuscript/sections/03-agent-facing-compact.tex",
+    "manuscript/sections/04-examples-compact.tex",
+    "replication/tables/ex08_three_way.tex",
+    "manuscript/sections/05-parity-compact.tex",
+    "manuscript/tables/track_a_cross_language_snapshot.tex",
+    "manuscript/tables/headline_parity.tex",
+    "manuscript/tables/forest_seed_mc.tex",
+    "manuscript/tables/track_b_monte_carlo.tex",
+    "manuscript/sections/06-performance.tex",
+    "manuscript/tables/track_c_perf.tex",
+    "manuscript/sections/07-agent-eval.tex",
+    "replication/tables/ex07_agent_trace.tex",
+    "manuscript/sections/08-computational-details-compact.tex",
+    "manuscript/sections/09-discussion-compact.tex",
+    "manuscript/sections/appendix.tex",
+    "manuscript/tables/appendix_b_parity.tex"
+  ],
+  "archival_bib_entry_count": 59,
+  "checks": [
+    {
+      "evidence": "missing=[]",
+      "ok": true,
+      "requirement": "active manuscript citations resolve inside jss-bib.bib"
+    },
+    {
+      "evidence": "duplicates=[]",
+      "ok": true,
+      "requirement": "submission bibliography has no duplicate keys"
+    },
+    {
+      "evidence": "reserved=['brown2020language']; expected=['brown2020language']",
+      "ok": true,
+      "requirement": "reserved bibliography keys are explicit and stable"
+    },
+    {
+      "evidence": "active_archival_only=[]",
+      "ok": true,
+      "requirement": "active citations are not archival-only"
+    },
+    {
+      "evidence": "field_failures=[]",
+      "ok": true,
+      "requirement": "submission bibliography entries keep required fields"
+    },
+    {
+      "evidence": "missing_reasons=[]; stale_reasons=[]",
+      "ok": true,
+      "requirement": "no-DOI entries have manual verification reasons"
+    },
+    {
+      "evidence": "bbl_present=True; bibitems=72; active_citations=72",
+      "ok": true,
+      "requirement": "compiled bibliography count matches active citations when main.bbl exists"
+    }
+  ],
+  "compiled_bibliography": {
+    "bibitem_count": 72,
+    "present": true,
+    "thebibliography_count": 72
+  },
+  "doi_entry_count": 60,
+  "duplicate_keys": [],
+  "expected_reserved_entry_keys": [
+    "brown2020language"
+  ],
+  "failures": [],
+  "field_failures": [],
+  "generated_at_unix": 1780185600,
+  "locator_entry_count": 71,
+  "missing_no_doi_reasons": [],
+  "no_doi_entries": [
+    {
+      "active_cited": true,
+      "has_locator": true,
+      "key": "anthropic2024mcp",
+      "manual_verification": "Software/web specification citation; URL and access date are rendered from howpublished/note fields.",
+      "reserved": false,
+      "type": "misc"
+    },
+    {
+      "active_cited": true,
+      "has_locator": true,
+      "key": "bach2022doubleml",
+      "manual_verification": "JMLR software paper; URL to the official JMLR article page is present, and no DOI is recorded in the submission bibliography.",
+      "reserved": false,
+      "type": "article"
+    },
+    {
+      "active_cited": true,
+      "has_locator": false,
+      "key": "berge2018efficient",
+      "manual_verification": "CREA discussion paper for the fixest implementation lineage; URL to the institution-hosted PDF is present, and no DOI is recorded.",
+      "reserved": false,
+      "type": "techreport"
+    },
+    {
+      "active_cited": false,
+      "has_locator": true,
+      "key": "brown2020language",
+      "manual_verification": "NeurIPS 2020 proceedings paper; the proceedings carry no DOI, so the entry records the official proceedings URL plus the arXiv eprint (2005.14165) rather than attaching the preprint's DOI to the venue record.",
+      "reserved": true,
+      "type": "inproceedings"
+    },
+    {
+      "active_cited": true,
+      "has_locator": true,
+      "key": "card1995using",
+      "manual_verification": "Book-chapter citation; booktitle, editors, publisher, pages, and year are present, and no DOI is expected.",
+      "reserved": false,
+      "type": "incollection"
+    },
+    {
+      "active_cited": true,
+      "has_locator": true,
+      "key": "chen2025efficient",
+      "manual_verification": "arXiv preprint (2506.17729) with no journal publication as of verification; the eprint field is the identifier and the note says so.",
+      "reserved": false,
+      "type": "misc"
+    },
+    {
+      "active_cited": true,
+      "has_locator": true,
+      "key": "econml",
+      "manual_verification": "Software repository citation; URL is rendered from the howpublished field rather than a DOI.",
+      "reserved": false,
+      "type": "misc"
+    },
+    {
+      "active_cited": true,
+      "has_locator": true,
+      "key": "ghanem2026selection",
+      "manual_verification": "arXiv preprint (2203.09001, v15 dated 2026-07-24) with no journal publication as of verification; the eprint field is the identifier.",
+      "reserved": false,
+      "type": "misc"
+    },
+    {
+      "active_cited": true,
+      "has_locator": false,
+      "key": "lalonde1986evaluating",
+      "manual_verification": "American Economic Review 1986 article from the pre-routine-DOI era; journal, volume, issue, pages, and year are present, and no DOI is fabricated.",
+      "reserved": false,
+      "type": "article"
+    },
+    {
+      "active_cited": true,
+      "has_locator": true,
+      "key": "liang2023helm",
+      "manual_verification": "Transactions on Machine Learning Research article; TMLR issues no DOI, so the entry carries the arXiv eprint (2211.09110) whose journal_ref names the TMLR publication.",
+      "reserved": false,
+      "type": "article"
+    },
+    {
+      "active_cited": true,
+      "has_locator": true,
+      "key": "patil2023gorilla",
+      "manual_verification": "arXiv preprint (2305.15334) cited as such; the eprint field is the identifier and no DOI is fabricated.",
+      "reserved": false,
+      "type": "misc"
+    },
+    {
+      "active_cited": true,
+      "has_locator": true,
+      "key": "pedregosa2011scikit",
+      "manual_verification": "JMLR article; JMLR registers no DOIs, so the entry carries the official JMLR article URL, verified 2026-09-05 against the JMLR page and the arXiv record 1201.0490 (title, authors, journal_ref).",
+      "reserved": false,
+      "type": "article"
+    },
+    {
+      "active_cited": true,
+      "has_locator": true,
+      "key": "rios2022csdid",
+      "manual_verification": "Reserved software documentation citation; URL and access date are rendered from howpublished/note fields.",
+      "reserved": false,
+      "type": "misc"
+    }
+  ],
+  "no_doi_entry_count": 13,
+  "no_doi_manual_verification_count": 13,
+  "reserved_entry_keys": [
+    "brown2020language"
+  ],
+  "stale_no_doi_reasons": [],
+  "status": "PASS",
+  "submission_bib_entry_count": 73,
+  "url_entry_count": 5
+}

@@ -1,0 +1,56 @@
+{
+  "estimator": "02_csdid",
+  "side": "R",
+  "rows": [
+    {
+      "estimator": "02_csdid",
+      "side": "R",
+      "n": 5000,
+      "n_reps": 3,
+      "median_time_s": 0.0225841999053955,
+      "iqr_time_s": 0.00142550468444824,
+      "min_time_s": 0.0225260257720947,
+      "max_time_s": 0.0253770351409912,
+      "peak_mem_mb": null,
+      "extra": {
+        "n_units": 1000,
+        "T": 5
+      }
+    },
+    {
+      "estimator": "02_csdid",
+      "side": "R",
+      "n": 25000,
+      "n_reps": 3,
+      "median_time_s": 0.0460741519927979,
+      "iqr_time_s": 0.000446438789367676,
+      "min_time_s": 0.0459949970245361,
+      "max_time_s": 0.0468878746032715,
+      "peak_mem_mb": null,
+      "extra": {
+        "n_units": 5000,
+        "T": 5
+      }
+    },
+    {
+      "estimator": "02_csdid",
+      "side": "R",
+      "n": 125000,
+      "n_reps": 3,
+      "median_time_s": 0.174669981002808,
+      "iqr_time_s": 0.00447094440460205,
+      "min_time_s": 0.170624017715454,
+      "max_time_s": 0.179565906524658,
+      "peak_mem_mb": null,
+      "extra": {
+        "n_units": 25000,
+        "T": 5
+      }
+    }
+  ],
+  "hardware": {
+    "reference_package": "did 2.3.0",
+    "R_version": "R version 4.5.2 (2025-10-31)"
+  },
+  "extra": []
+}

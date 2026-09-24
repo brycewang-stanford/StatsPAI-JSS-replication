@@ -1,0 +1,209 @@
+{
+  "failures": [],
+  "generated_at_unix": 1780185600,
+  "items": [
+    {
+      "answer": "The JSS packet includes the 89-module R parity harness, 85 Stata bridges, and a classified T4 row rather than treating all comparisons as equality claims.",
+      "classification": "implemented_with_boundary",
+      "failures": [],
+      "id": "cross_language_parity",
+      "jss_upload_blocking": false,
+      "metrics": {
+        "methodological_gap_count": 1,
+        "r_joined_stata_modules": 85,
+        "r_modules": 89,
+        "stata_modules": 85,
+        "uncategorized_gap_count": 0
+      },
+      "primary_evidence": [
+        "replication/results/methodological_gap_ledger.md",
+        "replication/results/stata_bridge_audit.md",
+        "manuscript/tables/track_a_cross_language_snapshot.tex"
+      ],
+      "question": "Have the headline cross-language checks been run?",
+      "status": "PASS"
+    },
+    {
+      "answer": "The committed B=1000 Track-B artifacts cover all twelve nominal rows (with bias, Monte Carlo SD, SE calibration and interval length) plus three documented robustness failure-mode rows.",
+      "classification": "implemented",
+      "failures": [],
+      "id": "monte_carlo_validation",
+      "jss_upload_blocking": false,
+      "metrics": {
+        "b1000_rows": 12,
+        "coverage_max": 0.968,
+        "coverage_min": 0.883,
+        "robustness_rows": 3
+      },
+      "primary_evidence": [
+        "tests/coverage_monte_carlo/results_b1000/coverage_b1000.json",
+        "tests/coverage_monte_carlo/results_b1000/coverage_robustness_b1000.json",
+        "manuscript/sections/05-parity-compact.tex"
+      ],
+      "question": "Are the simulation rows implemented as validation evidence?",
+      "status": "PASS"
+    },
+    {
+      "answer": "Track C is a measured four-estimator benchmark with generated tables and a log-log figure; it is not framed as a universal speed claim.",
+      "classification": "implemented",
+      "failures": [],
+      "id": "performance_benchmark",
+      "jss_upload_blocking": false,
+      "metrics": {
+        "performance_modules": 5
+      },
+      "primary_evidence": [
+        "tests/perf/results/perf_table.md",
+        "manuscript/tables/track_c_perf.tex",
+        "manuscript/figures/track_c_loglog.pdf"
+      ],
+      "question": "Is there measured runtime evidence rather than anecdote?",
+      "status": "PASS"
+    },
+    {
+      "answer": "Tier 1 rebuilds the Section 4-7 headline numbers with Python-only scripts and records a no-R/no-Stata transcript.",
+      "classification": "implemented",
+      "failures": [],
+      "id": "tier1_reproduction",
+      "jss_upload_blocking": false,
+      "metrics": {
+        "tier1_live_external_call_count": 0,
+        "tier1_no_r_stata": true,
+        "tier1_steps": "24/24"
+      },
+      "primary_evidence": [
+        "replication/reproduce.py",
+        "replication/results/reproduce_tier1_output.txt",
+        "replication/results/reproduction_environment_audit.md"
+      ],
+      "question": "Can a reviewer reproduce headline numbers without R or Stata?",
+      "status": "PASS"
+    },
+    {
+      "answer": "Live Stata re-execution is optional because it requires a separate license and an explicit `STATA_EXE` runtime; a missing-Stata skip is documented as not being live-rerun evidence. The upload includes frozen JSON, do-files, provenance, and a bridge audit for all 85 modules.",
+      "classification": "external_runtime_documented",
+      "failures": [],
+      "id": "live_stata_rerun",
+      "jss_upload_blocking": false,
+      "metrics": {
+        "license_boundary": "Frozen JSON/do-file/provenance audit only; re-running Stata requires a separate Stata license.",
+        "live_rerun_command_documented": true,
+        "missing_stata_skip_documented": true,
+        "stata_modules": 85,
+        "verifier_missing_runtime_returns_skip": true
+      },
+      "primary_evidence": [
+        "replication/results/stata_bridge_audit.md",
+        "tests/stata_parity/README.md",
+        "tests/stata_parity/verify_reproduce_stata.py",
+        "replication/results/reproduction_environment_audit.md"
+      ],
+      "question": "Is a live Stata rerun required for JSS upload?",
+      "status": "PASS"
+    },
+    {
+      "answer": "No behavioural agent-performance result is claimed here; the JSS evidence is a mechanical and contractual interface audit whose schemas, typed errors, handles, citations, and deterministic trace are inspectable in the same validation ledger as human calls, with a packaged deferred benchmark protocol specifying matched baselines, task families, scoring dimensions, and leakage controls for the separate behavioural study.",
+      "classification": "deferred_to_separate_benchmark",
+      "failures": [],
+      "id": "behavioural_agent_benchmark",
+      "jss_upload_blocking": false,
+      "metrics": {
+        "protocol_arms": 3,
+        "protocol_claimed_behavioural_result": false,
+        "protocol_jss_upload_blocking": false,
+        "protocol_scoring_dimensions": 6,
+        "protocol_task_families": 5,
+        "protocol_validity_controls": 6,
+        "schema_files": 1220,
+        "schema_parameters": 9436,
+        "trace_bibtex_entry_count": 2,
+        "trace_tools": 559
+      },
+      "primary_evidence": [
+        "replication/results/agent_interface_audit.md",
+        "replication/results/agent_benchmark_protocol.md",
+        "manuscript/sections/07-agent-eval.tex",
+        "replication/results/ex07_agent_trace.txt"
+      ],
+      "question": "Does the JSS paper need a behavioural LLM benchmark?",
+      "status": "PASS"
+    },
+    {
+      "answer": "No. The JSS claim is tiered: certified/validated symbols carry evidence notes, while API-stable breadth is disclosed as interface stability rather than numerical validation.",
+      "classification": "not_a_jss_claim",
+      "failures": [],
+      "id": "full_registry_numeric_validation",
+      "jss_upload_blocking": false,
+      "metrics": {
+        "api_stable_symbols": 661,
+        "certified_validated_symbols": 556,
+        "missing_validation_notes": 0,
+        "unbacked_auto_stable": 568
+      },
+      "primary_evidence": [
+        "replication/results/validation_evidence_audit.md",
+        "replication/results/claim_lint.md",
+        "docs/guides/stability.md"
+      ],
+      "question": "Does every registered public function need numerical validation?",
+      "status": "PASS"
+    },
+    {
+      "answer": "No. The JSS archive is an audited source snapshot; the clean worktree, changelog, and tag alignment remain listed as nonblocking final-release work.",
+      "classification": "post_upload_release_work",
+      "failures": [],
+      "id": "final_tagged_release",
+      "jss_upload_blocking": false,
+      "metrics": {
+        "ready_for_final_publication": false,
+        "release_blocker_count": 109,
+        "release_boundary_status": "PASS",
+        "version_consistent": true
+      },
+      "primary_evidence": [
+        "replication/results/release_boundary_audit.md",
+        "replication/results/source_snapshot_manifest.md",
+        "replication/results/submission_risk_ledger.md"
+      ],
+      "question": "Does JSS upload require the final clean tagged release cut?",
+      "status": "PASS"
+    }
+  ],
+  "status": "PASS",
+  "summary": {
+    "classification_counts": {
+      "deferred_to_separate_benchmark": 1,
+      "external_runtime_documented": 1,
+      "implemented": 3,
+      "implemented_with_boundary": 1,
+      "not_a_jss_claim": 1,
+      "post_upload_release_work": 1
+    },
+    "expected_item_ids": [
+      "cross_language_parity",
+      "monte_carlo_validation",
+      "performance_benchmark",
+      "tier1_reproduction",
+      "live_stata_rerun",
+      "behavioural_agent_benchmark",
+      "full_registry_numeric_validation",
+      "final_tagged_release"
+    ],
+    "failed_items": 0,
+    "item_count": 8,
+    "item_identity_ok": true,
+    "item_ids": [
+      "cross_language_parity",
+      "monte_carlo_validation",
+      "performance_benchmark",
+      "tier1_reproduction",
+      "live_stata_rerun",
+      "behavioural_agent_benchmark",
+      "full_registry_numeric_validation",
+      "final_tagged_release"
+    ],
+    "jss_upload_blocking_item_count": 0,
+    "jss_upload_blocking_items": [],
+    "pass_items": 8
+  }
+}

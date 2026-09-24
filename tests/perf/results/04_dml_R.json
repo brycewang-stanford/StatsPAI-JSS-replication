@@ -1,0 +1,59 @@
+{
+  "estimator": "04_dml",
+  "side": "R",
+  "rows": [
+    {
+      "estimator": "04_dml",
+      "side": "R",
+      "n": 1000,
+      "n_reps": 3,
+      "median_time_s": 0.102702140808105,
+      "iqr_time_s": 0.00134241580963135,
+      "min_time_s": 0.100649118423462,
+      "max_time_s": 0.103333950042725,
+      "peak_mem_mb": null,
+      "extra": {
+        "model": "plr",
+        "ml_g": "regr.lm",
+        "n_folds": 5
+      }
+    },
+    {
+      "estimator": "04_dml",
+      "side": "R",
+      "n": 5000,
+      "n_reps": 3,
+      "median_time_s": 0.116173028945923,
+      "iqr_time_s": 0.00172853469848633,
+      "min_time_s": 0.114094018936157,
+      "max_time_s": 0.11755108833313,
+      "peak_mem_mb": null,
+      "extra": {
+        "model": "plr",
+        "ml_g": "regr.lm",
+        "n_folds": 5
+      }
+    },
+    {
+      "estimator": "04_dml",
+      "side": "R",
+      "n": 10000,
+      "n_reps": 3,
+      "median_time_s": 0.131477117538452,
+      "iqr_time_s": 0.0013124942779541,
+      "min_time_s": 0.129187107086182,
+      "max_time_s": 0.13181209564209,
+      "peak_mem_mb": null,
+      "extra": {
+        "model": "plr",
+        "ml_g": "regr.lm",
+        "n_folds": 5
+      }
+    }
+  ],
+  "hardware": {
+    "reference_package": "DoubleML 1.0.2",
+    "R_version": "R version 4.5.2 (2025-10-31)"
+  },
+  "extra": []
+}

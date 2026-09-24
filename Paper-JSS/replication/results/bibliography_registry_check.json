@@ -1,0 +1,918 @@
+{
+  "entries": [
+    {
+      "key": "abadie2003economic",
+      "doi": "10.1257/000282803321455188",
+      "problems": [],
+      "registry": "Crossref",
+      "title_overlap": 1.0,
+      "crossref_title": "The Economic Costs of Conflict: A Case Study of the Basque Country",
+      "crossref_first_author": "Abadie",
+      "crossref_years": [
+        2003
+      ],
+      "crossref_container": "American Economic Review",
+      "venue_overlap": 1.0,
+      "status": "OK"
+    },
+    {
+      "key": "abadie2010synthetic",
+      "doi": "10.1198/jasa.2009.ap08746",
+      "problems": [],
+      "registry": "Crossref",
+      "title_overlap": 1.0,
+      "crossref_title": "Synthetic Control Methods for Comparative Case Studies: Estimating the Effect of California\u2019s Tobacco Control Program",
+      "crossref_first_author": "Abadie",
+      "crossref_years": [
+        2010
+      ],
+      "crossref_container": "Journal of the American Statistical Association",
+      "venue_overlap": 1.0,
+      "status": "OK"
+    },
+    {
+      "key": "abadie2011synth",
+      "doi": "10.18637/jss.v042.i13",
+      "problems": [],
+      "registry": "Crossref",
+      "title_overlap": 1.0,
+      "crossref_title": "<b>Synth</b>\n                    : An\n                    <i>R</i>\n                    Package for Synthetic Control Methods in Comparative Case Studies",
+      "crossref_first_author": "Abadie",
+      "crossref_years": [
+        2011,
+        2015
+      ],
+      "crossref_container": "Journal of Statistical Software",
+      "venue_overlap": 1.0,
+      "status": "OK"
+    },
+    {
+      "key": "angrist2009mostly",
+      "doi": "10.1515/9781400829828",
+      "problems": [
+        "title overlap 60%: registry says 'Mostly Harmless Econometrics'"
+      ],
+      "registry": "Crossref",
+      "title_overlap": 0.6,
+      "crossref_title": "Mostly Harmless Econometrics",
+      "crossref_first_author": "Angrist",
+      "crossref_years": [
+        2009,
+        2019
+      ],
+      "crossref_container": "",
+      "status": "EXPLAINED",
+      "explanation": "Crossref registers the short title 'Mostly Harmless Econometrics'; the entry prints the book's full title including the subtitle 'An Empiricist's Companion', which is what the title page carries."
+    },
+    {
+      "key": "arkhangelsky2021synthetic",
+      "doi": "10.1257/aer.20190159",
+      "problems": [],
+      "registry": "Crossref",
+      "title_overlap": 1.0,
+      "crossref_title": "Synthetic Difference-in-Differences",
+      "crossref_first_author": "Arkhangelsky",
+      "crossref_years": [
+        2021
+      ],
+      "crossref_container": "American Economic Review",
+      "venue_overlap": 1.0,
+      "status": "OK"
+    },
+    {
+      "key": "athey2019generalized",
+      "doi": "10.1214/18-aos1709",
+      "problems": [],
+      "registry": "Crossref",
+      "title_overlap": 1.0,
+      "crossref_title": "Generalized random forests",
+      "crossref_first_author": "Athey",
+      "crossref_years": [
+        2019
+      ],
+      "crossref_container": "The Annals of Statistics",
+      "venue_overlap": 1.0,
+      "status": "OK"
+    },
+    {
+      "key": "bach2024doubleml",
+      "doi": "10.18637/jss.v108.i03",
+      "problems": [],
+      "registry": "Crossref",
+      "title_overlap": 1.0,
+      "crossref_title": "<b>DoubleML</b>: An Object-Oriented Implementation of Double Machine Learning in <i>R</i>",
+      "crossref_first_author": "Bach",
+      "crossref_years": [
+        2024
+      ],
+      "crossref_container": "Journal of Statistical Software",
+      "venue_overlap": 1.0,
+      "status": "OK"
+    },
+    {
+      "key": "baker2026difference",
+      "doi": "10.1257/jel.20251650",
+      "problems": [],
+      "registry": "Crossref",
+      "title_overlap": 1.0,
+      "crossref_title": "Difference-in-Differences Designs: A Practitioner\u2019s Guide",
+      "crossref_first_author": "Baker",
+      "crossref_years": [
+        2026
+      ],
+      "crossref_container": "Journal of Economic Literature",
+      "venue_overlap": 1.0,
+      "status": "OK"
+    },
+    {
+      "key": "bates2015lme4",
+      "doi": "10.18637/jss.v067.i01",
+      "problems": [],
+      "registry": "Crossref",
+      "title_overlap": 1.0,
+      "crossref_title": "Fitting Linear Mixed-Effects Models Using\n                    <b>lme4</b>",
+      "crossref_first_author": "Bates",
+      "crossref_years": [
+        2015
+      ],
+      "crossref_container": "Journal of Statistical Software",
+      "venue_overlap": 1.0,
+      "status": "OK"
+    },
+    {
+      "key": "benmichael2021augmented",
+      "doi": "10.1080/01621459.2021.1929245",
+      "problems": [],
+      "registry": "Crossref",
+      "title_overlap": 1.0,
+      "crossref_title": "The Augmented Synthetic Control Method",
+      "crossref_first_author": "Ben-Michael",
+      "crossref_years": [
+        2021
+      ],
+      "crossref_container": "Journal of the American Statistical Association",
+      "venue_overlap": 1.0,
+      "status": "OK"
+    },
+    {
+      "key": "blackwell2014selection",
+      "doi": "10.1093/pan/mpt006",
+      "problems": [],
+      "registry": "Crossref",
+      "title_overlap": 1.0,
+      "crossref_title": "A Selection Bias Approach to Sensitivity Analysis for Causal Effects",
+      "crossref_first_author": "Blackwell",
+      "crossref_years": [
+        2013,
+        2014,
+        2017
+      ],
+      "crossref_container": "Political Analysis",
+      "venue_overlap": 1.0,
+      "status": "OK"
+    },
+    {
+      "key": "borusyak2024revisiting",
+      "doi": "10.1093/restud/rdae007",
+      "problems": [],
+      "registry": "Crossref",
+      "title_overlap": 1.0,
+      "crossref_title": "Revisiting Event-Study Designs: Robust and Efficient Estimation",
+      "crossref_first_author": "Borusyak",
+      "crossref_years": [
+        2024
+      ],
+      "crossref_container": "Review of Economic Studies",
+      "venue_overlap": 1.0,
+      "status": "OK"
+    },
+    {
+      "key": "brodersen2015inferring",
+      "doi": "10.1214/14-aoas788",
+      "problems": [],
+      "registry": "Crossref",
+      "title_overlap": 1.0,
+      "crossref_title": "Inferring causal impact using Bayesian structural time-series models",
+      "crossref_first_author": "Brodersen",
+      "crossref_years": [
+        2015
+      ],
+      "crossref_container": "The Annals of Applied Statistics",
+      "venue_overlap": 1.0,
+      "status": "OK"
+    },
+    {
+      "key": "callaway2021difference",
+      "doi": "10.1016/j.jeconom.2020.12.001",
+      "problems": [],
+      "registry": "Crossref",
+      "title_overlap": 1.0,
+      "crossref_title": "Difference-in-Differences with multiple time periods",
+      "crossref_first_author": "Callaway",
+      "crossref_years": [
+        2020,
+        2021
+      ],
+      "crossref_container": "Journal of Econometrics",
+      "venue_overlap": 1.0,
+      "status": "OK"
+    },
+    {
+      "key": "calonico2014robust",
+      "doi": "10.3982/ECTA11757",
+      "problems": [],
+      "registry": "Crossref",
+      "title_overlap": 1.0,
+      "crossref_title": "Robust Nonparametric Confidence Intervals for Regression-Discontinuity Designs",
+      "crossref_first_author": "Calonico",
+      "crossref_years": [
+        2014
+      ],
+      "crossref_container": "Econometrica",
+      "venue_overlap": 1.0,
+      "status": "OK"
+    },
+    {
+      "key": "calonico2015rdrobust",
+      "doi": "10.32614/RJ-2015-004",
+      "problems": [],
+      "registry": "Crossref",
+      "title_overlap": 1.0,
+      "crossref_title": "rdrobust: An R Package for Robust Nonparametric Inference in Regression-Discontinuity Designs",
+      "crossref_first_author": "Calonico",
+      "crossref_years": [
+        2015,
+        2019
+      ],
+      "crossref_container": "The R Journal",
+      "venue_overlap": 1.0,
+      "status": "OK"
+    },
+    {
+      "key": "cameron2008bootstrap",
+      "doi": "10.1162/rest.90.3.414",
+      "problems": [],
+      "registry": "Crossref",
+      "title_overlap": 1.0,
+      "crossref_title": "Bootstrap-Based Improvements for Inference with Clustered Errors",
+      "crossref_first_author": "Cameron",
+      "crossref_years": [
+        2008
+      ],
+      "crossref_container": "Review of Economics and Statistics",
+      "venue_overlap": 1.0,
+      "status": "OK"
+    },
+    {
+      "key": "cattaneo2018manipulation",
+      "doi": "10.1177/1536867X1801800115",
+      "problems": [],
+      "registry": "Crossref",
+      "title_overlap": 1.0,
+      "crossref_title": "Manipulation Testing Based on Density Discontinuity",
+      "crossref_first_author": "Cattaneo",
+      "crossref_years": [
+        2018
+      ],
+      "crossref_container": "The Stata Journal: Promoting communications on statistics and Stata",
+      "venue_overlap": 1.0,
+      "status": "OK"
+    },
+    {
+      "key": "cattaneo2020simple",
+      "doi": "10.1080/01621459.2019.1635480",
+      "problems": [],
+      "registry": "Crossref",
+      "title_overlap": 1.0,
+      "crossref_title": "Simple Local Polynomial Density Estimators",
+      "crossref_first_author": "Cattaneo",
+      "crossref_years": [
+        2019,
+        2020
+      ],
+      "crossref_container": "Journal of the American Statistical Association",
+      "venue_overlap": 1.0,
+      "status": "OK"
+    },
+    {
+      "key": "chen2020causalml",
+      "doi": "10.48550/arXiv.2002.11631",
+      "problems": [],
+      "registry": "DataCite",
+      "title_overlap": 1.0,
+      "crossref_title": "CausalML: Python Package for Causal Machine Learning",
+      "crossref_first_author": "Chen",
+      "crossref_years": [
+        2020
+      ],
+      "crossref_container": "arXiv",
+      "status": "OK"
+    },
+    {
+      "key": "chernozhukov2018double",
+      "doi": "10.1111/ectj.12097",
+      "problems": [],
+      "registry": "Crossref",
+      "title_overlap": 1.0,
+      "crossref_title": "Double/debiased machine learning for treatment and structural parameters",
+      "crossref_first_author": "Chernozhukov",
+      "crossref_years": [
+        2017,
+        2018
+      ],
+      "crossref_container": "The Econometrics Journal",
+      "venue_overlap": 1.0,
+      "status": "OK"
+    },
+    {
+      "key": "clarke2024synthetic",
+      "doi": "10.1177/1536867X241297914",
+      "problems": [],
+      "registry": "Crossref",
+      "title_overlap": 1.0,
+      "crossref_title": "On synthetic difference-in-differences and related estimation methods in Stata",
+      "crossref_first_author": "Clarke",
+      "crossref_years": [
+        2024
+      ],
+      "crossref_container": "The Stata Journal: Promoting communications on statistics and Stata",
+      "venue_overlap": 1.0,
+      "status": "OK"
+    },
+    {
+      "key": "conley1999estimation",
+      "doi": "10.1016/s0304-4076(98)00084-0",
+      "problems": [],
+      "registry": "Crossref",
+      "title_overlap": 1.0,
+      "crossref_title": "GMM estimation with cross sectional dependence",
+      "crossref_first_author": "Conley",
+      "crossref_years": [
+        1999,
+        2002
+      ],
+      "crossref_container": "Journal of Econometrics",
+      "venue_overlap": 1.0,
+      "status": "OK"
+    },
+    {
+      "key": "correia2020fast",
+      "doi": "10.1177/1536867X20909691",
+      "problems": [],
+      "registry": "Crossref",
+      "title_overlap": 1.0,
+      "crossref_title": "Fast Poisson estimation with high-dimensional fixed effects",
+      "crossref_first_author": "Correia",
+      "crossref_years": [
+        2020
+      ],
+      "crossref_container": "The Stata Journal: Promoting communications on statistics and Stata",
+      "venue_overlap": 1.0,
+      "status": "OK"
+    },
+    {
+      "key": "dehejia1999causal",
+      "doi": "10.1080/01621459.1999.10473858",
+      "problems": [],
+      "registry": "Crossref",
+      "title_overlap": 1.0,
+      "crossref_title": "Causal Effects in Nonexperimental Studies: Reevaluating the Evaluation of Training Programs",
+      "crossref_first_author": "Dehejia",
+      "crossref_years": [
+        1999,
+        2012
+      ],
+      "crossref_container": "Journal of the American Statistical Association",
+      "venue_overlap": 1.0,
+      "status": "OK"
+    },
+    {
+      "key": "goodmanbacon2021difference",
+      "doi": "10.1016/j.jeconom.2021.03.014",
+      "problems": [],
+      "registry": "Crossref",
+      "title_overlap": 1.0,
+      "crossref_title": "Difference-in-differences with variation in treatment timing",
+      "crossref_first_author": "Goodman-Bacon",
+      "crossref_years": [
+        2021
+      ],
+      "crossref_container": "Journal of Econometrics",
+      "venue_overlap": 1.0,
+      "status": "OK"
+    },
+    {
+      "key": "hainmueller2012entropy",
+      "doi": "10.1093/pan/mpr025",
+      "problems": [],
+      "registry": "Crossref",
+      "title_overlap": 1.0,
+      "crossref_title": "Entropy Balancing for Causal Effects: A Multivariate Reweighting Method to Produce Balanced Samples in Observational Studies",
+      "crossref_first_author": "Hainmueller",
+      "crossref_years": [
+        2011,
+        2012,
+        2017
+      ],
+      "crossref_container": "Political Analysis",
+      "venue_overlap": 1.0,
+      "status": "OK"
+    },
+    {
+      "key": "hainmueller2019much",
+      "doi": "10.1017/pan.2018.46",
+      "problems": [],
+      "registry": "Crossref",
+      "title_overlap": 1.0,
+      "crossref_title": "How Much Should We Trust Estimates from Multiplicative Interaction Models? Simple Tools to Improve Empirical Practice",
+      "crossref_first_author": "Hainmueller",
+      "crossref_years": [
+        2018,
+        2019
+      ],
+      "crossref_container": "Political Analysis",
+      "venue_overlap": 1.0,
+      "status": "OK"
+    },
+    {
+      "key": "hansen2006optimal",
+      "doi": "10.1198/106186006X137047",
+      "problems": [],
+      "registry": "Crossref",
+      "title_overlap": 1.0,
+      "crossref_title": "Optimal Full Matching and Related Designs via Network Flows",
+      "crossref_first_author": "Hansen",
+      "crossref_years": [
+        2006
+      ],
+      "crossref_container": "Journal of Computational and Graphical Statistics",
+      "venue_overlap": 1.0,
+      "status": "OK"
+    },
+    {
+      "key": "harris2020array",
+      "doi": "10.1038/s41586-020-2649-2",
+      "problems": [],
+      "registry": "Crossref",
+      "title_overlap": 1.0,
+      "crossref_title": "Array programming with NumPy",
+      "crossref_first_author": "Harris",
+      "crossref_years": [
+        2020
+      ],
+      "crossref_container": "Nature",
+      "venue_overlap": 1.0,
+      "status": "OK"
+    },
+    {
+      "key": "ho2011matchit",
+      "doi": "10.18637/jss.v042.i08",
+      "problems": [],
+      "registry": "Crossref",
+      "title_overlap": 1.0,
+      "crossref_title": "<b>MatchIt</b>\n                    : Nonparametric Preprocessing for Parametric Causal Inference",
+      "crossref_first_author": "Ho",
+      "crossref_years": [
+        2011,
+        2015
+      ],
+      "crossref_container": "Journal of Statistical Software",
+      "venue_overlap": 1.0,
+      "status": "OK"
+    },
+    {
+      "key": "hunter2007matplotlib",
+      "doi": "10.1109/MCSE.2007.55",
+      "problems": [],
+      "registry": "Crossref",
+      "title_overlap": 1.0,
+      "crossref_title": "Matplotlib: A 2D Graphics Environment",
+      "crossref_first_author": "Hunter",
+      "crossref_years": [
+        2007,
+        2008
+      ],
+      "crossref_container": "Computing in Science &amp; Engineering",
+      "venue_overlap": 1.0,
+      "status": "OK"
+    },
+    {
+      "key": "imai2014covariate",
+      "doi": "10.1111/rssb.12027",
+      "problems": [],
+      "registry": "Crossref",
+      "title_overlap": 1.0,
+      "crossref_title": "Covariate Balancing Propensity Score",
+      "crossref_first_author": "Imai",
+      "crossref_years": [
+        2013,
+        2014
+      ],
+      "crossref_container": "Journal of the Royal Statistical Society Series B: Statistical Methodology",
+      "venue_overlap": 1.0,
+      "status": "OK"
+    },
+    {
+      "key": "imbens2009recent",
+      "doi": "10.1257/jel.47.1.5",
+      "problems": [],
+      "registry": "Crossref",
+      "title_overlap": 1.0,
+      "crossref_title": "Recent Developments in the Econometrics of Program Evaluation",
+      "crossref_first_author": "Imbens",
+      "crossref_years": [
+        2009
+      ],
+      "crossref_container": "Journal of Economic Literature",
+      "venue_overlap": 1.0,
+      "status": "OK"
+    },
+    {
+      "key": "kleiber2008applied",
+      "doi": "10.1007/978-0-387-77318-6",
+      "problems": [],
+      "registry": "Crossref",
+      "title_overlap": 1.0,
+      "crossref_title": "Applied Econometrics with R",
+      "crossref_first_author": "Kleiber",
+      "crossref_years": [
+        2008
+      ],
+      "crossref_container": "",
+      "status": "OK"
+    },
+    {
+      "key": "lam2015numba",
+      "doi": "10.1145/2833157.2833162",
+      "problems": [
+        "title overlap 17%: registry says 'Numba'"
+      ],
+      "registry": "Crossref",
+      "title_overlap": 0.167,
+      "crossref_title": "Numba",
+      "crossref_first_author": "Lam",
+      "crossref_years": [
+        2015
+      ],
+      "crossref_container": "Proceedings of the Second Workshop on the LLVM Compiler Infrastructure in HPC",
+      "venue_overlap": 1.0,
+      "status": "EXPLAINED",
+      "explanation": "Crossref registers the one-word proceedings title 'Numba'; the entry prints the full title from the ACM record, 'Numba: A LLVM-Based Python JIT Compiler'."
+    },
+    {
+      "key": "lee2008randomized",
+      "doi": "10.1016/j.jeconom.2007.05.004",
+      "problems": [],
+      "registry": "Crossref",
+      "title_overlap": 1.0,
+      "crossref_title": "Randomized experiments from non-random selection in U.S. House elections",
+      "crossref_first_author": "Lee",
+      "crossref_years": [
+        2007,
+        2008
+      ],
+      "crossref_container": "Journal of Econometrics",
+      "venue_overlap": 1.0,
+      "status": "OK"
+    },
+    {
+      "key": "li2025benchmarking",
+      "doi": "10.31235/osf.io/ngr3d_v1",
+      "problems": [],
+      "registry": "Crossref",
+      "title_overlap": 1.0,
+      "crossref_title": "Benchmarking parallel trends violations in regression imputation difference-in-differences",
+      "crossref_first_author": "Li",
+      "crossref_years": [
+        2025
+      ],
+      "crossref_container": "",
+      "status": "OK"
+    },
+    {
+      "key": "liu2024practical",
+      "doi": "10.1111/ajps.12723",
+      "problems": [],
+      "registry": "Crossref",
+      "title_overlap": 1.0,
+      "crossref_title": "A Practical Guide to Counterfactual Estimators for Causal Inference with Time\u2010Series Cross\u2010Sectional Data",
+      "crossref_first_author": "Liu",
+      "crossref_years": [
+        2022,
+        2024
+      ],
+      "crossref_container": "American Journal of Political Science",
+      "venue_overlap": 1.0,
+      "status": "OK"
+    },
+    {
+      "key": "mckinney2010data",
+      "doi": "10.25080/Majora-92bf1922-00a",
+      "problems": [],
+      "registry": "Crossref",
+      "title_overlap": 1.0,
+      "crossref_title": "Data Structures for Statistical Computing in Python",
+      "crossref_first_author": "McKinney",
+      "crossref_years": [
+        2010,
+        2020
+      ],
+      "crossref_container": "Proceedings of the Python in Science Conference",
+      "venue_overlap": 0.833,
+      "status": "OK"
+    },
+    {
+      "key": "mou2023panel",
+      "doi": "10.18637/jss.v107.i07",
+      "problems": [],
+      "registry": "Crossref",
+      "title_overlap": 1.0,
+      "crossref_title": "Panel Data Visualization in <i>R</i> (<b>panelView</b>) and <i>Stata</i> (<b>panelview</b>)",
+      "crossref_first_author": "Mou",
+      "crossref_years": [
+        2023
+      ],
+      "crossref_container": "Journal of Statistical Software",
+      "venue_overlap": 1.0,
+      "status": "OK"
+    },
+    {
+      "key": "pustejovsky2018small",
+      "doi": "10.1080/07350015.2016.1247004",
+      "problems": [],
+      "registry": "Crossref",
+      "title_overlap": 1.0,
+      "crossref_title": "Small-Sample Methods for Cluster-Robust Variance Estimation and Hypothesis Testing in Fixed Effects Models",
+      "crossref_first_author": "Pustejovsky",
+      "crossref_years": [
+        2016,
+        2017,
+        2018
+      ],
+      "crossref_container": "Journal of Business &amp; Economic Statistics",
+      "venue_overlap": 1.0,
+      "status": "OK"
+    },
+    {
+      "key": "rambachan2023more",
+      "doi": "10.1093/restud/rdad018",
+      "problems": [],
+      "registry": "Crossref",
+      "title_overlap": 1.0,
+      "crossref_title": "A More Credible Approach to Parallel Trends",
+      "crossref_first_author": "Rambachan",
+      "crossref_years": [
+        2023
+      ],
+      "crossref_container": "Review of Economic Studies",
+      "venue_overlap": 1.0,
+      "status": "OK"
+    },
+    {
+      "key": "roodman2019fast",
+      "doi": "10.1177/1536867x19830877",
+      "problems": [],
+      "registry": "Crossref",
+      "title_overlap": 1.0,
+      "crossref_title": "Fast and wild: Bootstrap inference in Stata using boottest",
+      "crossref_first_author": "Roodman",
+      "crossref_years": [
+        2019
+      ],
+      "crossref_container": "The Stata Journal: Promoting communications on statistics and Stata",
+      "venue_overlap": 1.0,
+      "status": "OK"
+    },
+    {
+      "key": "roth2023whats",
+      "doi": "10.1016/j.jeconom.2023.03.008",
+      "problems": [],
+      "registry": "Crossref",
+      "title_overlap": 1.0,
+      "crossref_title": "What\u2019s trending in difference-in-differences? A synthesis of the recent econometrics literature",
+      "crossref_first_author": "Roth",
+      "crossref_years": [
+        2023
+      ],
+      "crossref_container": "Journal of Econometrics",
+      "venue_overlap": 1.0,
+      "status": "OK"
+    },
+    {
+      "key": "roth2026interpreting",
+      "doi": "10.1007/s42973-026-00235-x",
+      "problems": [],
+      "registry": "Crossref",
+      "title_overlap": 1.0,
+      "crossref_title": "Interpreting event-studies from recent difference-in-differences methods",
+      "crossref_first_author": "Roth",
+      "crossref_years": [
+        2026
+      ],
+      "crossref_container": "The Japanese Economic Review",
+      "venue_overlap": 1.0,
+      "status": "OK"
+    },
+    {
+      "key": "santanna2020doubly",
+      "doi": "10.1016/j.jeconom.2020.06.003",
+      "problems": [],
+      "registry": "Crossref",
+      "title_overlap": 1.0,
+      "crossref_title": "Doubly robust difference-in-differences estimators",
+      "crossref_first_author": "Sant\u2019Anna",
+      "crossref_years": [
+        2020
+      ],
+      "crossref_container": "Journal of Econometrics",
+      "venue_overlap": 1.0,
+      "status": "OK"
+    },
+    {
+      "key": "seabold2010statsmodels",
+      "doi": "10.25080/Majora-92bf1922-011",
+      "problems": [],
+      "registry": "Crossref",
+      "title_overlap": 1.0,
+      "crossref_title": "Statsmodels: Econometric and Statistical Modeling with Python",
+      "crossref_first_author": "Seabold",
+      "crossref_years": [
+        2010,
+        2020
+      ],
+      "crossref_container": "Proceedings of the Python in Science Conference",
+      "venue_overlap": 0.833,
+      "status": "OK"
+    },
+    {
+      "key": "sekhon2011multivariate",
+      "doi": "10.18637/jss.v042.i07",
+      "problems": [],
+      "registry": "Crossref",
+      "title_overlap": 1.0,
+      "crossref_title": "Multivariate and Propensity Score Matching Software with Automated Balance Optimization: The\n                    <b>Matching</b>\n                    Package for\n                    <i>R</i>",
+      "crossref_first_author": "Sekhon",
+      "crossref_years": [
+        2011,
+        2015
+      ],
+      "crossref_container": "Journal of Statistical Software",
+      "venue_overlap": 1.0,
+      "status": "OK"
+    },
+    {
+      "key": "sharma2020dowhy",
+      "doi": "10.48550/arXiv.2011.04216",
+      "problems": [],
+      "registry": "DataCite",
+      "title_overlap": 1.0,
+      "crossref_title": "DoWhy: An End-to-End Library for Causal Inference",
+      "crossref_first_author": "Sharma",
+      "crossref_years": [
+        2020
+      ],
+      "crossref_container": "arXiv",
+      "status": "OK"
+    },
+    {
+      "key": "sun2021estimating",
+      "doi": "10.1016/j.jeconom.2020.09.006",
+      "problems": [],
+      "registry": "Crossref",
+      "title_overlap": 1.0,
+      "crossref_title": "Estimating dynamic treatment effects in event studies with heterogeneous treatment effects",
+      "crossref_first_author": "Sun",
+      "crossref_years": [
+        2020,
+        2021
+      ],
+      "crossref_container": "Journal of Econometrics",
+      "venue_overlap": 1.0,
+      "status": "OK"
+    },
+    {
+      "key": "virtanen2020scipy",
+      "doi": "10.1038/s41592-019-0686-2",
+      "problems": [],
+      "registry": "Crossref",
+      "title_overlap": 1.0,
+      "crossref_title": "SciPy 1.0: fundamental algorithms for scientific computing in Python",
+      "crossref_first_author": "Virtanen",
+      "crossref_years": [
+        2020
+      ],
+      "crossref_container": "Nature Methods",
+      "venue_overlap": 1.0,
+      "status": "OK"
+    },
+    {
+      "key": "wager2018estimation",
+      "doi": "10.1080/01621459.2017.1319839",
+      "problems": [],
+      "registry": "Crossref",
+      "title_overlap": 1.0,
+      "crossref_title": "Estimation and Inference of Heterogeneous Treatment Effects using Random Forests",
+      "crossref_first_author": "Wager",
+      "crossref_years": [
+        2017,
+        2018
+      ],
+      "crossref_container": "Journal of the American Statistical Association",
+      "venue_overlap": 1.0,
+      "status": "OK"
+    },
+    {
+      "key": "wang2020minimal",
+      "doi": "10.1093/biomet/asz050",
+      "problems": [
+        "year 2020 is not among the registry's [2019]"
+      ],
+      "registry": "Crossref",
+      "title_overlap": 1.0,
+      "crossref_title": "Minimal dispersion approximately balancing weights: asymptotic properties and practical considerations",
+      "crossref_first_author": "Wang",
+      "crossref_years": [
+        2019
+      ],
+      "crossref_container": "Biometrika",
+      "venue_overlap": 1.0,
+      "status": "EXPLAINED",
+      "explanation": "Crossref carries only the 2019 advance-article date. The Oxford Academic article page gives the print issue as Biometrika 107(1), 93-105, March 2020, which is the year the entry prints."
+    },
+    {
+      "key": "wang2026statspaijoss",
+      "doi": "10.21105/joss.10604",
+      "problems": [],
+      "registry": "Crossref",
+      "title_overlap": 1.0,
+      "crossref_title": "StatsPAI: A Unified, Agent-Native Python Toolkit for Causal Inference and Applied Econometrics",
+      "crossref_first_author": "Wang",
+      "crossref_years": [
+        2026
+      ],
+      "crossref_container": "Journal of Open Source Software",
+      "venue_overlap": 1.0,
+      "status": "OK"
+    },
+    {
+      "key": "wing2024designing",
+      "doi": "10.1146/annurev-publhealth-061022-050825",
+      "problems": [],
+      "registry": "Crossref",
+      "title_overlap": 1.0,
+      "crossref_title": "Designing Difference-in-Difference Studies with Staggered Treatment Adoption: Key Concepts and Practical Guidelines",
+      "crossref_first_author": "Wing",
+      "crossref_years": [
+        2024
+      ],
+      "crossref_container": "Annual Review of Public Health",
+      "venue_overlap": 1.0,
+      "status": "OK"
+    },
+    {
+      "key": "xu2017generalized",
+      "doi": "10.1017/pan.2016.2",
+      "problems": [],
+      "registry": "Crossref",
+      "title_overlap": 1.0,
+      "crossref_title": "Generalized Synthetic Control Method: Causal Inference with Interactive Fixed Effects Models",
+      "crossref_first_author": "Xu",
+      "crossref_years": [
+        2017
+      ],
+      "crossref_container": "Political Analysis",
+      "venue_overlap": 1.0,
+      "status": "OK"
+    },
+    {
+      "key": "zeileis2020sandwich",
+      "doi": "10.18637/jss.v095.i01",
+      "problems": [],
+      "registry": "Crossref",
+      "title_overlap": 1.0,
+      "crossref_title": "Various Versatile Variances: An Object-Oriented Implementation of Clustered Covariances in\n                    <i>R</i>",
+      "crossref_first_author": "Zeileis",
+      "crossref_years": [
+        2020
+      ],
+      "crossref_container": "Journal of Statistical Software",
+      "venue_overlap": 1.0,
+      "status": "OK"
+    }
+  ],
+  "no_doi": [
+    "anthropic2024mcp",
+    "bach2022doubleml",
+    "berge2018efficient",
+    "brown2020language",
+    "card1995using",
+    "chen2025efficient",
+    "econml",
+    "ghanem2026selection",
+    "lalonde1986evaluating",
+    "liang2023helm",
+    "patil2023gorilla",
+    "pedregosa2011scikit",
+    "rios2022csdid"
+  ]
+}

@@ -1,0 +1,672 @@
+{
+  "cards": [
+    {
+      "answer_boundary": "Validated is an evidence tier limited to certified/validated registry entries; API-stable breadth is disclosed separately.",
+      "failures": [],
+      "id": "validation_scope",
+      "metrics": {
+        "api_stable_symbols": 648,
+        "certified_validated_symbols": 544,
+        "claim_files_checked": 37,
+        "unbacked_auto_stable": 555,
+        "unbacked_handwritten_stable": 0
+      },
+      "primary_evidence": [
+        "replication/results/claim_lint.md",
+        "replication/results/validation_evidence_audit.md",
+        "docs/guides/stability.md"
+      ],
+      "reviewer_question": "What exactly is validated, and what is only API-stable?",
+      "status": "PASS",
+      "verification_gate": "make audit -> claim_linter + validation_evidence_audit"
+    },
+    {
+      "answer_boundary": "Tier 1 is the short reviewer path and does not require live R or Stata; Tier 2/3 are external-language reruns.",
+      "failures": [],
+      "id": "headline_reproduction",
+      "metrics": {
+        "r_reproduced_modules": 89,
+        "stata_reproduced_modules": 85,
+        "tier1_complete": true,
+        "tier1_live_external_call_count": 0,
+        "tier1_no_r_stata": true
+      },
+      "primary_evidence": [
+        "replication/results/reproduce_tier1_output.txt",
+        "replication/results/reproduction_environment_audit.md",
+        "replication/reproduce.py"
+      ],
+      "reviewer_question": "Can headline Section 4-7 numbers be checked quickly?",
+      "status": "PASS",
+      "verification_gate": "make reproduce-tier1-transcript + make audit"
+    },
+    {
+      "answer_boundary": "Track A separates machine/iterative/moderate agreement from the one methodological/T4 disclosure.",
+      "failures": [],
+      "id": "cross_language_limits",
+      "metrics": {
+        "classified_gap_count": 1,
+        "methodological_gap_count": 1,
+        "r_joined_stata_modules": 85,
+        "stata_modules": 85,
+        "stata_rerun_claimed_live_rerun": false,
+        "stata_rerun_non_reproduced_rows": 0,
+        "stata_rerun_protocol_checklist_items": 8,
+        "stata_rerun_protocol_status": "PASS",
+        "stata_rerun_requires_license": true,
+        "stata_rerun_upload_blocking": false,
+        "uncategorized_gap_count": 0
+      },
+      "primary_evidence": [
+        "replication/results/methodological_gap_ledger.md",
+        "replication/results/stata_bridge_audit.md",
+        "replication/results/stata_rerun_protocol.md",
+        "manuscript/tables/track_a_cross_language_snapshot.tex"
+      ],
+      "reviewer_question": "Where do R/Stata comparisons stop being equality claims?",
+      "status": "PASS",
+      "verification_gate": "make audit -> methodological_gap_ledger + stata_bridge_audit + stata_rerun_protocol"
+    },
+    {
+      "answer_boundary": "The active manuscript inputs, generated tables, and figures are audited by label and generator path.",
+      "failures": [],
+      "id": "artifact_provenance",
+      "metrics": {
+        "active_sections": 10,
+        "dangling_refs": 0,
+        "float_labels": 19,
+        "generated_artifacts": 11,
+        "missing_refs": 0
+      },
+      "primary_evidence": [
+        "replication/results/manuscript_artifact_audit.md",
+        "replication/scripts/manuscript_artifact_audit.py",
+        "manuscript/main.tex"
+      ],
+      "reviewer_question": "Do active tables and figures map to generators?",
+      "status": "PASS",
+      "verification_gate": "make manuscript-artifact-audit"
+    },
+    {
+      "answer_boundary": "The active manuscript reports seven worked examples; the artifact audit verifies the seven executable scripts, seven table/script mentions, seven active subsection labels, and the count claim.",
+      "failures": [],
+      "id": "worked_example_scope",
+      "metrics": {
+        "count_claim_present": true,
+        "expected_count": 7,
+        "script_mentions": 7,
+        "scripts_present": 7,
+        "subsection_labels": 7,
+        "table_script_mentions": 7
+      },
+      "primary_evidence": [
+        "replication/results/manuscript_artifact_audit.md",
+        "replication/scripts/manuscript_artifact_audit.py",
+        "manuscript/sections/04-examples-compact.tex"
+      ],
+      "reviewer_question": "Do the worked examples match executable scripts and manuscript claims?",
+      "status": "PASS",
+      "verification_gate": "make manuscript-artifact-audit + make audit"
+    },
+    {
+      "answer_boundary": "The triage report separates implemented JSS evidence from external-runtime checks, behavioural agent benchmarking, API-breadth nonclaims, and post-upload release work; the deferred behavioural benchmark has a packaged protocol rather than an implied result.",
+      "failures": [],
+      "id": "experiment_triage",
+      "metrics": {
+        "agent_protocol_arms": 3,
+        "agent_protocol_jss_upload_blocking": false,
+        "agent_protocol_task_families": 5,
+        "classification_counts": {
+          "deferred_to_separate_benchmark": 1,
+          "external_runtime_documented": 1,
+          "implemented": 3,
+          "implemented_with_boundary": 1,
+          "not_a_jss_claim": 1,
+          "post_upload_release_work": 1
+        },
+        "item_ids": [
+          "cross_language_parity",
+          "monte_carlo_validation",
+          "performance_benchmark",
+          "tier1_reproduction",
+          "live_stata_rerun",
+          "behavioural_agent_benchmark",
+          "full_registry_numeric_validation",
+          "final_tagged_release"
+        ],
+        "jss_upload_blocking_item_count": 0,
+        "triage_failed_items": 0,
+        "triage_items": 8,
+        "triage_pass_items": 8
+      },
+      "primary_evidence": [
+        "replication/results/experiment_triage.md",
+        "replication/results/agent_benchmark_protocol.md",
+        "replication/scripts/experiment_triage.py",
+        "replication/results/submission_risk_ledger.md"
+      ],
+      "reviewer_question": "Which high-ROI experiments are implemented, bounded, or deferred?",
+      "status": "PASS",
+      "verification_gate": "make experiment-triage + make reviewer-evidence-map"
+    },
+    {
+      "answer_boundary": "The archive is a source snapshot with active external-review materials, local notes, and inactive draft sections excluded; the data-provenance audit classifies data/result members and rejects forbidden raw-data formats plus private or credential path hits.",
+      "failures": [],
+      "id": "archive_boundary",
+      "metrics": {
+        "active_external_present": 0,
+        "archive_file_count": 2800,
+        "archive_size_mib": 24.21,
+        "data_provenance_csv_files": 336,
+        "data_provenance_forbidden_raw_members": 0,
+        "data_provenance_high_risk_path_hits": 0,
+        "data_provenance_packaged_public_datasets": 9,
+        "data_provenance_public_original_extracts": 7,
+        "data_provenance_r_stata_fixture_csv": 91,
+        "data_provenance_scoped_data_files": 819,
+        "data_provenance_status": "PASS",
+        "data_provenance_unknown_categories": 0,
+        "jss_upload_blockers": 0,
+        "legacy_sections_present": 0
+      },
+      "primary_evidence": [
+        "replication/results/submission_risk_ledger.md",
+        "replication/results/data_provenance_audit.md",
+        "README.md",
+        "replication/scripts/verify_submission_package.py"
+      ],
+      "reviewer_question": "Is the submitted archive bounded and free of review-lane spillover?",
+      "status": "PASS",
+      "verification_gate": "make verify-submission-package"
+    },
+    {
+      "answer_boundary": "The cover letter discloses the published JOSS paper, states that this manuscript cites it and shares no evidence table with it, and names the maintainer, commercial downstream product, license, and funding facts.",
+      "failures": [],
+      "id": "related_review_coi_boundary",
+      "metrics": {
+        "active_external_present": 0,
+        "related_review_check": true,
+        "related_review_evidence": "cover-letter related-review/COI snippets=['published in the *Journal of Open Source', 'doi.org/10.21105/joss.10604', 'cites the JOSS paper explicitly', 'disclosed explicitly to the editors', 'StatsPAI Inc.', 'CoPaper.AI', 'No external funder', 'MIT licence']; missing=[].",
+        "release_boundary_status": "PASS",
+        "source_snapshot_boundary_check": true
+      },
+      "primary_evidence": [
+        "cover-letter.md",
+        "replication/results/jss_formal_compliance_audit.md",
+        "replication/results/release_boundary_audit.md",
+        "README.md"
+      ],
+      "reviewer_question": "Are the related JOSS publication and conflict disclosures visible without modifying the archived JOSS files?",
+      "status": "PASS",
+      "verification_gate": "make jss-formal-compliance-audit + make release-boundary-audit"
+    },
+    {
+      "answer_boundary": "Formal compliance verifies JSS class/front matter, license, archive install/import, package help files, PDF-visible boundary text, source-synchronized polished PDF prose, Poppler-rendered PDF sample pages, and an all-page machine render scan; the packaged visual-check protocol adds a page-by-page inventory and makes the final full-document human spot-check actionable while keeping it an upload-time manual action rather than a machine-verified PASS.",
+      "failures": [],
+      "id": "software_installability",
+      "metrics": {
+        "archive_present": true,
+        "formal_checks": 23,
+        "machine_render_not_human_review": true,
+        "manual_visual_spot_check_required": true,
+        "manual_visual_spot_check_status": "PENDING_MANUAL_REVIEW",
+        "missing_pdf_boundary_snippets": [],
+        "official_sources_checked": "2026-08-09",
+        "page_count": 52,
+        "pdf_boundary_snippets": 18,
+        "pdf_full_document_failures": 0,
+        "pdf_full_document_rendered_pages": 52,
+        "pdf_render_failures": 0,
+        "pdf_render_max_dark_ratio": 0.022067,
+        "pdf_render_min_height": 1287,
+        "pdf_render_min_ink_ratio": 0.017252,
+        "pdf_render_min_width": 910,
+        "pdf_render_sampled_pages": [
+          1,
+          2,
+          26,
+          52
+        ],
+        "pdf_render_status": "PASS",
+        "pdf_rendered_pages": 4,
+        "pdf_stale_prose_hits": [],
+        "pdf_text_chars": 148262,
+        "pdf_visual_protocol_checklist_items": 12,
+        "pdf_visual_protocol_claimed_manual_acceptance": false,
+        "pdf_visual_protocol_jss_upload_blocking": false,
+        "pdf_visual_protocol_manual_status": "PENDING_MANUAL_REVIEW",
+        "pdf_visual_protocol_page_count": 52,
+        "pdf_visual_protocol_page_inventory_count": 52,
+        "pdf_visual_protocol_page_inventory_float_markers": 68,
+        "pdf_visual_protocol_page_inventory_min_text_chars": 491,
+        "pdf_visual_protocol_page_inventory_text_pages": 52,
+        "pdf_visual_protocol_recorded_by_protocol": false,
+        "pdf_visual_protocol_status": "PASS"
+      },
+      "primary_evidence": [
+        "replication/results/jss_formal_compliance_audit.md",
+        "replication/results/pdf_render_audit.md",
+        "replication/results/pdf_visual_check_protocol.md",
+        "replication/scripts/jss_formal_compliance_audit.py",
+        "replication/scripts/pdf_render_audit.py",
+        "replication/scripts/pdf_visual_check_protocol.py",
+        "manuscript/main.pdf",
+        "pyproject.toml"
+      ],
+      "reviewer_question": "Can the submitted source be installed and imported?",
+      "status": "PASS",
+      "verification_gate": "make jss-formal-compliance-audit + make pdf-visual-check-protocol"
+    },
+    {
+      "answer_boundary": "The paper audits a mechanical and contractual interface: schemas, typed errors, result handles, traceable tool calls, citation resolution, and the same validation ledger as human calls, rather than claiming agent performance; the archive also ships a deferred benchmark protocol with matched baselines, task families, scoring dimensions, and leakage controls for the separate behavioural study.",
+      "failures": [],
+      "id": "agent_interface_boundary",
+      "metrics": {
+        "parameter_total": 9095,
+        "protocol_arms": 3,
+        "protocol_claimed_behavioural_result": false,
+        "protocol_scoring_dimensions": 6,
+        "protocol_task_families": 5,
+        "protocol_validity_controls": 6,
+        "schema_files": 1195,
+        "trace_bibtex_entry_count": 2,
+        "trace_tools": 559
+      },
+      "primary_evidence": [
+        "replication/results/agent_interface_audit.md",
+        "replication/results/agent_benchmark_protocol.md",
+        "replication/results/ex07_agent_trace.txt",
+        "schemas/tools.json"
+      ],
+      "reviewer_question": "Are agent-facing claims mechanical rather than behavioural?",
+      "status": "PASS",
+      "verification_gate": "make agent-interface-audit + make agent-benchmark-protocol"
+    },
+    {
+      "answer_boundary": "The compact discussion states the main limitations, while the hardening audit and risk ledger keep the residual reviewer risks visible without adding pages to the PDF.",
+      "failures": [],
+      "id": "limitations_crosswalk",
+      "metrics": {
+        "api_stable_symbols": 648,
+        "certified_validated_symbols": 544,
+        "documented_nonblocking_risk_count": 5,
+        "documented_nonblocking_risk_ids": [
+          "registry_breadth_denominator_disclosed",
+          "stata_tier3_requires_license",
+          "methodological_t4_row_disclosed",
+          "compact_text_may_feel_terse",
+          "agent_interface_value_boundary"
+        ],
+        "pdf_pages": 52,
+        "pdf_visual_protocol_checklist_items": 12,
+        "pdf_visual_protocol_manual_status": "PENDING_MANUAL_REVIEW",
+        "pdf_visual_protocol_page_inventory_count": 52,
+        "pdf_visual_protocol_page_inventory_text_pages": 52,
+        "pdf_visual_protocol_status": "PASS",
+        "symbols_with_limitations": 21,
+        "unbacked_auto_stable": 555
+      },
+      "primary_evidence": [
+        "manuscript/sections/09-discussion-compact.tex",
+        "REVIEWER-HARDENING-AUDIT.md",
+        "replication/results/submission_risk_ledger.md",
+        "replication/results/pdf_visual_check_protocol.md",
+        "replication/results/validation_evidence_audit.md"
+      ],
+      "reviewer_question": "Where are the compact paper's limitations and residual risks made explicit?",
+      "status": "PASS",
+      "verification_gate": "make reviewer-evidence-map + make verify-submission-package"
+    },
+    {
+      "answer_boundary": "The sustainability claim is bounded: the Discussion states that the validated core is MIT-licensed and forkable, output-changing fixes are regression-tested, and cross-language parity is scripted with environment/provenance files.",
+      "failures": [],
+      "id": "maintenance_sustainability",
+      "metrics": {
+        "artifact_hash_mismatches": 0,
+        "license_file": true,
+        "mit_forkable": true,
+        "r_reproduced_modules": 89,
+        "regression_tests": true,
+        "scripted_parity": true,
+        "stata_reproduced_modules": 85,
+        "tier1_complete": true
+      },
+      "primary_evidence": [
+        "manuscript/sections/09-discussion-compact.tex",
+        "LICENSE",
+        "replication/results/manuscript_artifact_audit.md",
+        "replication/results/reproduction_environment_audit.md"
+      ],
+      "reviewer_question": "Is the validated core maintainable if the current maintainer or commercial sponsor changes?",
+      "status": "PASS",
+      "verification_gate": "make audit + make verify-submission-package"
+    },
+    {
+      "answer_boundary": "The JSS upload snapshot is separate from final tagged-cut cleanup; pending worktree, tag, changelog, and Paper-JSS finalization items are listed as nonblocking final-cut work.",
+      "failures": [],
+      "id": "final_cut_boundary",
+      "metrics": {
+        "documented_nonblocking_risk_count": 5,
+        "documented_nonblocking_risk_details": [
+          {
+            "evidence": "544/1195 registry symbols are certified/validated; missing evidence paths=0",
+            "next_action": "Keep the validated-core framing and do not promote API-stable breadth without attached evidence notes.",
+            "risk": "registry_breadth_denominator_disclosed"
+          },
+          {
+            "evidence": "85/85 frozen Stata modules audited without live Stata; licensed rerun protocol packaged",
+            "next_action": "Keep Tier 3 optional and keep the Stata license boundary explicit; use stata_rerun_protocol.md for any licensed reviewer rerun and treat missing Stata as an optional-runtime skip, not a JSS upload blocker.",
+            "risk": "stata_tier3_requires_license"
+          },
+          {
+            "evidence": "1/1 methodological/T4 rows classified; uncategorized=0",
+            "next_action": "Keep the T4 row as a disclosure unless a deterministic T2 bridge is added.",
+            "risk": "methodological_t4_row_disclosed"
+          },
+          {
+            "evidence": "active PDF has 52 pages; PDF-visible evidence-map/checklist routing present; packaged PDF visual-check protocol present; page inventory covers 52/52 pages",
+            "next_action": "Keep additional reviewer evidence in replication/results and reviewer_evidence_map rather than expanding main.pdf; perform the final full-document human visual spot-check using pdf_visual_check_protocol.md and the PDF render audit before JSS upload.",
+            "risk": "compact_text_may_feel_terse"
+          },
+          {
+            "evidence": "1195 schemas, 9095 documented parameters, and 559 trace tools audited without behavioural benchmark claims",
+            "next_action": "Keep the agent section mechanical and contractual unless a behavioural benchmark is actually run and packaged; keep the deferred benchmark protocol labelled as protocol rather than a completed behavioural result.",
+            "risk": "agent_interface_value_boundary"
+          }
+        ],
+        "documented_nonblocking_risk_identity_ok": true,
+        "documented_nonblocking_risk_ids": [
+          "registry_breadth_denominator_disclosed",
+          "stata_tier3_requires_license",
+          "methodological_t4_row_disclosed",
+          "compact_text_may_feel_terse",
+          "agent_interface_value_boundary"
+        ],
+        "final_tagged_cut_breakdown": {
+          "generated_status_counts": {
+            "M": 28
+          },
+          "hand_edited_status_counts": {},
+          "package_code_paths": 0,
+          "package_docs_paths": 0,
+          "paper_manuscript_paths": 0,
+          "paper_other_paths": 0,
+          "paper_replication_paths": 0,
+          "validation_test_paths": 0
+        },
+        "final_tagged_cut_check_ids": [],
+        "final_tagged_cut_identity_ok": true,
+        "final_tagged_cut_pending_items": 0,
+        "final_tagged_cut_runbook": {
+          "requirements": [
+            "commit or intentionally exclude all hand-edited source and Paper-JSS paths",
+            "move accepted [Unreleased] changes into a dated CHANGELOG release entry",
+            "align pyproject.toml, src/statspai/__init__.py, and schema bundle versions",
+            "tag the exact package-source commit used by the JSS archive",
+            "re-run make submission-ready after the tag so manifests record a clean release snapshot"
+          ],
+          "scope": "Nonblocking post-upload release-cut work; not a JSS source-snapshot upload blocker.",
+          "step_count": 5,
+          "steps": [
+            {
+              "action": "commit or intentionally exclude all hand-edited source and Paper-JSS paths",
+              "step": 1
+            },
+            {
+              "action": "move accepted [Unreleased] changes into a dated CHANGELOG release entry",
+              "step": 2
+            },
+            {
+              "action": "align pyproject.toml, src/statspai/__init__.py, and schema bundle versions",
+              "step": 3
+            },
+            {
+              "action": "tag the exact package-source commit used by the JSS archive",
+              "step": 4
+            },
+            {
+              "action": "re-run make submission-ready after the tag so manifests record a clean release snapshot",
+              "step": 5
+            }
+          ],
+          "strict_release_command": "python Paper-JSS/replication/scripts/source_snapshot_manifest.py --strict-release"
+        },
+        "final_tagged_cut_runbook_step_count": 5,
+        "paper_release_pending_paths": 0,
+        "ready_for_final_publication": true,
+        "source_release_pending_paths": 0,
+        "strict_release_command": "python Paper-JSS/replication/scripts/source_snapshot_manifest.py --strict-release"
+      },
+      "primary_evidence": [
+        "replication/results/submission_risk_ledger.md",
+        "replication/results/source_snapshot_manifest.md",
+        "replication/results/release_boundary_audit.md"
+      ],
+      "reviewer_question": "What remains after upload before a final tagged release?",
+      "status": "PASS",
+      "verification_gate": "make submission-risk-ledger + make release-boundary-audit"
+    }
+  ],
+  "failures": [],
+  "generated_at_unix": 1790183142,
+  "review_routes": [
+    {
+      "evidence_cards": [
+        "software_installability",
+        "archive_boundary",
+        "related_review_coi_boundary",
+        "artifact_provenance",
+        "final_cut_boundary"
+      ],
+      "first_read": "replication/results/editor_screening_checklist.md",
+      "id": "editor_triage",
+      "missing_cards": [],
+      "primary_evidence": [
+        "replication/results/editor_screening_checklist.md",
+        "replication/results/jss_formal_compliance_audit.md",
+        "cover-letter.md",
+        "replication/results/pdf_render_audit.md",
+        "replication/results/pdf_visual_check_protocol.md",
+        "replication/results/submission_risk_ledger.md"
+      ],
+      "reviewer_start": "Start with the editor checklist, then open the map card named evidence_navigation.",
+      "status": "PASS",
+      "use_when": "You need a fast upload-readiness and JSS-form check before reading statistical detail.",
+      "verification_gate": "make editor-screening-checklist + make verify-submission-package"
+    },
+    {
+      "evidence_cards": [
+        "validation_scope",
+        "cross_language_limits",
+        "experiment_triage",
+        "limitations_crosswalk"
+      ],
+      "first_read": "replication/results/validation_evidence_audit.md",
+      "id": "statistical_validation",
+      "missing_cards": [],
+      "primary_evidence": [
+        "replication/results/validation_evidence_audit.md",
+        "replication/results/methodological_gap_ledger.md",
+        "replication/results/stata_rerun_protocol.md",
+        "replication/results/experiment_triage.md",
+        "manuscript/tables/track_a_cross_language_snapshot.tex"
+      ],
+      "reviewer_start": "Start with the validation-scope card, then read the cross-language limits card.",
+      "status": "PASS",
+      "use_when": "You want to audit the statistical evidence before the software packaging evidence.",
+      "verification_gate": "make audit"
+    },
+    {
+      "evidence_cards": [
+        "headline_reproduction",
+        "worked_example_scope",
+        "artifact_provenance"
+      ],
+      "first_read": "replication/results/reproduce_tier1_output.txt",
+      "id": "quick_reproduction",
+      "missing_cards": [],
+      "primary_evidence": [
+        "replication/results/reproduce_tier1_output.txt",
+        "replication/results/reproduction_environment_audit.md",
+        "replication/reproduce.py",
+        "replication/results/manuscript_artifact_audit.md"
+      ],
+      "reviewer_start": "Start with the Tier-1 transcript and only escalate to Tier 2/3 for external-language reruns.",
+      "status": "PASS",
+      "use_when": "You need to reproduce the headline Section 4-7 numbers without live R or Stata.",
+      "verification_gate": "make reproduce-jss-full"
+    },
+    {
+      "evidence_cards": [
+        "agent_interface_boundary",
+        "experiment_triage"
+      ],
+      "first_read": "replication/results/agent_interface_audit.md",
+      "id": "agent_interface",
+      "missing_cards": [],
+      "primary_evidence": [
+        "replication/results/agent_interface_audit.md",
+        "replication/results/agent_benchmark_protocol.md",
+        "replication/results/ex07_agent_trace.txt",
+        "schemas/tools.json",
+        "manuscript/sections/07-agent-eval.tex"
+      ],
+      "reviewer_start": "Start with the agent-interface boundary card and the deterministic MCP trace.",
+      "status": "PASS",
+      "use_when": "You are checking the agent-facing contribution but not behavioural agent performance.",
+      "verification_gate": "make agent-interface-audit"
+    },
+    {
+      "evidence_cards": [
+        "limitations_crosswalk",
+        "maintenance_sustainability",
+        "final_cut_boundary",
+        "archive_boundary"
+      ],
+      "first_read": "manuscript/sections/09-discussion-compact.tex",
+      "id": "limitations_and_release_boundary",
+      "missing_cards": [],
+      "primary_evidence": [
+        "manuscript/sections/09-discussion-compact.tex",
+        "replication/results/submission_risk_ledger.md",
+        "replication/results/reproduction_environment_audit.md",
+        "replication/results/source_snapshot_manifest.md",
+        "replication/results/release_boundary_audit.md"
+      ],
+      "reviewer_start": "Start with the limitations crosswalk, then the final-cut boundary card.",
+      "status": "PASS",
+      "use_when": "You are checking residual risks, source-snapshot wording, and what remains after upload.",
+      "verification_gate": "make submission-risk-ledger + make release-boundary-audit"
+    }
+  ],
+  "status": "PASS",
+  "summary": {
+    "archive_evidence_paths_checked": 40,
+    "archive_evidence_paths_missing": 0,
+    "archive_evidence_paths_resolved": 40,
+    "archive_evidence_present": true,
+    "archive_file_count": 2800,
+    "card_count": 13,
+    "card_identity_ok": true,
+    "card_ids": [
+      "validation_scope",
+      "headline_reproduction",
+      "cross_language_limits",
+      "artifact_provenance",
+      "worked_example_scope",
+      "experiment_triage",
+      "archive_boundary",
+      "related_review_coi_boundary",
+      "software_installability",
+      "agent_interface_boundary",
+      "limitations_crosswalk",
+      "maintenance_sustainability",
+      "final_cut_boundary"
+    ],
+    "documented_nonblocking_risk_count": 5,
+    "documented_nonblocking_risk_details": [
+      {
+        "evidence": "544/1195 registry symbols are certified/validated; missing evidence paths=0",
+        "next_action": "Keep the validated-core framing and do not promote API-stable breadth without attached evidence notes.",
+        "risk": "registry_breadth_denominator_disclosed"
+      },
+      {
+        "evidence": "85/85 frozen Stata modules audited without live Stata; licensed rerun protocol packaged",
+        "next_action": "Keep Tier 3 optional and keep the Stata license boundary explicit; use stata_rerun_protocol.md for any licensed reviewer rerun and treat missing Stata as an optional-runtime skip, not a JSS upload blocker.",
+        "risk": "stata_tier3_requires_license"
+      },
+      {
+        "evidence": "1/1 methodological/T4 rows classified; uncategorized=0",
+        "next_action": "Keep the T4 row as a disclosure unless a deterministic T2 bridge is added.",
+        "risk": "methodological_t4_row_disclosed"
+      },
+      {
+        "evidence": "active PDF has 52 pages; PDF-visible evidence-map/checklist routing present; packaged PDF visual-check protocol present; page inventory covers 52/52 pages",
+        "next_action": "Keep additional reviewer evidence in replication/results and reviewer_evidence_map rather than expanding main.pdf; perform the final full-document human visual spot-check using pdf_visual_check_protocol.md and the PDF render audit before JSS upload.",
+        "risk": "compact_text_may_feel_terse"
+      },
+      {
+        "evidence": "1195 schemas, 9095 documented parameters, and 559 trace tools audited without behavioural benchmark claims",
+        "next_action": "Keep the agent section mechanical and contractual unless a behavioural benchmark is actually run and packaged; keep the deferred benchmark protocol labelled as protocol rather than a completed behavioural result.",
+        "risk": "agent_interface_value_boundary"
+      }
+    ],
+    "documented_nonblocking_risk_identity_ok": true,
+    "documented_nonblocking_risk_ids": [
+      "registry_breadth_denominator_disclosed",
+      "stata_tier3_requires_license",
+      "methodological_t4_row_disclosed",
+      "compact_text_may_feel_terse",
+      "agent_interface_value_boundary"
+    ],
+    "expected_card_ids": [
+      "validation_scope",
+      "headline_reproduction",
+      "cross_language_limits",
+      "artifact_provenance",
+      "worked_example_scope",
+      "experiment_triage",
+      "archive_boundary",
+      "related_review_coi_boundary",
+      "software_installability",
+      "agent_interface_boundary",
+      "limitations_crosswalk",
+      "maintenance_sustainability",
+      "final_cut_boundary"
+    ],
+    "expected_route_ids": [
+      "editor_triage",
+      "statistical_validation",
+      "quick_reproduction",
+      "agent_interface",
+      "limitations_and_release_boundary"
+    ],
+    "failed_cards": 0,
+    "failed_routes": 0,
+    "final_tagged_cut_pending_items": 0,
+    "final_tagged_cut_runbook_step_count": 5,
+    "jss_upload_blockers": 0,
+    "missing_pdf_boundary_snippets": 0,
+    "pass_cards": 13,
+    "pdf_full_document_failure_count": 0,
+    "pdf_full_document_rendered_page_count": 52,
+    "pdf_pages": 52,
+    "pdf_render_failure_count": 0,
+    "pdf_render_status": "PASS",
+    "pdf_text_chars": 148262,
+    "pdf_visual_protocol_checklist_items": 12,
+    "pdf_visual_protocol_manual_status": "PENDING_MANUAL_REVIEW",
+    "pdf_visual_protocol_status": "PASS",
+    "route_count": 5,
+    "route_identity_ok": true,
+    "route_ids": [
+      "editor_triage",
+      "statistical_validation",
+      "quick_reproduction",
+      "agent_interface",
+      "limitations_and_release_boundary"
+    ],
+    "stata_rerun_protocol_checklist_items": 8,
+    "stata_rerun_protocol_status": "PASS"
+  }
+}

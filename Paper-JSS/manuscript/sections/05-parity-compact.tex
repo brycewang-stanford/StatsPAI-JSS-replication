@@ -1,0 +1,717 @@
+\section{Numerical parity and statistical validity}\label{sec:parity}
+
+The empirical claim of this paper is intentionally narrower than the
+package surface. \statspai{} registers \RegistryTotal{} public
+callables, and the census behind the claim is reported once, here: \RegistryCertified{}
+are \code{certified} and \RegistryValidated{} \code{validated}
+(together \RegistryCertifiedValidated{}), \RegistryApiStable{} are
+\code{api\_stable}, and \RegistryExperimental{} are experimental. The
+word ``validated'' in this submission means that a function is in the
+\code{certified} or \code{validated} registry tier, and the tiers are
+earned in exactly two ways: \code{certified} by a cross-language
+comparison with a named reference on identical bytes, \code{validated}
+by known-truth recovery or replication of published numbers. Monte
+Carlo coverage rows and documented disagreements (T4) are recorded
+against a function but never earn a tier on their own, so a disclosure
+cannot be read as a demonstration. All \RegistryStableHandwritten{}
+hand-written stable symbols carry parity, reference, or API-contract
+evidence; the remaining \RegistryAutoUnbacked{} stable auto-registered
+symbols are API-stable but not parity-backed, a denominator revisited
+in Section~\ref{sec:discussion}. Every \code{certified} symbol is
+linked in the registry to a named external reference implementation and
+the tolerance it was held to --- an \proglang{R} or \proglang{Stata}
+parity module for all but a handful whose canonical implementation is a
+\proglang{Python} package (\pkg{econml}, \pkg{DoubleML}, \pkg{pyblp},
+\pkg{obp}); those exceptions are enumerated in the package
+(\code{PYTHON\_REFERENCE\_ROWS}) and asserted by a test.
+Every \code{validated} symbol is linked to at least one known-truth or
+published-replication artifact; the validation-evidence audit in the archive fails on any
+certified/validated symbol whose registry entry lacks such an
+attachment, so the mapping from the \RParityModuleCount{} modules to
+the \RegistryCertifiedValidated{} certified/validated symbols is
+enumerable rather than asserted.
+
+Two properties of that census are easy to misread, so both are stated
+here rather than left to be recomputed. First, the certified and
+validated tiers answer different questions and are not summed in this
+paper's coverage language. \ParityCrossLanguage{} symbols were compared
+against a named \proglang{R} or \proglang{Stata} implementation on
+identical inputs; \ParityInternalEvidence{} recover a known population
+parameter on a deterministic DGP or reproduce published numbers on a
+calibrated replica. Only the first is a parity claim. The second is the
+strongest evidence available for a method with no reference
+implementation, and reporting a combined figure would let it borrow the
+first one's authority. Second, the all-registered denominator dilutes
+coverage: of \RegistryTotal{} registered callables, \ParityClassTotal{}
+are result or exception classes that can never carry a parity grade and
+\ParityInfraTotal{} are infrastructure that renders tables, draws plots,
+builds agent schemas or loads data. Against the \ParityEstimatorTotal{}
+estimator callables that remain, cross-language coverage is
+\ParityEstimatorCrossLanguage{} functions
+(\ParityEstimatorCrossLanguagePct{}). \code{sp.parity\_summary()} returns
+this split at call time, so a reader never has to reconstruct the
+denominator from a printed total.
+
+The registry tier and the parity grade are derived from one artifact,
+the committed parity index, through a single grade-to-tier function; a
+test asserts that the two agree for every stable symbol.
+
+The validation design is a twelve-estimator suite with four evidence
+tracks: numerical parity (Track A), Monte Carlo coverage against known
+DGPs (Track B, separated into materialized \(B_{1000}\) rows and
+estimator-specific slow-suite \(B_s\) rows), computational scaling (Track C,
+Section~\ref{sec:performance}), and agent-facing mechanical checks
+(Track D, Section~\ref{sec:agentbench}).
+This is representative, not exhaustive: it covers the causal-inference
+core behind the paper's statistical evidence claims, not every
+auxiliary helper in the registry.
+
+Because the paper uses several graded vocabularies, Table~\ref{tab:terminology}
+fixes them before any evidence is read. The practical
+reading rule is as follows. A \code{certified} or
+\code{validated} label is local to the named function, data contract,
+and evidence kind recorded in the registry; it does not promote nearby
+helpers or optional backends, and only a T2 row is a parity claim.
+Conversely,
+\code{api\_stable} means that the call signature and output shape are
+stable enough to support user code, not that the estimator has the
+paper-level statistical evidence required for a validation claim.
+
+\begin{table}[tbp]
+\centering\small
+\begin{tabular}{p{0.24\linewidth}p{0.70\linewidth}}
+\toprule
+Vocabulary & Meaning \\
+\midrule
+Registry tiers & \code{certified} / \code{validated} / \code{api\_stable} /
+\code{experimental}: the per-function evidence label queryable at call
+time (Section~\ref{sec:registry}). \\
+Evidence grades T1--T5 & Kind of numerical evidence behind a row:
+known-truth recovery (T1), same-byte cross-language parity (T2),
+seed-replicated equivalence of a stochastic estimator within a stated
+margin (T3), documented
+convention or identification boundary (T4), registered but not
+validated here (T5) (Section~\ref{sec:validation-tiers}). \\
+Tracks A--D & The four evidence tracks of the validation suite: parity,
+coverage, performance, agent-facing mechanical checks. \\
+\(B_{1000}\), \(B_s\) & Monte Carlo draw counts: materialized
+1{,}000-draw rows versus the slower estimator-specific suite. \\
+Reviewer paths & The three reproduction routes of
+Section~\ref{sec:reproducibility}: the licence-free \proglang{Python}
+path, the pinned-\proglang{R} path, and the \proglang{Stata} path. \\
+\bottomrule
+\end{tabular}
+\caption{Terminology used by the validation sections. Each vocabulary is
+orthogonal: a \code{certified} function can carry T2 and T4 rows on
+different fixtures, and any row can be rebuilt on one or more reviewer
+paths.}
+\label{tab:terminology}
+\end{table}
+
+\subsection{Twelve-estimator validation suite}\label{sec:decathlon}
+
+\begin{table}[!ht]
+\centering\small
+\begingroup
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{@{}rL{0.17\linewidth}L{0.26\linewidth}L{0.24\linewidth}L{0.15\linewidth}l@{}}
+\toprule
+\# & Method & Entry point & Reference & Data / DGP & Tracks \\
+\midrule
+1  & OLS + HC SE             & \code{sp.regress}         & \code{lm}+\pkg{sandwich}; \code{regress} & Card 1995 & A,\(B\),D \\
+2  & 2SLS                    & \code{sp.iv}              & \pkg{AER}; \code{ivregress} & Card 1995 & A,\(B\),D \\
+3  & HDFE                    & \code{sp.fast.feols}      & \pkg{fixest}; \code{reghdfe} & HDFE panel & A,\(B\),C,D \\
+4  & Callaway--Sant'Anna     & \code{sp.callaway\_santanna} & \pkg{did}; \code{csdid} & \texttt{mpdta} & A,\(B\),C,D \\
+5  & Sun--Abraham            & \code{sp.sun\_abraham}    & \pkg{fixest}; \code{eventstudyinteract} & \texttt{mpdta} & A,\(B\),D \\
+6  & Bias-corrected RD       & \code{sp.rdrobust}        & \pkg{rdrobust}; \code{rdrobust} & RDsenate & A,\(B\),D \\
+7  & RD density test         & \code{sp.rddensity}       & \pkg{rddensity}; \code{rddensity} & RDsenate & A,D \\
+8  & Classical SCM           & \code{sp.synth}           & \pkg{Synth}; \code{synth} & Basque; unique DGP & A,C,D \\
+9  & Synthetic DID           & \code{sp.sdid}            & \pkg{synthdid}; \code{sdid} & California-99 & A,\(B\),D \\
+10 & DML PLR                 & \code{sp.dml}             & \pkg{DoubleML} & Card/401(k) & A,\(B\),C,D \\
+11 & Causal forest           & \code{sp.causal\_forest}  & \pkg{grf} & Clean-overlap DGP & A,\(B\),D \\
+12 & PSM                     & \code{sp.psm}             & \pkg{MatchIt}; \code{teffects} & NSW-DW & A,D \\
+\bottomrule
+\end{tabular}
+\endgroup
+\caption{Twelve-estimator validation suite. In the Reference column the
+\proglang{R} package precedes the \proglang{Stata} command. Tracks are A
+(parity), \(B\) (materialized 1,000-draw coverage), C (performance), and
+D (agent-facing mechanical checks); row 8 dispatches as
+\code{sp.synth(method="classic")} and row 10 as
+\code{sp.dml(model="plr")}. Data marked with a named extract are
+calibrated replicas in Track~A and original extracts in
+Table~\ref{tab:headline-parity}. The HDFE member's coverage row
+runs through the \code{sp.panel} fixed-effects entry of the same
+absorption family. Supplemental Track-B rows for
+2x2 DiD and entropy balancing are reported in
+Table~\ref{tab:track-b-b1000} but are not members of this suite.}
+\label{tab:decathlon}
+\end{table}
+
+The reference implementations of Table~\ref{tab:decathlon} are cited
+once here: \code{lm} with \pkg{sandwich} \citep{zeileis2020sandwich},
+\pkg{AER}'s \code{ivreg} \citep{kleiber2008applied}, \pkg{fixest}
+\citep{berge2018efficient}, \pkg{did} \citep{callaway2021difference},
+\pkg{rdrobust} \citep{calonico2014robust,calonico2015rdrobust},
+\pkg{rddensity} \citep{cattaneo2018manipulation,cattaneo2020simple},
+\pkg{Synth} \citep{abadie2011synth}, \pkg{synthdid}
+\citep{arkhangelsky2021synthetic}, \pkg{DoubleML}
+\citep{bach2022doubleml,bach2024doubleml}, \pkg{grf}
+\citep{athey2019generalized}, and \pkg{MatchIt} \citep{ho2011matchit},
+with the \proglang{Stata} commands \code{csdid} \citep{rios2022csdid},
+\code{sdid} \citep{clarke2024synthetic}, \code{eventstudyinteract}
+\citep{sun2021estimating}, and \code{reghdfe}'s Poisson companion
+\code{ppmlhdfe} \citep{correia2020fast}.
+
+\subsection{Estimands, identification, and inference contracts}
+\label{sec:statistical-contracts}
+
+Numerical agreement does not establish identification. This subsection
+therefore states the contract under which each validation-suite row has a
+causal interpretation. These are
+contracts on the user's design and data, not properties that software can
+certify from a successful function call.  In particular, parity with a
+reference implementation can establish that two programs compute the same
+quantity while both remain inappropriate for a design that violates
+exogeneity, parallel trends, continuity, or overlap.
+
+For the linear rows, write \(Y=X\beta+u\).  The OLS coefficient is always a
+linear-projection parameter; interpreting it causally additionally requires
+the relevant conditional-mean restriction.  With instruments \(Z\), 2SLS
+solves the sample analogue of \(E[Z(Y-X\beta)]=0\); a LATE interpretation for
+a binary treatment further requires relevance, independence, exclusion, and
+monotonicity.  Absorbing fixed effects changes the projection space, not these
+identification requirements.  The parity harness specifies the covariance
+estimator explicitly---HC1 or the named cluster---rather than relying on the
+entry point's non-robust default.
+
+For staggered adoption, the target primitive is
+
+\[
+  \operatorname{ATT}(g,t)
+  = E\!\left[Y_t(1)-Y_t(0)\mid G=g\right],
+\]
+
+identified under no anticipation, a stated never-treated or not-yet-treated
+comparison group, conditional parallel trends, overlap, and no interference.
+Callaway--Sant'Anna aggregates these group--time effects; Sun--Abraham first
+forms cohort-by-relative-time effects and then interaction weights.  A joint
+pre-trend test is reported, but failure to reject is not proof of parallel
+trends and its power must be considered.
+
+The RD row targets the sharp/fuzzy cutoff effect (or kink contrast) under
+continuity, local support, and no precise manipulation; its parity row
+uses the native robust bias-corrected interval at the native CCT
+MSE-optimal bandwidth (Section~\ref{sec:track-a}).
+
+The remaining rows target nonparametric discontinuities, counterfactual
+panels, or effects learned after nuisance estimation.  For RD density the null
+is equality of the one-sided density limits at the cutoff; rejecting it is a
+design diagnostic, not itself an effect estimate.  Classical SCM and SDID
+construct weighted untreated counterfactuals, so pre-treatment fit and the
+stability of the untreated outcome process are central.  Their placebo
+distributions are design-based diagnostics and should not be read as generic
+i.i.d. sampling distributions. SDID uses placebo inference by default
+(with bootstrap and jackknife alternatives), while classical SCM offers
+in-space placebos.
+
+DML PLR uses an orthogonal, cross-fitted score for the partially linear model
+\(Y=\theta D+g(X)+\varepsilon\), \(D=m(X)+v\).  A causal reading of
+\(\theta\) requires the corresponding conditional exogeneity and overlap
+conditions in addition to nuisance-rate conditions.  The forest row targets
+\(\tau(x)=E[Y(1)-Y(0)\mid X=x]\); its ATE/ATT summaries use an AIPW score and
+therefore require conditional exchangeability and overlap.  PSM targets ATT
+by default and requires conditional exchangeability, common support, and a
+credible propensity specification.  Balance and overlap diagnostics remain
+part of the analysis even when the reference parity row passes. The validation
+path uses five-fold DML cross-fitting, AIPW influence-function intervals for
+forest aggregates, and Abadie--Imbens heteroskedastic inference for default
+nearest-neighbour PSM.
+
+\subsection{Track A: Numerical parity}\label{sec:track-a}
+
+Track A uses three layers. First, estimators are tested against known
+DGP truths whenever a truth exists. Second, \statspai{} and the
+canonical \proglang{R} implementation read the same \code{\%.16g} CSV
+bytes and write full-precision JSON. Third, when a directly comparable
+\proglang{Stata} command exists, the Stata side reads the same CSV and
+emits a sibling JSON artifact. The current R-joined harness has
+\RParityModuleCount{} modules. Of those, \StataParityModuleCount{} carry a
+canonical or audited Stata reference; each of the
+\NoStataModuleCount{} without one records a measured, command-level
+reason in \code{compare.py::STATA\_SKIP\_REASON}.
+Rows whose defaults differ for a documented reason are labelled as
+convention gaps rather than as ordinary passes.
+Table~\ref{tab:internal-parity} summarizes the source-tree test layers
+behind these claims.
+
+\begin{table}[!ht]
+\centering\small
+\begin{tabular}{p{0.25\linewidth}p{0.22\linewidth}rp{0.36\linewidth}}
+\toprule
+Layer & Harness & Tests & Role \\
+\midrule
+Analytical/reference recovery & reference parity & 4{,}285 & Deterministic-DGP recovery, frozen \proglang{R} / \proglang{Stata} reference fixtures on identical bytes, and cross-estimator agreement; includes the 203 tests that pin Stata's \code{vce()} grammar (27 estimators, 79 estimator-by-covariance cells at \(10^{-6}\)) and its \code{test}, \code{lincom} and \code{margins} post-estimation commands \\
+Published/replica parity & external parity & 88 & Pinned values for Card, Lee, Basque, NSW, \texttt{mpdta}, paper-level formulas, and the four \pkg{DoubleML} model-class pins \\
+Monte Carlo coverage & coverage MC & 32 & Slow-marked headline DGP checks, robustness rows, and one smoke row \\
+\bottomrule
+\end{tabular}
+\caption{Validation test layers available in the source tree used for
+this submission. Counts are the tests \code{pytest} collects in each
+harness, reported by \code{sp.validation\_report(collect\_tests=True)}
+and pinned as floors by \code{tests/test\_jss\_validation\_api.py}; the
+Track A modules of Appendix~\ref{app:parity} are a separate,
+module-level artifact.}
+\label{tab:internal-parity}
+\end{table}
+
+\begin{table}[!ht]
+\centering\scriptsize
+\input{tables/track_a_cross_language_snapshot.tex}
+\caption{Representative Track A cross-language parity rows compiled
+from the same JSON artifacts as the supplementary parity ledger. Every
+row is inside its registered module-level tolerance in
+\code{tests/r\_parity/compare.py}, which is \(10^{-6}\) except where
+the verdict says otherwise: the DML row's tighter \(10^{-10}\) budget
+reflects its fully deterministic linear-learner pipeline, the forest
+row is a single draw from each engine whose interpretation rests on the
+seed-replicated comparison of Section~\ref{sec:validation-tiers}, and
+the classical-SCM row is the \(5\times10^{-2}\) T4 disclosure. Data
+marked ``replica'' are the calibrated redistribution-safe fixtures; the
+Card-replica rows use the specification \code{lwage \~{} educ + exper +
+expersq + black + south + smsa} with HC1 errors, which is why their
+coefficients differ from the shorter original-extract specification of
+Table~\ref{tab:headline-parity}.}
+\label{tab:track-a-cross-language-snapshot}
+\end{table}
+
+Table~\ref{tab:track-a-cross-language-snapshot} is only a compact slice;
+the full row-level ledger is generated in the replication archive. Its
+fixtures are calibrated, redistribution-safe replicas (the Data column
+names them as such); original public extracts are handled separately in
+Table~\ref{tab:headline-parity}. Of
+the \RParityModuleCount{} R-joined modules, \RParityPassCount{} receive a pass-type verdict, but two
+non-T2 Track A rows remain explicitly visible in the parity artifacts:
+classical SCM on the calibrated Basque replica is a T4
+identification/reference-disagreement disclosure,
+and causal forest is a stochastic T3 equivalence claim rather than a
+deterministic T2 claim.
+A parity row is evidence about a \statspai{} algorithm only if the
+\proglang{Python} side ran one, so every module is also classified by
+what its \statspai{} side executes, and the classification is not taken
+on trust: a call-trace audit
+(\code{scripts/trace\_parity\_provenance.py}) runs each module under a
+profiler that records every call from \statspai{} into a package other
+than the numerical substrate (\pkg{NumPy}, \pkg{SciPy}, \pkg{pandas})
+and every subprocess it launches, and a contract test fails if the
+registered classification and the trace disagree or if a module has
+changed since it was traced. Of the \RParityModuleCount{} modules,
+\ParityNativeModuleCount{} run a \statspai{}-native implementation
+(\pkg{scikit-learn} appears only as a user-chosen nuisance learner);
+\ParityThirdPartyModuleCount{} are served by a third-party
+\proglang{Python} estimation library that \statspai{} wraps --- panel
+fixed and random effects through \pkg{linearmodels}, ARIMA through
+\pkg{statsmodels}, and fixed-effects GLMs through \pkg{pyfixest} ---
+and are marked as such in Appendix~\ref{app:parity}, because they
+validate the wrapper's argument mapping and conventions rather than an
+independent algorithm; \ParityPortModuleCount{} rely on an official
+port; and \ParityBackendModuleCount{} call a reference implementation.
+That last count was two before release 1.31: until then the
+two Honest-DiD modules called \code{backend="honestdid"}, which hands the
+computation to the \proglang{R} package itself, so their rows compared
+\proglang{R} with \proglang{R}; the RD headline delegated to the
+official \pkg{rdrobust} \proglang{Python} port. All three now exercise
+native code, and each carries evidence of its own. The native
+smoothness FLCI is compared with \pkg{HonestDiD} after the package's
+simulated folded-normal quantile is replaced by the exact one (the
+shipped package sits \(3\times10^{-4}\) away, which is that simulation
+error): the bounds agree to \(1.4\times10^{-8}\) for \(M>0\), and at
+\(M=0\), where the interval has a closed form (the GLS linear
+extrapolation of the pre-period coefficients), the native solver is
+within \(2\times10^{-9}\) of it while \pkg{HonestDiD}'s cone solver is
+\(5.7\times10^{-6}\) away. The native relative-magnitudes set is a port
+of the Andrews--Roth--Pakes conditional test \citep{andrews2023inference}
+inverted over \pkg{HonestDiD}'s \(\theta\) grid; on sixteen cases
+(diagonal and correlated covariances, a non-basis target, a single
+post-period) it returns the \emph{same} accepted grid points as
+\pkg{HonestDiD}, and the least-favourable hybrid, whose first-stage
+critical value is simulated, agrees to within one grid step. The native
+RD default selector returns \pkg{rdrobust}'s MSE-optimal bandwidth and
+robust estimate on the RDsenate bytes at relative error below
+\(3\times10^{-13}\), with the port recorded only as a convergence check.
+Module 52
+separately certifies the native classical-SCM solver on a uniquely
+identified DGP. A generated ledger in the replication archive
+classifies the remaining T4 row and fails the audit if a methodological
+gap appears without an explicit reviewer-risk label and promotion path;
+the causal-forest row is governed by the seed-replicated comparison of
+Section~\ref{sec:validation-tiers}.
+
+Native \code{sp.sdid} matches \pkg{synthdid}'s ATT at relative error
+\(2.6\times10^{-15}\) and native \code{sp.rddensity} matches
+\pkg{rddensity}'s p-value at \(3.3\times10^{-11}\) \citep{arkhangelsky2021synthetic,cattaneo2020simple}.
+
+\paragraph{Headline original-data rows.}
+The Track~A fixtures above are calibrated, redistribution-safe
+replicas; the complementary original-data ledger runs \statspai{} and
+the canonical \proglang{R} reference on the \emph{original} public
+extracts shipped by \proglang{R} packages. It currently holds
+\OrigParityModuleCount{} modules and \OrigParityRowCount{} statistic
+rows, including six epidemiology-side modules that reproduce the
+NHEFS worked examples of Hern\'an and Robins' \emph{What If} (IPW,
+g-formula, g-estimation, outcome regression, survival, and E-values).
+Table~\ref{tab:headline-parity} shows the most reviewer-relevant
+cases; the full report is generated by
+\code{tests/orig\_parity/compare\_orig.py}, and the printed table is
+itself generated from those artifacts. The \code{did::mpdta}
+simple-ATT row makes the replica/original boundary concrete: the
+calibrated replica used by Track~A module 04 returns \(-0.0330\) on all
+three sides, while the original bytes return \(-0.03995\); both are
+same-byte parity facts, and neither number is quoted against the other
+data set anywhere in this paper.
+
+\begin{table}[!ht]
+\centering\scriptsize
+\resizebox{\textwidth}{!}{%
+\input{tables/headline_parity.tex}}
+\caption{Selected original-data parity rows on public extracts,
+generated from \code{tests/orig\_parity/results/}. All \proglang{R}
+references read the same CSV bytes as \statspai{}. The \emph{Published}
+column is a heterogeneous anchor --- an original-paper table value
+(Card, Basque), a printed-vignette value (the \code{did} dynamic ATT),
+a textbook program output (NHEFS), or a rounded composite-extract value
+(LaLonde) --- shown for context, not as a parity target; the parity
+claim is the \statspai{}-versus-\proglang{R} pair in the \emph{Note}
+column. The \code{did::mpdta} simple-ATT row has no printed vignette
+anchor, so its Published cell is empty by design.}
+\label{tab:headline-parity}
+\end{table}
+
+\subsection{Evidence tiers and hard cases}\label{sec:validation-tiers}
+
+\paragraph{Evidence is attached to configurations.}
+A tier is attached to a function, but every artifact exercises one
+configuration: a method variant, an inference option, a data condition,
+a code path, and an output. The Track~B DML row is the plain example:
+the suite member is the partially linear model, and until this revision
+the only materialised coverage row ran the interactive model, which says
+nothing about the other's intervals (a PLR row is now included,
+Table~\ref{tab:track-b-b1000}). For the twelve suite estimators the
+package therefore records, per artifact, the configuration it exercises,
+and \code{sp.validation\_scope(result)} reads the configuration of a
+fitted object and returns the artifacts that match it exactly
+(``covered'' requires a T1 or T2 row; ``stochastic only'' means only
+T3, T4, or coverage rows match; otherwise ``not covered''), together
+with the artifacts that differ in one dimension. The map is deliberately
+narrower than the registry --- an option it does not list is reported as
+not covered --- and it found a gap in this paper's own first example:
+\code{sp.iv}'s default classical 2SLS covariance, printed in
+Listing~\ref{lst:card-output}, had no deterministic reference row
+(Track~A pins the HC1 variant). It is now pinned against
+\pkg{AER}\code{::ivreg} on the original Card extract, with classical,
+HC1, and clustered errors in just- and over-identified models, at
+\(8\times10^{-11}\).
+
+\paragraph{Evidence grades.}
+The grades are those of Table~\ref{tab:terminology}; T5 marks a function
+registered but not validated in this paper. Two rows need more than a
+tolerance to read correctly.
+
+\paragraph{Causal forest: which Monte Carlo error?}
+For a stochastic estimator two uncertainties must be kept apart:
+sampling variation across datasets, which the reported standard error of
+the ATE estimates, and the algorithm's own Monte Carlo variation across
+seeds on \emph{fixed} data. ``Agreement within combined Monte Carlo
+error'' is a statement about the second, so it cannot be tested by
+dividing the gap between one \statspai{} fit and one \pkg{grf} fit by
+their sampling standard errors --- which is how an earlier version of
+this row was graded. The forest evidence now separates three tasks.
+\emph{Truth recovery and inference} are Track~B's (the AIPW coverage row
+below). \emph{Estimand agreement} holds by construction: both engines
+report the doubly-robust AIPW average \citep{athey2019generalized}, and
+given the same forest the AIPW operator agrees with \pkg{grf}'s to
+machine precision. \emph{Algorithmic agreement} is tested by refitting
+each engine under 50 seeds (20 at 8{,}000 trees) on fixed data, at
+500, 2{,}000, and 8{,}000 trees, on two datasets: the reference-parity
+fixture and the Track~A module-13 design, the latter run after the
+equivalence margin was fixed. Seeds are spaced \(10^5\) apart on both
+sides, because \pkg{grf} forests grown from consecutive seeds share most
+of their random draws: a first run with consecutive \proglang{R} seeds
+understated \pkg{grf}'s seed-to-seed spread several-fold and made
+\statspai{}'s forest look several times noisier than it is.
+Table~\ref{tab:forest-seed-mc} reports the result. At every tree count
+on both datasets a two-one-sided test establishes equivalence within
+\(\delta = 0.1\) sampling standard errors --- a difference that moves a
+95\% interval endpoint by at most 5\% of its half-width --- with an
+upper bound of at most 0.056. The two engines are equally noisy: their
+seed-to-seed standard deviations differ by a factor between 0.78 and
+1.48 and fall with the number of trees, from 13--18\% of the sampling
+standard error at 500 trees to 6--8\% at the default 2{,}000. The claim
+is equivalence, not identity: the engines are independent
+implementations, and at 8{,}000 trees, where Monte Carlo error is
+smallest, their seed means differ by up to 0.025 sampling standard
+errors (\(|z| \le 2.6\)). The single-fit Track~A row is one draw from
+each distribution, not a parity fact on its own.
+Artifacts: \path{tests/reference_parity/test_grf_seed_mc_equivalence.py}
+and its fixtures.
+
+\begin{table}[!ht]
+\centering\footnotesize
+\input{tables/forest_seed_mc.tex}
+\caption{Seed-replicated comparison of \code{sp.causal\_forest} and
+\pkg{grf}~2.6.1 on fixed data (AIPW ATE; ATT in the archive).
+``Gap'' is the difference of seed means; ``MC SE'' its combined
+algorithmic Monte Carlo standard error; ``Gap/SE\(_s\)'' the gap in units
+of \pkg{grf}'s reported sampling standard error; ``MC SD'' the seed-to-seed
+standard deviation of each engine. Equivalence (TOST, 5\%) against
+\(\delta = 0.1\,\mathrm{SE}_s\) holds in every row. Generated by
+\code{replication/scripts/generate\_forest\_seed\_table.py}.}
+\label{tab:forest-seed-mc}
+\end{table}
+
+\paragraph{Synthetic control: one specification, two data sets.}\label{sec:scm-identification}
+The classical-SCM row is a T4 disclosure because the outer \(V\)
+optimization is non-convex and donor weights need not be unique --- and
+how much that matters turns out to be data-dependent, which the ledger
+reports rather than averages away. On the \emph{calibrated Basque
+replica} of Track~A module 07 (the same ADH special-predictor
+specification and CSV bytes on all three sides), native \statspai{}
+tracks Stata \code{synth} for the average post-treatment gap at
+relative error \(4.2\times10^{-4}\), while R \pkg{Synth} and Stata
+\code{synth} differ from each other by \(2.3\times10^{-2}\). On the
+\emph{original} \code{Synth::basque} bytes under the same
+specification, the three implementations essentially reconvene:
+\statspai{} \(-0.8946\), \proglang{R} \(-0.8944\), \proglang{Stata}
+\(-0.8943\), pairwise within \(4\times10^{-4}\)
+(Table~\ref{tab:headline-parity}) --- still above the \(10^{-6}\)
+strict-parity gate, consistent with solver tolerance on a non-convex
+outer problem, but far from the replica's split. The same specification
+therefore admits a near-common optimum on one data set and measurably
+different local optima on another; a validation ledger that pooled the
+two facts into one tolerance would hide exactly the sensitivity a
+practitioner needs to know about. The solver is
+separately certified on an identified SCM DGP (Track~A module 52): when
+the treated unit is exactly a unique convex combination of donors,
+\statspai{}, \pkg{Synth}, and Stata \code{synth} agree on the average
+post-treatment gap at relative error \(7.8\times10^{-8}\) and on the
+donor weights at \(5.6\times10^{-7}\), the tolerance of the constrained
+quadratic solver. Thus the
+paper claims solver correctness on identified problems and documents
+the replica's reference-disagreement/local-optimum problem without
+treating it as a strict R/Synth parity pass.
+
+Native \code{sp.augsynth} now ports \pkg{augsynth}'s Ridge+SCM
+convention \citep{benmichael2021augmented} (ATT at \(7.9\times10^{-6}\)
+on the Basque fixture).
+Native \code{sp.gsynth} now ports \pkg{gsynth}'s two-way factor
+convention \citep{xu2017generalized}, matching it to machine precision.
+
+\subsection{Track B: Monte Carlo coverage}\label{sec:track-b}
+
+Track B checks 95\% interval coverage on known DGPs, and reports with
+each rate what is needed to explain it: the estimator's bias, its Monte
+Carlo SD, the mean reported standard error, their ratio, and the
+interval length (Table~\ref{tab:track-b-b1000}). The artifact holds
+twelve \(B=1{,}000\) rows; ten correspond to suite members (OLS, 2SLS,
+fixed effects through \code{sp.panel}, Callaway--Sant'Anna,
+Sun--Abraham, sharp RD, SDID, DML PLR, and the causal forest), and 2x2
+DiD, entropy balancing, and the interactive DML model are supplemental.
+Three suite members have no coverage row by construction: the RD density
+test is a diagnostic, classical SCM has no analytic interval, and PSM's
+inference evidence is the Abadie--Imbens SE parity row.
+
+Most rows are calibrated in the direct sense: the mean standard error is
+within 3\% of the Monte Carlo SD and coverage sits in the 99\% Wilson
+band around 0.95. The rows that are not are explained rather than
+graded. \emph{Sharp RD} (0.934) and \emph{SDID} (0.928) have calibrated
+standard errors (ratios 0.98 and 0.99), so the shortfall is in the shape
+of the sampling distribution, not the SE. For RD this is the reference
+procedure's own finite-sample behaviour: on the first 200 draws R
+\pkg{rdrobust}~4.0.0 returns the same intervals as \statspai{} to
+\(6\times10^{-12}\) and covers in exactly the same draws
+(\path{tests/coverage_monte_carlo/mechanisms/rd_drawwise_reference.py}).
+\emph{DML PLR} under-covers clearly (0.883), and the diagnostics say why:
+its bias is half a Monte Carlo SD while the SE is nearly calibrated
+(0.88). \code{sp.dml} returns \pkg{DoubleML}'s numbers to \(10^{-16}\) on
+the same folds and learners, so this is the procedure with the default
+learner, not the code. Varying one thing at a time on the same design
+(\path{tests/coverage_monte_carlo/mechanisms/dml_plr_learners.py},
+\(B=500\)) locates it in the nuisance fit: with the true nuisance
+functions coverage is 0.952 and the bias vanishes; with a random forest
+or a spline Lasso it is 0.940 and 0.938; with the default gradient
+boosting it is 0.892 at \(n=500\) and 0.936 at \(n=2{,}000\), where the
+bias is still 0.41 SD. DML's orthogonal score makes nuisance error
+second order, not zero, and the default learner's regularisation bias on
+this design shrinks too slowly to be negligible at these sample sizes;
+the result is stated in \code{sp.dml}'s documentation and in the
+configuration map. \emph{Entropy balancing} over-covered at 1.000 in the
+previous revision because its standard error held the weights fixed and
+was twice the Monte Carlo SD; with the M-estimation variance it is now
+0.945 with a ratio of 0.97 (Section~\ref{sec:parity-gaps}).
+The \emph{causal-forest} row is new in its present form. It previously
+over-covered (0.977, standard-error ratio 1.13) because its entry point
+reported a separate AIPW estimator rather than the forest's
+(Section~\ref{sec:attachment-audit}); recomputed on the forest's own
+doubly-robust average at the default 2{,}000 trees it covers 0.959 with
+a ratio of 1.04, and a 300-draw check at 300 trees gives 0.973
+(\path{tests/coverage_monte_carlo/mechanisms/forest_trees.py}).
+Table~\ref{tab:track-b-robustness} records stress cases as failure-mode
+evidence rather than calibration results.
+
+\input{tables/track_b_monte_carlo.tex}
+
+% Table 11 floats to the top of the next page; without this the
+% size/power paragraph split around it and a page opened with the
+% fragment "reaches at least 0.82 at the largest effect".
+\Needspace*{9\baselineskip}
+The size/power sweep closes a weakness of coverage-only reporting: an
+interval that never rejects can cover well without being useful. At the
+tested null, 2x2 DiD is conservative (size 0.024) and sharp RD rejects
+slightly too often (0.076 at \(B=500\)), consistent with its coverage;
+the other rows are within Monte Carlo error of 0.05, including entropy
+balancing, whose size was 0.000 under the old standard error. Each curve
+is monotone on its own effect grid and reaches at least 0.90 at the
+largest effect; effect grids and DGPs differ, so this is not a
+cross-estimator ranking. DML, the forest, and SDID have no packaged
+power sweep, and the paper makes no power claim for them. Full rejection
+probabilities are in
+\code{tests/coverage\_monte\_carlo/results\_b1000/size\_power\_b1000.json}.
+
+\subsection{Cross-estimator parity}\label{sec:cross-estimator}
+
+The test suite also asserts equivalence across estimators that should
+collapse to the same estimand on a given DGP. For example, the
+Callaway--Sant'Anna, Sun--Abraham, multi-period DiD, and BJS/imputation
+implementations must agree on a homogeneous staggered-DiD DGP to within
+a multiple of \(\sqrt{\mathrm{SE}_1^2+\mathrm{SE}_2^2}\). Two estimators fitted
+to the same data are positively correlated, so this bound is loose: it is
+a screen for gross disagreement, not an equivalence test. It is still a
+useful adversarial check, because a shared bug can pass one-reference
+parity but fail cross-estimator agreement.
+
+\subsection{High-\texorpdfstring{$N$}{N} analytical parity and pinned fixtures}\label{sec:high-n}
+
+High-\(N\) fixtures tighten selected known-truth checks to two standard
+errors at \(N=5{,}000\) and \(N=8{,}000\). Pinned fixtures lock the paper
+replica values in Table~\ref{tab:headline-parity} to four decimals.
+Honest-DiD is pinned directly to the closed-form breakdown value in
+\citet{rambachan2023more}, and the DML/HDFE slices check influence
+functions and residual-regression identities independently of any
+single reference implementation.
+
+\paragraph{Event-study paths.}
+Value comparison is the wrong test for an event-study \emph{path},
+because implementations differ in what each half of the path is
+differenced against \citep{roth2026interpreting}.
+\code{sp.event\_study\_convention()} records that choice per estimator,
+and running it closed a defect: \code{sp.did\_imputation} documented
+Stata's \code{pretrends(k)} but shipped a residual construction whose
+leads equal the symmetric benchmark times $N_0/N$
+\citep{li2025benchmarking}, so a violated assumption read as satisfied.
+The default now reproduces Stata's leads and their standard errors to
+$1.2\times10^{-12}$ and $8\times10^{-13}$.
+
+\subsection{Adjudicating a disagreement}\label{sec:adjudication}
+
+A parity ledger is only as credible as its procedure for the rows that
+do \emph{not} agree, so the procedure is fixed in advance and every
+registered tolerance carries the outcome. A disagreement on identical
+bytes is assumed to be a \statspai{} defect until the first diverging
+intermediate quantity -- design matrix, weights, residuals, sandwich
+meat -- has been located. If the divergence is a documented choice on
+both sides (a degrees-of-freedom divisor, a small-sample cluster
+correction, an analytic versus influence-function variance), the
+default follows the method's own authors, the alternative is exposed as
+a keyword, and the gap is registered with its mechanism and bounded by
+the tolerance. If the reference itself is the problem or the solution
+is not unique, the row is graded T4 and must carry independent
+evidence (a second reference, an analytic identity, or a uniquely
+identified DGP). If exact agreement is impossible by construction
+(forest randomization, bootstrap), the row is graded T3, which requires
+refitting on fixed data under many seeds and an equivalence margin
+stated against the sampling uncertainty; a single draw per side is
+reported but does not earn the grade. A gap that
+cannot be located is not called parity: it is graded ``unexplained''
+in the tolerance audit and reported here as an open item. Two contract
+tests enforce the procedure mechanically: every \proglang{R}-joined
+standard-error row of every passing module must sit inside its
+module's registered budget, and every Stata standard-error row that
+does not must be registered with a reconstruction of the Stata number.
+In release \StatsPAIVersion{} all \RParityModuleCount{} modules pass the
+first test, and the second holds three entries, each reproduced from
+\statspai{}'s own quantities: the group-average SE of Stata
+\code{csdid} (the fixed-cohort-share aggregation of the joint influence
+functions, $10^{-14}$; module 04), the PLIV degrees-of-freedom factor
+($N/(N-K)$) of Stata's \code{ddml} double-machine-learning command
+(module 71), and the per-horizon $K$ of Stata's \code{lpdid} local
+projections DiD command (module 83). The Sun--Abraham row is the procedure's worked
+example: it was carried as an open 0.7--2.2\% item across two releases
+rather than absorbed into a wider tolerance, and the bisection that
+closed it in 1.24.0 found a defect on the \statspai{} side
+(Table~\ref{tab:correctness-history}).
+
+\subsection{Auditing the attachment, not only the number}
+\label{sec:attachment-audit}
+
+A parity harness checks that two implementations produce the same
+number. It does not check the claim that sits one level above: that the
+function a reader calls is the function the harness ran. Track A modules
+are written against one entry point, while a package of this size
+exposes dispatchers, thin wrappers and convenience names that are
+\emph{said} to reach the same estimator core. Every such name inherits a
+grade it did not earn on its own, and inheritance is where an
+unfalsifiable claim can hide -- the numbers in the ledger stay correct
+while the set of functions they vouch for quietly grows.
+
+Auditing those attachments in release 1.26.0 found that, of eleven
+registered alias attachments, seven cited a module that never called the
+aliased name. Each surviving attachment now names a test that runs the
+alias against the canonical entry point on the module's own bytes. One
+did not survive: \code{sp.wooldridge\_did}, credited with the ETWFE
+module as an alias of \code{sp.etwfe}, returns an ATT \(6.1\%\) away on
+that module's bytes because it is a different estimator; the alias was
+withdrawn and the function demoted to the grade its own evidence
+supports.
+
+The same failure mode appeared in this revision in a coverage row.
+Track~B's causal-forest row ran through
+\code{sp.causal\_question()}, whose forest design fitted the forest and
+then reported a separate cross-fit AIPW estimator with its own
+gradient-boosting nuisances: refitting with 30, 300, and 2{,}000 trees
+gave bit-identical results. It now reports the forest's own
+doubly-robust average, identical to
+\code{cf.average\_treatment\_effect()}, and the row was recomputed.
+
+\subsection{Correctness history and residual risk}\label{sec:parity-gaps}
+
+Every output-changing fix is pinned by a regression test and listed,
+with its version, in Appendix~\ref{app:corrections}. Two entries explain
+the design better than the rest. The 1.23.0 fix shows what a reference
+comparison catches that unit tests do not: \code{sp.did(..., weights=)}
+never forwarded the weights to a staggered branch and silently returned
+the unweighted estimand, which only \code{did::att\_gt(weightsname=)}
+on identical bytes exposed. The 1.25.0 fix shows the limit of a parity
+ledger: the causal-forest aggregation was wrong for a
+\emph{continuous} treatment, a path no Track~A or Track~B row
+exercised, and it surfaced in a worked example. A ledger validates the
+configurations it runs and is silent about the rest.
+
+The current release controls that residual risk in three ways rather
+than by pointing to the number of past fixes. First, the evidence for a
+fitted configuration is queryable: given a result,
+\code{sp.validation\_scope} reports which artifacts exercise exactly the variant, inference option,
+data condition, and code path of that fit, and reports ``not covered''
+rather than inferring coverage from a neighbouring configuration
+(Section~\ref{sec:validation-tiers}). Second, the release is frozen:
+the paper describes tag \code{v\StatsPAIVersion{}}, the archive carries
+the source snapshot and every artifact hash, and changes after the tag
+cannot alter a number printed here. Third, every recorded artifact can
+be rebuilt from its entry point (Table~\ref{tab:reproduction}).
+
+\subsubsection{Documented default-convention divergences}\label{sec:convention-gaps}
+
+The remaining disclosed boundaries are classical SCM's non-unique
+\(V,W\) solutions on the calibrated Basque replica
+(Section~\ref{sec:scm-identification}) and the \proglang{Stata} bridge,
+which is migration evidence with frozen JSON and do-files and requires a
+licence only for re-execution.

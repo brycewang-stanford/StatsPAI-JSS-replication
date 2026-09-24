@@ -1,0 +1,74 @@
+{
+  "estimator": "04_dml",
+  "side": "py",
+  "rows": [
+    {
+      "estimator": "04_dml",
+      "side": "py",
+      "n": 1000,
+      "n_reps": 3,
+      "median_time_s": 0.003884625039063394,
+      "iqr_time_s": 0.00018508301582187414,
+      "min_time_s": 0.003850333974696696,
+      "max_time_s": 0.00403541699051857,
+      "peak_mem_mb": 250.125,
+      "peak_gpu_hbm_mb": null,
+      "extra": {
+        "model": "plr",
+        "ml_g": "LinearRegression",
+        "ml_m": "LinearRegression",
+        "n_folds": 5
+      }
+    },
+    {
+      "estimator": "04_dml",
+      "side": "py",
+      "n": 5000,
+      "n_reps": 3,
+      "median_time_s": 0.005750957992859185,
+      "iqr_time_s": 0.00018858409021049738,
+      "min_time_s": 0.0056757909478619695,
+      "max_time_s": 0.005864375038072467,
+      "peak_mem_mb": 252.09375,
+      "peak_gpu_hbm_mb": null,
+      "extra": {
+        "model": "plr",
+        "ml_g": "LinearRegression",
+        "ml_m": "LinearRegression",
+        "n_folds": 5
+      }
+    },
+    {
+      "estimator": "04_dml",
+      "side": "py",
+      "n": 10000,
+      "n_reps": 3,
+      "median_time_s": 0.007961416966281831,
+      "iqr_time_s": 7.49579630792141e-05,
+      "min_time_s": 0.007939000031910837,
+      "max_time_s": 0.00801395799499005,
+      "peak_mem_mb": 254.3125,
+      "peak_gpu_hbm_mb": null,
+      "extra": {
+        "model": "plr",
+        "ml_g": "LinearRegression",
+        "ml_m": "LinearRegression",
+        "n_folds": 5
+      }
+    }
+  ],
+  "hardware": {
+    "platform": "macOS-26.6.2-arm64-arm-64bit",
+    "processor": "arm",
+    "machine": "arm64",
+    "python": "3.10.20",
+    "cpu_logical": 8,
+    "cpu_physical": 8,
+    "mem_gb": 24.0,
+    "load_avg_1m_at_start": 1.67,
+    "git_commit": "3afb4353882a321037c755188e309c8329b9846b",
+    "statspai_version": "1.30.1",
+    "statspai_commit": "a24a25347c9d56815f15f6abef09498de014d894"
+  },
+  "extra": {}
+}

@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.DS_Store
+Paper-JSS/build/
+Paper-JSS/manuscript/*.aux
+Paper-JSS/manuscript/*.bbl
+Paper-JSS/manuscript/*.blg
+Paper-JSS/manuscript/*.fdb_latexmk
+Paper-JSS/manuscript/*.fls
+Paper-JSS/manuscript/*.log
+Paper-JSS/manuscript/*.out

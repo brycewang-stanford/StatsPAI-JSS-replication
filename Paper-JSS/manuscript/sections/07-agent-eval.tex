@@ -1,0 +1,149 @@
+\section{Agent-facing interface checks}\label{sec:agentbench}
+
+The agent-facing design described in Section~\ref{sec:agent} is the
+most contestable claim in this paper: a reviewer may reasonably ask
+whether a machine-readable schema \emph{actually} improves the
+behaviour of an LLM agent on a real empirical task, or whether a
+\emph{statsmodels-plus-prompting} baseline performs equivalently well.
+That question needs frozen model releases, fixed prompts, matched tool
+budgets, and a scoring rubric; it cannot be inferred from schema
+coverage, and Section~\ref{sec:agentbench-behavioural} states what
+answering it would take. The present section reports only the
+\emph{mechanical} and \emph{contractual} evidence that the agent-facing
+surface is correctly wired up. We refer to \citet{patil2023gorilla}
+and \citet{liang2023helm} as methodological precedents for tool-use
+and holistic-LLM benchmarks respectively.
+
+\subsection{Mechanical evidence}\label{sec:agentbench-mechanical}
+
+The function-schema layer is statically inspectable. We report in
+Table~\ref{tab:schema-coverage} both the function-level coverage
+($\RegistryTotal$ of $\RegistryTotal$ public functions emit a non-empty
+OpenAI-style JSON Schema; \AgentCardCount{} currently expose curated or explicitly
+inherited agent metadata cards) and the
+parameter-level quality of those
+schemas (\(\SchemaParameterTotal\) documented parameters across the
+\(\RegistryTotal\) schemas, of which \(\SchemaParameterDefaultPct\) carry an
+explicit default value and \(\SchemaParameterEnumPct\) carry enumerated
+choices). Parameter quality
+matters because the headline ``$\RegistryTotal/\RegistryTotal$ emit a schema'' figure is
+high by construction -- the registry pipes \emph{any} typed signature
+into a JSON Schema -- whereas the
+stronger contract is that every parameter carries a
+non-empty description. We do not turn
+absence of package-distributed, package-wide OpenAI-style tool-schema catalogues
+in \pkg{statsmodels}, \pkg{linearmodels}, or \pkg{scikit-learn} into
+a numerical \emph{zero} score: those projects target different interfaces,
+and Table~\ref{tab:schema-coverage} is an internal completeness audit,
+not a behavioural or package-quality ranking; they do not rule out external
+wrappers.
+
+\begin{table}[t]
+\centering\small
+\begin{tabular}{@{}L{0.62\linewidth}rrr@{}}
+\toprule
+Audit item & Count & Missing & Share \\
+\midrule
+Public functions/classes                        & \RegistryTotal & --- & 100.0\% \\
+Emit non-empty OpenAI-style tool schema          & \RegistryTotal & 0 & 100.0\% \\
+Have at least one typed parameter                & \SchemaWithTypedParameter & --- & --- \\
+Have non-empty function description              & \RegistryTotal & 0 & 100.0\% \\
+Have curated or inherited agent metadata         & \AgentCardCount & \AgentDefaultCardCount & \AgentCardPct \\
+\midrule
+Parameters across all schemas                    & \SchemaParameterTotal & --- & 100.0\% \\
+\quad with non-empty description                 & \SchemaParameterDescribed & 0 & \SchemaParameterDescribedPct \\
+\quad with explicit default value                & \SchemaParameterDefault & --- & \SchemaParameterDefaultPct \\
+\quad with enumerated choices (\code{enum})      & \SchemaParameterEnum & --- & \SchemaParameterEnumPct \\
+\bottomrule
+\end{tabular}
+\caption{Internal mechanical schema audit for \statspai{} \StatsPAIVersion{}.
+``Agent metadata'' means at least one non-empty assumption, pre-condition,
+failure mode, limitation, or typical/minimum sample-size field after explicit
+inheritance. The remaining schemas still emit name, signature, and
+description fields, but are not counted as curated. Counts are regenerated
+from the live registry; this table makes no cross-package quality claim.}
+\label{tab:schema-coverage}
+\end{table}
+
+The same registry is exported as a versioned offline schema bundle
+covering tool schemas, function schemas, agent cards, result-payload
+validation, and provenance counts, so non-Python clients can discover
+the tool surface without importing \statspai{}.
+
+To keep this surface honest as the package grows, \statspai{} ships a
+coverage ratchet for agent cards. The ratchet classifies registered
+functions into cumulative documentation tiers, records per-field and
+per-tier counters in a checked JSON floor, and fails CI on any
+regression. The tiers deliberately separate a minimal schema-ready
+description from richer assumptions, failure modes, alternatives, sample
+size guidance, and certified/validated evidence. Lowering the floor
+requires an explicit hand edit, so a schema-quality regression is
+visible in code review rather than hidden behind a large function
+count.
+
+\subsection{Contractual trace evidence}\label{sec:agentbench-procedural}
+
+The agent-facing surface is exposed through an MCP server
+(Section~\ref{sec:mcp}) that negotiates Model Context Protocol
+revisions 2024-11-05, 2025-03-26, and 2025-06-18. The protocol test
+suite exercises the \code{initialize} handshake and version
+negotiation, \code{tools/list} and \code{tools/call} with structured
+content, and \code{isError} envelopes; the schema and registry suites
+check that registered functions emit tool schemas, that agent-card
+filters behave as documented, and that MCP tool discovery sees the same
+registry-backed surface as \code{sp.function\_schema()}. These are the
+package's own tests, not an external certification of protocol
+conformance.
+
+For this submission we also execute one deterministic end-to-end trace
+through the live MCP server. The script
+\code{replication/scripts/ex07\_agent\_trace.py} writes a temporary
+\texttt{mpdta.csv} (the calibrated replica of Section~\ref{sec:ex-csdid},
+so the traced estimate \(-0.0330\) is the replica value, not the
+original-data \(-0.03995\)), calls \code{tools/list}, fits
+\code{callaway\_santanna} with \code{as\_handle=true}, sends the
+returned handle to \code{audit\_result}, and then sends the same
+handle to \code{honest\_did\_from\_result}. It finally resolves the
+returned citation keys through the MCP \code{bibtex} tool against the
+curated \code{paper.bib}, so the trace exercises the citation
+anti-hallucination contract rather than merely reporting key strings.
+The same trace also sends a stale result-handle call to
+\code{audit\_result} and checks that the MCP response is a recoverable
+\code{isError} envelope with an actionable refit hint, so failure
+recovery is exercised rather than only described.
+Table~\ref{tab:agent-trace}
+summarizes the trace; the normalized transcript is included in the
+replication archive. The trace verifies the agent-specific claim that
+the estimate \(\to\) audit \(\to\) sensitivity chain is executable
+without ferrying arrays or hand-copying citations through the model
+context.
+
+\begin{table}[t]
+\centering\small
+\input{../replication/tables/ex07_agent_trace.tex}
+\caption{Deterministic MCP trace used for the agent-facing interface
+check, including one recoverable stale-handle error path. Ephemeral
+result handles are normalized in the transcript shipped with the
+replication archive
+(\code{replication/\allowbreak results/\allowbreak ex07\_agent\_trace.txt}).}
+\label{tab:agent-trace}
+\end{table}
+
+\subsection{No behavioural benchmark claim}\label{sec:agentbench-behavioural}
+
+Mechanical and contractual evidence does not answer whether an LLM agent
+using this interface produces \emph{better empirical analyses} than one
+using \pkg{statsmodels} or \proglang{R} packages through a Jupyter MCP
+shim. That question requires frozen model
+releases, fixed prompts, matched tool budgets, and a scoring rubric,
+and belongs in a separate behavioural study. To make that deferral auditable
+rather than vague, the archive includes
+\code{replication/\allowbreak results/\allowbreak agent\_benchmark\_protocol.md}, which records
+the matched arms, task families, scoring dimensions, leakage controls,
+and minimum report items required before any behavioural claim is made.
+The JSS contribution here is contractual: schemas, typed
+errors, result handles, citations, and the deterministic trace are
+reproducible interfaces, regenerated from the same validation ledger
+that governs human-facing calls rather than from a separate
+prompt-engineering layer, and they keep later benchmark scores from
+being confounded with missing metadata or unverifiable citations.

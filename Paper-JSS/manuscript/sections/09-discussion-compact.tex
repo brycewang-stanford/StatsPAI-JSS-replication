@@ -1,0 +1,122 @@
+\section{Discussion}\label{sec:discussion}
+
+\statspai{} is a unification and validation project, not a new-estimator
+paper. The claim is that a single \proglang{Python} package can expose
+the applied causal workflow through shared result surfaces, explicit
+validation status, reproducible parity artifacts, and machine-readable
+agent schemas. It is not a claim that \statspai{} dominates specialized
+reference packages in their home domains, nor that the MCP interface
+replaces empirical judgement.
+
+The main limitations are as follows. First, \RegistryAutoUnbacked{} stable auto-registered symbols remain API-stable but not parity-backed
+(\RegistryAutoUnbackedClasslike{} class-like, \RegistryAutoUnbackedFunctionlike{} function-like), and the other \RegistryOtherApiEvidence{} symbols of the
+\RegistryApiStable-symbol \code{api\_stable} tier carry API, unit-contract,
+convention, or supplemental evidence only. The validated claim is
+limited to certified/validated entries and to the named rows and modules in the validation-suite evidence; the validation-evidence
+audit lists nine scoped limitation rows, each tied to a named function, evidence grade, and unsupported variant.
+Second, only one Track~A row remains a methodological/T4 disclosure:
+classical SCM on the calibrated Basque replica, where reference
+implementations choose measurably different local optima; on the
+original \code{Synth::basque} bytes the same specification brings all
+three implementations within \(4\times10^{-4}\)
+(Section~\ref{sec:scm-identification}), so the disclosure is about
+data-dependent non-uniqueness, not a standing numerical defect. The
+causal-forest row is T3: the two forest engines are equivalent to
+within a tenth of a sampling standard error and equally noisy across
+seeds, which is an equivalence claim, not parity. The
+\ParityThirdPartyModuleCount{} Track~A rows served by third-party
+\proglang{Python} libraries validate \statspai{}'s wrappers of those
+libraries, not native algorithms. The configuration map behind
+\code{sp.validation\_scope} covers the twelve suite estimators; for
+the rest of the registry the evidence notes name the artifact but not
+its configuration. Third,
+the \pkg{fect} and \pkg{interflex} cross-validation selectors for the
+factor number, penalty, and kernel bandwidth are ported in
+1.29.0 but can only be graded T3: their folds are random,
+so the three-ecosystem parity of Section~\ref{sec:ex-fect} is
+established at user-specified tuning values, and the selectors are
+checked by given-fold score equality plus across-seed agreement of the
+selection. Fourth, Stata reproduction requires a
+separate licence, so Stata rows are migration bridges rather than the
+licence-free core of the archive; \NoStataModuleCount{} of the \RParityModuleCount{} modules carry no Stata
+reference, each with a measured reason. Fifth, Bayesian, causal-discovery,
+and behavioural-agent evaluations require different loss functions and
+are outside this software-validation article. Sixth, within DiD, \statspai{} implements the apparatus of the
+\citet{baker2026difference} practitioner's guide but not the efficient
+combination of comparison groups and baseline periods
+\citep{chen2025efficient} or selection-based pre-trend diagnostics
+\citep{ghanem2026selection}.
+
+The unification itself has costs worth stating plainly, because they
+are the price of the design rather than defects of it. A unified API
+necessarily lags its upstream references: when \pkg{did} or
+\pkg{fixest} ships a new option, \statspai{} users wait for the ported,
+parity-tested version, and the validation regime that makes the port
+trustworthy is exactly what makes it slower to ship. The registry's
+own census quantifies a second cost: \RegistryAutoUnbacked{} of the
+registered symbols carry API-contract evidence only, so a user who
+strays from the validated core onto a long-tail helper is relying on
+software-engineering guarantees, not statistical validation -- which is
+why the tier is printed at call time rather than in an appendix.
+Third, the evidence regime itself has a maintenance bill: every
+correctness fix in Table~\ref{tab:correctness-history} exists because a
+parity or coverage artifact flagged it, and keeping \RParityModuleCount{}
+modules pinned against two external ecosystems is ongoing work that a
+single-method package does not carry.
+
+A fourth cost is a limit of the regime rather than of the package. A
+parity ledger validates the paths it exercises and is silent about the
+rest: the 1.25.0 entry of Table~\ref{tab:correctness-history}, a
+continuous-treatment forest path no Track~A or Track~B row reaches,
+surfaced only in a worked example. That is why the registry records
+\emph{which} artifact backs a label, why \code{sp.validation\_scope}
+reports the configuration an artifact exercised, and why the worked
+examples are executed end-to-end.
+
+The roadmap is to resolve or further bound the remaining
+classical-SCM reference-disagreement disclosure, extend
+\(B=1{,}000\) coverage beyond the headline rows, close the two measured
+performance gaps of Section~\ref{sec:performance}, and move the agent
+interface from mechanical conformance to scored behavioural
+benchmarking.
+
+A final limitation is institutional: a large surface is maintained by a
+small team with one principal author. The risk is bounded by
+properties verifiable from the archive: the package is MIT-licensed with
+no relicensing clause, so the validated core can be forked; every
+output-changing fix is pinned by a regression test; and the parity
+harness is scripted and environment-pinned (\code{renv.lock}, recorded
+Stata versions, per-row JSON provenance), so any third party with the
+reference runtimes can re-execute it.
+
+\section*{Author contributions}
+
+B.\,W.\ designed and implemented \statspai{}, the validation harnesses
+and registry API, and drafted the manuscript. S.\,R.\ supervised the
+applied-econometrics programme, advised on scope and validation priorities,
+and reviewed the manuscript. Both authors approved the final version.
+
+\section*{Acknowledgements}
+
+The authors thank Stanford REAP for institutional support and feedback,
+and the maintainers of the \proglang{Python}, \proglang{R}, and
+\proglang{Stata} packages used as parity references. Any remaining
+errors are the authors' own.
+
+\section*{Conflict of interest}
+
+\statspai{} is MIT-licensed open-source software. The authors are
+affiliated with StatsPAI Inc., which maintains the package; CoPaper.AI
+is a commercial downstream product that may call \statspai{} but is not
+required to use it. B.\,W.\ is the creator and principal maintainer. No
+external funder had a role in the validation studies, analysis, or
+manuscript preparation.
+
+\section*{AI usage disclosure}
+
+Portions of code documentation and manuscript text were prepared with
+large-language-model assistance. The authors selected the claims,
+reviewed the text, and remain responsible for all statistical decisions.
+Numerical claims are tied to tests, replication scripts, frozen JSON
+artifacts, and cited references; citations are checked by the verifier
+in Section~\ref{sec:cite}.

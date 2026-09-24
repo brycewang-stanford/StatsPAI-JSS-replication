@@ -1,0 +1,13 @@
+\begin{tabular}{p{0.15\linewidth}p{0.28\linewidth}p{0.23\linewidth}p{0.24\linewidth}}
+    \toprule
+    Component & StatsPAI call & Role & Local mpdta output \\
+    \midrule
+    TWFE diagnostic & \code{sp.bacon\_\allowbreak{}decomposition(...)} & Goodman--Bacon decomposition & $\hat\beta_{TWFE}=-0.0375$; forbidden-share 0.0\% \\
+    Sun--Abraham & \code{sp.sun\_abraham(...)} & Interaction-weighted event study & ATT -0.0338 (SE 0.0090) \\
+    Callaway--Sant'Anna & \code{sp.callaway\_\allowbreak{}santanna(...)} & Group-time ATT aggregation & ATT -0.0330 (SE 0.0078) \\
+    BJS imputation & \code{sp.did\_imputation(...)} & Untreated-outcome imputation & ATT -0.0351 (SE 0.0069) \\
+    DR-DiD & \code{sp.callaway\_\allowbreak{}santanna(dr)} & Doubly robust 2x2/cell estimator & Dispatcher path; no separate simple-ATT row \\
+    Synthetic DiD & \code{sp.synth(..., method='sdid')} & Weighted SC $\times$ DiD design & Used when treated aggregate units need donor weights \\
+    Honest DiD & \code{sp.honest\_did(dynamic, e=0)} & Parallel-trends sensitivity & rejects zero up to $M=0.0050$ \\
+    \bottomrule
+\end{tabular}

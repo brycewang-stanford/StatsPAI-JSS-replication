@@ -1,0 +1,92 @@
+Transcript: <STATSPAI_ROOT>/Paper-JSS/replication/results/reproduce_tier1_output.txt
+======================================================================
+StatsPAI JSS replication -- Tier 1
+======================================================================
+
+[Tier 1] worked examples (Sections 4, 7) -- replicas + fixtures
+  -> ex01_card.py ...
+     ok (4.2s)
+  -> ex02_basque.py ...
+     ok (0.8s)
+  -> ex03_csdid.py ...
+     ok (1.3s)
+  -> ex04_lee.py ...
+     ok (1.5s)
+  -> ex05_lalonde.py ...
+     ok (1.6s)
+  -> ex06_causal_impact.py ...
+     ok (1.2s)
+  -> ex07_agent_trace.py ...
+     ok (1.4s)
+  -> ex08_fect_interflex.py ...
+     ok (1.0s)
+
+[Tier 1] figures, supplemental tables, registry inventory
+  -> generate_figures.py ...
+     ok (1.8s)
+  -> gen_appendix_A.py ...
+     ok (1.4s)
+  -> gen_appendix_C.py ...
+     ok (1.3s)
+  -> generate_inventory.py ...
+     ok (1.3s)
+  -> Track-A parity rollup ...
+     ok (0.1s)
+  -> Track-C performance artifacts ...
+     ok (0.8s)
+
+[Tier 1] validation against TRUTH (no external language needed)
+  -> causal-forest AIPW recovery ...
+     ok (12.3s)
+  -> JSS headline-count guard ...
+     ok (9.3s)
+  -> methodological gap ledger ...
+     ok (0.0s)
+  -> frozen Stata bridge audit ...
+     ok (0.0s)
+  -> agent interface audit ...
+     ok (1.4s)
+  -> release boundary audit ...
+     ok (0.0s)
+  -> reproduction environment audit ...
+     ok (0.0s)
+  -> manuscript artifact audit ...
+     ok (0.1s)
+  -> manuscript listings execute ...
+     ok (16.2s)
+
+[Tier 1] citation verifier
+  -> verify_citations.py ...
+     ok (0.0s)
+
+======================================================================
+SUMMARY
+======================================================================
+  [PASS] ex01_card.py                                         4.2s
+  [PASS] ex02_basque.py                                       0.8s
+  [PASS] ex03_csdid.py                                        1.3s
+  [PASS] ex04_lee.py                                          1.5s
+  [PASS] ex05_lalonde.py                                      1.6s
+  [PASS] ex06_causal_impact.py                                1.2s
+  [PASS] ex07_agent_trace.py                                  1.4s
+  [PASS] ex08_fect_interflex.py                               1.0s
+  [PASS] generate_figures.py                                  1.8s
+  [PASS] gen_appendix_A.py                                    1.4s
+  [PASS] gen_appendix_C.py                                    1.3s
+  [PASS] generate_inventory.py                                1.3s
+  [PASS] Track-A parity rollup                                0.1s
+  [PASS] Track-C performance artifacts                        0.8s
+  [PASS] causal-forest AIPW recovery                         12.3s
+  [PASS] JSS headline-count guard                             9.3s
+  [PASS] methodological gap ledger                            0.0s
+  [PASS] frozen Stata bridge audit                            0.0s
+  [PASS] agent interface audit                                1.4s
+  [PASS] release boundary audit                               0.0s
+  [PASS] reproduction environment audit                       0.0s
+  [PASS] manuscript artifact audit                            0.1s
+  [PASS] manuscript listings execute                         16.2s
+  [PASS] verify_citations.py                                  0.0s
+----------------------------------------------------------------------
+  24/24 steps passed in 1.0 min
+  RESULT: OK -- all required steps reproduced.
+  (Every Section 4-7 headline number was rebuilt without R or Stata.)

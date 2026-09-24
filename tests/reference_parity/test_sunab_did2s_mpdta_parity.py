@@ -1,0 +1,272 @@
+"""Reference parity on canonical ``did::mpdta``: Sun-Abraham and Gardner.
+
+Closes two coverage rows that previously had no matched-option runner against
+their R reference implementations:
+
+* ``sp.sun_abraham``  vs  ``fixest::sunab`` (fixest 0.14.0)
+* ``sp.gardner_did``  vs  ``did2s::did2s``  (did2s 1.2.1)
+
+Two convention notes, both verified rather than assumed:
+
+1. **Sun-Abraham overall aggregation.** ``sp.sun_abraham`` defaults to
+   ``aggregation='event_time'``, which equal-weights the post-treatment
+   relative-time IW effects. ``fixest::summary(..., agg='att')`` instead
+   weights every post cohort-time cell by its treated cohort size. Both are
+   legitimate summaries of the same event study; they differ substantially on
+   unbalanced panels (−0.0772 vs −0.0400 here, because e=0 carries 191 treated
+   observations while e=2 and e=3 carry 20 each). ``aggregation='fixest_att'``
+   selects the R convention and is what this module pins. The *event-study
+   vector itself* is convention-free and is pinned coefficient by coefficient.
+
+2. **Gardner two-stage standard errors.** The point estimate matches R to
+   ~1e-8 and the SE to ~1e-9 (R's value below is stored to 10 significant
+   digits). The default ``vce='analytic'`` is the did2s corrected clustered
+   variance -- the stage-2 sandwich built from the two-stage influence
+   function, so the stage-1 fixed-effect estimation error is propagated with
+   no small-sample factor, exactly as ``did2s::did2s`` does. The
+   pre-correction stage-2-only SE is still reachable as ``vce='stage2'``
+   (~18% low on this fixture) and is pinned below so its size stays on
+   record; ``vce='bootstrap'`` agrees with the analytic SE to bootstrap noise.
+
+Data provenance
+---------------
+``tests/orig_parity/data/02_mpdta_original.csv``, SHA256
+``1b789c34e12ff490b2f432217a1f70af334117523eb44d20eb842ed92a574661`` —
+verified byte-identical to a rebuild of ``did::mpdta`` from the R package.
+
+References
+----------
+- Sun, L. and Abraham, S. (2021). "Estimating dynamic treatment effects in
+  event studies with heterogeneous treatment effects." *Journal of
+  Econometrics*, 225(2), 175-199. [@sun2021estimating]
+- Gardner, J. (2022). "Two-stage differences in differences."
+  arXiv:2207.05943. [@gardner2022twostage]
+"""
+
+from __future__ import annotations
+
+import hashlib
+import pathlib
+import warnings
+
+import pandas as pd
+import pytest
+
+import statspai as sp
+
+_MPDTA = (
+    pathlib.Path(__file__).resolve().parents[1]
+    / "orig_parity"
+    / "data"
+    / "02_mpdta_original.csv"
+)
+_MPDTA_SHA256 = "1b789c34e12ff490b2f432217a1f70af334117523eb44d20eb842ed92a574661"
+
+# ---------------------------------------------------------------------------
+# R reference values, generated on the locked CSV above.
+#   fixest 0.14.0:
+#     feols(lemp ~ sunab(g_sa, year) | countyreal + year, cluster = ~countyreal)
+#     where g_sa recodes never-treated (first_treat == 0) to 10000
+#   did2s 1.2.1:
+#     did2s(yname="lemp", first_stage = ~0 | countyreal + year,
+#           second_stage = ~i(dpost, ref=FALSE), treatment="dpost",
+#           cluster_var="countyreal")
+# ---------------------------------------------------------------------------
+R_SUNAB_EVENT = {
+    -4: (0.00330636, 0.02455510),
+    -3: (0.02502183, 0.01815434),
+    -2: (0.02445874, 0.01426679),
+    0: (-0.01993182, 0.01185754),
+    1: (-0.05095737, 0.01687068),
+    2: (-0.13725874, 0.03658948),
+    3: (-0.10081136, 0.03450427),
+}
+R_SUNAB_AGG_ATT = (-0.0399512752, 0.0117962774)
+R_DID2S_STATIC = (-0.0477099151, 0.0134784088)
+
+
+@pytest.fixture(scope="module")
+def mpdta() -> pd.DataFrame:
+    if not _MPDTA.exists():  # pragma: no cover - fixture shipped with the repo
+        pytest.skip(f"locked mpdta fixture missing: {_MPDTA}")
+    digest = hashlib.sha256(_MPDTA.read_bytes()).hexdigest()
+    assert digest == _MPDTA_SHA256, (
+        "the mpdta fixture changed — the pinned R reference numbers in this "
+        f"module were locked against {_MPDTA_SHA256}, got {digest}"
+    )
+    return pd.read_csv(_MPDTA)
+
+
+# ===========================================================================
+# Sun & Abraham vs fixest::sunab
+# ===========================================================================
+
+
+def test_sunab_event_study_matches_fixest(mpdta):
+    """Every IW event-study coefficient matches fixest::sunab."""
+    res = sp.sun_abraham(mpdta, y="lemp", g="first_treat", t="year", i="countyreal")
+    got = {int(e): a for e, a in zip(res.detail["relative_time"], res.detail["att"])}
+
+    assert set(got) == set(R_SUNAB_EVENT), (
+        f"event-time grid drifted: got {sorted(got)}, "
+        f"expected {sorted(R_SUNAB_EVENT)}"
+    )
+    for e, (att_r, _) in R_SUNAB_EVENT.items():
+        assert got[e] == pytest.approx(
+            att_r, abs=1e-6
+        ), f"e={e}: StatsPAI {got[e]:.8f} vs fixest {att_r:.8f}"
+
+
+def test_sunab_event_study_ses_match_fixest(mpdta):
+    """Cluster-robust SEs on the event study reproduce fixest exactly.
+
+    ``fixest::sunab`` treats the cohort shares as fixed when it
+    aggregates cohort-by-relative-time coefficients; Sun & Abraham
+    (2021, Prop. 3) and Stata's ``eventstudyinteract`` add the
+    share-estimation term ``β' Var(ŵ) β``. StatsPAI's default
+    (``share_variance=True``) follows the authors' own implementation and
+    is pinned to Stata at 8e-12 by parity module 05; ``share_variance=False``
+    is the fixest convention and must match ``fixest`` at machine level
+    on every relative time. Both use the fixest/reghdfe nested
+    degrees-of-freedom rule, so the default also matches fixest exactly
+    wherever a single cohort is eligible (Var(ŵ) is degenerate there)
+    and exceeds it, by the positive share term, wherever several are.
+    """
+    fixed = sp.sun_abraham(
+        mpdta,
+        y="lemp",
+        g="first_treat",
+        t="year",
+        i="countyreal",
+        share_variance=False,
+    )
+    got_fixed = {
+        int(e): s for e, s in zip(fixed.detail["relative_time"], fixed.detail["se"])
+    }
+    for e, (_, se_r) in R_SUNAB_EVENT.items():
+        # R_SUNAB_EVENT is transcribed to 8 decimals, so 1e-8 absolute is
+        # the transcription precision, not a parity budget.
+        assert got_fixed[e] == pytest.approx(
+            se_r, abs=1e-8
+        ), f"e={e}: fixed-share SE {got_fixed[e]:.10f} vs fixest {se_r:.10f}"
+
+    default = sp.sun_abraham(mpdta, y="lemp", g="first_treat", t="year", i="countyreal")
+    es = default.detail
+    got = {int(e): s for e, s in zip(es["relative_time"], es["se"])}
+    n_cohorts = {int(e): int(k) for e, k in zip(es["relative_time"], es["n_cohorts"])}
+    for e, (_, se_r) in R_SUNAB_EVENT.items():
+        if n_cohorts[e] == 1:
+            assert got[e] == pytest.approx(
+                se_r, abs=1e-8
+            ), f"e={e}: single-cohort SE {got[e]:.10f} vs fixest {se_r:.10f}"
+        else:
+            # Share term is positive semi-definite and, on mpdta, at most
+            # 0.93% of the SE (e=1).
+            assert (
+                se_r < got[e] <= se_r * 1.01
+            ), f"e={e}: default SE {got[e]:.10f} vs fixest {se_r:.10f}"
+    assert default.model_info["dof_K"] == 17  # 12 observed cells + 5 year effects
+
+
+def test_sunab_fixest_att_aggregation_matches_r(mpdta):
+    """``aggregation='fixest_att'`` reproduces fixest's agg='att' summary."""
+    res = sp.sun_abraham(
+        mpdta,
+        y="lemp",
+        g="first_treat",
+        t="year",
+        i="countyreal",
+        aggregation="fixest_att",
+    )
+    att_r, se_r = R_SUNAB_AGG_ATT
+    assert res.estimate == pytest.approx(att_r, abs=1e-8)
+    assert res.se == pytest.approx(se_r, rel=0.01)
+
+
+def test_sunab_default_aggregation_is_event_time_not_fixest(mpdta):
+    """Pin the documented default so the convention gap stays visible.
+
+    The default equal-weights event times; fixest weights by treated cohort
+    size.  On this unbalanced panel that is a ~2x difference, which is a real
+    migration footgun worth keeping under test rather than discovering in a
+    replication.
+    """
+    default = sp.sun_abraham(mpdta, y="lemp", g="first_treat", t="year", i="countyreal")
+    post = default.detail.loc[default.detail["relative_time"] >= 0, "att"]
+
+    assert default.estimate == pytest.approx(float(post.mean()), rel=1e-12)
+    assert default.model_info["summary_aggregation"] == "event_time"
+    # Both conventions are carried on the result so either can be reported.
+    assert default.model_info["att_fixest_att"] == pytest.approx(
+        R_SUNAB_AGG_ATT[0], abs=1e-8
+    )
+
+
+# ===========================================================================
+# Gardner two-stage vs did2s
+# ===========================================================================
+
+
+def test_gardner_point_estimate_matches_did2s(mpdta):
+    """Static two-stage ATT matches R did2s to ~1e-8."""
+    res = sp.gardner_did(
+        mpdta, y="lemp", group="countyreal", time="year", first_treat="first_treat"
+    )
+    assert res.estimate == pytest.approx(R_DID2S_STATIC[0], abs=1e-7)
+
+
+def test_gardner_analytic_se_matches_did2s(mpdta):
+    """The default SE is did2s's corrected two-stage clustered variance.
+
+    R's SE is stored to 10 significant digits, so rel 1e-8 is the tightest
+    honest bound (observed 5.8e-10). No warning is expected on the default
+    path.
+    """
+    se_r = R_DID2S_STATIC[1]
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        analytic = sp.gardner_did(
+            mpdta, y="lemp", group="countyreal", time="year", first_treat="first_treat"
+        )
+    assert not [w for w in caught if "gardner_did" in str(w.message)]
+    assert analytic.se == pytest.approx(se_r, rel=1e-8)
+
+
+def test_gardner_stage2_se_understates_and_bootstrap_agrees(mpdta):
+    """Pin the size of the legacy stage-2-only SE against the reference.
+
+    ``vce='stage2'`` ignores stage-1 estimation error and lands ~18% below
+    R's on this fixture (it was the default before the correction and warns);
+    ``vce='bootstrap'`` propagates both stages and lands within bootstrap
+    noise of R.  Bands are loose enough for bootstrap noise but tight enough
+    to catch a regression in either direction.
+    """
+    se_r = R_DID2S_STATIC[1]
+
+    with pytest.warns(UserWarning, match="stage2"):
+        legacy = sp.gardner_did(
+            mpdta,
+            y="lemp",
+            group="countyreal",
+            time="year",
+            first_treat="first_treat",
+            vce="stage2",
+        )
+    boot = sp.gardner_did(
+        mpdta,
+        y="lemp",
+        group="countyreal",
+        time="year",
+        first_treat="first_treat",
+        vce="bootstrap",
+    )
+
+    assert 0.70 < legacy.se / se_r < 0.85, (
+        f"stage2/R SE ratio {legacy.se / se_r:.4f} left the known band — "
+        "the legacy stage-2 variance changed"
+    )
+    assert 0.90 < boot.se / se_r < 1.10, (
+        f"bootstrap/R SE ratio {boot.se / se_r:.4f}: the bootstrap should "
+        "recover R's two-stage SE"
+    )
+    assert boot.estimate == pytest.approx(legacy.estimate, rel=1e-12)

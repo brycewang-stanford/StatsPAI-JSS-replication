@@ -1,0 +1,57 @@
+{
+  "estimator": "01_hdfe",
+  "side": "R",
+  "rows": [
+    {
+      "estimator": "01_hdfe",
+      "side": "R",
+      "n": 10000,
+      "n_reps": 5,
+      "median_time_s": 0.00435900688171387,
+      "iqr_time_s": 9.41753387451172e-05,
+      "min_time_s": 0.00426006317138672,
+      "max_time_s": 0.00452399253845215,
+      "peak_mem_mb": null,
+      "extra": {
+        "n_firms": 200,
+        "package": "fixest"
+      }
+    },
+    {
+      "estimator": "01_hdfe",
+      "side": "R",
+      "n": 100000,
+      "n_reps": 5,
+      "median_time_s": 0.0086209774017334,
+      "iqr_time_s": 0.000166177749633789,
+      "min_time_s": 0.00845718383789062,
+      "max_time_s": 0.00923395156860352,
+      "peak_mem_mb": null,
+      "extra": {
+        "n_firms": 632,
+        "package": "fixest"
+      }
+    },
+    {
+      "estimator": "01_hdfe",
+      "side": "R",
+      "n": 1000000,
+      "n_reps": 5,
+      "median_time_s": 0.0487449169158936,
+      "iqr_time_s": 0.000551223754882812,
+      "min_time_s": 0.0483591556549072,
+      "max_time_s": 0.0492949485778809,
+      "peak_mem_mb": null,
+      "extra": {
+        "n_firms": 2000,
+        "package": "fixest"
+      }
+    }
+  ],
+  "hardware": {
+    "reference_package": "fixest 0.14.0",
+    "platform": "darwin20",
+    "R_version": "R version 4.5.2 (2025-10-31)"
+  },
+  "extra": []
+}

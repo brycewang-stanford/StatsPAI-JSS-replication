@@ -1,0 +1,181 @@
+%% StatsPAI -- JSS submission
+%% --------------------------------------------------------------
+%% Author: Biaoyue (Bryce) Wang -- brycew6m@stanford.edu
+%% Class:   jss.cls (https://www.jstatsoft.org/about/submissions)
+%% Compile: latexmk -pdf main.tex
+%%
+%% Notes
+%% -----
+%% * The active manuscript intentionally uses the submission-facing
+%%   `\documentclass[article]{jss}` mode.  The JSS style guide reserves
+%%   `nojss` for package-vignette derivatives, not for the manuscript PDF.
+%% * jss.cls already provides \code, \pkg, \proglang, \email, \doi,
+%%   and loads natbib (authoryear, round) + hyperref.  The earlier
+%%   article-class build redefined those macros; with jss.cls they come
+%%   for free and the redefinitions are intentionally dropped.
+%% * The earlier article-class backup used during style migration is
+%%   preserved at main-article-class.tex.bak.
+%% --------------------------------------------------------------
+
+\documentclass[article]{jss}
+
+%% Recommended packages from the JSS template.
+\usepackage{orcidlink,thumbpdf,lmodern}
+
+%% Packages we still need beyond the JSS defaults.
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{booktabs,longtable,array,multirow}
+\usepackage{listings}
+\usepackage{enumitem}
+\usepackage{microtype}
+%% Printed transcripts are 20-30 lines and read badly when a page break
+%% lands inside the output block; \Needspace moves the whole transcript
+%% to the next page rather than splitting it.
+\usepackage{needspace}
+
+%% Code listing style approximating JSS Sinput / Soutput.  We retain
+%% listings (rather than jss.cls's fancyvrb CodeInput) for the numbered,
+%% cross-referenceable captions the text relies on, but the rendering is
+%% deliberately verbatim-equivalent:
+%%
+%%   columns=fullflexible + keepspaces  -- listings' default [c]fixed mode
+%%     pads every glyph into a fixed box, which spreads identifiers into
+%%     "sp . datasets . card_1995 ()" in the PDF and makes the code
+%%     uncopyable.  fullflexible uses the typewriter font's natural
+%%     widths, so a listing sets exactly as \verb would.
+%%   upquote  -- straight ' and " so a reader can paste a listing into a
+%%     Python prompt without silently getting curly quotes.
+%%   no language=/keywordstyle=  -- JSS does not syntax-highlight code;
+%%     bolding Python keywords was a house-style deviation.
+%%
+%% Every printed listing is executed verbatim by
+%% replication/scripts/listings_execute_audit.py, so a listing that stops
+%% being runnable fails `make verify` rather than reaching a reviewer.
+\definecolor{codebg}{gray}{0.96}
+\lstdefinestyle{Sinput}{
+  basicstyle=\ttfamily\small,
+  backgroundcolor=\color{codebg},
+  frame=single, framesep=4pt, framerule=0pt,
+  columns=fullflexible,
+  keepspaces=true,
+  upquote=true,
+  breaklines=true,
+  breakautoindent=false,
+  breakindent=2em,
+  postbreak={\mbox{$\hookrightarrow$\space}},
+  showstringspaces=false,
+  aboveskip=1.2\medskipamount,
+  belowskip=0.6\medskipamount,
+}
+\lstdefinestyle{Soutput}{
+  style=Sinput,
+  backgroundcolor=\color{codebg!60!white},
+}
+\lstset{style=Sinput}
+
+%% Custom commands.  jss.cls defines \code, \pkg, \proglang for us.
+%% Wrap \pkg{StatsPAI} in \texorpdfstring so the macro is also safe
+%% to use inside section titles (where hyperref needs a plain-text
+%% PDF-bookmark string).
+\newcommand{\statspai}{\texorpdfstring{\pkg{StatsPAI}}{StatsPAI}}
+%% natbib prints every author on a reference's first in-text citation.
+%% For the three large-collaboration entries that means eight names and
+%% two lines of body text to name one dependency, so force the
+%% abbreviated form everywhere: HELM (50 authors), NumPy, SciPy, and
+%% scikit-learn (16).
+\shortcites{liang2023helm,harris2020array,virtanen2020scipy,%
+            pedregosa2011scikit}
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+\input{generated_claims.tex}
+
+%% -- Article metainformation (JSS macros) ------------------------------------
+
+%% Title-block affiliations are kept to two lines per author so the JSS
+%% title page still holds the abstract; the full affiliation string
+%% (identical to paper.md / CITATION.cff) is in \Address below.
+\author{Biaoyue Wang~\orcidlink{0000-0002-1828-2208}\\
+        Stanford University\\
+        \emph{and} StatsPAI Inc.
+        \And
+        Scott Rozelle~\orcidlink{0000-0001-5053-0243}\\
+        Stanford University\\
+        \emph{and} StatsPAI Inc.}
+\Plainauthor{Biaoyue Wang, Scott Rozelle}
+
+\title{\statspai{}: Validation-Tiered \proglang{Python} Workflows for
+       Causal Inference}
+\Plaintitle{StatsPAI: Validation-Tiered Python Workflows for Causal Inference}
+\Shorttitle{\statspai{}: Validation-Tiered \proglang{Python} Causal Inference}
+
+\Abstract{
+\statspai{} is a \proglang{Python} package for applied causal inference
+and econometrics in which every registered function carries an evidence
+tier that a user or an agent can query at call time. This article asks
+what such a label certifies, and describes the design that makes the
+answer checkable. Parity rows are classified by what the \statspai{}
+side actually executes, verified by a call trace of every module
+(\ParityNativeModuleCount{} of \RParityModuleCount{} run native code,
+\ParityThirdPartyModuleCount{} wrap third-party \proglang{Python}
+libraries, and none call the reference they are compared against);
+evidence is recorded per configuration, so a user can ask whether the
+variant, inference option, and code path just fitted is the one that was
+tested; automated diagnostics distinguish a missing check from one that
+does not exist for the fit; and stochastic estimators are graded by
+seed-replicated equivalence against an explicit margin rather than by
+their sampling standard errors. The evidence covers a twelve-estimator
+core: same-byte parity with canonical \proglang{R} implementations
+(\RParityModuleCount{} modules) and audited \proglang{Stata} bridges
+(\StataParityModuleCount{}), known-truth recovery, Monte Carlo coverage
+at \(B=1{,}000\) reported with bias, Monte Carlo standard deviation, and
+standard-error calibration, and a performance study that keeps
+unfavourable comparisons. Applying the design to the package found
+defects that numerical agreement alone had not: two parity rows that
+compared \proglang{R} with itself, a coverage row that measured a
+different estimator from the one it named, an entropy-balancing standard
+error twice the estimator's Monte Carlo standard deviation, and an audit
+that requested an over-identification test for a just-identified model.
+Seven worked examples, executed verbatim and one returning the same numbers as its
+\proglang{R} and \proglang{Stata} references on identical bytes, and a
+licence-free replication path complete the article. The evidence for
+the agent-facing interface is mechanical and contractual, not a claim of
+behavioural agent superiority.
+}
+
+\Keywords{causal inference, applied econometrics, validation tiers, \proglang{Python},
+          \proglang{R}, \proglang{Stata}, software, machine learning,
+          agent-facing registry API, large language models, reproducibility}
+\Plainkeywords{causal inference, applied econometrics, validation tiers, Python, R,
+               Stata, software, machine learning, agent-facing registry API,
+               large language models, reproducibility}
+
+\Address{
+  Biaoyue Wang (corresponding author)\\
+  Rural Education Action Program, Stanford Center on China's Economy and Institutions,\\
+  Stanford University, United States\\
+  \emph{and} StatsPAI Inc., United States\\
+  E-mail: \email{brycew6m@gmail.com}, \email{brycew6m@stanford.edu}\\
+  URL: \url{https://github.com/brycewang-stanford/StatsPAI}\\[6pt]
+  Scott Rozelle\\
+  Rural Education Action Program, Stanford Center on China's Economy and Institutions,\\
+  Stanford University, United States\\
+  \emph{and} StatsPAI Inc., United States\\
+  E-mail: \email{rozelle@stanford.edu}
+}
+
+\begin{document}
+
+\input{sections/01-introduction-compact.tex}
+\input{sections/02-architecture-compact.tex}
+\input{sections/03-agent-facing-compact.tex}
+\input{sections/04-examples-compact.tex}
+\input{sections/05-parity-compact.tex}
+\input{sections/06-performance.tex}
+\input{sections/07-agent-eval.tex}
+\input{sections/08-computational-details-compact.tex}
+\input{sections/09-discussion-compact.tex}
+
+\bibliography{jss-bib}
+
+\input{sections/appendix.tex}
+
+\end{document}

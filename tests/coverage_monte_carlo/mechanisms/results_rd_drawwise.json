@@ -1,0 +1,9 @@
+{
+  "n_draws": 200,
+  "max_rel_diff_estimate": 6.6244383061516915e-12,
+  "max_abs_diff_ci": 6.035172361862351e-12,
+  "coverage_statspai": 0.895,
+  "coverage_rdrobust": 0.895,
+  "same_draws_covered": true,
+  "rdrobust_version": "4.0.0"
+}

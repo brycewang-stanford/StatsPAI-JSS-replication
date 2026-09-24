@@ -1,0 +1,45 @@
+{
+  "module": "13_causal_forest",
+  "side": "py",
+  "rows": [
+    {
+      "module": "13_causal_forest",
+      "side": "py",
+      "statistic": "ate_causal_forest",
+      "estimate": 1.0120093758465099,
+      "se": 0.03539045559565791,
+      "ci_lo": 0.9426453574825563,
+      "ci_hi": 1.0813733942104633,
+      "n": 4000,
+      "extra": {}
+    },
+    {
+      "module": "13_causal_forest",
+      "side": "py",
+      "statistic": "att_causal_forest",
+      "estimate": 1.0084701421535274,
+      "se": 0.03718202688597936,
+      "ci_lo": 0.9355947085848079,
+      "ci_hi": 1.081345575722247,
+      "n": 4000,
+      "extra": {}
+    }
+  ],
+  "extra": {
+    "n_estimators": 2000,
+    "random_state": 42,
+    "covariates": [
+      "x1",
+      "x2",
+      "x3",
+      "x4",
+      "x5"
+    ],
+    "estimator": "AIPW doubly-robust (grf-aligned)",
+    "aipw_clip": 0.25,
+    "true_ate": 1.0034061636502045,
+    "true_att": 1.0044253057506767,
+    "dgp": "clean overlap: e(X)=0.5+0.2*tanh(X1) in [0.30,0.70]; tau(X)=1+0.5*X2; Y=X1+0.5*X3+tau*T+N(0,1); N=4000.",
+    "note": "Both sp.causal_forest.average_treatment_effect and grf::average_treatment_effect report the AIPW doubly-robust ATE/ATT, and since v1.21 they use the identical operator for both: the ATE score is grf's influence function and the ATT is grf's plug-in CATE average over the treated arm plus a Hajek-normalised doubly-robust correction, with the two variance components summed. Fed grf's own forest outputs, StatsPAI reproduces grf::get_scores elementwise to 2.3e-14 and grf's ATE/ATT estimate and std.err to 1e-15 (tests/reference_parity/test_grf_aipw_operator_parity.py), so the rows below isolate forest RNG rather than any formula difference. On this clean-overlap DGP the StatsPAI row uses clip=0.25, consistent with the known e(X) support [0.30,0.70], and agrees with grf within combined Monte Carlo error. A multi-seed clean-overlap pytest guard checks AIPW truth recovery for both ATE and ATT. The former NSW-DW stress case is now tracked in the Track B robustness sweep."
+  }
+}

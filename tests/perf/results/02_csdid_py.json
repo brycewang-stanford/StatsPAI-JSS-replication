@@ -1,0 +1,68 @@
+{
+  "estimator": "02_csdid",
+  "side": "py",
+  "rows": [
+    {
+      "estimator": "02_csdid",
+      "side": "py",
+      "n": 5000,
+      "n_reps": 3,
+      "median_time_s": 0.007643874967470765,
+      "iqr_time_s": 0.0002608750946819782,
+      "min_time_s": 0.007425290998071432,
+      "max_time_s": 0.00768616609275341,
+      "peak_mem_mb": 163.65625,
+      "peak_gpu_hbm_mb": null,
+      "extra": {
+        "n_units": 1000,
+        "T": 5
+      }
+    },
+    {
+      "estimator": "02_csdid",
+      "side": "py",
+      "n": 25000,
+      "n_reps": 3,
+      "median_time_s": 0.010498541058041155,
+      "iqr_time_s": 0.0001308320788666606,
+      "min_time_s": 0.0104495839914307,
+      "max_time_s": 0.01058041607029736,
+      "peak_mem_mb": 169.625,
+      "peak_gpu_hbm_mb": null,
+      "extra": {
+        "n_units": 5000,
+        "T": 5
+      }
+    },
+    {
+      "estimator": "02_csdid",
+      "side": "py",
+      "n": 125000,
+      "n_reps": 3,
+      "median_time_s": 0.02696633292362094,
+      "iqr_time_s": 0.0010677919490262866,
+      "min_time_s": 0.026781582972034812,
+      "max_time_s": 0.0278493749210611,
+      "peak_mem_mb": 202.296875,
+      "peak_gpu_hbm_mb": null,
+      "extra": {
+        "n_units": 25000,
+        "T": 5
+      }
+    }
+  ],
+  "hardware": {
+    "platform": "macOS-26.6.2-arm64-arm-64bit",
+    "processor": "arm",
+    "machine": "arm64",
+    "python": "3.10.20",
+    "cpu_logical": 8,
+    "cpu_physical": 8,
+    "mem_gb": 24.0,
+    "load_avg_1m_at_start": 1.35,
+    "git_commit": "3afb4353882a321037c755188e309c8329b9846b",
+    "statspai_version": "1.30.1",
+    "statspai_commit": "a24a25347c9d56815f15f6abef09498de014d894"
+  },
+  "extra": {}
+}

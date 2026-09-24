@@ -1,0 +1,249 @@
+# `tests/r_parity/` — cross-language parity harness against R
+
+This directory contains the **StatsPAI ↔ R numerical-parity harness**:
+each module pair runs the same calibrated replica on both sides,
+dumps a full-precision JSON result, and lets `compare.py` produce a
+per-module headline table for the JSS paper's Appendix B.
+
+It complements:
+
+- [`tests/reference_parity/`](../reference_parity/) — pure-Python
+  pytest tests that verify `sp.*` recovers the *true* parameter on
+  deterministic DGPs (no R involved).
+- [`tests/external_parity/`](../external_parity/) — pytest tests
+  that pin replica outputs to constants documented in
+  [`tests/external_parity/PUBLISHED_REFERENCE_VALUES.md`](../external_parity/PUBLISHED_REFERENCE_VALUES.md).
+
+## Layout
+
+```
+tests/r_parity/
+├── _common.py            # shared scaffolding for the Python side
+├── _common.R             # shared scaffolding for the R side
+├── compare.py            # joins JSONs, emits 2-way and 3-way parity tables
+├── NN_<method>.py        # one Python script per module
+├── NN_<method>.R         # the matching R script when a reference is materialized
+├── data/                 # CSVs dumped from sp.datasets so R sees same bytes
+└── results/
+    ├── NN_<method>_{py,R}.json   # full-precision per-module results
+    ├── parity_table.md           # human-readable R rollup
+    ├── parity_table_3way.md      # human-readable R + Stata rollup
+    └── parity_table_3way.tex     # LaTeX longtable for Appendix B
+```
+
+Historical verification worklog (not the current source-snapshot audit):
+[`PARITY_TEST_WORKLOG_2026-05-29.md`](PARITY_TEST_WORKLOG_2026-05-29.md).
+
+## Modules (87 materialized StatsPAI--R rows; 81 carry a Stata artifact)
+
+Module `50_xtabond` is now materialized on the R side through
+`plm::pgmm`, so all modules 01--64 have committed StatsPAI--R rows.
+The native Python rows used by the loose/reference-bridge audit are
+modules 01--52; modules 53--56 are additional R-only
+robust/cluster-SE parity rows, and modules 57--64 extend the GLM /
+IV / system / limited-dependent-variable coverage (logit, Poisson,
+LIML, SUR, beta regression, truncated regression, ZIP, ZINB).
+Modules 65--66 open the spatial-econometrics family, aligning the SAR /
+SEM / SDM maximum-likelihood estimators and the SAR-2SLS / SEM-GMM
+moment estimators against `spatialreg`. Module 67 extends the
+absorbing-FE estimator family (sp.feols is already bit-exact against
+fixest::feols, Track A module 03) to absorbed-FE GLMs — `sp.feglm` and
+`sp.fepois` against their fixest siblings. Module 68 pins `sp.demean` to
+the textbook mean-within projection (algorithmic, machine-tier). Module
+69 aligns `sp.balance_panel` to the base R `counts == n_periods` row
+filter. Module 70 opens the policy-learning family: `sp.policy_tree`
+against `policytree::policy_tree`, sharing the doubly-robust score
+vector through the CSV so the two exact tree searches optimise the
+identical objective. Module 71 closes the DML variant gap left by
+module 08: `sp.dml`'s parity grade was certified for `model='plr'` only,
+so IRM / PLIV / IIVM are now pinned to their `DoubleML` model classes on
+a shared explicit fold partition.
+
+| # | Module | StatsPAI | R / reference side |
+| --- | --- | --- | --- |
+| 01 | OLS + HC1 SE | `sp.regress` | `lm` + `sandwich::vcovHC` |
+| 02 | 2SLS + HC1 SE | `sp.ivreg` | `AER::ivreg` |
+| 03 | HDFE 2-way FE | `sp.fast.feols` | `fixest::feols` |
+| 04 | CS-DiD simple ATT | `sp.callaway_santanna` | `did::att_gt` + `aggte` |
+| 05 | Sun-Abraham event study | `sp.sun_abraham` | `fixest::sunab` |
+| 06 | RD CCT bias-corrected | `sp.rdrobust` (native CCT; port recorded separately) | `rdrobust::rdrobust` |
+| 07 | Classical SCM | `sp.synth(method="classic", backend="native")` | `Synth::synth` |
+| 08 | DML PLR | `sp.dml("plr")` | `DoubleML::DoubleMLPLR` |
+| 09 | RD density (CJM) | `sp.rddensity(backend="native")` | `rddensity::rddensity` |
+| 10 | Honest DiD smoothness | `sp.honest_did` (native FLCI) | `HonestDiD::createSensitivityResults` (exact quantile) + closed form at M = 0 |
+| 11 | PSM 1:1 NN | `sp.psm` | `MatchIt::matchit` |
+| 12 | Synthetic DID | `sp.sdid(backend="native")` | `synthdid::synthdid_estimate` |
+| 13 | Causal forest (AIPW) | `sp.causal_forest` | `grf::causal_forest` |
+| 14 | OLS + cluster SE | `sp.regress(cluster=)` | `lm` + `sandwich::vcovCL` |
+| 15 | HDFE + cluster SE | `sp.fast.feols(cr1)` | `fixest::feols(cluster=)` |
+| 16 | BJS imputation | `sp.did_imputation` | `didimputation::did_imputation` |
+| 17 | Wooldridge ETWFE | `sp.etwfe` + `sp.etwfe_emfx` + `sp.wooldridge_did` | `etwfe::etwfe` + `emfx` |
+| 18 | Augmented SCM | `sp.augsynth(backend="native")` | `augsynth::augsynth` |
+| 19 | Generalized SCM | `sp.gsynth(backend="native")` | `gsynth::gsynth` |
+| 20 | Goodman--Bacon decomp | `sp.bacon_decomposition` | `bacondecomp::bacon` |
+| 21 | Honest DiD relative-mags | `sp.honest_did(method="relative_magnitude")` (native ARP set) | `HonestDiD::createSensitivityResults_relativeMagnitudes` |
+| 22 | sensemakr | `sp.sensemakr` | `sensemakr::sensemakr` |
+| 23 | E-value | `sp.evalue` | `EValue::evalues.RR` |
+| 24 | Cox proportional hazards | `sp.survival.cox` | `survival::coxph` |
+| 25 | LMM | `sp.mixed` | `lme4::lmer` |
+| 26 | GLMM logit (Laplace) | `sp.melogit` | `lme4::glmer` |
+| 27 | GLMM AGHQ (n=8) | `sp.melogit(nAGQ=8)` | `lme4::glmer(nAGQ=8)` |
+| 28 | SFA cross-section | `sp.frontier` | `sfaR::sfacross` |
+| 29 | Panel SFA Pitt-Lee | `sp.xtfrontier` | `frontier::sfa` |
+| 30 | Blinder--Oaxaca | `sp.decompose("oaxaca")` | `oaxaca::oaxaca` |
+| 31 | DFL reweighting | `sp.decompose("dfl")` | `ddecompose::dfl_decompose` |
+| 32 | RIF / UQR (median) | `sp.decomposition.rif_decomposition` | `dineq::rif` + manual OLS |
+| 33 | VAR | `sp.var` | `vars::VAR` |
+| 34 | Local projections | `sp.local_projections(..., identification="lpirfs_cholesky")` | `lpirfs::lp_lin` |
+| 35 | Panel FE/RE/Hausman | `sp.panel` | `plm::plm` + `plm::phtest` |
+| 36 | Causal mediation | `sp.mediation` | `mediation::mediate` |
+| 37 | PPML + HDFE | `sp.ppmlhdfe` | `fixest::fepois` |
+| 38 | DR-DID (Sant'Anna-Zhao) | `sp.drdid` | `DRDID::drdid_imp_panel` |
+| 39 | ARIMA(2,0,0) | `sp.arima` | `stats::arima` |
+| 40 | Quantile regression | `sp.qreg` | `quantreg::rq` |
+| 41 | Tobit | `sp.tobit` | `censReg::censReg` |
+| 42 | Negative binomial | `sp.nbreg` | `MASS::glm.nb` |
+| 43 | Heckman selection | `sp.heckman` | `sampleSelection::heckit` |
+| 44 | Multinomial logit | `sp.mlogit` | `nnet::multinom` |
+| 45 | Ordered logit | `sp.ologit` | `MASS::polr(method="logistic")` |
+| 46 | Conditional logit | `sp.clogit` | `survival::clogit` |
+| 47 | PPML + 3-way HDFE | `sp.ppmlhdfe` | `fixest::fepois` |
+| 48 | Binary probit | `sp.probit` | `stats::glm(family=binomial("probit"))` |
+| 49 | Ordered probit | `sp.oprobit` | `MASS::polr(method="probit")` |
+| 50 | Arellano--Bond GMM | `sp.xtabond` | `plm::pgmm` |
+| 51 | Newey-West HAC OLS | `sp.regress(robust="hac")` | `sandwich::NeweyWest` |
+| 52 | Identified classical SCM DGP | `sp.synth(method="classic", backend="native")` | `Synth::synth` |
+| 53 | Cluster-robust CR2 SE (+ CR3 jackknife) | `sp.cr2_se` | `clubSandwich::vcovCR(type="CR2"/"CR3")` |
+| 54 | Two-way cluster-robust SE | `sp.twoway_cluster` | `sandwich::vcovCL(cluster=~g1+g2)` |
+| 55 | HC2 / HC3 robust SE | `sp.regress` | `sandwich::vcovHC(type="HC2"/"HC3")` |
+| 56 | Three-way cluster-robust SE | `sp.multiway_cluster_vcov` | `sandwich::vcovCL(cluster=~g1+g2+g3)` |
+| 57 | Binary logit | `sp.logit` | `stats::glm(family=binomial("logit"))` |
+| 58 | Poisson ML (no FE) | `sp.poisson` | `stats::glm(family=poisson())` |
+| 59 | LIML k-class IV | `sp.liml` | `ivmodel::LIML` |
+| 60 | SUR one-step FGLS | `sp.sureg` | `systemfit::systemfit(method="SUR", noDfCor)` |
+| 61 | Beta regression | `sp.betareg` | `betareg::betareg(link.phi="log")` |
+| 62 | Truncated regression | `sp.truncreg` | `truncreg::truncreg(method="NR")` |
+| 63 | Zero-inflated Poisson | `sp.zip_model` | `pscl::zeroinfl(dist="poisson")` |
+| 64 | Zero-inflated NB | `sp.zinb` | `pscl::zeroinfl(dist="negbin")` |
+| 65 | Spatial ML (SAR/SEM/SDM) | `sp.sar` / `sp.sem` / `sp.sdm` | `spatialreg::lagsarlm` / `spatialreg::errorsarlm` / `spatialreg::lagsarlm(Durbin=TRUE)` |
+| 66 | Spatial GMM (SAR-2SLS/SEM-GMM) | `sp.sar_gmm` / `sp.sem_gmm` | `spatialreg::stsls(W2X=FALSE)` / `spatialreg::GMerrorsar` |
+| 67 | Panel GLM (feglm / fepois) | `sp.feglm` / `sp.fepois` | `fixest::feglm` (family="logit") / `fixest::fepois` |
+| 68 | Within transformation | `sp.demean` | textbook mean-within (algorithmic) |
+| 69 | Panel balance filter | `sp.balance_panel` | base R counts == n_periods |
+| 70 | Policy tree (exact, depth 1--2) | `sp.policy_tree` | `policytree::policy_tree` |
+| 72 | TMLE (targeting step) | `sp.tmle(fluctuation="per_arm")` | `tmle::tmle` |
+| 73 | Gardner two-stage DiD | `sp.gardner_did` | `did2s::did2s` |
+| 74 | Changes-in-Changes (ATT + QTE) | `sp.cic` | `qte::CiC` |
+| 75 | Stacked DiD (CDLZ) | `sp.stacked_did` | hand-written stack + `fixest::feols` |
+| 76 | Pre-trends power (Roth 2022) | `sp.pretrends_power` / `sp.pretrends_slope_for_power` | `pretrends::pretrends` / `pretrends::slope_for_power` (GitHub, not CRAN) |
+| 77 | Triple differences (staggered DDD) | `sp.ddd_heterogeneous` | `triplediff::ddd` + `agg_ddd` |
+| 78 | dCDH intertemporal event study | `sp.did_multiplegt_dyn` | `DIDmultiplegtDYN::did_multiplegt_dyn` |
+| 79 | Functional-form test for parallel trends | `sp.functional_form_test` | `didFF::didFF` |
+| 80 | Continuous-treatment DiD (CGS) | `sp.cgs_continuous_did` | `contdid::cont_did` |
+| 81 | dCDH 2020 DID_M (on/off switching) | `sp.did_multiplegt` | `DIDmultiplegt::did_multiplegt` (archived 0.1.4) |
+| 82 | Design-based staggered rollout | `sp.staggered_rollout` | `staggered::staggered` / `staggered_cs` / `staggered_sa` (1.2.2) |
+| 83 | LP-DiD event study | `sp.lp_did` | direct transcription (no LP-DiD R package installed); Stata side uses the authors' `lpdid` |
+| 84 | BJS pre-treatment lead vector | `sp.did_imputation(pretrend_method="bjs")` | `didimputation::did_imputation` on the horizons; the three leads are a py<->Stata pin because R takes `pretrends` as a flag and omits relative time -1 while Stata takes a count and pools earlier periods |
+| 85 | Dynamic TWFE event study | `sp.event_study` | `fixest::feols(y ~ i(rel, treat, ref=-1) \| unit + time)` with default `ssc` (all three sides count the absorbed time effects in K since 1.24.0); non-staggered by design |
+| 86 | fect counterfactual estimators (fe / ife / mc) | `sp.fect(method="fe" / "ife" / "mc")` | `fect::fect(Y ~ D + X1 + X2, method=, force="two-way", se=FALSE, CV=FALSE, tol=1e-12, max.iteration=20000)`; Stata side uses the authors' `fect_stata` (GitHub, installed into a local ado path) |
+| 87 | interflex marginal effects (linear / binning / kernel) | `sp.interflex(estimator="linear" / "binning" / "kernel")` | `interflex::interflex(vartype="delta", vcov.type="robust", neval=5, nbins=3, bw=1)`; Stata side uses the SSC `interflex` command |
+| 88 | RD bandwidth selection (all ten CCT selectors) | `sp.rdbwselect` | `rdrobust::rdbwselect`; Stata side uses the authors' `rdbwselect` ado. `certwo` is R-only: Stata rdbwselect 10.0.0 exits r(3200) on it, including on the package's own `rdrobust_senate.dta` |
+| 89 | Multi-score / geographic RD at boundary points | `sp.rdms` | `rdmulti::rdms`; Stata side uses the `rdms` ado from the rdpackages GitHub mirror (rdmulti is not on SSC: `ssc describe rdmulti` returns r(601)), installed into a local gitignored ado path |
+| 71 | DML family (IRM / PLIV / IIVM) | `sp.dml(model="irm")` / `sp.dml(model="pliv")` / `sp.dml(model="iivm")` | `DoubleML::DoubleMLIRM` / `DoubleMLPLIV` / `DoubleMLIIVM` |
+
+## Running
+
+End-to-end run for a single module:
+
+```bash
+cd tests/r_parity
+python3 11_psm.py     # writes data/11_psm.csv + results/11_psm_py.json
+Rscript 11_psm.R      # reads same CSV + writes results/11_psm_R.json
+python3 compare.py    # refresh parity tables
+```
+
+Run all materialized R modules:
+
+```bash
+cd tests/r_parity
+for py in [0-9][0-9]_*.py; do
+  n="${py%.py}"
+  R="${n}.R"
+  test -f "${R}" || continue
+  python3 "${py}" && Rscript "${R}"
+done
+python3 compare.py
+```
+
+To execute the external runtime smoke tests from pytest on a machine
+with R/Stata installed, run:
+
+```bash
+pytest tests/test_parity_runtime.py -m external_parity_runtime --no-cov
+```
+
+## Tier A fixture lock
+
+The committed Tier A fixture set is hash-locked in
+[`TIER_A_FIXTURE_LOCK.json`](TIER_A_FIXTURE_LOCK.json). The lock covers
+the parity scripts, shared helpers, input CSVs, golden JSONs, rendered
+Appendix B tables, `renv.lock`, and the R/Stata reference-environment
+files. It is checked by the fast pytest contract suite, so a fixture can
+no longer drift merely because `compare.py` was re-run.
+
+Verify the lock without external R/Stata software:
+
+```bash
+python scripts/tier_a_fixture_lock.py
+```
+
+After intentionally changing a Tier A fixture, first regenerate the
+materialized evidence (`NN_*.py` / `NN_*.R` / Stata `.do` as needed,
+then `python tests/r_parity/compare.py`). Review the resulting diff,
+then refresh the lock explicitly:
+
+```bash
+python scripts/tier_a_fixture_lock.py --write
+pytest -o addopts='' tests/test_parity_harness_contract.py
+```
+
+## Tolerance budget (pre-registered)
+
+Lives in [`compare.py::TOLERANCES`](compare.py); single source of
+truth for the verdict column.
+
+- closed-form estimators (OLS, 2SLS, HDFE): `rel_diff < 1e-6`
+- iterative / cross-fit estimators: normally `rel_diff < 1e-3`
+- stochastic or solver-sensitive rows: method-specific tolerances with
+  the source of residual noise recorded in `extra`
+- convention gaps are reported separately and are not ordinary parity
+  passes
+- Honest-DiD CI bounds: `abs_diff < 0.05`
+
+## R dependencies
+
+CRAN: `AER`, `fixest`, `did`, `HonestDiD`, `Synth`, `rdrobust`,
+`rddensity`, `DoubleML`, `mlr3`, `mlr3learners`, `MatchIt`,
+`sandwich`, `bacondecomp`, `didimputation`, `EValue`, `sensemakr`,
+`lme4`, `oaxaca`, `sfaR`, `frontier`, `etwfe`, `gsynth`,
+`ddecompose`, `dineq`, `vars`, `lpirfs`, `mediation`,
+`survival`, `plm`, `Matching`, `DRDID`, `forecast`, `quantreg`,
+`censReg`, `MASS`, `sampleSelection`, `nnet`, `lmtest`, `policytree`, `tmle`.
+
+Module 71 additionally uses `mlr3` / `mlr3learners` (already required by
+module 08) for the `regr.lm` and `classif.log_reg` nuisance learners.
+
+GitHub:
+
+- `synthdid` (`remotes::install_github("synth-inference/synthdid")`)
+- `augsynth` (`remotes::install_github("ebenmichael/augsynth")`)
+
+## How the JSS paper uses this
+
+[`Paper-JSS/manuscript/sections/appendix.tex`](../../Paper-JSS/manuscript/sections/appendix.tex)
+`\input`s `manuscript/tables/appendix_b_parity.tex`, which is a
+copy of `tests/r_parity/results/parity_table_3way.tex` refreshed by
+`compare.py`. Re-running `compare.py` after any module change is
+sufficient to keep the appendix in sync; the build step in
+`Paper-JSS/replication/Makefile` should `cp` the table back into
+`manuscript/tables/`.

@@ -1,0 +1,63 @@
+{
+  "datasets": {
+    "experimental": "sp.datasets.nsw_lalonde(simulated=True)",
+    "observational": "sp.datasets.nsw_dw()"
+  },
+  "published_original": {
+    "experimental_att_dehejia_wahba": 1794.0,
+    "observational_naive_ols": -8498.0
+  },
+  "experimental": {
+    "n_rows": 445,
+    "schooling_column": "education",
+    "naive_ols": {
+      "estimate": 1555.7165275811694,
+      "se": 589.1241486511567
+    },
+    "adjusted_ols": {
+      "estimate": 1520.9417465672377,
+      "se": 589.5274460804816
+    },
+    "psm_1nn": {
+      "estimate": 1957.9780641814555,
+      "se": 785.2965869435665
+    },
+    "ipw_att": {
+      "estimate": 1489.7078662021522,
+      "se": 638.5052915505098
+    }
+  },
+  "observational": {
+    "n_rows": 2675,
+    "schooling_column": "education",
+    "naive_ols": {
+      "estimate": -8386.912714365018,
+      "se": 391.13971947537
+    },
+    "adjusted_ols": {
+      "estimate": 2313.010530530182,
+      "se": 538.6730649173743
+    },
+    "psm_1nn": {
+      "estimate": 2514.227481565299,
+      "se": 664.0739258839424
+    },
+    "ipw_att": {
+      "estimate": 2106.024235063781,
+      "se": 879.7484388674543
+    }
+  },
+  "pinned_checks": {
+    "experimental_naive_abs_diff_to_1556": 0.28347241883056995,
+    "experimental_naive_passes_abs_50": true,
+    "observational_naive_abs_diff_to_minus_8387": 0.08728563498152653,
+    "observational_naive_passes_abs_200": true,
+    "observational_adjusted_abs_diff_to_2313": 0.01053053018222272,
+    "observational_adjusted_passes_abs_200": true
+  },
+  "neighbourhood_checks": {
+    "experimental_naive_in_1000_2500": true,
+    "observational_naive_below_minus_5000": true,
+    "observational_adjusted_in_1000_3000": true
+  }
+}

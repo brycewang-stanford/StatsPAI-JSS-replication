@@ -1,0 +1,410 @@
+{
+  "active_float_labels": [
+    "fig:basque-gap",
+    "fig:mpdta-es",
+    "fig:track-c-loglog",
+    "tab:agent-trace",
+    "tab:correctness-history",
+    "tab:decathlon",
+    "tab:ex08-three-way",
+    "tab:forest-seed-mc",
+    "tab:headline-parity",
+    "tab:internal-parity",
+    "tab:related-software",
+    "tab:reproduction",
+    "tab:schema-coverage",
+    "tab:scope",
+    "tab:terminology",
+    "tab:track-a-cross-language-snapshot",
+    "tab:track-a-parity",
+    "tab:track-b-b1000",
+    "tab:track-b-robustness",
+    "tab:track-c-perf",
+    "tab:worked-example-map"
+  ],
+  "active_sections": [
+    "sections/01-introduction-compact.tex",
+    "sections/02-architecture-compact.tex",
+    "sections/03-agent-facing-compact.tex",
+    "sections/04-examples-compact.tex",
+    "sections/05-parity-compact.tex",
+    "sections/06-performance.tex",
+    "sections/07-agent-eval.tex",
+    "sections/08-computational-details-compact.tex",
+    "sections/09-discussion-compact.tex",
+    "sections/appendix.tex"
+  ],
+  "artifact_count": 12,
+  "compact_section_coverage": {
+    "expected_sections": [
+      "sections/01-introduction-compact.tex",
+      "sections/02-architecture-compact.tex",
+      "sections/03-agent-facing-compact.tex",
+      "sections/04-examples-compact.tex",
+      "sections/05-parity-compact.tex",
+      "sections/06-performance.tex",
+      "sections/07-agent-eval.tex",
+      "sections/08-computational-details-compact.tex",
+      "sections/09-discussion-compact.tex",
+      "sections/appendix.tex"
+    ],
+    "missing_anchor_count": 0,
+    "ok": true,
+    "rows": [
+      {
+        "anchors": {
+          "boundary": "not a claim that \\statspai{} supersedes specialized packages",
+          "contribution": "Concretely, the article adds",
+          "evidence": "Table~\\ref{tab:scope} makes this boundary explicit"
+        },
+        "missing_anchors": [],
+        "ok": true,
+        "role": "contribution framing and validation-tier boundary",
+        "section": "sections/01-introduction-compact.tex"
+      },
+      {
+        "anchors": {
+          "backend_boundary": "do not depend on a compiled native extension",
+          "boundary": "Specialized packages remain the reference implementations",
+          "contribution": "The architecture has four layers",
+          "evidence": "The validation tier is therefore not a paper-only artifact",
+          "integration": "make cross-family handoffs auditable and reproducible"
+        },
+        "missing_anchors": [],
+        "ok": true,
+        "role": "software architecture and registry trust tiers",
+        "section": "sections/02-architecture-compact.tex"
+      },
+      {
+        "anchors": {
+          "boundary": "It is not a behavioural claim",
+          "contribution": "typed schemas and an MCP server",
+          "evidence": "Every public-facing citation emitted by the package"
+        },
+        "missing_anchors": [],
+        "ok": true,
+        "role": "agent-facing registry without behavioural overclaim",
+        "section": "sections/03-agent-facing-compact.tex"
+      },
+      {
+        "anchors": {
+          "boundary": "central boundary: original-data rows are claimed only",
+          "contribution": "seven worked examples as an end-to-end smoke test",
+          "evidence": "Table~\\ref{tab:worked-example-map} maps those examples"
+        },
+        "missing_anchors": [],
+        "ok": true,
+        "role": "worked examples and executable provenance",
+        "section": "sections/04-examples-compact.tex"
+      },
+      {
+        "anchors": {
+          "boundary": "only a T2 row is a parity claim",
+          "contribution": "twelve-estimator suite with four evidence tracks",
+          "evidence": "(together \\RegistryCertifiedValidated{})"
+        },
+        "missing_anchors": [],
+        "ok": true,
+        "role": "validation evidence and hard-case disclosures",
+        "section": "sections/05-parity-compact.tex"
+      },
+      {
+        "anchors": {
+          "boundary": "does not support a universal",
+          "contribution": "fast enough for routine applied work",
+          "evidence": "CPU timings"
+        },
+        "missing_anchors": [],
+        "ok": true,
+        "role": "performance evidence and speed-claim limits",
+        "section": "sections/06-performance.tex"
+      },
+      {
+        "anchors": {
+          "boundary": "does not answer whether an LLM agent",
+          "contribution": "reports only the \\emph{mechanical} and \\emph{contractual} evidence",
+          "evidence": "deterministic end-to-end trace",
+          "infrastructure": "regenerated from the same validation ledger"
+        },
+        "missing_anchors": [],
+        "ok": true,
+        "role": "mechanical and contractual agent-interface evidence",
+        "section": "sections/07-agent-eval.tex"
+      },
+      {
+        "anchors": {
+          "boundary": "not require a compiled Rust extension, GPU, or commercial software",
+          "contribution": "rebuild the paper's evidence along three paths",
+          "evidence": "runs in under ten minutes",
+          "quick_zip_boundary": "are frozen evidence on that path",
+          "reviewer_commands": "replication/reproduce.py"
+        },
+        "missing_anchors": [],
+        "ok": true,
+        "role": "installation, CI, and reproducibility contract",
+        "section": "sections/08-computational-details-compact.tex"
+      },
+      {
+        "anchors": {
+          "boundary": "The unification itself has costs",
+          "contribution": "not a new-estimator paper",
+          "evidence": "main limitations are as follows"
+        },
+        "missing_anchors": [],
+        "ok": true,
+        "role": "limitations, unification costs, and maintenance risk",
+        "section": "sections/09-discussion-compact.tex"
+      },
+      {
+        "anchors": {
+          "boundary": "Two things this table does not do",
+          "contribution": "The slice is a reading aid, not the evidence",
+          "evidence": "tables/appendix_b_parity.tex"
+        },
+        "missing_anchors": [],
+        "ok": true,
+        "role": "the complete Track A ledger, printed rather than archived",
+        "section": "sections/appendix.tex"
+      }
+    ],
+    "sections_checked": 10,
+    "sections_passed": 10
+  },
+  "dangling_float_refs": [],
+  "failures": [],
+  "figure_artifacts": [
+    {
+      "exists": true,
+      "generator": "Paper-JSS/replication/scripts/generate_figures.py",
+      "missing_sources": [],
+      "path": "Paper-JSS/manuscript/figures/ex02_basque_gap.pdf",
+      "sources": [
+        "Paper-JSS/replication/scripts/generate_figures.py",
+        "Paper-JSS/replication/results/ex02_basque.json",
+        "Paper-JSS/replication/tables/ex02_basque.tex"
+      ]
+    },
+    {
+      "exists": true,
+      "generator": "Paper-JSS/replication/scripts/generate_figures.py",
+      "missing_sources": [],
+      "path": "Paper-JSS/manuscript/figures/ex03_mpdta_event_study.pdf",
+      "sources": [
+        "Paper-JSS/replication/scripts/generate_figures.py",
+        "Paper-JSS/replication/results/ex03_csdid.json",
+        "Paper-JSS/replication/tables/ex03_csdid.tex"
+      ]
+    },
+    {
+      "exists": true,
+      "generator": "tests/perf/compare_perf.py",
+      "hash_equal": true,
+      "hash_equal_to": "tests/perf/figures/track_c_loglog.pdf",
+      "missing_sources": [],
+      "path": "Paper-JSS/manuscript/figures/track_c_loglog.pdf",
+      "sha256": "4233d1c8f6b80f1107eaa4588801fb970fbbc0525cf09fe000235d4c34fc2039",
+      "sources": [
+        "tests/perf/results/perf_table.tex",
+        "tests/perf/figures/track_c_loglog.pdf"
+      ]
+    }
+  ],
+  "figures": [
+    "Paper-JSS/manuscript/figures/ex02_basque_gap.pdf",
+    "Paper-JSS/manuscript/figures/ex03_mpdta_event_study.pdf",
+    "Paper-JSS/manuscript/figures/track_c_loglog.pdf"
+  ],
+  "generated_at_unix": 1780185600,
+  "hash_mismatches": 0,
+  "missing_narrative_refs": [],
+  "narrative_float_refs": [
+    "fig:basque-gap",
+    "fig:mpdta-es",
+    "fig:track-c-loglog",
+    "tab:agent-trace",
+    "tab:correctness-history",
+    "tab:decathlon",
+    "tab:ex08-three-way",
+    "tab:forest-seed-mc",
+    "tab:headline-parity",
+    "tab:internal-parity",
+    "tab:related-software",
+    "tab:reproduction",
+    "tab:schema-coverage",
+    "tab:scope",
+    "tab:terminology",
+    "tab:track-a-cross-language-snapshot",
+    "tab:track-a-parity",
+    "tab:track-b-b1000",
+    "tab:track-b-robustness",
+    "tab:track-c-perf",
+    "tab:worked-example-map"
+  ],
+  "status": "PASS",
+  "table_inputs": [
+    "Paper-JSS/manuscript/generated_claims.tex",
+    "Paper-JSS/manuscript/tables/appendix_b_parity.tex",
+    "Paper-JSS/manuscript/tables/forest_seed_mc.tex",
+    "Paper-JSS/manuscript/tables/headline_parity.tex",
+    "Paper-JSS/manuscript/tables/track_a_cross_language_snapshot.tex",
+    "Paper-JSS/manuscript/tables/track_b_monte_carlo.tex",
+    "Paper-JSS/manuscript/tables/track_c_perf.tex",
+    "Paper-JSS/replication/tables/ex07_agent_trace.tex",
+    "Paper-JSS/replication/tables/ex08_three_way.tex"
+  ],
+  "tables": [
+    {
+      "exists": true,
+      "generator": "Paper-JSS/replication/scripts/generate_manuscript_claims.py",
+      "missing_snippets": [],
+      "missing_sources": [],
+      "path": "Paper-JSS/manuscript/generated_claims.tex",
+      "sources": [
+        "scripts/stability_audit.py",
+        "Paper-JSS/replication/scripts/agent_interface_audit.py"
+      ]
+    },
+    {
+      "exists": true,
+      "generator": "Paper-JSS/replication/scripts/gen_appendix_parity.py",
+      "missing_snippets": [],
+      "missing_sources": [],
+      "path": "Paper-JSS/manuscript/tables/appendix_b_parity.tex",
+      "sources": [
+        "tests/r_parity/results/parity_table_3way.tex"
+      ]
+    },
+    {
+      "exists": true,
+      "generator": "Paper-JSS/replication/scripts/generate_forest_seed_table.py",
+      "missing_snippets": [],
+      "missing_sources": [],
+      "path": "Paper-JSS/manuscript/tables/forest_seed_mc.tex",
+      "sources": [
+        "tests/reference_parity/_fixtures/grf_seed_mc_py.json",
+        "tests/reference_parity/_fixtures/grf_seed_mc_R.json",
+        "tests/reference_parity/_fixtures/grf_seed_mc_m13_py.json",
+        "tests/reference_parity/_fixtures/grf_seed_mc_m13_R.json"
+      ]
+    },
+    {
+      "exists": true,
+      "generator": "Paper-JSS/replication/scripts/generate_headline_parity_table.py",
+      "missing_snippets": [],
+      "missing_sources": [],
+      "path": "Paper-JSS/manuscript/tables/headline_parity.tex",
+      "sources": [
+        "tests/orig_parity/results/01_card_original_py.json",
+        "tests/orig_parity/results/02_mpdta_original_py.json",
+        "tests/orig_parity/results/03_basque_original_py.json",
+        "tests/orig_parity/results/03_basque_original_Stata.json",
+        "tests/orig_parity/results/04b_nsw_psid_original_py.json",
+        "tests/orig_parity/results/05_lee_original_py.json",
+        "tests/orig_parity/results/06_nhefs_ch12_ipw_py.json",
+        "tests/orig_parity/results/07_nhefs_ch13_gformula_py.json"
+      ]
+    },
+    {
+      "exists": true,
+      "generator": "tests/r_parity/compare.py",
+      "missing_snippets": [],
+      "missing_sources": [],
+      "path": "Paper-JSS/manuscript/tables/track_a_cross_language_snapshot.tex",
+      "sources": [
+        "tests/r_parity/results/parity_table_3way.md",
+        "tests/r_parity/results/parity_table_3way.tex"
+      ]
+    },
+    {
+      "exists": true,
+      "generator": "Paper-JSS/replication/scripts/generate_track_b_tables.py",
+      "missing_snippets": [],
+      "missing_sources": [],
+      "path": "Paper-JSS/manuscript/tables/track_b_monte_carlo.tex",
+      "sources": [
+        "tests/coverage_monte_carlo/results_b1000/coverage_b1000.json",
+        "tests/coverage_monte_carlo/results_b1000/coverage_robustness_b1000.json",
+        "tests/coverage_monte_carlo/results_b1000/size_power_b1000.json"
+      ]
+    },
+    {
+      "exists": true,
+      "generator": "tests/perf/compare_perf.py",
+      "hash_equal": true,
+      "hash_equal_to": "tests/perf/results/perf_table.tex",
+      "missing_snippets": [],
+      "missing_sources": [],
+      "path": "Paper-JSS/manuscript/tables/track_c_perf.tex",
+      "sha256": "4e966a3b2282a2542acd00912267b71890c3792b4bd9597705db7a0dd9e4747d",
+      "sources": [
+        "tests/perf/results/perf_table.tex"
+      ]
+    },
+    {
+      "exists": true,
+      "generator": "Paper-JSS/replication/scripts/ex07_agent_trace.py",
+      "missing_snippets": [],
+      "missing_sources": [],
+      "path": "Paper-JSS/replication/tables/ex07_agent_trace.tex",
+      "sources": [
+        "Paper-JSS/replication/results/ex07_agent_trace.json",
+        "Paper-JSS/replication/results/ex07_agent_trace.txt"
+      ]
+    },
+    {
+      "exists": true,
+      "generator": "Paper-JSS/replication/scripts/ex08_fect_interflex.py",
+      "missing_snippets": [],
+      "missing_sources": [],
+      "path": "Paper-JSS/replication/tables/ex08_three_way.tex",
+      "sources": [
+        "Paper-JSS/replication/results/ex08_fect_interflex.json",
+        "tests/r_parity/results/86_fect_R.json",
+        "tests/stata_parity/results/86_fect_Stata.json",
+        "tests/r_parity/results/87_interflex_R.json",
+        "tests/stata_parity/results/87_interflex_Stata.json"
+      ]
+    }
+  ],
+  "worked_examples": {
+    "count_claim_present": true,
+    "expected_count": 7,
+    "labels_present": [
+      "sec:ex-basque",
+      "sec:ex-card",
+      "sec:ex-causal-impact",
+      "sec:ex-csdid",
+      "sec:ex-fect",
+      "sec:ex-lalonde",
+      "sec:ex-rd"
+    ],
+    "ok": true,
+    "script_mentions": [
+      "Paper-JSS/replication/scripts/ex01_card.py",
+      "Paper-JSS/replication/scripts/ex02_basque.py",
+      "Paper-JSS/replication/scripts/ex03_csdid.py",
+      "Paper-JSS/replication/scripts/ex04_lee.py",
+      "Paper-JSS/replication/scripts/ex05_lalonde.py",
+      "Paper-JSS/replication/scripts/ex06_causal_impact.py",
+      "Paper-JSS/replication/scripts/ex08_fect_interflex.py"
+    ],
+    "scripts_present": [
+      "Paper-JSS/replication/scripts/ex01_card.py",
+      "Paper-JSS/replication/scripts/ex02_basque.py",
+      "Paper-JSS/replication/scripts/ex03_csdid.py",
+      "Paper-JSS/replication/scripts/ex04_lee.py",
+      "Paper-JSS/replication/scripts/ex05_lalonde.py",
+      "Paper-JSS/replication/scripts/ex06_causal_impact.py",
+      "Paper-JSS/replication/scripts/ex08_fect_interflex.py"
+    ],
+    "table_script_mentions": [
+      "ex01_card.py",
+      "ex02_basque.py",
+      "ex03_csdid.py",
+      "ex04_lee.py",
+      "ex05_lalonde.py",
+      "ex06_causal_impact.py",
+      "ex08_fect_interflex.py"
+    ]
+  }
+}

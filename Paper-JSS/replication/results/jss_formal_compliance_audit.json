@@ -1,0 +1,226 @@
+{
+  "archive_present": false,
+  "checks": [
+    {
+      "evidence": "main.pdf pages=52; class=article jss; missing_front_matter=[]",
+      "ok": true,
+      "requirement": "PDF manuscript in JSS LaTeX article style"
+    },
+    {
+      "evidence": "main.log present=True; blocking_patterns=[]; underfull boxes are not treated as blocking.",
+      "ok": true,
+      "requirement": "LaTeX build log is free of blocking layout/reference errors"
+    },
+    {
+      "evidence": "main.pdf text contains validation-tier, API-stable denominator, source-snapshot/release, data-provenance, and mechanical-agent boundary snippets; missing=[].",
+      "ok": true,
+      "requirement": "PDF-visible validation/source/data/agent boundaries are present"
+    },
+    {
+      "evidence": "main.pdf text is checked for stale defensive reviewer-facing phrases; stale_hits=[].",
+      "ok": true,
+      "requirement": "PDF text is synchronized with polished manuscript prose"
+    },
+    {
+      "evidence": "pdf_render_audit renders representative pages and rejects blank, overwhelmingly dark, or implausibly small rasters, then scans every PDF page with the same machine thresholds; status=PASS; sampled=[1, 2, 26, 52]; rendered=4; full_scan=52/52; full_failures=0; min_width=910; min_height=1287; min_ink_ratio=0.085421; max_dark_ratio=0.02163; failures=0.",
+      "ok": true,
+      "requirement": "rendered PDF page-sample sanity check passes"
+    },
+    {
+      "evidence": "active manuscript markup counts={'proglang': 157, 'pkg': 219, 'code': 518}; caption_label_failures=[].",
+      "ok": true,
+      "requirement": "JSS markup macros and labelled floats are used"
+    },
+    {
+      "evidence": "pyproject.toml uses setuptools, src layout, and console entry points; development classifier is Beta rather than Alpha; pip --no-deps --target install/import probe ok=True; version=1.30.1; functions=1220; scripts=['statspai', 'statspai-mcp']; dist_infos=['statspai-1.30.1.dist-info'].",
+      "ok": true,
+      "requirement": "source code is packaged for installation"
+    },
+    {
+      "evidence": "README plus getting-started, reference, and stability docs present; missing_help=[].",
+      "ok": true,
+      "requirement": "formatted package help/documentation files are included"
+    },
+    {
+      "evidence": "LICENSE, pyproject.toml, and cover letter all identify MIT/GPL compatibility.",
+      "ok": true,
+      "requirement": "GPL-compatible software license is clearly indicated"
+    },
+    {
+      "evidence": "Root CITATION.cff identifies the software, license, code repository, and PyPI artifact.",
+      "ok": true,
+      "requirement": "software citation metadata is included"
+    },
+    {
+      "evidence": "replication/reproduce.py plus Makefile tiers; Tier-1 transcript is complete.",
+      "ok": true,
+      "requirement": "standalone replication script covers manuscript results"
+    },
+    {
+      "evidence": "Tier-1 transcript file is included and records 24/24 successful steps.",
+      "ok": true,
+      "requirement": "reviewer output transcript for standalone replication script is included"
+    },
+    {
+      "evidence": "Tier-1 transcript reports 24/24 steps in 1.0 minutes; JSS asks for a short reviewer-verification path when full replication is heavier.",
+      "ok": true,
+      "requirement": "short reviewer replication path completes within one hour"
+    },
+    {
+      "evidence": "Active manuscript includes a related-software table with cross-ecosystem comparators, reference-choice boundaries, StatsPAI contribution/boundary language, empirical-comparison pointers, and explicit non-supersession/T3/T4/licensing limits; missing_related_tokens=[].",
+      "ok": true,
+      "requirement": "existing implementations and comparative scope are discussed"
+    },
+    {
+      "evidence": "JSS discourages extensive simulation studies; the cover letter and active manuscript frame the Monte Carlo rows as validation artifacts and failure-mode guards, not as a new-estimator simulation campaign.",
+      "ok": true,
+      "requirement": "Monte Carlo content is framed as validation rather than a standalone simulation study"
+    },
+    {
+      "evidence": "active manuscript separates the audited upload archive from later tag/changelog/release-cut cleanup; snapshot_status=Audited source-snapshot submission archive; the failing final-publication release gate is a tag/changelog synchronization gate, not a JSS upload reproducibility failure.; version_consistent=True.",
+      "ok": true,
+      "requirement": "source-snapshot and final-release boundaries are explicit"
+    },
+    {
+      "evidence": "reproduction_environment_audit records Docker/Python/R/Stata contracts and the cover letter discloses the no-R/no-Stata Tier-1 headline path; unseeded_rng=0.",
+      "ok": true,
+      "requirement": "platform dependencies and RNG seeds are disclosed"
+    },
+    {
+      "evidence": "cover-letter expected snippets=['52 pages', '24/24', '89-module R-parity', '85-module Stata bridge', '1,220 registered public functions', '1,220 public functions', '9,436 schema parameters', 'tagged 1.30.1 release', '13 PASS evidence cards', '5 suggested review routes', 'editor triage', 'statistical validation', 'quick reproduction', 'agent-interface review', 'limitations/release-boundary review']; missing=[]; package manifest absent; size not checked",
+      "ok": true,
+      "requirement": "cover letter numeric summary is synchronized with generated audit artifacts"
+    },
+    {
+      "evidence": "cover-letter PDF/manual-review snippets=['pdf_render_audit.{json,md}', 'representative PDF pages and an all-page machine scan', 'final full-document visual spot-check remains an upload-time manual action', '52-row page inventory', 'rather than a machine-verified PASS']; missing=[].",
+      "ok": true,
+      "requirement": "cover letter PDF visual-check boundary is explicit"
+    },
+    {
+      "evidence": "cover-letter related-review/COI snippets=['published in the *Journal of Open Source', 'doi.org/10.21105/joss.10604', 'cites the JOSS paper explicitly', 'disclosed explicitly to the editors', 'StatsPAI Inc.', 'CoPaper.AI', 'No external funder', 'MIT licence']; missing=[].",
+      "ok": true,
+      "requirement": "cover letter related-review and conflict disclosures are explicit"
+    },
+    {
+      "evidence": "manuscript_artifact_audit maps active table/figure inputs to generators; artifacts=12; hash_mismatches=0; float_labels=21; missing_refs=0; dangling_refs=0; compact_sections=10/10; compact_missing_anchors=0.",
+      "ok": true,
+      "requirement": "active manuscript tables and figures map to generators and prose"
+    },
+    {
+      "evidence": "submission archive has not been built in this tree yet.",
+      "ok": null,
+      "requirement": "JSS attachment size and archive source set are bounded"
+    },
+    {
+      "evidence": "submission archive has not been built in this tree yet.",
+      "ok": null,
+      "requirement": "ASCII source/data contract is enforced inside the archive"
+    }
+  ],
+  "failures": [],
+  "generated_at_unix": 1780185600,
+  "install_probe": {
+    "dist_infos": [
+      "statspai-1.30.1.dist-info"
+    ],
+    "expected_version": "1.30.1",
+    "function_count": 1220,
+    "import_output_tail": "{\"function_count\": 1220, \"version\": \"1.30.1\"}",
+    "import_returncode": 0,
+    "install_command": "<STATSPAI_ROOT>/.venv/bin/python -m pip install --quiet --disable-pip-version-check --no-deps --target <tmp>/target <STATSPAI_ROOT>",
+    "install_output_tail": "",
+    "install_returncode": 0,
+    "ok": true,
+    "scripts": [
+      "statspai",
+      "statspai-mcp"
+    ],
+    "version": "1.30.1"
+  },
+  "missing_pdf_boundary_snippets": [],
+  "official_sources": [
+    {
+      "name": "JSS submissions checklist",
+      "url": "https://www.jstatsoft.org/about/submissions"
+    },
+    {
+      "name": "JSS information for authors",
+      "url": "https://www.jstatsoft.org/authors"
+    },
+    {
+      "name": "JSS style guide",
+      "url": "https://www.jstatsoft.org/style"
+    },
+    {
+      "name": "JSS submission guide",
+      "url": "https://www.jstatsoft.org/guides/submission"
+    }
+  ],
+  "official_sources_checked": "2026-08-09",
+  "page_ceiling": 52,
+  "page_count": 52,
+  "pdf_boundary_snippets": [
+    "evidence tier that a user",
+    "or an agent can query at call time",
+    "certified/validated",
+    "API-stable",
+    "not parity-backed",
+    "This article describes StatsPAI 1.30.1",
+    "tag v1.30.1",
+    "not a behavioural claim",
+    "matched arms, task families",
+    "before any behavioural claim",
+    "software-interface contribution",
+    "named rows and modules",
+    "nine scoped limitation rows",
+    "calibrated Basque replica",
+    "no printed vignette anchor",
+    "The unification itself has costs",
+    "licence-free replication path",
+    "reviewer evidence map and editor screening checklist"
+  ],
+  "pdf_render": {
+    "failure_count": 0,
+    "full_document_failure_count": 0,
+    "full_document_max_dark_ratio": 0.02163,
+    "full_document_max_white_ratio": 0.94777,
+    "full_document_min_height": 1287,
+    "full_document_min_ink_ratio": 0.05223,
+    "full_document_min_width": 910,
+    "full_document_rendered_page_count": 52,
+    "max_dark_ratio": 0.02163,
+    "max_white_ratio": 0.914579,
+    "min_height": 1287,
+    "min_ink_ratio": 0.085421,
+    "min_width": 910,
+    "page_count": 52,
+    "rendered_page_count": 4,
+    "sampled_pages": [
+      1,
+      2,
+      26,
+      52
+    ],
+    "status": "PASS"
+  },
+  "pdf_stale_prose_hits": [],
+  "pdf_stale_prose_snippets": [
+    "unflattering denominator",
+    "hiding it would be worse",
+    "silent wins",
+    "users pay for",
+    "must be read row by row",
+    "limitations are blunt",
+    "pretending it is a strict R/Synth parity pass",
+    "harshest reviewer"
+  ],
+  "pdf_text_chars": 153762,
+  "status": "PASS",
+  "tier1_transcript": {
+    "complete": true,
+    "minutes": 1.0,
+    "passed": 24,
+    "total": 24,
+    "within_one_hour": true
+  }
+}

@@ -1,0 +1,4 @@
+This tree is the public replication snapshot of the StatsPAI JSS paper.
+Documents addressed to the journal editors are withheld from it; the
+submission-document audits skip those files here, and only where this
+marker is present (see replication/scripts/_paths.py).

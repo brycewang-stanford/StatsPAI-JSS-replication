@@ -1,0 +1,78 @@
+{
+  "agent_trace": {
+    "audit_checks": 4,
+    "bibtex_entry_count": 2,
+    "bibtex_source": "paper.bib",
+    "ci": [
+      -0.04819473753598168,
+      -0.0177582900833258
+    ],
+    "citation_keys": [
+      "callaway2021difference",
+      "rambachan2023more"
+    ],
+    "estimate": -0.03297651380965374,
+    "honest_max_rejecting_M": 0.007441185915807715,
+    "missing_suggested_functions": [
+      "sp.sensitivity_rr",
+      "sp.bacon_decomposition"
+    ],
+    "required_tools_present": {
+      "audit_result": true,
+      "bibtex": true,
+      "callaway_santanna": true,
+      "callaway_schema_in_manifest": true,
+      "honest_did_from_result": true
+    },
+    "schema_control_group_enum": [
+      "nevertreated",
+      "notyettreated"
+    ],
+    "schema_required": [
+      "data_path",
+      "g",
+      "i",
+      "t",
+      "y"
+    ],
+    "se": 0.0077645425356625665,
+    "stale_handle_available_ids": 2,
+    "stale_handle_error": "result_id 'missing_result_id' not found in cache",
+    "stale_handle_hint": "unknown result_id (never cached, or evicted long ago, or the server restarted); re-fit the estimator with as_handle=true.",
+    "stale_handle_is_error": true,
+    "stale_handle_reason": "unknown",
+    "tool_count": 559,
+    "unknown_bibtex_keys": []
+  },
+  "boundary_files_checked": [
+    "Paper-JSS/REVIEWER-HARDENING-AUDIT.md",
+    "Paper-JSS/manuscript/main.tex",
+    "Paper-JSS/manuscript/sections/03-agent-facing-compact.tex",
+    "Paper-JSS/manuscript/sections/07-agent-eval.tex",
+    "Paper-JSS/manuscript/sections/09-discussion-compact.tex"
+  ],
+  "failures": [],
+  "forbidden_manuscript_references": [
+    "Paper-AgentBench/",
+    "Paper-JSS/notes/osf-preregistration.md",
+    "OSF pre-registration",
+    "pre-registered behavioural",
+    "pre-registered hypotheses"
+  ],
+  "generated_at_unix": 1780185600,
+  "schema_count_files_checked": [
+    "Paper-JSS/cover-letter.md",
+    "Paper-JSS/manuscript/sections/07-agent-eval.tex"
+  ],
+  "schema_quality": {
+    "curated_agent_card": 411,
+    "parameter_total": 9436,
+    "parameter_with_default": 3348,
+    "parameter_with_description": 9436,
+    "parameter_with_enum": 468,
+    "public_surface": 1220,
+    "with_nonempty_description": 1220,
+    "with_typed_parameter": 1188
+  },
+  "status": "PASS"
+}

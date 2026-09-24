@@ -1,0 +1,1189 @@
+"""
+Local randomization inference for regression discontinuity designs.
+
+Implements the methodology of Cattaneo, Titiunik, and Vazquez-Bare (2016) for
+inference in RD designs under a local randomization assumption. Within a small
+window around the cutoff, units are treated as if randomly assigned to
+treatment or control.
+
+Functions
+---------
+rdrandinf : Main randomization inference for RD designs.
+rdwinselect : Data-driven window selection for local randomization.
+rdsensitivity : Sensitivity of results across different windows.
+rdrbounds : Rosenbaum sensitivity bounds for hidden bias.
+
+References
+----------
+Cattaneo, M.D., Titiunik, R. and Vazquez-Bare, G. (2016).
+"Inference in Regression Discontinuity Designs under Local Randomization."
+*The Stata Journal*, 16(2), 331-367. [@cattaneo2016inference]
+"""
+
+import warnings
+from typing import Callable, Dict, List, Optional, Tuple
+
+import numpy as np
+import pandas as pd
+from scipy import stats as sp_stats
+
+from ..core.results import CausalResult
+from ._core import _complete_cases
+
+
+def _drop_incomplete(frame, columns, *, where: str):
+    """Drop non-finite rows and say so, rather than propagating a NaN.
+
+    The local-randomization entry points had no missing-data handling,
+    while ``sp.rdrobust`` in the same subpackage has always dropped
+    incomplete rows. The asymmetry was not benign: a missing outcome
+    inside the window turned the difference in means into NaN, and since
+    ``abs(nan) >= abs(nan)`` is False for every draw, the permutation
+    count stayed at zero and the reported p-value came out exactly 0.000
+    -- the most significant answer the test can give, produced by a
+    statistic that never computed. Dropping silently would trade one
+    quiet failure for another, so the count is warned (CLAUDE.md §3.7).
+    """
+    cleaned, n_dropped = _complete_cases(frame, columns)
+    if n_dropped:
+        warnings.warn(
+            f"{where}: dropped {n_dropped} observation(s) inside the window "
+            f"with a missing or non-finite value in {[c for c in columns if c]}. "
+            f"{len(cleaned)} remain. Randomization inference is run on the "
+            "complete cases only.",
+            UserWarning,
+            stacklevel=3,
+        )
+    return cleaned, n_dropped
+
+
+# ======================================================================
+# Citation registration
+# ======================================================================
+
+CausalResult._CITATIONS["rdlocrand"] = (
+    "@article{cattaneo2016inference,\n"
+    "  title={Inference in Regression Discontinuity Designs under\n"
+    "  Local Randomization},\n"
+    "  author={Cattaneo, Matias D and Titiunik, Roc{\\'\\i}o and\n"
+    "  Vazquez-Bare, Gonzalo},\n"
+    "  journal={The Stata Journal},\n"
+    "  volume={16},\n"
+    "  number={2},\n"
+    "  pages={331--367},\n"
+    "  year={2016}\n"
+    "}"
+)
+
+
+# ======================================================================
+# Internal helpers
+# ======================================================================
+
+
+def _select_window(
+    data: pd.DataFrame, x: str, c: float, wl: Optional[float], wr: Optional[float]
+) -> np.ndarray:
+    """Return mask for observations within [c+wl, c+wr]."""
+    xv = data[x].values
+    if wl is None or wr is None:
+        raise ValueError(
+            "Window bounds wl and wr must be specified. "
+            "Use rdwinselect() to choose a data-driven window."
+        )
+    left = c + wl  # wl is typically negative
+    right = c + wr
+    return np.asarray((xv >= left) & (xv <= right), dtype=bool)
+
+
+def _polynomial_residuals(
+    y: np.ndarray, x: np.ndarray, p: int, covs: Optional[np.ndarray] = None
+) -> np.ndarray:
+    """Partial out polynomial in X (and optional covariates) from Y."""
+    n = len(y)
+    parts = []
+    # Polynomial terms x^1, ..., x^p (if p > 0)
+    if p > 0:
+        parts.extend([x**k for k in range(1, p + 1)])
+    # Covariates
+    if covs is not None:
+        if covs.ndim == 1:
+            parts.append(covs.reshape(-1, 1))
+        elif covs.shape[1] > 0:
+            parts.append(covs)
+
+    if len(parts) == 0:
+        return np.asarray(y - np.mean(y), dtype=float)
+
+    X_design = np.column_stack(parts)
+    X_design = np.column_stack([np.ones(n), X_design])
+    beta, _, _, _ = np.linalg.lstsq(X_design, y, rcond=None)
+    return np.asarray(y - X_design @ beta, dtype=float)
+
+
+def _diffmeans(y: np.ndarray, d: np.ndarray) -> float:
+    """Difference in means: E[Y|D=1] - E[Y|D=0]."""
+    return float(y[d == 1].mean() - y[d == 0].mean())
+
+
+def _ks_stat(y: np.ndarray, d: np.ndarray) -> float:
+    """Kolmogorov-Smirnov statistic."""
+    stat, _ = sp_stats.ks_2samp(y[d == 1], y[d == 0])
+    return float(stat)
+
+
+def _ranksum_stat(y: np.ndarray, d: np.ndarray) -> float:
+    """Standardised Wilcoxon rank-sum statistic, as in ``rdrandinf``.
+
+    ``T`` is the rank sum of the CONTROL group, standardised by
+
+        E[T] = n0 (n + 1) / 2,   Var[T] = n0 n1 s^2 / n
+
+    where ``s^2`` is the sample variance of the midranks. Using ``s^2``
+    rather than the closed form ``(n + 1) / 12`` is what makes this
+    tie-robust, and the senate running variable is heavily tied.
+
+    The previous implementation returned ``|U - mu| / sigma`` from scipy's
+    Mann-Whitney U with the no-ties variance, which is a different statistic
+    -- roughly 2-3x off rdlocrand's on ties-heavy data -- and discarded the
+    sign.
+    """
+    n1 = int((d == 1).sum())
+    n0 = int((d == 0).sum())
+    n = n1 + n0
+    if n1 == 0 or n0 == 0 or n < 2:
+        return 0.0
+    ri = sp_stats.rankdata(y)  # midranks for ties, matching R's rank()
+    t_stat = ri[d == 0].sum()
+    s2 = float(np.var(ri, ddof=1))
+    var_t = n0 * n1 * s2 / n
+    if var_t <= 0:
+        return 0.0
+    return float((t_stat - n0 * (n + 1) / 2.0) / np.sqrt(var_t))
+
+
+_STAT_FUNCS: Dict[str, Callable[[np.ndarray, np.ndarray], float]] = {
+    "diffmeans": _diffmeans,
+    "ksmirnov": _ks_stat,
+    "ranksum": _ranksum_stat,
+}
+
+
+def _compute_stat(y: np.ndarray, d: np.ndarray, stat_name: str) -> float:
+    """Dispatch to the requested test statistic."""
+    return _STAT_FUNCS[stat_name](y, d)
+
+
+def _permutation_pvalue(
+    y: np.ndarray,
+    d: np.ndarray,
+    stat_name: str,
+    n_perms: int,
+    rng: np.random.Generator,
+    two_sided: bool = True,
+) -> Tuple[float, float]:
+    """
+    Fisher randomization p-value via permutation.
+
+    Returns (observed_stat, perm_pvalue).
+    """
+    obs_stat = _compute_stat(y, d, stat_name)
+    draws = (rng.permutation(d) for _ in range(n_perms))
+    perm_pval = _pvalue_from_assignments(y, obs_stat, draws, stat_name, two_sided)
+    return obs_stat, perm_pval
+
+
+def _pvalue_from_assignments(
+    y: np.ndarray,
+    obs_stat: float,
+    assignments,
+    stat_name: str,
+    two_sided: bool = True,
+) -> float:
+    """Randomization p-value over a given sequence of assignment vectors.
+
+    The share of ``assignments`` whose statistic is at least as extreme as
+    ``obs_stat``. Separated from the random draws so that the p-value can
+    be recomputed on any fixed set of assignments -- the reference-parity
+    test feeds it R's own ``sample()`` draws and reproduces
+    ``rdlocrand::rdrandinf``'s p-value exactly.
+    """
+    abs_obs = abs(obs_stat) if two_sided else obs_stat
+    count = 0
+    total = 0
+    for d_perm in assignments:
+        perm_stat = _compute_stat(y, np.asarray(d_perm), stat_name)
+        perm_abs = abs(perm_stat) if two_sided else perm_stat
+        if perm_abs >= abs_obs - 1e-14:
+            count += 1
+        total += 1
+    return count / total
+
+
+def _asymptotic_pvalue(
+    y: np.ndarray, d: np.ndarray, stat_name: str
+) -> Tuple[float, float]:
+    """
+    Asymptotic p-value for the chosen test statistic.
+
+    Returns (stat, pvalue).
+    """
+    if stat_name == "diffmeans":
+        y1, y0 = y[d == 1], y[d == 0]
+        n1, n0 = len(y1), len(y0)
+        if n1 < 2 or n0 < 2:
+            return _diffmeans(y, d), np.nan
+        diff = y1.mean() - y0.mean()
+        se = np.sqrt(y1.var(ddof=1) / n1 + y0.var(ddof=1) / n0)
+        if se < 1e-14:
+            return diff, 0.0 if abs(diff) > 1e-14 else 1.0
+        t = diff / se
+        # Normal, not t. Two reasons, and they agree:
+        #
+        # * ``se`` above is the Welch (unequal-variance) standard error, so
+        #   referring it to a t with ``n1 + n0 - 2`` degrees of freedom mixes
+        #   two different tests -- Welch's needs Satterthwaite's df, not the
+        #   pooled one.
+        # * rdlocrand calls this quantity the *asymptotic* p-value and uses
+        #   ``2 * pnorm(-|t|)``, which is what the name means.
+        #
+        # The old form was conservative but wrong by a factor that grows with
+        # the statistic: on rdsenate at w=+/-5 it reported 1.68e-10 where
+        # rdlocrand reports 2.49e-11, a factor of 6.7.
+        pval = 2 * sp_stats.norm.cdf(-abs(t))
+        return float(diff), float(pval)
+    elif stat_name == "ksmirnov":
+        stat, pval = sp_stats.ks_2samp(y[d == 1], y[d == 0])
+        return float(stat), float(pval)
+    elif stat_name == "ranksum":
+        # The statistic is already standardised, so the asymptotic p-value
+        # is the normal tail -- same as rdlocrand. scipy's mannwhitneyu
+        # p-value does not correspond to this statistic.
+        stat = _ranksum_stat(y, d)
+        return float(stat), float(2 * sp_stats.norm.cdf(-abs(stat)))
+    else:
+        raise ValueError(f"Unknown statistic: {stat_name}")  # pragma: no cover
+
+
+def _wald_iv(y: np.ndarray, d_actual: np.ndarray, z: np.ndarray) -> Tuple[float, float]:
+    """
+    Wald (IV) estimator: tau = E[Y|Z=1]-E[Y|Z=0] / E[D|Z=1]-E[D|Z=0].
+
+    Returns (estimate, se).
+    """
+    y1 = y[z == 1].mean()
+    y0 = y[z == 0].mean()
+    d1 = d_actual[z == 1].mean()
+    d0 = d_actual[z == 0].mean()
+    first_stage = d1 - d0
+    if abs(first_stage) < 1e-14:
+        return np.nan, np.nan  # pragma: no cover
+    tau = (y1 - y0) / first_stage
+
+    # Delta method SE
+    n1 = int((z == 1).sum())
+    n0 = int((z == 0).sum())
+    var_y1 = y[z == 1].var(ddof=1) / n1 if n1 > 1 else 0
+    var_y0 = y[z == 0].var(ddof=1) / n0 if n0 > 1 else 0
+    var_d1 = d_actual[z == 1].var(ddof=1) / n1 if n1 > 1 else 0
+    var_d0 = d_actual[z == 0].var(ddof=1) / n0 if n0 > 1 else 0
+
+    # Gradient of g(mu_y1, mu_y0, mu_d1, mu_d0) = (mu_y1-mu_y0)/(mu_d1-mu_d0)
+    num = y1 - y0
+    den = first_stage
+    # Var(tau) via delta method
+    var_num = var_y1 + var_y0
+    var_den = var_d1 + var_d0
+    se = np.sqrt(var_num / den**2 + num**2 * var_den / den**4)
+    return float(tau), float(se)
+
+
+# ======================================================================
+# Public API
+# ======================================================================
+
+
+def rdrandinf(
+    data: pd.DataFrame,
+    y: str,
+    x: str,
+    c: float = 0,
+    wl: Optional[float] = None,
+    wr: Optional[float] = None,
+    statistic: str = "diffmeans",
+    p: int = 0,
+    covs: Optional[List[str]] = None,
+    kernel: str = "uniform",
+    n_perms: int = 1000,
+    fuzzy: Optional[str] = None,
+    alpha: float = 0.05,
+    seed: int = 42,
+) -> CausalResult:
+    """
+    Randomization inference for regression discontinuity designs.
+
+    Under the local randomization assumption, units within a small window
+    around the cutoff are treated as if randomly assigned. Inference is
+    based on Fisher's randomization test.
+
+    Parameters
+    ----------
+    data : pd.DataFrame
+        Input dataset.
+    y : str
+        Outcome variable name.
+    x : str
+        Running variable name.
+    c : float, default 0
+        RD cutoff value.
+    wl : float, optional
+        Window left bound offset from cutoff (typically negative).
+        The left edge of the window is ``c + wl``.
+    wr : float, optional
+        Window right bound offset from cutoff (typically positive).
+        The right edge of the window is ``c + wr``.
+    statistic : str, default 'diffmeans'
+        Test statistic: 'diffmeans', 'ksmirnov', 'ranksum', or 'all'.
+        ``'ttest'`` is accepted as an alias for ``'diffmeans'``, matching
+        rdlocrand, where both names select the same statistic.
+    p : int, default 0
+        Polynomial order for adjustment (0 = unadjusted).
+    covs : list of str, optional
+        Covariate names to partial out before testing.
+    kernel : str, default 'uniform'
+        Kernel weighting (only 'uniform' currently supported for local
+        randomization).
+    n_perms : int, default 1000
+        Number of permutations for Fisher randomization test.
+    fuzzy : str, optional
+        Actual treatment variable for fuzzy RD. The Wald (IV) estimator
+        is computed within the window.
+    alpha : float, default 0.05
+        Significance level.
+    seed : int, default 42
+        Random seed for reproducibility.
+
+    Returns
+    -------
+    CausalResult
+        Result with treatment effect estimate, permutation and asymptotic
+        p-values, and confidence interval.
+
+    Notes
+    -----
+    The confidence interval is obtained by test inversion when
+    ``statistic='diffmeans'``: the set of hypothesised effect values
+    tau_0 that are not rejected by the permutation test at level alpha.
+
+    References
+    ----------
+    Cattaneo, M.D., Titiunik, R. and Vazquez-Bare, G. (2016).
+    "Inference in Regression Discontinuity Designs under Local
+    Randomization." *The Stata Journal*, 16(2), 331-367. [@cattaneo2016inference]
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> import pandas as pd
+    >>> import statspai as sp
+    >>> rng = np.random.default_rng(42)
+    >>> n = 500
+    >>> x = rng.uniform(-1, 1, n)
+    >>> y = 0.8 * (x >= 0) + 0.5 * x + rng.normal(0, 0.3, n)
+    >>> df = pd.DataFrame({"x": x, "y": y})
+    >>> res = sp.rdrandinf(df, y="y", x="x", c=0.0, wl=-0.3,
+    ...                    wr=0.3, n_perms=500, seed=42)
+    >>> round(float(res.estimate), 3)
+    0.926
+    >>> res.pvalue is not None
+    True
+    """
+    rng = np.random.default_rng(seed)
+    if wl is None or wr is None:
+        raise ValueError(
+            "Window bounds wl and wr must be specified. "
+            "Use rdwinselect() to choose a data-driven window."
+        )
+    wl_value = float(wl)
+    wr_value = float(wr)
+
+    # --- subset to window ---
+    mask = _select_window(data, x, c, wl_value, wr_value)
+    df_w = data.loc[mask].copy()
+    df_w, _n_missing = _drop_incomplete(df_w, [y, x, covs, fuzzy], where="rdrandinf")
+    n_obs = len(df_w)
+    if n_obs < 4:
+        raise ValueError(  # pragma: no cover
+            f"Only {n_obs} observations in window [{c + wl_value}, {c + wr_value}]. "
+            "Widen the window or check your data."
+        )
+
+    yv = df_w[y].values.astype(float)
+    xv = df_w[x].values.astype(float)
+    # Treatment: above cutoff
+    z = (xv >= c).astype(int)
+    n_right = int(z.sum())
+    n_left = n_obs - n_right
+    if n_left < 2 or n_right < 2:
+        raise ValueError(  # pragma: no cover
+            f"Need >= 2 observations on each side of the cutoff; "
+            f"got {n_left} left and {n_right} right."
+        )
+
+    # --- polynomial / covariate adjustment ---
+    if p > 0 or (covs is not None and len(covs) > 0):
+        cov_mat = df_w[covs].values.astype(float) if covs else None
+        yv = _polynomial_residuals(yv, xv - c, p, cov_mat)
+
+    # --- fuzzy RD: Wald estimator ---
+    if fuzzy is not None:
+        d_actual = df_w[fuzzy].values.astype(float)
+        tau_iv, se_iv = _wald_iv(yv, d_actual, z)
+
+        # Permutation p-value for fuzzy: permute Z, recompute Wald
+        count = 0
+        for _ in range(n_perms):
+            z_perm = rng.permutation(z)
+            tau_perm, _ = _wald_iv(yv, d_actual, z_perm)
+            if not np.isnan(tau_perm) and abs(tau_perm) >= abs(tau_iv) - 1e-14:
+                count += 1
+        perm_pval = count / n_perms
+
+        # Asymptotic p-value
+        if se_iv > 0 and not np.isnan(se_iv):
+            t_stat = tau_iv / se_iv
+            asym_pval = 2 * sp_stats.norm.sf(abs(t_stat))
+        else:
+            asym_pval = np.nan  # pragma: no cover
+
+        z_crit = sp_stats.norm.ppf(1 - alpha / 2)
+        ci = (tau_iv - z_crit * se_iv, tau_iv + z_crit * se_iv)
+
+        return CausalResult(
+            method="RD Local Randomization (Fuzzy)",
+            estimand="LATE",
+            estimate=float(tau_iv),
+            se=float(se_iv),
+            pvalue=float(perm_pval),
+            ci=ci,
+            alpha=alpha,
+            n_obs=n_obs,
+            model_info={
+                "cutoff": c,
+                "window": (c + wl_value, c + wr_value),
+                "n_left": n_left,
+                "n_right": n_right,
+                "statistic": "wald_iv",
+                "polynomial_order": p,
+                "n_perms": n_perms,
+                "pvalue_permutation": perm_pval,
+                "pvalue_asymptotic": asym_pval,
+                "first_stage": float(d_actual[z == 1].mean() - d_actual[z == 0].mean()),
+                "fuzzy_treatment": fuzzy,
+            },
+            _citation_key="rdlocrand",
+        )
+
+    # --- sharp RD ---
+    # rdlocrand accepts 'ttest' and 'diffmeans' as names for the same
+    # statistic (they share one branch in rdrandinf.model), so an R script
+    # written with either must run unchanged.
+    if statistic == "ttest":
+        statistic = "diffmeans"
+    stat_names = list(_STAT_FUNCS.keys()) if statistic == "all" else [statistic]
+    if statistic != "all" and statistic not in _STAT_FUNCS:
+        raise ValueError(  # pragma: no cover
+            f"Unknown statistic '{statistic}'. "
+            f"Choose from: 'diffmeans' (alias 'ttest'), 'ksmirnov', "
+            f"'ranksum', 'all'."
+        )
+
+    results = {}
+    for sname in stat_names:
+        obs, perm_pval = _permutation_pvalue(yv, z, sname, n_perms, rng)
+        _, asym_pval = _asymptotic_pvalue(yv, z, sname)
+        results[sname] = {
+            "observed_stat": obs,
+            "pvalue_permutation": perm_pval,
+            "pvalue_asymptotic": asym_pval,
+        }
+
+    # Primary statistic for the CausalResult
+    primary = stat_names[0]
+    tau = _diffmeans(yv, z)
+    y1, y0 = yv[z == 1], yv[z == 0]
+    se = np.sqrt(y1.var(ddof=1) / n_right + y0.var(ddof=1) / n_left)
+
+    # Confidence interval by test inversion for diffmeans
+    ci = _ci_test_inversion(yv, z, n_perms, alpha, rng)
+
+    pval_main = results[primary]["pvalue_permutation"]
+
+    # Detail DataFrame if 'all'
+    detail = None
+    if statistic == "all":
+        rows = []
+        for sname, res in results.items():
+            rows.append(
+                {
+                    "statistic": sname,
+                    "observed": res["observed_stat"],
+                    "pvalue_perm": res["pvalue_permutation"],
+                    "pvalue_asym": res["pvalue_asymptotic"],
+                }
+            )
+        detail = pd.DataFrame(rows)
+
+    return CausalResult(
+        method="RD Local Randomization",
+        estimand="ATE (local)",
+        estimate=float(tau),
+        se=float(se),
+        pvalue=float(pval_main),
+        ci=ci,
+        alpha=alpha,
+        n_obs=n_obs,
+        detail=detail,
+        model_info={
+            "cutoff": c,
+            "window": (c + wl_value, c + wr_value),
+            "n_left": n_left,
+            "n_right": n_right,
+            "statistic": statistic,
+            "polynomial_order": p,
+            "n_perms": n_perms,
+            "covariates": covs,
+            "results_by_stat": results,
+            "pvalue_permutation": pval_main,
+            "pvalue_asymptotic": results[primary]["pvalue_asymptotic"],
+        },
+        _citation_key="rdlocrand",
+    )
+
+
+def _ci_test_inversion(
+    y: np.ndarray,
+    d: np.ndarray,
+    n_perms: int,
+    alpha: float,
+    rng: np.random.Generator,
+    n_grid: int = 101,
+) -> Tuple[float, float]:
+    """
+    Confidence interval by test inversion for difference-in-means.
+
+    Shift Y under each hypothesised tau_0 and check if the Fisher test
+    rejects. The CI is the range of non-rejected tau_0 values.
+    """
+    tau_hat = _diffmeans(y, d)
+    se_hat = np.sqrt(
+        y[d == 1].var(ddof=1) / (d == 1).sum() + y[d == 0].var(ddof=1) / (d == 0).sum()
+    )
+    if se_hat < 1e-14 or np.isnan(se_hat):
+        return (tau_hat, tau_hat)
+
+    # Search range: +/- 4 SE around point estimate
+    lo = tau_hat - 4 * se_hat
+    hi = tau_hat + 4 * se_hat
+    grid = np.linspace(lo, hi, n_grid)
+
+    not_rejected = []
+    for tau0 in grid:
+        # Under H0: tau = tau0, adjust treated outcomes
+        y_adj = y.copy()
+        y_adj[d == 1] = y[d == 1] - tau0
+        # Test stat under null: diff should be ~0
+        obs = abs(_diffmeans(y_adj, d))
+        count = 0
+        for _ in range(n_perms):
+            d_perm = rng.permutation(d)
+            perm_stat = abs(_diffmeans(y_adj, d_perm))
+            if perm_stat >= obs - 1e-14:
+                count += 1
+        pval = count / n_perms
+        if pval > alpha:
+            not_rejected.append(tau0)
+
+    if len(not_rejected) == 0:
+        # Fall back to normal approximation
+        z_crit = sp_stats.norm.ppf(1 - alpha / 2)
+        return (tau_hat - z_crit * se_hat, tau_hat + z_crit * se_hat)
+
+    return (float(min(not_rejected)), float(max(not_rejected)))
+
+
+def rdwinselect(
+    data: pd.DataFrame,
+    x: str,
+    c: float = 0,
+    covs: Optional[List[str]] = None,
+    wmin: Optional[float] = None,
+    wstep: Optional[float] = None,
+    nwindows: int = 10,
+    statistic: str = "diffmeans",
+    p: int = 0,
+    seed: int = 42,
+    alpha: float = 0.15,
+) -> pd.DataFrame:
+    """
+    Data-driven window selection for local randomization RD.
+
+    Tests covariate balance at successively larger windows around the
+    cutoff. The recommended window is the largest for which all
+    covariates remain balanced (p > alpha).
+
+    Parameters
+    ----------
+    data : pd.DataFrame
+        Input dataset.
+    x : str
+        Running variable name.
+    c : float, default 0
+        RD cutoff value.
+    covs : list of str, optional
+        Covariate names to test balance for. If None, uses quantiles of
+        the running variable as pseudo-covariates.
+    wmin : float, optional
+        Minimum half-window width. Defaults to the smallest gap between
+        adjacent observations near the cutoff.
+    wstep : float, optional
+        Window increment. Defaults to ``(max_range - wmin) / nwindows``.
+    nwindows : int, default 10
+        Number of windows to evaluate.
+    statistic : str, default 'diffmeans'
+        Test statistic for balance testing.
+    p : int, default 0
+        Polynomial order for adjustment.
+    seed : int, default 42
+        Random seed.
+    alpha : float, default 0.15
+        Significance level for balance (lenient by default to be
+        conservative about window selection).
+
+    Returns
+    -------
+    pd.DataFrame
+        Columns: window_left, window_right, n_left, n_right, p_value,
+        balanced. Rows sorted by window width.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> import pandas as pd
+    >>> import statspai as sp
+    >>> rng = np.random.default_rng(42)
+    >>> n = 500
+    >>> x = rng.uniform(-1, 1, n)
+    >>> z1 = 0.2 * x + rng.normal(0, 1, n)
+    >>> df = pd.DataFrame({"x": x, "z1": z1})
+    >>> tab = sp.rdwinselect(df, x="x", c=0.0, covs=["z1"],
+    ...                      nwindows=5)
+    >>> tab.shape
+    (5, 6)
+    >>> list(tab.columns)
+    ['window_left', 'window_right', 'n_left', 'n_right', 'p_value', 'balanced']
+    >>> tab["n_left"].tolist()
+    [26, 74, 129, 193, 249]
+    """
+    rng = np.random.default_rng(seed)
+    # Cleaned once, before the window grid is derived: the grid is built
+    # from quantiles and gaps of the running variable, so dropping rows
+    # afterwards would leave the windows keyed to a sample that no longer
+    # exists. Warned once here rather than once per window.
+    data, _n_missing = _drop_incomplete(data, [x, covs], where="rdwinselect")
+    xv = data[x].values.astype(float)
+
+    # --- determine window grid ---
+    x_left = xv[xv < c]
+    x_right = xv[xv >= c]
+    if len(x_left) == 0 or len(x_right) == 0:
+        raise ValueError(
+            "Need observations on both sides of the cutoff."
+        )  # pragma: no cover
+
+    # Max range: distance to closest boundary
+    max_left = c - x_left.min()
+    max_right = x_right.max() - c
+    max_range = min(max_left, max_right)
+
+    if wmin is None:
+        # Smallest gap near cutoff
+        sorted_x = np.sort(xv)
+        gaps = np.diff(sorted_x)
+        near_cutoff = (sorted_x[:-1] >= c - max_range / 2) & (
+            sorted_x[:-1] <= c + max_range / 2
+        )
+        if near_cutoff.any():
+            wmin = float(np.median(gaps[near_cutoff]))
+        else:
+            wmin = float(np.median(gaps[gaps > 0]))
+        wmin = max(wmin, max_range / (nwindows * 2))
+
+    if wstep is None:
+        wstep = (max_range - wmin) / max(nwindows - 1, 1)
+        wstep = max(wstep, wmin)
+
+    # --- pseudo-covariates if none given ---
+    use_covs = covs
+    if use_covs is None or len(use_covs) == 0:
+        # Create quantile dummies of X as pseudo-covariates
+        qs = [0.25, 0.5, 0.75]
+        pseudo_names = []
+        for q in qs:
+            cname = f"_x_q{int(q * 100)}"
+            data = data.copy()
+            data[cname] = (data[x] <= np.quantile(xv, q)).astype(float)
+            pseudo_names.append(cname)
+        use_covs = pseudo_names
+
+    # --- evaluate each window ---
+    rows = []
+    for i in range(nwindows):
+        w = wmin + i * wstep
+        wl = -w
+        wr = w
+
+        mask = (xv >= c + wl) & (xv <= c + wr)
+        df_w = data.loc[mask]
+        xw = df_w[x].values.astype(float)
+        z = (xw >= c).astype(int)
+        n_left = int((z == 0).sum())
+        n_right = int((z == 1).sum())
+
+        if n_left < 2 or n_right < 2:
+            rows.append(
+                {
+                    "window_left": c + wl,
+                    "window_right": c + wr,
+                    "n_left": n_left,
+                    "n_right": n_right,
+                    "p_value": np.nan,
+                    "balanced": False,
+                }
+            )
+            continue  # pragma: no cover
+
+        # Test balance for each covariate, take minimum p-value
+        min_pval = 1.0
+        for cv in use_covs:
+            if cv not in df_w.columns:
+                continue  # pragma: no cover
+            cv_vals = df_w[cv].values.astype(float)
+            if np.std(cv_vals) < 1e-14:
+                continue  # pragma: no cover
+
+            # Polynomial adjustment
+            if p > 0:
+                cv_vals = _polynomial_residuals(cv_vals, xw - c, p)
+
+            _, perm_pval = _permutation_pvalue(cv_vals, z, statistic, 500, rng)
+            min_pval = min(min_pval, perm_pval)
+
+        rows.append(
+            {
+                "window_left": c + wl,
+                "window_right": c + wr,
+                "n_left": n_left,
+                "n_right": n_right,
+                "p_value": min_pval,
+                "balanced": min_pval > alpha,
+            }
+        )
+
+    result = pd.DataFrame(rows)
+
+    # Clean up pseudo-covariates
+    if covs is None:
+        for cname in pseudo_names:
+            if cname in data.columns:
+                data.drop(columns=[cname], inplace=True, errors="ignore")
+
+    return result
+
+
+def rdsensitivity(
+    data: pd.DataFrame,
+    y: str,
+    x: str,
+    c: float = 0,
+    wlist: Optional[List[float]] = None,
+    nwindows: int = 20,
+    statistic: str = "diffmeans",
+    p: int = 0,
+    n_perms: int = 500,
+    seed: int = 42,
+    alpha: float = 0.05,
+    plot: bool = False,
+) -> pd.DataFrame:
+    """
+    Sensitivity of RD estimates across different window widths.
+
+    For each window, runs ``rdrandinf`` and records the estimate, standard
+    error, and p-value. Optionally produces a plot if matplotlib is
+    available.
+
+    Parameters
+    ----------
+    data : pd.DataFrame
+        Input dataset.
+    y : str
+        Outcome variable name.
+    x : str
+        Running variable name.
+    c : float, default 0
+        RD cutoff value.
+    wlist : list of float, optional
+        Symmetric half-window widths to evaluate. If None, an
+        evenly-spaced grid is generated automatically.
+    nwindows : int, default 20
+        Number of windows when ``wlist`` is None.
+    statistic : str, default 'diffmeans'
+        Test statistic for inference.
+    p : int, default 0
+        Polynomial order for adjustment.
+    n_perms : int, default 500
+        Number of permutations per window.
+    seed : int, default 42
+        Random seed.
+    alpha : float, default 0.05
+        Significance level.
+
+    Returns
+    -------
+    pd.DataFrame
+        Columns: window, estimate, se, pvalue, ci_lower, ci_upper,
+        significant.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> import pandas as pd
+    >>> import statspai as sp
+    >>> rng = np.random.default_rng(42)
+    >>> x = rng.uniform(-1, 1, 500)
+    >>> y = 0.5 * (x >= 0) + 0.8 * x + rng.normal(0, 0.3, 500)
+    >>> df = pd.DataFrame({"x": x, "y": y})
+    >>> sens = sp.rdsensitivity(
+    ...     df, y="y", x="x", wlist=[0.25, 0.5, 0.75],
+    ...     n_perms=200, seed=42,
+    ... )
+    >>> sens["estimate"].round(3).tolist()
+    [0.66, 0.834, 1.078]
+    >>> bool(sens["significant"].all())
+    True
+    """
+    # Cleaned once here rather than inside each per-window rdrandinf call:
+    # the default window grid is derived from the running variable's own
+    # spacing, so it has to be built on the sample that will actually be
+    # estimated, and one warning is more useful than `nwindows` of them.
+    data, _n_missing = _drop_incomplete(data, [y, x], where="rdsensitivity")
+    xv = data[x].values.astype(float)
+
+    if wlist is None:
+        x_left = xv[xv < c]
+        x_right = xv[xv >= c]
+        max_left = c - x_left.min() if len(x_left) > 0 else 1.0
+        max_right = x_right.max() - c if len(x_right) > 0 else 1.0
+        max_w = min(max_left, max_right)
+        # Start from a small window; ensure enough obs
+        sorted_gaps = np.sort(np.abs(xv - c))
+        # Need at least 4 obs, so start from the 4th closest
+        min_w = sorted_gaps[min(3, len(sorted_gaps) - 1)] * 1.1
+        min_w = max(min_w, max_w / (nwindows * 2))
+        wlist = np.linspace(min_w, max_w * 0.95, nwindows).tolist()
+
+    rows = []
+    for w in wlist:
+        wl = -w
+        wr = w
+        mask = (xv >= c + wl) & (xv <= c + wr)
+        z_in = (xv[mask] >= c).astype(int)
+        n_left = int((z_in == 0).sum())
+        n_right = int((z_in == 1).sum())
+
+        if n_left < 2 or n_right < 2:
+            rows.append(
+                {
+                    "window": w,
+                    "estimate": np.nan,
+                    "se": np.nan,
+                    "pvalue": np.nan,
+                    "ci_lower": np.nan,
+                    "ci_upper": np.nan,
+                    "significant": False,
+                }
+            )
+            continue  # pragma: no cover
+
+        try:
+            res = rdrandinf(
+                data,
+                y,
+                x,
+                c=c,
+                wl=wl,
+                wr=wr,
+                statistic=statistic,
+                p=p,
+                n_perms=n_perms,
+                alpha=alpha,
+                seed=seed,
+            )
+            rows.append(
+                {
+                    "window": w,
+                    "estimate": res.estimate,
+                    "se": res.se,
+                    "pvalue": res.pvalue,
+                    "ci_lower": res.ci[0],
+                    "ci_upper": res.ci[1],
+                    "significant": res.pvalue <= alpha,
+                }
+            )
+        except (ValueError, RuntimeError):  # pragma: no cover
+            rows.append(
+                {
+                    "window": w,
+                    "estimate": np.nan,
+                    "se": np.nan,
+                    "pvalue": np.nan,
+                    "ci_lower": np.nan,
+                    "ci_upper": np.nan,
+                    "significant": False,
+                }
+            )
+
+    result = pd.DataFrame(rows)
+
+    # Figure built only on request, and never shown.
+    #
+    # This block used to run unconditionally and end in ``plt.show()``.
+    # Under an interactive backend -- ``macosx`` is the default on the
+    # platform this is developed on -- ``show()`` blocks until a human
+    # closes the window, so `sp.rdsensitivity(...)` never returned in a
+    # script, a test run, a CI job or an agent session. That is a hard
+    # hang in an estimation function, in a package whose stated purpose
+    # is to be callable by agents.
+    #
+    # Displaying is the caller's decision in every case: the returned
+    # figure is attached to ``result.attrs["figure"]`` so a notebook user
+    # can render it and everyone else can ignore it.
+    try:
+        import matplotlib.pyplot as plt
+
+        valid = result.dropna(subset=["estimate"]) if plot else result.iloc[:0]
+        if len(valid) > 0:
+            fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+
+            # Panel 1: Estimates with CI
+            ax = axes[0]
+            ax.plot(valid["window"], valid["estimate"], "o-", color="#2c3e50")
+            ax.fill_between(
+                valid["window"],
+                valid["ci_lower"],
+                valid["ci_upper"],
+                alpha=0.2,
+                color="#3498db",
+            )
+            ax.axhline(0, color="grey", linestyle="--", linewidth=0.8)
+            ax.set_xlabel("Window half-width")
+            ax.set_ylabel("Treatment effect estimate")
+            ax.set_title("Sensitivity: Estimates across windows")
+
+            # Panel 2: p-values
+            ax = axes[1]
+            ax.plot(valid["window"], valid["pvalue"], "o-", color="#e74c3c")
+            ax.axhline(
+                alpha,
+                color="grey",
+                linestyle="--",
+                linewidth=0.8,
+                label=f"alpha = {alpha}",
+            )
+            ax.set_xlabel("Window half-width")
+            ax.set_ylabel("Permutation p-value")
+            ax.set_title("Sensitivity: P-values across windows")
+            ax.legend()
+
+            plt.tight_layout()
+            result.attrs["figure"] = fig
+    except ImportError:  # pragma: no cover
+        pass  # pragma: no cover
+
+    return result
+
+
+def _rdrbounds_rows(
+    yv: np.ndarray,
+    z: np.ndarray,
+    gamma_list,
+    U: np.ndarray,
+    statistic: str,
+) -> List[Dict[str, float]]:
+    """Rosenbaum-bound p-values given a (reps, n) matrix of uniforms ``U``.
+
+    Every p-value reuses the same ``U`` (R ``rdrbounds`` re-seeds before
+    each one), and unit ``order[j]`` receives column ``j``. Separated from
+    the draws so the reference-parity test can feed R's own ``runif``
+    stream and reproduce ``rdlocrand::rdrbounds`` exactly.
+    """
+    n = len(yv)
+    ranks = sp_stats.rankdata(yv)
+    rank_var = float(np.var(ranks, ddof=1))
+
+    def _stats(D: np.ndarray) -> np.ndarray:
+        """Statistic for each row of a (reps, n) assignment matrix."""
+        n1 = D.sum(axis=1)
+        n0 = n - n1
+        with np.errstate(divide="ignore", invalid="ignore"):
+            if statistic == "ranksum":
+                T = (1 - D) @ ranks
+                out = (T - n0 * (n + 1) / 2) / np.sqrt(n0 * n1 * rank_var / n)
+            else:
+                out = (D @ yv) / n1 - ((1 - D) @ yv) / n0
+        out[(n1 == 0) | (n0 == 0)] = np.nan
+        return out
+
+    obs = float(_stats(z[None, :])[0])
+
+    def _pvalue(prob: np.ndarray, order: np.ndarray) -> float:
+        # Draws are attached to units in `order`, as R attaches runif(n) to
+        # the rows of its sorted data.
+        D = np.empty_like(U)
+        D[:, order] = (U <= prob[None, :]).astype(float)
+        st = _stats(D)
+        ok = np.isfinite(st)
+        return float(np.mean(np.abs(st[ok]) >= abs(obs) - 1e-14))
+
+    dec = np.argsort(-yv, kind="mergesort")
+    inc = np.argsort(yv, kind="mergesort")
+    rows = []
+    for gamma in gamma_list:
+        if abs(gamma - 1.0) < 1e-14:
+            pv = _pvalue(np.full(n, z.mean()), inc)
+            rows.append({"gamma": gamma, "pvalue_upper": pv, "pvalue_lower": pv})
+            continue
+        phigh, plow = gamma / (1 + gamma), 1 / (1 + gamma)
+        ub, lb = [], []
+        pos = np.arange(n)
+        for u in range(1, n + 1):
+            # R: uplus on the decreasing sort, uminus on the increasing one;
+            # both give the high probability to the u largest outcomes.
+            ub.append(_pvalue(np.where(pos < u, phigh, plow), dec))
+            lb.append(_pvalue(np.where(pos >= n - u, phigh, plow), inc))
+        rows.append({"gamma": gamma, "pvalue_upper": max(ub), "pvalue_lower": min(lb)})
+    return rows
+
+
+def rdrbounds(
+    data: pd.DataFrame,
+    y: str,
+    x: str,
+    c: float = 0,
+    wl: Optional[float] = None,
+    wr: Optional[float] = None,
+    gamma_list: Optional[List[float]] = None,
+    statistic: str = "ranksum",
+    n_perms: int = 1000,
+    seed: int = 42,
+) -> pd.DataFrame:
+    """
+    Rosenbaum sensitivity bounds for RD under local randomization.
+
+    Assesses how much hidden bias (departure from random assignment)
+    would be needed to explain away the estimated treatment effect, as
+    R ``rdlocrand::rdrbounds`` does. Under Rosenbaum's model with odds
+    ratio ``Gamma`` each unit in the window is treated independently with
+    probability ``Gamma/(1+Gamma)`` or ``1/(1+Gamma)``. As in R, the bounds
+    are taken over the monotone patterns in which the ``u`` units with the
+    largest outcomes get the high probability, ``u = 1..n``: the upper
+    bound is the largest of those p-values and the lower bound the
+    smallest. ``Gamma = 1`` is randomization with the treated share as the
+    common probability.
+
+    Parameters
+    ----------
+    data : pd.DataFrame
+        Input dataset.
+    y : str
+        Outcome variable name.
+    x : str
+        Running variable name.
+    c : float, default 0
+        RD cutoff value.
+    wl, wr : float
+        Window ``[c + wl, c + wr]`` (``wl`` typically negative).
+    gamma_list : list of float, optional
+        Odds ratios. Defaults to ``[1, 1.5, 2, 2.5, 3, 4, 5]``.
+    statistic : {'ranksum', 'diffmeans'}, default 'ranksum'
+        ``'ranksum'`` is R's standardised rank sum (control-rank sum minus
+        its mean over ``sqrt(n0 n1 var(ranks) / n)``); ``'diffmeans'`` the
+        difference in means.
+    n_perms : int, default 1000
+        Bernoulli assignment draws per p-value. The same draws are reused
+        across thresholds and ``Gamma`` values (common random numbers, as R
+        reseeds before each p-value).
+    seed : int, default 42
+        Random seed.
+
+    Returns
+    -------
+    pd.DataFrame
+        Columns: gamma, pvalue_upper, pvalue_lower.
+
+    Notes
+    -----
+    Randomisation p-values: agreement with R is within Monte-Carlo error
+    only. Through 1.28.0 this function split units at the *median*
+    outcome only -- one threshold instead of the extremum over all of them
+    -- drew a fixed number of treated units rather than Bernoulli
+    assignments, and gave the high probability to the *smallest* outcomes
+    for the lower bound; R's ``uminus`` on its increasing sort selects the
+    largest outcomes, the same patterns as the upper bound, which is what
+    this port follows (with R's draw-to-unit attachment for each bound).
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> import pandas as pd
+    >>> import statspai as sp
+    >>> rng = np.random.default_rng(42)
+    >>> n = 500
+    >>> x = rng.uniform(-1, 1, n)
+    >>> y = 0.8 * (x >= 0) + 0.5 * x + rng.normal(0, 0.3, n)
+    >>> df = pd.DataFrame({"x": x, "y": y})
+    >>> tab = sp.rdrbounds(df, y="y", x="x", c=0.0, wl=-0.3,
+    ...                    wr=0.3, gamma_list=[1.0, 1.5, 2.0],
+    ...                    n_perms=500, seed=42)
+    >>> tab.shape
+    (3, 3)
+    >>> list(tab.columns)
+    ['gamma', 'pvalue_upper', 'pvalue_lower']
+    >>> bool((tab["pvalue_upper"] >= tab["pvalue_lower"]).all())
+    True
+    """
+    if wl is None or wr is None:
+        raise ValueError(
+            "Window bounds wl and wr must be specified. "
+            "Use rdwinselect() to choose a data-driven window."
+        )
+    if statistic not in ("ranksum", "diffmeans"):
+        raise ValueError("statistic must be 'ranksum' or 'diffmeans'")
+    if gamma_list is None:
+        gamma_list = [1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0]
+    mask = _select_window(data, x, c, float(wl), float(wr))
+    df_w = data.loc[mask].copy()
+    df_w, _n_missing = _drop_incomplete(df_w, [y, x], where="rdrbounds")
+    yv = df_w[y].to_numpy(dtype=float)
+    z = (df_w[x].to_numpy(dtype=float) >= c).astype(float)
+    n = len(yv)
+    if n < 4 or z.sum() < 2 or (n - z.sum()) < 2:
+        raise ValueError("Need >= 2 observations on each side of the cutoff.")
+
+    for gamma in gamma_list:
+        if gamma < 1.0:
+            raise ValueError("gamma must be >= 1.")
+    rng = np.random.default_rng(seed)
+    U = rng.random((int(n_perms), n))
+    rows = _rdrbounds_rows(yv, z, gamma_list, U, statistic)
+    return pd.DataFrame(rows)

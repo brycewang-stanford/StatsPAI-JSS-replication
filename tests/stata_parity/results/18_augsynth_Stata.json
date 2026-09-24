@@ -1,0 +1,46 @@
+{
+  "module": "18_augsynth",
+  "side": "Stata",
+  "rows": [
+    {
+      "module": "18_augsynth",
+      "side": "Stata",
+      "statistic": "att_augmented",
+      "estimate": -0.36277067318064221,
+      "se": null,
+      "ci_lo": null,
+      "ci_hi": null,
+      "n": 731,
+      "extra": {}
+    }
+,
+    {
+      "module": "18_augsynth",
+      "side": "Stata",
+      "statistic": "pre_rmspe",
+      "estimate": 0.013961503372745,
+      "se": null,
+      "ci_lo": null,
+      "ci_hi": null,
+      "n": 731,
+      "extra": {}
+    }
+  ],
+  "extra": {
+    "method": "augsynth Ridge + SCM (progfunc = Ridge, scm = TRUE), outcome-only",
+    "ridge_lambda": 0.0192485849869997,
+    "ridge_lambda_rule": "augsynth cv_lambda: lambda_max = sigma_max(Xc)^2, 21-point log grid to lambda_max*1e-8, leave-one-period-out holdout over periods 1..T0-1, largest lambda within one SE of the minimum mean squared holdout error (min_1se = TRUE); recomputed in Mata, equals the lambda element of the augsynth fit object, 0.019248584986999707",
+    "stata_bridge_status": "audited Stata/Mata algorithm bridge",
+    "stata_algorithm": "donor-mean-centred pre-outcomes; exact active-set simplex QP for the SCM weights; ridge correction (x1 - X0'w)'(X0'X0 + lambda I)^-1 X0' added to the weights; counterfactual = raw donor trajectory x augmented weights",
+    "stata_reference_note": "Portable algorithm bridge; not a packaged Stata reference. allsynth v1.32 bcorrect(merge ridge) rejects the fixture (needs >= K + 2 = 17 controls, 16 available; r(198)) and, where feasible, estimates a different bias-corrected quantity (synth V-weighted weights + per-period ridgeregress outcome model). augsynth's remaining 7.9e-6 offset is its OSQP eps_abs = eps_rel = 1e-8 stopping rule on the simplex QP; the exact optimum agrees with the Python native path to 2e-8.",
+    "stata_command": "Mata _sp_augsynth_bridge(region, year, gdppc, Basque Country, 1970)"
+  },
+  "provenance": {
+    "stata_version": 18,
+    "edition": "MP",
+    "os": "Unix",
+    "machine_type": "Mac (Apple Silicon)",
+    "born_date": "07 Jun 2023",
+    "captured_via": "tests/stata_parity/_common.do::stata_parity_close"
+  }
+}

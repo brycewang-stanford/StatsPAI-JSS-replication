@@ -1,0 +1,32 @@
+{
+  "module": "73_did2s",
+  "side": "py",
+  "rows": [
+    {
+      "module": "73_did2s",
+      "side": "py",
+      "statistic": "static_ATT",
+      "estimate": -0.03510827660810244,
+      "se": 0.006903625094119211,
+      "ci_lo": -0.04863913315534303,
+      "ci_hi": -0.021577420060861843,
+      "n": 2500,
+      "extra": {}
+    },
+    {
+      "module": "73_did2s",
+      "side": "py",
+      "statistic": "static_ATT_stage2_se",
+      "estimate": -0.03510827660810244,
+      "se": 0.005117728129401425,
+      "ci_lo": null,
+      "ci_hi": null,
+      "n": 2500,
+      "extra": {}
+    }
+  ],
+  "extra": {
+    "estimator": "gardner_did",
+    "vce": "analytic (did2s corrected two-stage variance) + stage2 diagnostic"
+  }
+}

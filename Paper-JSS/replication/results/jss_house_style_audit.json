@@ -1,0 +1,84 @@
+{
+  "anchor_failures": [],
+  "checks": [
+    {
+      "evidence": "missing=[]",
+      "ok": true,
+      "requirement": "active JSS style files are present"
+    },
+    {
+      "evidence": "hits=0",
+      "ok": true,
+      "requirement": "active JSS files are free of draft markers"
+    },
+    {
+      "evidence": "hits=0",
+      "ok": true,
+      "requirement": "active JSS files avoid marketing-style claims"
+    },
+    {
+      "evidence": "hits=0",
+      "ok": true,
+      "requirement": "upload-facing prose avoids overconfident proof or guarantee wording"
+    },
+    {
+      "evidence": "hits=0",
+      "ok": true,
+      "requirement": "upload-facing prose avoids defensive or casual reviewer-facing phrasing"
+    },
+    {
+      "evidence": "macro_counts={'proglang': 137, 'pkg': 198, 'code': 361}; thresholds={'proglang': 50, 'pkg': 80, 'code': 150}; failures=[]",
+      "ok": true,
+      "requirement": "active manuscript keeps JSS macro density"
+    },
+    {
+      "evidence": "anchor_failures=[]",
+      "ok": true,
+      "requirement": "upload-facing prose retains contribution, boundary, and disclosure anchors"
+    }
+  ],
+  "defensive_tone_hits": [],
+  "draft_marker_hits": [],
+  "failures": [],
+  "generated_at_unix": 1780185600,
+  "marketing_claim_hits": [],
+  "overconfidence_claim_hits": [],
+  "status": "PASS",
+  "summary": {
+    "active_section_count": 9,
+    "anchor_failure_count": 0,
+    "checked_files": [
+      "manuscript/main.tex",
+      "manuscript/jss-bib.bib",
+      "manuscript/README.md",
+      "README.md",
+      "cover-letter.md",
+      "REVIEWER-HARDENING-AUDIT.md",
+      "requirements-jss.txt",
+      "manuscript/sections/01-introduction-compact.tex",
+      "manuscript/sections/02-architecture-compact.tex",
+      "manuscript/sections/03-agent-facing-compact.tex",
+      "manuscript/sections/04-examples-compact.tex",
+      "manuscript/sections/05-parity-compact.tex",
+      "manuscript/sections/06-performance.tex",
+      "manuscript/sections/07-agent-eval.tex",
+      "manuscript/sections/08-computational-details-compact.tex",
+      "manuscript/sections/09-discussion-compact.tex"
+    ],
+    "defensive_tone_hits": 0,
+    "draft_marker_hits": 0,
+    "macro_counts": {
+      "code": 361,
+      "pkg": 198,
+      "proglang": 137
+    },
+    "macro_failures": [],
+    "macro_thresholds": {
+      "code": 150,
+      "pkg": 80,
+      "proglang": 50
+    },
+    "marketing_claim_hits": 0,
+    "overconfidence_claim_hits": 0
+  }
+}

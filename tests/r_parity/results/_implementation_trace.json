@@ -1,0 +1,1163 @@
+{
+ "generator": "scripts/trace_parity_provenance.py",
+ "python": "3.10.20",
+ "substrate_ignored": [
+  "numpy",
+  "scipy",
+  "pandas",
+  "numba",
+  "llvmlite",
+  "patsy",
+  "formulaic",
+  "dateutil",
+  "pytz",
+  "tzdata",
+  "joblib",
+  "threadpoolctl",
+  "matplotlib",
+  "packaging",
+  "typing_extensions",
+  "importlib_metadata",
+  "_distutils_hack",
+  "cloudpickle"
+ ],
+ "known_package_classes": {
+  "rdrobust": "official_python_port",
+  "rddensity": "official_python_port",
+  "rdd": "official_python_port",
+  "linearmodels": "third_party_python",
+  "statsmodels": "third_party_python",
+  "pyfixest": "third_party_python",
+  "econml": "third_party_python",
+  "doubleml": "third_party_python",
+  "lifelines": "third_party_python",
+  "sklearn": "nuisance_learner",
+  "lightgbm": "nuisance_learner",
+  "xgboost": "nuisance_learner"
+ },
+ "modules": {
+  "01_ols": {
+   "seconds": 5.32,
+   "error": null,
+   "boundary_calls": [],
+   "packages": [],
+   "rscript_launches": 0,
+   "subprocesses": [],
+   "source_sha256": "a3f49b180fc45900b551754a234da162e63fe5c2fc7302cd8c698e57f935d5cd"
+  },
+  "02_iv": {
+   "seconds": 4.88,
+   "error": null,
+   "boundary_calls": [],
+   "packages": [],
+   "rscript_launches": 0,
+   "subprocesses": [],
+   "source_sha256": "989111a2bbb29426cf5109d0c7d22c9b993d8e898586377052c13bd78ead3602"
+  },
+  "03_hdfe": {
+   "seconds": 5.21,
+   "error": null,
+   "boundary_calls": [],
+   "packages": [],
+   "rscript_launches": 0,
+   "subprocesses": [],
+   "source_sha256": "b6ed8b64644b0b2d6af4fed44c9ac16958e4f839e1b5f02776d619b17c61d723"
+  },
+  "04_csdid": {
+   "seconds": 4.28,
+   "error": null,
+   "boundary_calls": [],
+   "packages": [],
+   "rscript_launches": 0,
+   "subprocesses": [],
+   "source_sha256": "8068d589c92dbda9625faeb4df7ff912c465a04dfa4d739390560654d1826649"
+  },
+  "05_sunab": {
+   "seconds": 4.8,
+   "error": null,
+   "boundary_calls": [],
+   "packages": [],
+   "rscript_launches": 0,
+   "subprocesses": [],
+   "source_sha256": "11c33b06924bff81b09225379206969bc572f3f50262acb7445aedb130a4cf4f"
+  },
+  "06_rd": {
+   "seconds": 9.95,
+   "error": null,
+   "boundary_calls": [
+    {
+     "package": "rdrobust",
+     "callee": "rdrobust.rdrobust.rdrobust",
+     "caller": "rd/rdrobust.py",
+     "n": 1
+    }
+   ],
+   "packages": [
+    "rdrobust"
+   ],
+   "rscript_launches": 0,
+   "subprocesses": [],
+   "source_sha256": "3ce6dbee4de1a913a60287267003f54f5048b0b388f5de6042afd19e85b8fccf"
+  },
+  "07_scm": {
+   "seconds": 50.0,
+   "error": null,
+   "boundary_calls": [],
+   "packages": [],
+   "rscript_launches": 0,
+   "subprocesses": [],
+   "source_sha256": "d819464521723fc909026ee511051f03e5c6f4304725972e746225711d42bffb"
+  },
+  "08_dml": {
+   "seconds": 4.43,
+   "error": null,
+   "boundary_calls": [
+    {
+     "package": "sklearn",
+     "callee": "sklearn.base.clone",
+     "caller": "dml/_base.py",
+     "n": 10
+    },
+    {
+     "package": "sklearn",
+     "callee": "sklearn.base.wrapper",
+     "caller": "dml/_base.py",
+     "n": 10
+    },
+    {
+     "package": "sklearn",
+     "callee": "sklearn.ensemble._gb.__init__",
+     "caller": "dml/_base.py",
+     "n": 1
+    },
+    {
+     "package": "sklearn",
+     "callee": "sklearn.linear_model._base.predict",
+     "caller": "dml/plr.py",
+     "n": 10
+    }
+   ],
+   "packages": [
+    "sklearn"
+   ],
+   "rscript_launches": 0,
+   "subprocesses": [],
+   "source_sha256": "abfa81f2491547d8982d8fda0008f3e2bd6ec6f3e492e2389b28c27048b8067d"
+  },
+  "09_rddensity": {
+   "seconds": 3.58,
+   "error": null,
+   "boundary_calls": [],
+   "packages": [],
+   "rscript_launches": 0,
+   "subprocesses": [],
+   "source_sha256": "900a3d21949458035580d992a1be6f0f5ea116c6b548f181a2b2d73c150da503"
+  },
+  "10_honest_did": {
+   "seconds": 11.43,
+   "error": null,
+   "boundary_calls": [],
+   "packages": [],
+   "rscript_launches": 0,
+   "subprocesses": [],
+   "source_sha256": "becfd23ba572042b1509f313e7263aa65b8e3970a7467a8882030536208951e2"
+  },
+  "11_psm": {
+   "seconds": 4.22,
+   "error": null,
+   "boundary_calls": [],
+   "packages": [],
+   "rscript_launches": 0,
+   "subprocesses": [],
+   "source_sha256": "d0e81f131c14ebd6eb5aef59dd1d1af5c40551bde8be14e850c2743170f585e0"
+  },
+  "12_sdid": {
+   "seconds": 71.33,
+   "error": null,
+   "boundary_calls": [],
+   "packages": [],
+   "rscript_launches": 0,
+   "subprocesses": [],
+   "source_sha256": "cd85fffdacf17b0e96a48b51ce445c86c21571fc6f6ef601de55e5e8055517c1"
+  },
+  "13_causal_forest": {
+   "seconds": 22.13,
+   "error": null,
+   "boundary_calls": [
+    {
+     "package": "sklearn",
+     "callee": "sklearn.ensemble._forest.__init__",
+     "caller": "forest/causal_forest.py",
+     "n": 2
+    }
+   ],
+   "packages": [
+    "sklearn"
+   ],
+   "rscript_launches": 0,
+   "subprocesses": [],
+   "source_sha256": "0247f8d4a6c2a500ac6a97b55994ad3afb055ebf8dee8a79eb30f00c08e467a6"
+  },
+  "14_ols_cluster": {
+   "seconds": 5.44,
+   "error": null,
+   "boundary_calls": [],
+   "packages": [],
+   "rscript_launches": 0,
+   "subprocesses": [],
+   "source_sha256": "495a448e0d13a8a67f77c4b60446de83a936f33c110f53880e77529ec2227901"
+  },
+  "15_hdfe_cluster": {
+   "seconds": 4.6,
+   "error": null,
+   "boundary_calls": [],
+   "packages": [],
+   "rscript_launches": 0,
+   "subprocesses": [],
+   "source_sha256": "85bf80fea1474ff7718f609e63652041bfa2117c5677c6f1963fa98bc8cfc620"
+  },
+  "16_bjs": {
+   "seconds": 4.59,
+   "error": null,
+   "boundary_calls": [],
+   "packages": [],
+   "rscript_launches": 0,
+   "subprocesses": [],
+   "source_sha256": "2edd13d50680c32d849cebe53d95f276fc89a278b014e14b6e496eb832b39d63"
+  },
+  "17_etwfe": {
+   "seconds": 4.8,
+   "error": null,
+   "boundary_calls": [],
+   "packages": [],
+   "rscript_launches": 0,
+   "subprocesses": [],
+   "source_sha256": "33550a3b284b876bb3afd63a62a75d4bbfb932e14c2d84ad9dca6438cc67fd67"
+  },
+  "18_augsynth": {
+   "seconds": 5.37,
+   "error": null,
+   "boundary_calls": [],
+   "packages": [],
+   "rscript_launches": 0,
+   "subprocesses": [],
+   "source_sha256": "2d6c2d362bcdda5a7ed3dbd8d55ba1e0981e40c66cb05adb364c33ccda55366e"
+  },
+  "19_gsynth": {
+   "seconds": 4.37,
+   "error": null,
+   "boundary_calls": [],
+   "packages": [],
+   "rscript_launches": 0,
+   "subprocesses": [],
+   "source_sha256": "d29de90132363f0e98164cbd2af2246dda916979beef8dc2136e4cecd59848de"
+  },
+  "20_bacon": {
+   "seconds": 5.52,
+   "error": null,
+   "boundary_calls": [],
+   "packages": [],
+   "rscript_launches": 0,
+   "subprocesses": [],
+   "source_sha256": "b594a5544692a209ce891c6435a87df996443d5d8c7988f1899c05ab417529ff"
+  },
+  "21_honest_relmags": {
+   "seconds": 41.11,
+   "error": null,
+   "boundary_calls": [],
+   "packages": [],
+   "rscript_launches": 0,
+   "subprocesses": [],
+   "source_sha256": "869903b475d5c750922b6f09088ce7ee240baede79954d0a1aa5bc66742cf6bc"
+  },
+  "22_sensemakr": {
+   "seconds": 4.23,
+   "error": null,
+   "boundary_calls": [],
+   "packages": [],
+   "rscript_launches": 0,
+   "subprocesses": [],
+   "source_sha256": "f3ad9bf1d65a840ad5d9e49d4649194c1a8a0653e97e383d78e29f0e4b7c81a8"
+  },
+  "23_evalue": {
+   "seconds": 3.78,
+   "error": null,
+   "boundary_calls": [],
+   "packages": [],
+   "rscript_launches": 0,
+   "subprocesses": [],
+   "source_sha256": "18156b6c2814762c7c96d3def4605999a876124feb696d904fcc6e5e789a024f"
+  },
+  "24_coxph": {
+   "seconds": 5.91,
+   "error": null,
+   "boundary_calls": [],
+   "packages": [],
+   "rscript_launches": 0,
+   "subprocesses": [],
+   "source_sha256": "fb8003976a7814e822983294a54f61ad6de970cb7463d18c2c002e6344c4fcc1"
+  },
+  "25_lmm": {
+   "seconds": 8.13,
+   "error": null,
+   "boundary_calls": [],
+   "packages": [],
+   "rscript_launches": 0,
+   "subprocesses": [],
+   "source_sha256": "a9e2659cfc934a9ea5efcf30b66c44662b15992c880d5bbd8195d57a95ffab74"
+  },
+  "26_glmm_logit": {
+   "seconds": 5.25,
+   "error": null,
+   "boundary_calls": [],
+   "packages": [],
+   "rscript_launches": 0,
+   "subprocesses": [],
+   "source_sha256": "6ea3a9ca4113e5a5ec41e67d76e34ce3f632580a24677115693678e5d94af502"
+  },
+  "27_glmm_aghq": {
+   "seconds": 5.93,
+   "error": null,
+   "boundary_calls": [],
+   "packages": [],
+   "rscript_launches": 0,
+   "subprocesses": [],
+   "source_sha256": "67dd418c4cefb921478b40ad3d279b0ca6af2ac918057b67c4fcfc95ff5b74a0"
+  },
+  "28_frontier": {
+   "seconds": 5.32,
+   "error": null,
+   "boundary_calls": [],
+   "packages": [],
+   "rscript_launches": 0,
+   "subprocesses": [],
+   "source_sha256": "638bfe4764d63d8e3ad3dd447d99aa4beded8d1a83e846710cf5dcab8d4ff6a6"
+  },
+  "29_panel_sfa": {
+   "seconds": 4.96,
+   "error": null,
+   "boundary_calls": [],
+   "packages": [],
+   "rscript_launches": 0,
+   "subprocesses": [],
+   "source_sha256": "cb3bdd575e2c84cd78195264f8846519938da4505bb7aee9da014de78f8f518a"
+  },
+  "30_oaxaca": {
+   "seconds": 5.17,
+   "error": null,
+   "boundary_calls": [],
+   "packages": [],
+   "rscript_launches": 0,
+   "subprocesses": [],
+   "source_sha256": "d7e505274bac35c920cf635bc34c02b35b4d40a7c7e3b8e25cd241d81f1bca4d"
+  },
+  "31_dfl": {
+   "seconds": 6.04,
+   "error": null,
+   "boundary_calls": [],
+   "packages": [],
+   "rscript_launches": 0,
+   "subprocesses": [],
+   "source_sha256": "1bce13d7190d19a74f3c31e379b234b24ad790721fbc60b7bac5e59687341f2c"
+  },
+  "32_rif": {
+   "seconds": 8.54,
+   "error": null,
+   "boundary_calls": [],
+   "packages": [],
+   "rscript_launches": 0,
+   "subprocesses": [],
+   "source_sha256": "e6b91db648961f0da9d6138159b576678b70dff34bbe5a504be304da91795d92"
+  },
+  "33_var": {
+   "seconds": 10.76,
+   "error": null,
+   "boundary_calls": [],
+   "packages": [],
+   "rscript_launches": 0,
+   "subprocesses": [],
+   "source_sha256": "eb0984372e01fc842a65f6e516629ccee58cb454fbfe48ad0676319d54a3818e"
+  },
+  "34_lp": {
+   "seconds": 8.57,
+   "error": null,
+   "boundary_calls": [],
+   "packages": [],
+   "rscript_launches": 0,
+   "subprocesses": [],
+   "source_sha256": "7fd6384d3e0a2bdc78afc8be384943a12639d31e8a1f038a4030e8bab5ff4458"
+  },
+  "35_panel": {
+   "seconds": 11.18,
+   "error": null,
+   "boundary_calls": [
+    {
+     "package": "linearmodels",
+     "callee": "linearmodels.panel.model.__init__",
+     "caller": "panel/panel_diagnostics.py",
+     "n": 2
+    },
+    {
+     "package": "linearmodels",
+     "callee": "linearmodels.panel.model.__init__",
+     "caller": "panel/panel_reg.py",
+     "n": 2
+    },
+    {
+     "package": "linearmodels",
+     "callee": "linearmodels.panel.model.fit",
+     "caller": "panel/panel_diagnostics.py",
+     "n": 2
+    },
+    {
+     "package": "linearmodels",
+     "callee": "linearmodels.panel.model.fit",
+     "caller": "panel/panel_reg.py",
+     "n": 2
+    },
+    {
+     "package": "linearmodels",
+     "callee": "linearmodels.panel.results.df_model",
+     "caller": "panel/panel_reg.py",
+     "n": 6
+    },
+    {
+     "package": "linearmodels",
+     "callee": "linearmodels.panel.results.df_resid",
+     "caller": "panel/panel_reg.py",
+     "n": 2
+    },
+    {
+     "package": "linearmodels",
+     "callee": "linearmodels.panel.results.entity_info",
+     "caller": "panel/panel_reg.py",
+     "n": 4
+    },
+    {
+     "package": "linearmodels",
+     "callee": "linearmodels.panel.results.f_statistic",
+     "caller": "panel/panel_reg.py",
+     "n": 8
+    },
+    {
+     "package": "linearmodels",
+     "callee": "linearmodels.panel.results.fitted_values",
+     "caller": "panel/panel_reg.py",
+     "n": 2
+    },
+    {
+     "package": "linearmodels",
+     "callee": "linearmodels.panel.results.nobs",
+     "caller": "panel/panel_reg.py",
+     "n": 2
+    },
+    {
+     "package": "linearmodels",
+     "callee": "linearmodels.panel.results.params",
+     "caller": "panel/panel_diagnostics.py",
+     "n": 2
+    },
+    {
+     "package": "linearmodels",
+     "callee": "linearmodels.panel.results.params",
+     "caller": "panel/panel_reg.py",
+     "n": 2
+    },
+    {
+     "package": "linearmodels",
+     "callee": "linearmodels.panel.results.resids",
+     "caller": "panel/panel_reg.py",
+     "n": 2
+    },
+    {
+     "package": "linearmodels",
+     "callee": "linearmodels.panel.results.rsquared",
+     "caller": "panel/panel_reg.py",
+     "n": 2
+    },
+    {
+     "package": "linearmodels",
+     "callee": "linearmodels.panel.results.rsquared_between",
+     "caller": "panel/panel_reg.py",
+     "n": 6
+    },
+    {
+     "package": "linearmodels",
+     "callee": "linearmodels.panel.results.rsquared_within",
+     "caller": "panel/panel_reg.py",
+     "n": 6
+    },
+    {
+     "package": "linearmodels",
+     "callee": "linearmodels.panel.results.std_errors",
+     "caller": "panel/panel_reg.py",
+     "n": 2
+    },
+    {
+     "package": "linearmodels",
+     "callee": "linearmodels.panel.results.time_info",
+     "caller": "panel/panel_reg.py",
+     "n": 4
+    },
+    {
+     "package": "linearmodels",
+     "callee": "linearmodels.shared.hypotheses.pval",
+     "caller": "panel/panel_reg.py",
+     "n": 2
+    },
+    {
+     "package": "linearmodels",
+     "callee": "linearmodels.shared.hypotheses.stat",
+     "caller": "panel/panel_reg.py",
+     "n": 2
+    },
+    {
+     "package": "statsmodels",
+     "callee": "statsmodels.tools.tools.add_constant",
+     "caller": "panel/panel_diagnostics.py",
+     "n": 1
+    },
+    {
+     "package": "statsmodels",
+     "callee": "statsmodels.tools.tools.add_constant",
+     "caller": "panel/panel_reg.py",
+     "n": 1
+    }
+   ],
+   "packages": [
+    "linearmodels",
+    "statsmodels"
+   ],
+   "rscript_launches": 0,
+   "subprocesses": [],
+   "source_sha256": "6bbc177840059356cd4fab5efe4741e455ee83ecc0e19b3ab1726d28f1745329"
+  },
+  "36_mediation": {
+   "seconds": 8.55,
+   "error": null,
+   "boundary_calls": [],
+   "packages": [],
+   "rscript_launches": 0,
+   "subprocesses": [],
+   "source_sha256": "a0d36466a4f34812d9304431ae94ec7227122879af00c663dd6a504a30374065"
+  },
+  "37_ppmlhdfe": {
+   "seconds": 6.29,
+   "error": null,
+   "boundary_calls": [],
+   "packages": [],
+   "rscript_launches": 0,
+   "subprocesses": [],
+   "source_sha256": "35c7815f7f9313d3e579a06e51054c6974a8c631f5ea3ec13388ce9d5980b2e2"
+  },
+  "38_drdid": {
+   "seconds": 6.84,
+   "error": null,
+   "boundary_calls": [],
+   "packages": [],
+   "rscript_launches": 0,
+   "subprocesses": [],
+   "source_sha256": "6dc9797f8ac28369cee531066873b392157a5896395e3af014144ce054578a25"
+  },
+  "39_arima": {
+   "seconds": 7.56,
+   "error": null,
+   "boundary_calls": [
+    {
+     "package": "statsmodels",
+     "callee": "statsmodels.base.wrapper.__getattribute__",
+     "caller": "timeseries/arima.py",
+     "n": 11
+    },
+    {
+     "package": "statsmodels",
+     "callee": "statsmodels.tsa.arima.model.__init__",
+     "caller": "timeseries/arima.py",
+     "n": 1
+    },
+    {
+     "package": "statsmodels",
+     "callee": "statsmodels.tsa.arima.model.fit",
+     "caller": "timeseries/arima.py",
+     "n": 1
+    }
+   ],
+   "packages": [
+    "statsmodels"
+   ],
+   "rscript_launches": 0,
+   "subprocesses": [],
+   "source_sha256": "31d8af6dce7a149f2f25cf1b24ef6c5d8d12591812ce50dbaff3b4d685567a91"
+  },
+  "40_qreg": {
+   "seconds": 6.23,
+   "error": null,
+   "boundary_calls": [],
+   "packages": [],
+   "rscript_launches": 0,
+   "subprocesses": [],
+   "source_sha256": "230ba2dca5a816e22d1def9deca87906a402f31dcb84db9a9e2f09d8850cc6c7"
+  },
+  "41_tobit": {
+   "seconds": 6.24,
+   "error": null,
+   "boundary_calls": [],
+   "packages": [],
+   "rscript_launches": 0,
+   "subprocesses": [],
+   "source_sha256": "2b6fdddacc14ec3d1941bc95c7b4a9af9ece4510ef15f89f2944481be1fd5dac"
+  },
+  "42_nbreg": {
+   "seconds": 7.5,
+   "error": null,
+   "boundary_calls": [],
+   "packages": [],
+   "rscript_launches": 0,
+   "subprocesses": [],
+   "source_sha256": "0f4a4b45e2f984ca1d3fb0e0693fc07acaf19e1d376c9a762f610b47b60772a9"
+  },
+  "43_heckman": {
+   "seconds": 7.28,
+   "error": null,
+   "boundary_calls": [],
+   "packages": [],
+   "rscript_launches": 0,
+   "subprocesses": [],
+   "source_sha256": "1ce2aa607ada6557386451ffe6b8dc35da7afe7022aecb6cc95696c81bd10654"
+  },
+  "44_mlogit": {
+   "seconds": 8.44,
+   "error": null,
+   "boundary_calls": [],
+   "packages": [],
+   "rscript_launches": 0,
+   "subprocesses": [],
+   "source_sha256": "65482f47fd3534d6e42586a6fc4cae449685c81fb87df193f839f0cf4dc0078b"
+  },
+  "45_ologit": {
+   "seconds": 8.1,
+   "error": null,
+   "boundary_calls": [],
+   "packages": [],
+   "rscript_launches": 0,
+   "subprocesses": [],
+   "source_sha256": "92bff30cac5d82191a18283a61d8001f3ea2452894baf054f93b5eb0b3916fff"
+  },
+  "46_clogit": {
+   "seconds": 13.99,
+   "error": null,
+   "boundary_calls": [],
+   "packages": [],
+   "rscript_launches": 0,
+   "subprocesses": [],
+   "source_sha256": "4cfa35abd87b0c77d2054e2bcf39e6ac2add550e5cc2b601443f2b190bbb028a"
+  },
+  "47_ppmlhdfe_3fe": {
+   "seconds": 5.25,
+   "error": null,
+   "boundary_calls": [],
+   "packages": [],
+   "rscript_launches": 0,
+   "subprocesses": [],
+   "source_sha256": "eec5b43c653b00ab1c8505b59d87d0d6a04f5c30915453e19c1582040ce3fc99"
+  },
+  "48_probit": {
+   "seconds": 7.34,
+   "error": null,
+   "boundary_calls": [],
+   "packages": [],
+   "rscript_launches": 0,
+   "subprocesses": [],
+   "source_sha256": "ed90a25fe24d1ea16d38f46b372b31c3266f570125cd8c854b276d62d6d050d6"
+  },
+  "49_oprobit": {
+   "seconds": 7.16,
+   "error": null,
+   "boundary_calls": [],
+   "packages": [],
+   "rscript_launches": 0,
+   "subprocesses": [],
+   "source_sha256": "89ab5ff7bfe1c536599935790ee10284a0d0afd59e36317dfeec3b685e7269ee"
+  },
+  "50_xtabond": {
+   "seconds": 6.42,
+   "error": null,
+   "boundary_calls": [],
+   "packages": [],
+   "rscript_launches": 0,
+   "subprocesses": [],
+   "source_sha256": "418c48eb17edadd87b982745b5dd0074c3aed1dbbf4572f76b0426650d1ac2ec"
+  },
+  "51_newey": {
+   "seconds": 6.85,
+   "error": null,
+   "boundary_calls": [],
+   "packages": [],
+   "rscript_launches": 0,
+   "subprocesses": [],
+   "source_sha256": "7c5260123b6f36233c963c444bebe275cfdebd859d34a979279af8e085db30a5"
+  },
+  "52_scm_unique": {
+   "seconds": 8.09,
+   "error": null,
+   "boundary_calls": [],
+   "packages": [],
+   "rscript_launches": 0,
+   "subprocesses": [],
+   "source_sha256": "96ce0e95f43323ef1e5b87a922361a20a91ccca5e0f1a3164739c89f15d01fd0"
+  },
+  "53_cr2": {
+   "seconds": 9.48,
+   "error": null,
+   "boundary_calls": [],
+   "packages": [],
+   "rscript_launches": 0,
+   "subprocesses": [],
+   "source_sha256": "e0ddeaef3324853976bc26f5295f549300b91f13a5aaaa039c3e28fd78c20bbe"
+  },
+  "54_twoway_cluster": {
+   "seconds": 7.39,
+   "error": null,
+   "boundary_calls": [],
+   "packages": [],
+   "rscript_launches": 0,
+   "subprocesses": [],
+   "source_sha256": "355cf13d6032a2437d832b4528261f6b645cde52c95a2ad33e0520a365a88cf0"
+  },
+  "55_hc2_hc3": {
+   "seconds": 5.47,
+   "error": null,
+   "boundary_calls": [],
+   "packages": [],
+   "rscript_launches": 0,
+   "subprocesses": [],
+   "source_sha256": "96bab2a14a593dede4a21fb0ec5be45e6a828337735af3963c2baa4796494aaa"
+  },
+  "56_multiway_cluster": {
+   "seconds": 5.35,
+   "error": null,
+   "boundary_calls": [],
+   "packages": [],
+   "rscript_launches": 0,
+   "subprocesses": [],
+   "source_sha256": "96411d6d01b4f5e2ebf4f01252c333a6e183d14832d7e948986500fa250ffa76"
+  },
+  "57_logit": {
+   "seconds": 5.04,
+   "error": null,
+   "boundary_calls": [],
+   "packages": [],
+   "rscript_launches": 0,
+   "subprocesses": [],
+   "source_sha256": "1f489cbb3c8a9f0214df7a584d9240171293c24f060fbf8bacf0cf3dbf13600d"
+  },
+  "58_poisson": {
+   "seconds": 4.49,
+   "error": null,
+   "boundary_calls": [],
+   "packages": [],
+   "rscript_launches": 0,
+   "subprocesses": [],
+   "source_sha256": "ea11247912d108d473fc5cf03145bf628589dd453e6a48dd5afd11a68822249c"
+  },
+  "59_liml": {
+   "seconds": 4.21,
+   "error": null,
+   "boundary_calls": [],
+   "packages": [],
+   "rscript_launches": 0,
+   "subprocesses": [],
+   "source_sha256": "76037e17d70b8480247180d0ecd9e08dc84a9178d12f4f09809c090ad1efc9cd"
+  },
+  "60_sureg": {
+   "seconds": 4.12,
+   "error": null,
+   "boundary_calls": [],
+   "packages": [],
+   "rscript_launches": 0,
+   "subprocesses": [],
+   "source_sha256": "5f421aae873c74f219c47f4bc2c54933e9c2ee394d4ff6901f937d4e8b295bf6"
+  },
+  "61_betareg": {
+   "seconds": 6.07,
+   "error": null,
+   "boundary_calls": [],
+   "packages": [],
+   "rscript_launches": 0,
+   "subprocesses": [],
+   "source_sha256": "22c199a92d3aee36d52d73b04aa1ae1c79f97a4e3aa1527ccec9fe8c1d75bab8"
+  },
+  "62_truncreg": {
+   "seconds": 7.11,
+   "error": null,
+   "boundary_calls": [],
+   "packages": [],
+   "rscript_launches": 0,
+   "subprocesses": [],
+   "source_sha256": "c1b9cc74bb10e1f8be5e771512cc8500c88e1a0b16f2f39ae6a39631a345c89a"
+  },
+  "63_zip": {
+   "seconds": 4.84,
+   "error": null,
+   "boundary_calls": [],
+   "packages": [],
+   "rscript_launches": 0,
+   "subprocesses": [],
+   "source_sha256": "00a544b2d3f2a9b1d93b80594007468ebbad6e4c92754834a8b577a382b4575f"
+  },
+  "64_zinb": {
+   "seconds": 4.99,
+   "error": null,
+   "boundary_calls": [],
+   "packages": [],
+   "rscript_launches": 0,
+   "subprocesses": [],
+   "source_sha256": "29508bc75055b29ba023a45c5842ea61176625f55b4e6d8d3d46a2ebebeade5e"
+  },
+  "65_spatial": {
+   "seconds": 5.65,
+   "error": null,
+   "boundary_calls": [],
+   "packages": [],
+   "rscript_launches": 0,
+   "subprocesses": [],
+   "source_sha256": "81ab6304d53cea4212df6d8b9294f6e7d04393af7798c808560a0959dc5772f1"
+  },
+  "66_spatial_gmm": {
+   "seconds": 5.86,
+   "error": null,
+   "boundary_calls": [],
+   "packages": [],
+   "rscript_launches": 0,
+   "subprocesses": [],
+   "source_sha256": "d39bdb9836bf3f571b05cb4616bec2fa1e33a8335ea3cda0b6d47e80c55b5819"
+  },
+  "67_panel_glm": {
+   "seconds": 37.2,
+   "error": null,
+   "boundary_calls": [
+    {
+     "package": "pyfixest",
+     "callee": "pyfixest.__getattr__",
+     "caller": "fixest/wrapper.py",
+     "n": 2
+    },
+    {
+     "package": "pyfixest",
+     "callee": "pyfixest.estimation.api.feglm.feglm",
+     "caller": "fixest/wrapper.py",
+     "n": 1
+    },
+    {
+     "package": "pyfixest",
+     "callee": "pyfixest.estimation.api.fepois.fepois",
+     "caller": "fixest/wrapper.py",
+     "n": 1
+    },
+    {
+     "package": "pyfixest",
+     "callee": "pyfixest.estimation.models._result_accessor_mixin.coef",
+     "caller": "fixest/adapter.py",
+     "n": 2
+    },
+    {
+     "package": "pyfixest",
+     "callee": "pyfixest.estimation.models._result_accessor_mixin.pvalue",
+     "caller": "fixest/adapter.py",
+     "n": 2
+    },
+    {
+     "package": "pyfixest",
+     "callee": "pyfixest.estimation.models._result_accessor_mixin.resid",
+     "caller": "fixest/adapter.py",
+     "n": 1
+    },
+    {
+     "package": "pyfixest",
+     "callee": "pyfixest.estimation.models._result_accessor_mixin.se",
+     "caller": "fixest/adapter.py",
+     "n": 2
+    },
+    {
+     "package": "pyfixest",
+     "callee": "pyfixest.estimation.models._result_accessor_mixin.tstat",
+     "caller": "fixest/adapter.py",
+     "n": 2
+    },
+    {
+     "package": "pyfixest",
+     "callee": "pyfixest.estimation.models.feglm_.predict",
+     "caller": "fixest/adapter.py",
+     "n": 1
+    },
+    {
+     "package": "pyfixest",
+     "callee": "pyfixest.estimation.models.fepois_.predict",
+     "caller": "fixest/adapter.py",
+     "n": 1
+    },
+    {
+     "package": "pyfixest",
+     "callee": "pyfixest.estimation.models.fepois_.resid",
+     "caller": "fixest/adapter.py",
+     "n": 1
+    }
+   ],
+   "packages": [
+    "pyfixest"
+   ],
+   "rscript_launches": 0,
+   "subprocesses": [],
+   "source_sha256": "8ebaafea794822cedc4cd6c9e5dd399b017c8947a645d1f82a9439dc7292755b"
+  },
+  "68_demean_within": {
+   "seconds": 6.64,
+   "error": null,
+   "boundary_calls": [],
+   "packages": [],
+   "rscript_launches": 0,
+   "subprocesses": [],
+   "source_sha256": "8921a139bd14caf7bbfb45adf292df4631fff7fd5e0e1c93340c3f6e36d9988b"
+  },
+  "69_balance_panel": {
+   "seconds": 4.35,
+   "error": null,
+   "boundary_calls": [],
+   "packages": [],
+   "rscript_launches": 0,
+   "subprocesses": [],
+   "source_sha256": "4a1b7e4c51f9ce18c832f2d4f659943ddf1b0deb498172c588ad66c50fd6d1b9"
+  },
+  "70_policy_tree": {
+   "seconds": 8.67,
+   "error": null,
+   "boundary_calls": [],
+   "packages": [],
+   "rscript_launches": 0,
+   "subprocesses": [],
+   "source_sha256": "083c4c66e67720ad383b649203e8eb55da4cc9f28ffa67f18620f13f574c842f"
+  },
+  "71_dml_family": {
+   "seconds": 7.6,
+   "error": null,
+   "boundary_calls": [
+    {
+     "package": "sklearn",
+     "callee": "sklearn.base.clone",
+     "caller": "dml/_base.py",
+     "n": 55
+    },
+    {
+     "package": "sklearn",
+     "callee": "sklearn.base.wrapper",
+     "caller": "dml/_base.py",
+     "n": 55
+    },
+    {
+     "package": "sklearn",
+     "callee": "sklearn.ensemble._gb.__init__",
+     "caller": "dml/_base.py",
+     "n": 1
+    },
+    {
+     "package": "sklearn",
+     "callee": "sklearn.linear_model._base.predict",
+     "caller": "dml/iivm.py",
+     "n": 10
+    },
+    {
+     "package": "sklearn",
+     "callee": "sklearn.linear_model._base.predict",
+     "caller": "dml/irm.py",
+     "n": 10
+    },
+    {
+     "package": "sklearn",
+     "callee": "sklearn.linear_model._base.predict",
+     "caller": "dml/pliv.py",
+     "n": 15
+    },
+    {
+     "package": "sklearn",
+     "callee": "sklearn.linear_model._logistic.predict_proba",
+     "caller": "dml/iivm.py",
+     "n": 15
+    },
+    {
+     "package": "sklearn",
+     "callee": "sklearn.linear_model._logistic.predict_proba",
+     "caller": "dml/irm.py",
+     "n": 5
+    }
+   ],
+   "packages": [
+    "sklearn"
+   ],
+   "rscript_launches": 0,
+   "subprocesses": [],
+   "source_sha256": "9584677e190d05667a6c37050b76018eab347597296e6b61a6c7762a5e0173ef"
+  },
+  "72_tmle": {
+   "seconds": 5.29,
+   "error": null,
+   "boundary_calls": [],
+   "packages": [],
+   "rscript_launches": 0,
+   "subprocesses": [],
+   "source_sha256": "bf84cf028cf8e76fb18c47fc4674ae4e619b91583be9531e27c0faf153b9a71e"
+  },
+  "73_did2s": {
+   "seconds": 5.44,
+   "error": null,
+   "boundary_calls": [],
+   "packages": [],
+   "rscript_launches": 0,
+   "subprocesses": [],
+   "source_sha256": "c2137e4eec81122dab146c7299cd7647b479dbfe5758145b825afd3b23d30ad4"
+  },
+  "74_cic": {
+   "seconds": 4.7,
+   "error": null,
+   "boundary_calls": [],
+   "packages": [],
+   "rscript_launches": 0,
+   "subprocesses": [],
+   "source_sha256": "a8f87483603eeff406df81d6c9da752a2c6168f4f0a87e1920b02acee8c052e5"
+  },
+  "75_stacked": {
+   "seconds": 6.22,
+   "error": null,
+   "boundary_calls": [],
+   "packages": [],
+   "rscript_launches": 0,
+   "subprocesses": [],
+   "source_sha256": "dbf697a7cf9d5c92007b1d1febe2b9a9933ef9b3fe5d168fcf1723957f89da5e"
+  },
+  "76_pretrends": {
+   "seconds": 6.42,
+   "error": null,
+   "boundary_calls": [],
+   "packages": [],
+   "rscript_launches": 0,
+   "subprocesses": [],
+   "source_sha256": "44cd5652b66382e4db5863fadf8aa46c694091b0424c73a927eb9c80de1ea949"
+  },
+  "77_ddd": {
+   "seconds": 6.53,
+   "error": null,
+   "boundary_calls": [],
+   "packages": [],
+   "rscript_launches": 0,
+   "subprocesses": [],
+   "source_sha256": "d734fe8c049867c0c57907fe5125fbd135248c99b25759421bfa75e7de94a151"
+  },
+  "78_multiplegt_dyn": {
+   "seconds": 7.63,
+   "error": null,
+   "boundary_calls": [],
+   "packages": [],
+   "rscript_launches": 0,
+   "subprocesses": [],
+   "source_sha256": "2afeb8a7e2e88bf9977e031e55f3754c6069b1ac221e6a289ae4f0bf45c26f27"
+  },
+  "79_didff": {
+   "seconds": 7.15,
+   "error": null,
+   "boundary_calls": [],
+   "packages": [],
+   "rscript_launches": 0,
+   "subprocesses": [],
+   "source_sha256": "192c3d9adff5892e7ed11da9f97752bca5706e2c2620676abc84de626d5514ad"
+  },
+  "80_contdid": {
+   "seconds": 5.51,
+   "error": null,
+   "boundary_calls": [],
+   "packages": [],
+   "rscript_launches": 0,
+   "subprocesses": [],
+   "source_sha256": "f670390c47c9ee96e71946bc654352c6b4bcd30508e0171eb132b1db89ad5004"
+  },
+  "81_didm": {
+   "seconds": 6.56,
+   "error": null,
+   "boundary_calls": [],
+   "packages": [],
+   "rscript_launches": 0,
+   "subprocesses": [],
+   "source_sha256": "8ca6e8d62a77a1c3619b023b6cf58c69f7d0a95f862c15a9b52206649e4c9600"
+  },
+  "82_staggered": {
+   "seconds": 8.25,
+   "error": null,
+   "boundary_calls": [],
+   "packages": [],
+   "rscript_launches": 0,
+   "subprocesses": [],
+   "source_sha256": "424816d3c803bbe49ab5ae44b26e06170a6eb7860a2cfb7351e35acd455f0645"
+  },
+  "83_lpdid": {
+   "seconds": 10.54,
+   "error": null,
+   "boundary_calls": [],
+   "packages": [],
+   "rscript_launches": 0,
+   "subprocesses": [],
+   "source_sha256": "fac1654ebbb5f8575e7e0ca34ab4b1845ef0365ccb53f2f1d961242103ad478b"
+  },
+  "84_bjs_pretrends": {
+   "seconds": 5.29,
+   "error": null,
+   "boundary_calls": [],
+   "packages": [],
+   "rscript_launches": 0,
+   "subprocesses": [],
+   "source_sha256": "114ca3f4673805de554b978f0b15251cbce9f532b0c0c931d1af44862a352c8f"
+  },
+  "85_twfe_event_study": {
+   "seconds": 4.62,
+   "error": null,
+   "boundary_calls": [],
+   "packages": [],
+   "rscript_launches": 0,
+   "subprocesses": [],
+   "source_sha256": "ef24b2792a81ca3ca376d878d73246ff3e4582ef5e87ccaae1dfe4b8e3471c29"
+  },
+  "86_fect": {
+   "seconds": 6.46,
+   "error": null,
+   "boundary_calls": [],
+   "packages": [],
+   "rscript_launches": 0,
+   "subprocesses": [],
+   "source_sha256": "0d2486f325114d51ccb385e1ee02dc2544e9a22cd8ac2be54960c00271da1e23"
+  },
+  "87_interflex": {
+   "seconds": 4.76,
+   "error": null,
+   "boundary_calls": [],
+   "packages": [],
+   "rscript_launches": 0,
+   "subprocesses": [],
+   "source_sha256": "2e65b708c86a2e62a29c783f1659d036016b85cc501442a6bdd569a134cc1a1f"
+  },
+  "88_rdbwselect": {
+   "seconds": 8.32,
+   "error": null,
+   "boundary_calls": [],
+   "packages": [],
+   "rscript_launches": 0,
+   "subprocesses": [],
+   "source_sha256": "0f7d33f20b286ea2f4d5c6201cd5284a895f5cb80a7a96cbc4cd2e1bf4a479d8"
+  },
+  "89_rdms": {
+   "seconds": 6.15,
+   "error": null,
+   "boundary_calls": [],
+   "packages": [],
+   "rscript_launches": 0,
+   "subprocesses": [],
+   "source_sha256": "3e6d8c5b4db64a28a81dae21eb3141f423f7a79c07d550738cef3e2579d32573"
+  }
+ }
+}

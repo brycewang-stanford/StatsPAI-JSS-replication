@@ -1,0 +1,76 @@
+{
+  "audit": "listings_execute_audit",
+  "manuscript_sections": [
+    "01-introduction-compact.tex",
+    "02-architecture-compact.tex",
+    "03-agent-facing-compact.tex",
+    "04-examples-compact.tex",
+    "05-parity-compact.tex",
+    "06-performance.tex",
+    "07-agent-eval.tex",
+    "08-computational-details-compact.tex",
+    "09-discussion-compact.tex"
+  ],
+  "n_listings": 7,
+  "n_pass": 7,
+  "n_fail": 0,
+  "status": "PASS",
+  "rows": [
+    {
+      "label": "lst:motivating",
+      "status": "PASS",
+      "seconds": 0.0,
+      "stdout_bytes": 0,
+      "transcript_verified": false,
+      "section": "01-introduction-compact.tex"
+    },
+    {
+      "label": "lst:validation-tier-output",
+      "status": "PASS",
+      "seconds": 0.0,
+      "stdout_bytes": 241,
+      "transcript_verified": true,
+      "section": "02-architecture-compact.tex"
+    },
+    {
+      "label": "lst:card-output",
+      "status": "PASS",
+      "seconds": 0.0,
+      "stdout_bytes": 1412,
+      "transcript_verified": true,
+      "section": "04-examples-compact.tex"
+    },
+    {
+      "label": "lst:card-cate",
+      "status": "PASS",
+      "seconds": 0.0,
+      "stdout_bytes": 95,
+      "transcript_verified": true,
+      "section": "04-examples-compact.tex"
+    },
+    {
+      "label": "lst:csdid",
+      "status": "PASS",
+      "seconds": 0.0,
+      "stdout_bytes": 0,
+      "transcript_verified": false,
+      "section": "04-examples-compact.tex"
+    },
+    {
+      "label": "lst:csdid-output",
+      "status": "PASS",
+      "seconds": 0.0,
+      "stdout_bytes": 307,
+      "transcript_verified": true,
+      "section": "04-examples-compact.tex"
+    },
+    {
+      "label": "lst:fect",
+      "status": "PASS",
+      "seconds": 0.0,
+      "stdout_bytes": 0,
+      "transcript_verified": false,
+      "section": "04-examples-compact.tex"
+    }
+  ]
+}

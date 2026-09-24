@@ -1,0 +1,152 @@
+{
+  "modules": [
+    "86_fect",
+    "87_interflex"
+  ],
+  "fect": [
+    {
+      "label": "two-way FE (imputation)",
+      "statistic": "fe_att_avg",
+      "statspai": 2.5001052940306,
+      "r": 2.50010529403015,
+      "stata": 2.500105291571568,
+      "rel_r": 1.7993736929893015e-13,
+      "rel_stata": 9.83571410913694e-10,
+      "niter": 1
+    },
+    {
+      "label": "  covariate X1 coefficient (fe)",
+      "statistic": "fe_beta_x1",
+      "statspai": 1.0285851342630574,
+      "r": 1.02858513426306,
+      "stata": 1.028585134263058,
+      "rel_r": 2.5904858726248344e-15,
+      "rel_stata": 6.476214681562099e-16
+    },
+    {
+      "label": "interactive FE, r = 2",
+      "statistic": "ife_att_avg",
+      "statspai": 2.241883510269279,
+      "r": 2.24188351026928,
+      "stata": 2.241883509635354,
+      "rel_r": 3.961750981403326e-16,
+      "rel_stata": 2.8276442992624423e-10,
+      "niter": 877
+    },
+    {
+      "label": "  covariate X1 coefficient (ife)",
+      "statistic": "ife_beta_x1",
+      "statspai": 0.9568571297725328,
+      "r": 0.956857129772533,
+      "stata": 0.9568571297773582,
+      "rel_r": 2.320561743400673e-16,
+      "rel_stata": 5.042928752645742e-12
+    },
+    {
+      "label": "matrix completion, lambda = 0.002",
+      "statistic": "mc_att_avg",
+      "statspai": 2.3985288645466265,
+      "r": 2.39852886454662,
+      "stata": 2.398528865061922,
+      "rel_r": 2.7772599472177267e-15,
+      "rel_stata": 2.1483809073214475e-10,
+      "niter": 352
+    },
+    {
+      "label": "  covariate X1 coefficient (mc)",
+      "statistic": "mc_beta_x1",
+      "statspai": 0.9820881092821135,
+      "r": 0.982088109282114,
+      "stata": 0.9820881092828264,
+      "rel_r": 4.521887656034066e-16,
+      "rel_stata": 7.258760159843419e-13
+    }
+  ],
+  "interflex": [
+    {
+      "label": "linear ME at the grid midpoint",
+      "statistic": "linear_me_3",
+      "statspai": 3.054080061359968,
+      "r": 3.05408006135997,
+      "stata": 3.054080061359962,
+      "se_statspai": 0.11383565270820754,
+      "se_r": 0.113835652708208,
+      "se_stata": 0.1138356527082073,
+      "rel_r": 5.816340121120616e-16,
+      "rel_stata": 2.0357190423922207e-15
+    },
+    {
+      "label": "binning effect, bin 1 (median x = -0.27)",
+      "statistic": "binning_me_1",
+      "statspai": 1.516042843156925,
+      "r": 1.51604284315693,
+      "stata": 1.516042843156926,
+      "se_statspai": 0.2066584532576172,
+      "se_r": 0.206658453257617,
+      "se_stata": 0.206658453257617,
+      "rel_r": 3.222192123659549e-15,
+      "rel_stata": 5.858531133926469e-16
+    },
+    {
+      "label": "binning effect, bin 2 (median x = 1.06)",
+      "statistic": "binning_me_2",
+      "statspai": 3.182121014488621,
+      "r": 3.18212101448862,
+      "stata": 3.182121014488621,
+      "se_statspai": 0.1641395818076006,
+      "se_r": 0.164139581807601,
+      "se_stata": 0.1641395818076008,
+      "rel_r": 2.791152239830386e-16,
+      "rel_stata": 0.0
+    },
+    {
+      "label": "binning effect, bin 3 (median x = 2.25)",
+      "statistic": "binning_me_3",
+      "statspai": 4.108384342080315,
+      "r": 4.10838434208032,
+      "stata": 4.108384342080317,
+      "se_statspai": 0.2031745212487751,
+      "se_r": 0.203174521248775,
+      "se_stata": 0.2031745212487751,
+      "rel_r": 1.0809339459832373e-15,
+      "rel_stata": 4.323735783932952e-16
+    },
+    {
+      "label": "Wald p-value, linear vs binning (R convention)",
+      "statistic": "p_wald",
+      "statspai": 7.12099425341637e-07,
+      "r": 7.12099425342101e-07,
+      "stata": null,
+      "rel_r": 6.515414566380952e-13,
+      "rel_stata": null
+    },
+    {
+      "label": "Wald p-value (Stata convention: no covariate-by-bin terms, F)",
+      "statistic": "p_wald_stata",
+      "statspai": 2.2486793738973935e-07,
+      "r": null,
+      "stata": 2.2486793739e-07,
+      "rel_r": null,
+      "rel_stata": 1.1591155358260533e-12
+    },
+    {
+      "label": "kernel ME at the midpoint, adaptive bandwidth (R convention)",
+      "statistic": "kernel_me_3",
+      "statspai": 3.341083868916167,
+      "r": 3.34108386891616,
+      "stata": null,
+      "rel_r": 1.9937656189133205e-15,
+      "rel_stata": null
+    },
+    {
+      "label": "kernel ME at the midpoint, fixed bandwidth (Stata convention)",
+      "statistic": "kernel_fixed_me_3",
+      "statspai": 3.2776476869044235,
+      "r": null,
+      "stata": 3.27764768690442,
+      "rel_r": null,
+      "rel_stata": 1.0839217689549383e-15
+    }
+  ],
+  "worst_relative_gap": 9.83571410913694e-10
+}

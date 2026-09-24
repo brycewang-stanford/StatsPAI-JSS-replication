@@ -1,0 +1,70 @@
+\appendix
+
+\section{The complete Track A ledger}\label{app:parity}
+
+Table~\ref{tab:track-a-cross-language-snapshot} in Section~\ref{sec:track-a} prints a
+twelve-row slice of Track A, chosen to span the validation suite. The
+slice is a reading aid, not the evidence. The evidence is
+Table~\ref{tab:track-a-parity} below: every one of the
+\RParityModuleCount{} modules, with the worst residual gap each one
+carries against its canonical \proglang{R} reference and, for
+\StataParityModuleCount{} of them, against a canonical or audited
+\proglang{Stata} bridge.
+
+The difference columns are worst-case over each module's headline rows
+and cover \emph{point estimates only}; every SE row of every passing
+module is gated separately (Section~\ref{sec:adjudication}). The
+parenthetical notes name the convention, delegation, or common
+specification under which a row is claimed, and italic text in the
+\proglang{Stata} column records a \emph{measured} reason that no
+portable \proglang{Stata} artifact exists.
+
+\input{tables/appendix_b_parity.tex}
+
+\noindent Of the \RParityModuleCount{} modules, all but one receive a
+pass-type verdict. A pass-type verdict covers ordinary strict passes,
+common-specification passes such as RD at a forced common bandwidth,
+seeded stochastic passes such as DML, and coefficient-level passes whose
+secondary diagnostic follows a documented small-sample convention. The
+single remaining \textit{GAP} is the classical-SCM donor-weight
+non-uniqueness disclosure of
+Section~\ref{sec:scm-identification}, kept visible rather than absorbed
+into a wider tolerance.
+
+Two things this table does not do: it omits per-row detail, which is
+regenerated into \code{tests/r\_parity/results/parity\_table\_3way.md},
+and it does not by itself show that either side is re-derivable
+(Section~\ref{sec:reproducibility}).
+
+\section{Output-changing corrections}\label{app:corrections}
+
+Table~\ref{tab:correctness-history} lists the output-changing fixes that
+affect interpretation of the present validation claim; each is pinned by
+a regression test, and users on affected versions should re-estimate.
+Section~\ref{sec:parity-gaps} discusses the 1.23.0 and 1.25.0 entries;
+none of the 174 defects of 1.29.0 had been caught by a unit test.
+
+\begin{table}[!ht]
+\centering\scriptsize
+\begin{tabular}{@{}p{0.08\linewidth}p{0.25\linewidth}p{0.61\linewidth}@{}}
+\toprule
+Version & Affected area & Output-changing fix \\
+\midrule
+1.6--1.15 & IV/LIML/Heckman, event study, CS-DiD, TMLE, DML, metalearners, mediation & Small-sample, two-step and rank SE corrections; influence-function, orthogonal-score and AIPW fixes. \\
+1.16.0 & Quantile regression, Newey--West, Arellano--Bond; forest ATE/ATT & SE scaling and GMM weight construction corrected; forest headline moved to the \pkg{grf} AIPW estimand. \\
+1.21.0 & CBPS, entropy balancing, Mahalanobis, genetic matching & GMM basis, exact moment balance, and covariance conventions corrected (up to $8.6\times$ off \pkg{CBPS}); now pinned against \pkg{CBPS}, \pkg{ebal}, \pkg{MatchIt}, \pkg{optmatch}, \pkg{Matching}, \pkg{sbw}. \\
+1.23.0 & CS-DiD unit weights; IPW SEs & Weighted estimand restored; IPW SEs were 9--11\% (up to 89\% weighted) too large; pinned to \code{did::att\_gt} (see text). \\
+1.24.0 & Sun--Abraham, GLMM, PPML-HDFE, dynamic TWFE SEs & Degrees-of-freedom/nesting conventions fixed to the reference rules; SEs moved 0.1--2\% (see text). \\
+1.25.0 & Causal-forest aggregation under a continuous treatment & The binary AIPW score was applied to a continuous treatment ($-1266.6$, $p=0.0000$ on Card); guarded in 1.25.0, replaced by the Riesz-representer average in 1.29.0. Binary results unchanged. \\
+1.26.0 & Evidence grades & A false alias certification (\code{sp.wooldridge\_did} as \code{sp.etwfe}) withdrawn; grades, not estimates, changed. \\
+1.27.0 & ETWFE, \code{sp.wooldridge\_did}, \code{sp.etregress}, RE panel logit/probit, panel FGLS, spatial LM tests & Cohort ATTs read from a saturated regression; clustered SEs account for absorbed effects; the \code{etregress} default is a true MLE with first-stage-aware two-step SEs; \code{lm\_tests} no longer reverses its model-selection conclusion. \\
+1.28.0 & SCM placebo \(p\)-values; Mendelian randomization; evidence grades & Permutation \(p\)-values now rank the treated unit with its placebos, \((1+\#\{\text{placebo}\ge\text{treated}\})/(J+1)\); MR estimators ported to their reference definitions; 31 functions graded T2 on closed-form tests that never ran \proglang{R} or \proglang{Stata} were regraded T1 (see text). \\
+1.29.0 & Cross-language parity campaign (174 defects) and Track A closure & Fourteen families bisected against their reference on identical bytes; 174 output-changing defects fixed, none caught by a unit test; forest defaults follow \pkg{grf}; Gardner two-stage SE as \pkg{did2s}; PSM SE as \code{teffects psmatch}. \\
+1.30.0 & HonestDiD on a raw CS fit; forest ATT/ATC under a continuous treatment & The event-study covariance passed to \code{sp.honest\_did} dropped the cohort-share term off the diagonal (cross-cell entries up to 8\% off \pkg{did}), overstating robustness; now matches \pkg{did} to \(2.8\times10^{-13}\), and the bounds of Listing~\ref{lst:csdid-output} moved in the fourth decimal. ATT and ATC now raise for a continuous treatment, as in \pkg{grf}. \\
+1.31.0 & Entropy-balancing SE; audit applicability; Honest-DiD relative magnitudes; evidence grades & \code{sp.ebalance} SE was twice the Monte Carlo SD; now the M-estimation sandwich (\pkg{WeightIt} to \(3\times10^{-9}\)). \code{sp.audit}: over-identification test not applicable on just-identified fits. \code{sp.causal\_question} forest design reports the forest's own AIPW average. Native relative-magnitudes Honest-DiD set; two parity rows that ran \proglang{R} itself rebuilt on native code; forest T3 re-established by seed replication. \\
+\bottomrule
+\end{tabular}
+\caption{Output-changing correctness fixes through release
+\StatsPAIVersion{}; CHANGELOG and \code{MIGRATION.md} hold the detail.}
+\label{tab:correctness-history}
+\end{table}

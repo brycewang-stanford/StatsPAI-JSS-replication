@@ -1,0 +1,113 @@
+{
+  "dockerfile": {
+    "base_image": "python:3.12-slim",
+    "required_apt_missing": []
+  },
+  "failures": [],
+  "generated_at_unix": 1780185600,
+  "makefile": {
+    "pandoc_markdown_optional": true,
+    "required_targets_missing": [],
+    "target_count": 65
+  },
+  "r_environment_present": true,
+  "r_expected_reproduced_modules": 89,
+  "r_repro_report_non_reproduced_rows": 0,
+  "r_repro_report_present": true,
+  "r_repro_report_rows": 89,
+  "r_reproduced_modules": 89,
+  "random_seeding": {
+    "checked_file_count": 37,
+    "seeded_stochastic_file_count": 19,
+    "stochastic_file_count": 19,
+    "stochastic_files": [
+      "Paper-JSS/replication/scripts/ex01_card.py",
+      "Paper-JSS/replication/scripts/ex06_causal_impact.py",
+      "tests/coverage_monte_carlo/mechanisms/dml_plr_learners.py",
+      "tests/coverage_monte_carlo/mechanisms/forest_trees.py",
+      "tests/coverage_monte_carlo/mechanisms/rd_drawwise_reference.py",
+      "tests/coverage_monte_carlo/run_b1000.py",
+      "tests/coverage_monte_carlo/run_robustness_b1000.py",
+      "tests/coverage_monte_carlo/test_coverage.py",
+      "tests/coverage_monte_carlo/test_coverage_robustness.py",
+      "tests/coverage_monte_carlo/test_size_power.py",
+      "tests/perf/01_hdfe_perf.R",
+      "tests/perf/01_hdfe_perf.py",
+      "tests/perf/02_csdid_perf.R",
+      "tests/perf/02_csdid_perf.py",
+      "tests/perf/03_scm_perf.R",
+      "tests/perf/03_scm_perf.py",
+      "tests/perf/04_dml_perf.R",
+      "tests/perf/04_dml_perf.py",
+      "tests/perf/05_feols_jax_bootstrap_bench.py"
+    ],
+    "unseeded_stochastic_file_count": 0,
+    "unseeded_stochastic_files": []
+  },
+  "renv_lock_present": true,
+  "reproduce": {
+    "has_tier1": true,
+    "has_tier2": true,
+    "has_tier3": true,
+    "has_transcript_option": true,
+    "tier1_live_external_call_count": 0,
+    "tier1_live_external_dependency_markers": [],
+    "tier3_accepts_stata_exe": true,
+    "tier3_passes_stata_exe_to_verifier": true
+  },
+  "requirements": {
+    "package_count": 23,
+    "packages": [
+      "jsonschema",
+      "linearmodels",
+      "matplotlib",
+      "numba",
+      "numpy",
+      "openpyxl",
+      "pandas",
+      "patsy",
+      "pillow",
+      "pyarrow",
+      "pypdf",
+      "pytest",
+      "pytest-cov",
+      "python-docx",
+      "rdrobust",
+      "scikit-learn",
+      "scipy",
+      "seaborn",
+      "setuptools",
+      "statsmodels",
+      "tabulate",
+      "wheel",
+      "xlsxwriter"
+    ],
+    "required_pip_missing": [],
+    "version_comment_ok": true
+  },
+  "reviewer_readmes": {
+    "manuscript_readme_command_count": 7,
+    "manuscript_readme_missing_commands": [],
+    "manuscript_readme_stata_contract_missing": [],
+    "paper_readme_command_count": 26,
+    "paper_readme_missing_commands": [],
+    "paper_readme_stata_contract_missing": [],
+    "stata_live_rerun_command_documented": true,
+    "stata_missing_runtime_skip_documented": true
+  },
+  "stata_environment_present": true,
+  "stata_expected_reproduced_modules": 85,
+  "stata_live_rerun_contract": {
+    "stata_verify_missing_runtime_returns_skip": true,
+    "stata_verify_script_present": true,
+    "stata_verify_uses_stata_exe": true
+  },
+  "stata_repro_report_non_reproduced_rows": 0,
+  "stata_repro_report_present": true,
+  "stata_repro_report_rows": 85,
+  "stata_reproduced_modules": 85,
+  "status": "PASS",
+  "tier1_transcript_complete": true,
+  "tier1_transcript_no_r_stata": true,
+  "tier1_transcript_present": true
+}

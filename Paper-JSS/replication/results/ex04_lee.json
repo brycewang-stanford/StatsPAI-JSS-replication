@@ -1,0 +1,57 @@
+{
+  "dataset": "sp.datasets.lee_2008_senate() (calibrated replica)",
+  "n_rows": 6558,
+  "running_variable": "margin",
+  "outcome": "voteshare_next",
+  "published_original_jump_approx": 0.08,
+  "published_original_jump_pp": 7.99,
+  "pinned_replica_jump": 0.0768,
+  "rdrobust": {
+    "robust_estimate": 0.0763362891502054,
+    "robust_se": 0.00898303659605468,
+    "robust_pvalue": 1.931730479216922e-17,
+    "robust_ci": [
+      0.05872986095013295,
+      0.09394271735027786
+    ],
+    "conventional_estimate": 0.07754508346450995,
+    "conventional_se": 0.007540432056184212,
+    "bandwidth_h": 0.17576152200279643,
+    "bandwidth_b": 0.2755555898135891,
+    "n_left": 3260,
+    "n_right": 3298,
+    "n_effective_left": 1679,
+    "n_effective_right": 1737
+  },
+  "original_rdrobust_Rdsenate_cct": {
+    "dataset": "rdrobust::rdrobust_RDsenate",
+    "n_rows": 1390,
+    "bwselect": "cct",
+    "robust_estimate": 7.506502483530383,
+    "robust_se": 1.7412584138683658,
+    "robust_ci": [
+      4.093698704571047,
+      10.91930626248972
+    ],
+    "conventional_estimate": 7.414130822948856,
+    "conventional_se": 1.4587160216775097,
+    "bandwidth_h": 17.754397296055835,
+    "n_effective_left": 360,
+    "n_effective_right": 323
+  },
+  "pinned_check": {
+    "abs_diff": 0.000463710849794588,
+    "passes_at_1e-3": true
+  },
+  "cct_parity_check": {
+    "robust_abs_diff": 3.0382807381101884e-11,
+    "conventional_abs_diff": 4.885603033244479e-11,
+    "bandwidth_abs_diff": 4.416378374116903e-11,
+    "passes_at_1e-6": true
+  },
+  "neighbourhood_check": {
+    "in_range": true,
+    "lower": 0.05,
+    "upper": 0.12
+  }
+}
