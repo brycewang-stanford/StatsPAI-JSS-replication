@@ -66,5 +66,6 @@ def test_scope_map_now_covers_the_card_listing_configuration():
         "estimator": "2sls",
         "vce": "classical",
         "identification": "just",
+        "absorb": "none",
     }
     assert scope["status"] == "covered"

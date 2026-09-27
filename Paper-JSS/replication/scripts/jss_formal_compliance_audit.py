@@ -36,7 +36,12 @@ RELEASE = _release_version()
 #: transcripts and the parity ledger moved into an appendix -- both of
 #: which a JSS reviewer asks for, neither of which is padding. Emitted in
 #: the payload so tests read it back instead of repeating the number.
-PAGE_CEILING = 52
+#: Raised to 53 at 1.32.0: the correctness-history appendix (Table 18) gained
+#: that release's row, whose output-changing fixes a user of an earlier
+#: version must see, and the affiliation block moved to a 53rd page. The
+#: alternative, cutting half a page of body text, was ruled out by the v2
+#: review ("do not compress further").
+PAGE_CEILING = 53
 
 
 HERE = Path(__file__).resolve().parent
@@ -118,7 +123,7 @@ COMPARATIVE_SCOPE_SNIPPETS = (
     r"\statspai{} contribution and boundary",
     "integration-and-validation layer around reference software",
     r"not a claim that \statspai{} supersedes",
-    "T3 stochastic agreement",
+    "T3 equivalence claim",
     "T4",
     "separate licensed runtime",
     "larger dependency surface",
@@ -799,7 +804,7 @@ def main() -> int:
                 and {"reproduce-tier1", "reproduce-tier2", "reproduce-tier3"}
                 <= targets
                 and tier1_summary["complete"] is True
-                and "Every Section 4-7 headline number was rebuilt without R or Stata."
+                and "Tier 1 needs no R or Stata: it recomputes the examples, listings and census and re-tabulates the frozen parity, coverage and timing experiments."
                 in transcript
                 and "RESULT: OK -- all required steps reproduced." in transcript
             ),
@@ -924,8 +929,11 @@ def main() -> int:
                 repro_env.get("status") == "PASS"
                 and repro_env.get("renv_lock_present") is True
                 and repro_env.get("stata_environment_present") is True
-                and "every Section 4--7 headline number was" in cover_letter
-                and "rebuilt without R or Stata" in cover_letter
+                # The Tier-1 claim must separate what is recomputed from
+                # what is re-tabulated from frozen experiments (JSS v2
+                # review: "rebuilt" overstated the short path).
+                and "without R or Stata" in " ".join(cover_letter.split())
+                and "re-tabulates the frozen" in " ".join(cover_letter.split())
                 and rng.get("unseeded_stochastic_file_count") == 0
             ),
             (

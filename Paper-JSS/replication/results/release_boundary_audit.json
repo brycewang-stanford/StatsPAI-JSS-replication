@@ -26,40 +26,36 @@
   "status": "PASS",
   "summary": {
     "contains_unreleased_source_changes": true,
-    "generated_dirty_count": 52,
-    "manuscript_version_macro": "1.30.1",
-    "package_version": "1.30.1",
-    "paper_release_blocker_count": 29,
+    "generated_dirty_count": 30,
+    "manuscript_version_macro": "1.32.0",
+    "package_version": "1.32.0",
+    "paper_release_blocker_count": 2,
     "ready_for_final_publication": false,
     "release_blocker_breakdown": {
       "generated_status_counts": {
-        "??": 2,
-        "M": 45,
-        "MM": 5
+        "M": 30
       },
       "hand_edited_status_counts": {
-        "??": 27,
-        "M": 70,
-        "MM": 12
+        "M": 2
       },
-      "package_code_paths": 18,
-      "package_docs_paths": 10,
-      "paper_manuscript_paths": 11,
-      "paper_other_paths": 4,
-      "paper_replication_paths": 14,
-      "validation_test_paths": 47
+      "package_code_paths": 0,
+      "package_docs_paths": 0,
+      "paper_manuscript_paths": 0,
+      "paper_other_paths": 0,
+      "paper_replication_paths": 2,
+      "validation_test_paths": 0
     },
-    "release_blocker_count": 109,
+    "release_blocker_count": 2,
     "release_gate_checks": [
       {
         "check": "clean_combined_worktree",
-        "detail": "109 hand-edited final-publication gate paths; 52 generated dirty paths",
+        "detail": "2 hand-edited final-publication gate paths; 30 generated dirty paths",
         "ok": false
       },
       {
         "check": "package_tag_at_head",
-        "detail": "no package-source tag at HEAD",
-        "ok": false
+        "detail": "v1.32.0",
+        "ok": true
       },
       {
         "check": "versions_consistent",
@@ -68,26 +64,26 @@
       },
       {
         "check": "unreleased_changelog_finalized",
-        "detail": "444 non-empty lines across 7 headings",
-        "ok": false
+        "detail": "0 non-empty lines across 0 headings; 0 MIGRATION.md Unreleased sections",
+        "ok": true
       },
       {
         "check": "source_paths_finalized",
-        "detail": "80 source/test/docs paths still dirty",
-        "ok": false
+        "detail": "0 source/test/docs paths still dirty",
+        "ok": true
       },
       {
         "check": "paper_paths_finalized",
-        "detail": "29 Paper-JSS paths still dirty",
+        "detail": "2 Paper-JSS paths still dirty",
         "ok": false
       }
     ],
-    "schema_bundle_version": "1.30.1",
-    "source_release_blocker_count": 80,
-    "source_version": "1.30.1",
+    "schema_bundle_version": "1.32.0",
+    "source_release_blocker_count": 0,
+    "source_version": "1.32.0",
     "strict_release_command": "python Paper-JSS/replication/scripts/source_snapshot_manifest.py --strict-release",
     "submission_archive_status": "Audited source-snapshot submission archive; the failing final-publication release gate is a tag/changelog synchronization gate, not a JSS upload reproducibility failure.",
-    "unreleased_changelog_nonempty": true,
+    "unreleased_changelog_nonempty": false,
     "version_consistent": true
   }
 }

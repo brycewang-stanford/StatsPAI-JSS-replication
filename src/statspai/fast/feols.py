@@ -75,7 +75,7 @@ class FeolsResult(ResultProtocolMixin):
     fe_cardinality: List[int]
     df_resid: int
     vcov_type: str
-    ssc: str = "statspai"
+    ssc: str = "fixest"
     cluster_var: Optional[str] = None
     backend: str = "statspai-native"
 
@@ -217,7 +217,7 @@ def feols(
     vcov: str = "iid",
     cluster: Optional[str] = None,
     weights: Optional[str] = None,
-    ssc: str = "statspai",
+    ssc: str = "fixest",
     drop_singletons: bool = True,
     fe_tol: float = 1e-10,
     fe_maxiter: int = 1_000,
@@ -243,31 +243,29 @@ def feols(
         - ``"cr1"``: one-way cluster-robust (Liang-Zeger) with
           FE-rank-aware small-sample factor.
 
-        The DOF convention is ``df_resid = n_kept - p - Σ(G_k - 1)``
-        — same as :func:`sp.fast.fepois` and :func:`sp.fast.event_study`.
-        This matches ``fixest::ssc(fixef.K="full")`` to a uniform 1-DOF
-        off-by-true-rank for K≥2, and pyfixest's default
-        ``ssc(fixef.K="nested")`` to within ~1% on iid/hc1 (always
-        slightly smaller SE because StatsPAI charges all FEs even when
-        nested in cluster). Use the bootstrap (``sp.fast.boottest``)
-        for tight finite-sample inference; use ``vcov="iid"`` /
-        ``"hc1"`` for the canonical analogues of fixest's defaults.
+        Degrees of freedom and the CR1 factor follow ``ssc`` (below); the
+        default reproduces ``fixest::feols`` and ``reghdfe``. Use the
+        bootstrap (``sp.fast.boottest``) for few-cluster inference.
     cluster : str, optional
         Column name for cluster identifiers. Required when
         ``vcov="cr1"``; rejected otherwise. NaN cluster values raise.
     weights : str, optional
         Column name of observation weights. Each obs's contribution to
         the objective is scaled by ``w_i`` (frequency / survey weights).
-    ssc : {"statspai", "fixest"}, default "statspai"
+    ssc : {"fixest", "statspai"}, default "fixest"
         Small-sample correction convention for residual degrees of
         freedom and CR1 scaling.
 
-        - ``"statspai"`` preserves the historical native convention
-          ``fe_dof = Σ(G_k - 1)`` and charges all absorbed FEs in CR1.
-        - ``"fixest"`` mirrors R ``fixest`` / Stata ``reghdfe`` defaults
-          used by the parity harness: the IID/HC1 residual rank is
-          ``ΣG_k - 1`` for multiple FE dimensions, and one-way clustered
-          CR1 excludes FE dimensions nested in the cluster variable.
+        - ``"fixest"`` (default since 1.31.0) mirrors R ``fixest`` /
+          Stata ``reghdfe`` defaults, the setting the parity harness
+          pins: the IID/HC1 residual rank is ``ΣG_k - 1`` for multiple FE
+          dimensions, and one-way clustered CR1 excludes FE dimensions
+          nested in the cluster variable.
+        - ``"statspai"`` is the pre-1.31 default, kept to reproduce old
+          numbers: ``fe_dof = Σ(G_k - 1)`` (one degree of freedom too few
+          for two-way FE) and every absorbed FE charged in CR1, which
+          inflates clustered SEs when the effects are nested in the
+          clusters (SE/SD 1.08, coverage 0.979 on the Track B panel).
     drop_singletons : bool, default True
         Iteratively drop FE-singleton rows before fitting.
     fe_tol, fe_maxiter : float, int

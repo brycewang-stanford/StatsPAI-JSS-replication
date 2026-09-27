@@ -4214,4 +4214,121 @@ EXTRA_AGENT_CARDS: Dict[str, Dict[str, Any]] = {
         "alternatives": ["network_hte", "spillover", "interference"],
         "typical_n_min": 200,
     },
+    "q_learning": {
+        "assumptions": [
+            "Sequential ignorability: each stage-k action is as good as "
+            "random given the observed history H_k",
+            "Positivity: both actions have positive probability at every "
+            "history that occurs",
+            "Stage-wise Q-functions are correctly specified as linear in "
+            "the history (with A_k x H_k interactions)",
+        ],
+        "pre_conditions": [
+            "Binary (0/1) action at every stage",
+            "One final outcome, higher is better",
+        ],
+        "failure_modes": [
+            {
+                "symptom": "actions and stage_covariates have different lengths",
+                "exception": "ValueError",
+                "remedy": "Pass one covariate list per decision stage (an "
+                "empty list for a stage with no new covariates)",
+                "alternative": "a_learning",
+            },
+            {
+                "symptom": "Estimated rule is sensitive to the main-effect "
+                "part of the Q-model",
+                "exception": "(none — informational)",
+                "remedy": "Q-learning needs the whole Q-function right; "
+                "compare with A-learning, which models only the contrast "
+                "and needs a propensity model instead",
+                "alternative": "a_learning",
+            },
+        ],
+        "alternatives": ["a_learning", "snmm"],
+        "typical_n_min": 200,
+    },
+    "a_learning": {
+        "assumptions": [
+            "Sequential ignorability: each stage-k action is as good as "
+            "random given the observed history H_k",
+            "Positivity: stage propensities bounded away from 0 and 1",
+            "Stage contrast (blip) function linear in the history",
+            "Stage propensity model (logistic in the history) correctly " "specified",
+        ],
+        "pre_conditions": [
+            "Binary (0/1) action at every stage",
+            "One final outcome, higher is better",
+        ],
+        "failure_modes": [
+            {
+                "symptom": "actions and stage_covariates have different lengths",
+                "exception": "ValueError",
+                "remedy": "Pass one covariate list per decision stage (an "
+                "empty list for a stage with no new covariates)",
+                "alternative": "q_learning",
+            },
+            {
+                "symptom": "Propensities pile up at the clipping bounds",
+                "exception": "(none — informational)",
+                "remedy": "Positivity is doubtful; inspect overlap by stage "
+                "and treat estimates at clipped histories with caution",
+                "alternative": "q_learning",
+            },
+        ],
+        "alternatives": ["q_learning", "snmm"],
+        "typical_n_min": 200,
+    },
+    "snmm": {
+        "assumptions": [
+            "Sequential ignorability: each stage-k action is as good as "
+            "random given the observed history H_k",
+            "Positivity: stage propensities bounded away from 0 and 1",
+            "Linear structural nested mean (blip) model at each stage",
+            "Stage propensity model (logistic in the history) correctly " "specified",
+        ],
+        "pre_conditions": [
+            "Binary (0/1) action at every stage",
+        ],
+        "failure_modes": [
+            {
+                "symptom": "actions and stage_covariates have different lengths",
+                "exception": "ValueError",
+                "remedy": "Pass one covariate list per decision stage (an "
+                "empty list for a stage with no new covariates)",
+                "alternative": "a_learning",
+            },
+        ],
+        "alternatives": ["a_learning", "q_learning"],
+        "typical_n_min": 200,
+    },
+    "balke_pearl": {
+        "assumptions": [
+            "Instrument independent of potential outcomes and potential "
+            "treatments (Z independent of Y(0), Y(1), D(0), D(1))",
+            "Exclusion restriction: Z affects Y only through D",
+            "No monotonicity assumed; the ATE is partially identified",
+        ],
+        "pre_conditions": [
+            "Outcome, treatment and instrument all binary (0/1)",
+        ],
+        "failure_modes": [
+            {
+                "symptom": "A column is not coded 0/1",
+                "exception": "ValueError",
+                "remedy": "Recode to 0/1; for non-binary outcomes use "
+                "bounds that allow a bounded continuous outcome",
+                "alternative": "manski_bounds",
+            },
+            {
+                "symptom": "Bounds are wide and include zero",
+                "exception": "(none — informational)",
+                "remedy": "Expected without further assumptions; if "
+                "monotonicity is credible, point-identify the LATE instead",
+                "alternative": "iv",
+            },
+        ],
+        "alternatives": ["manski_bounds", "iv_bounds", "iv"],
+        "typical_n_min": 200,
+    },
 }

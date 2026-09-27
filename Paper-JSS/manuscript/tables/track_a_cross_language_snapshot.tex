@@ -11,7 +11,7 @@ Estimator & Statistic & Data & \statspai{} & \proglang{R} ref. & \proglang{Stata
 \code{sp.callaway\_santanna} & simple ATT & \texttt{mpdta} replica & -0.032976514 & -0.032976514 & -0.032976514 & \(1.3\times10^{-15}\) & T2 \\
 \code{sp.rdrobust} & robust RD, default CCT \(h\) & RDsenate & 7.506502484 & 7.506502484 & 7.506502483 & \(9.4\times10^{-11}\) & T2; native, default \(h\) \\
 \code{sp.dml} & \(\hat\theta_{\mathrm{DML}}\) & Card replica & 0.110228260 & 0.110228260 & 0.110228260 & \(3.7\times10^{-15}\) & T2; ddml bridge \\
-\code{sp.causal\_forest} & AIPW ATE & clean-overlap DGP & 1.012009376 & 1.011741552 & --- & 0.000265 & T3; seed-replicated, operator exact \\
+\code{sp.causal\_forest} & AIPW ATE & clean-overlap DGP & 1.012009376 & 1.011741552 & --- & 0.000265 & one draw (S); T3 by seed study \\
 \code{sp.psm} & ATT & NSW--DW replica & 2277.690721 & 2277.690721 & 2277.690721 & \(1.2\times10^{-15}\) & T2; SE convention \\
 \code{sp.synth} (unique) & avg post gap & identified SCM DGP & 2.000000155 & 1.999999999 & 2.000000000 & \(7.8\times10^{-8}\) & T1+T2; identified DGP \\
 \code{sp.synth} (classic) & avg post gap & Basque replica & -0.704244148 & -0.687789210 & -0.703950536 & 0.0239 & T4; reference disagreement \\

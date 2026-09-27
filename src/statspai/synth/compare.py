@@ -22,6 +22,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
+from .._aliases import accepts_aliases
 from ..core.results import CausalResult
 from .scm import synth
 
@@ -138,11 +139,14 @@ class SynthComparison:
         comparison_table: pd.DataFrame,
         recommended: str,
         recommendation_reason: str,
+        degradations: Optional[List[Dict[str, Any]]] = None,
     ):
         self.results = results
         self.comparison_table = comparison_table
         self.recommended = recommended
         self.recommendation_reason = recommendation_reason
+        #: Methods that failed on this data: ``{section, error_type, message}``.
+        self.degradations: List[Dict[str, Any]] = list(degradations or [])
 
     # ------------------------------------------------------------------ #
     #  Display helpers
@@ -341,6 +345,7 @@ def _recommend(table: pd.DataFrame) -> Tuple[str, str]:
 # ====================================================================== #
 
 
+@accepts_aliases(id="unit", y="outcome")
 def synth_compare(
     data: pd.DataFrame,
     outcome: str,
@@ -409,11 +414,16 @@ def synth_compare(
     if methods is None:
         methods = _ALL_METHODS.copy()
 
+    from ..workflow._degradation import record_degradation
+
     results: Dict[str, CausalResult] = {}
     rows: List[Dict[str, Any]] = []
+    degradations: List[Dict[str, Any]] = []
+    last_exc: Optional[BaseException] = None
 
     for method_name in methods:
         t0 = _time.time()
+        failure: Optional[BaseException] = None
         try:
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
@@ -429,9 +439,25 @@ def synth_compare(
                     alpha=alpha,
                     **kwargs,
                 )
-        except Exception:  # pragma: no cover
-            # Method failed on this data — skip silently
-            continue  # pragma: no cover
+        except TypeError as exc:
+            if "unexpected keyword" in str(exc):
+                # A misspelled option is the caller's error, not this
+                # method failing on this data: skipping it would drop
+                # every method and return an empty comparison.
+                raise
+            failure = exc
+        except Exception as exc:
+            failure = exc
+        if failure is not None:
+            # Outside the warning filter above, so the skip is visible
+            # (CLAUDE.md §3.7): it used to be dropped without a trace.
+            last_exc = failure
+            record_degradation(
+                degradations,
+                section=f"synth_compare method={method_name!r}",
+                exc=failure,
+            )
+            continue
         elapsed = _time.time() - t0
 
         results[method_name] = res
@@ -460,6 +486,12 @@ def synth_compare(
             }
         )
 
+    if not rows and last_exc is not None:
+        raise RuntimeError(
+            f"synth_compare: every requested method failed; the last error "
+            f"was {type(last_exc).__name__}: {last_exc}"
+        ) from last_exc
+
     # Build comparison table sorted by pre-treatment fit
     comparison_table = pd.DataFrame(rows)
     if not comparison_table.empty:
@@ -476,6 +508,7 @@ def synth_compare(
         comparison_table=comparison_table,
         recommended=recommended,
         recommendation_reason=reason,
+        degradations=degradations,
     )
 
 
@@ -484,6 +517,7 @@ def synth_compare(
 # ====================================================================== #
 
 
+@accepts_aliases(id="unit", y="outcome")
 def synth_recommend(
     data: pd.DataFrame,
     outcome: str,

@@ -1,0 +1,6 @@
+# Additional Python packages for `reproduce.py --recompute ...` (not needed
+# for Tier 1; the lock already contains them, this file names them for a
+# ranges-based environment). Versions are those used for the submission.
+#   performance: the DML row times doubleml-for-py as its reference
+DoubleML==0.11.3
+# R and its packages for the reference legs: tests/r_parity/renv.lock

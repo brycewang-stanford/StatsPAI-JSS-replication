@@ -91,7 +91,7 @@ def run() -> dict:
         "method": agg["method"],
         "ate": float(agg["estimate"]),
         "ate_se": float(agg["se"]),
-        "cate_mean": float(cate["Mean (ATE)"]),
+        "cate_mean": float(cate["Mean"]),
         "cate_sd": float(cate["Std. Dev."]),
         "cate_q25": float(cate["Q25"]),
         "cate_q75": float(cate["Q75"]),

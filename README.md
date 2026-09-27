@@ -12,10 +12,10 @@ accompanies the manuscript. The package itself is developed at
 
 | | |
 | --- | --- |
-| StatsPAI version string | 1.30.1 |
-| StatsPAI source commit | [`e91ecdf6b4`](https://github.com/brycewang-stanford/StatsPAI/commit/e91ecdf6b41404ebf39c88b07a02c2b3f88c8890) |
-| Relation to release tag | `src/` contains changes committed after release tag `v1.30.1`; the PyPI 1.30.1 wheel is **not** identical to this snapshot |
-| Manuscript sources commit | `09e6914c55` (private manuscript repository) |
+| StatsPAI version string | 1.32.0 |
+| StatsPAI source commit | [`23da3621cc`](https://github.com/brycewang-stanford/StatsPAI/commit/23da3621cc07d206e7e0ad7ae384b221dd327cc3) |
+| Relation to release tag | `src/` is identical to release tag `v1.32.0` (PyPI 1.32.0) |
+| Manuscript sources commit | `f4eeff04b0` (private manuscript repository) |
 
 `src/statspai/` here is the source at that commit, and `pip install -e .`
 installs exactly it; use it rather than the PyPI wheel to reproduce the

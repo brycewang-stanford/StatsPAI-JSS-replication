@@ -2,11 +2,19 @@
 from __future__ import annotations
 
 import re
-import unicodedata
+import sys
 from pathlib import Path
 
 import statspai as sp
 import statspai.registry as registry
+
+# The archive ships source files ASCII-transliterated (JSS: "Source code must
+# be submitted in ASCII files"), which also rewrites the docstrings and
+# descriptions this table prints. Normalising with the same function
+# (StatsPAI's scripts/ascii_source.py, idempotent on ASCII) makes the table
+# byte-identical whether it is rebuilt from the repository or the archive.
+sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "scripts"))
+from ascii_source import ascii_source_text  # noqa: E402
 
 
 HERE = Path(__file__).resolve().parent
@@ -17,30 +25,7 @@ OUT = TABLE_DIR / "function_inventory_full.tex"
 
 def _latex_escape(value: object, max_len: int | None = None) -> str:
     text = "" if value is None else str(value)
-    text = (
-        text.replace("ρ", "rho")
-        .replace("β", "beta")
-        .replace("ε", "epsilon")
-        .replace("λ", "lambda")
-        .replace("θ", "theta")
-        .replace("τ", "tau")
-        .replace("Δ", "Delta")
-        .replace("δ", "delta")
-        .replace("σ", "sigma")
-        .replace("×", "x")
-        .replace("≡", "=")
-        .replace("∈", "in")
-        .replace("≤", "<=")
-        .replace("≥", ">=")
-        .replace("agent-native", "agent-facing")
-        .replace("–", "-")
-        .replace("—", "-")
-        .replace("’", "'")
-        .replace("“", '"')
-        .replace("”", '"')
-    )
-    text = unicodedata.normalize("NFKD", text)
-    text = text.encode("ascii", "ignore").decode("ascii")
+    text = ascii_source_text(text.replace("agent-native", "agent-facing"))
     text = re.sub(r"\s+", " ", text).strip()
     if max_len is not None and len(text) > max_len:
         text = text[: max_len - 3].rstrip() + "..."

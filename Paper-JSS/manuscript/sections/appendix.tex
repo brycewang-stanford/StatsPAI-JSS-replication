@@ -29,42 +29,51 @@ secondary diagnostic follows a documented small-sample convention. The
 single remaining \textit{GAP} is the classical-SCM donor-weight
 non-uniqueness disclosure of
 Section~\ref{sec:scm-identification}, kept visible rather than absorbed
-into a wider tolerance.
-
-Two things this table does not do: it omits per-row detail, which is
-regenerated into \code{tests/r\_parity/results/parity\_table\_3way.md},
-and it does not by itself show that either side is re-derivable
+into a wider tolerance. Two things this table does not do: show per-row
+detail, or show that either side is re-derivable
 (Section~\ref{sec:reproducibility}).
 
 \section{Output-changing corrections}\label{app:corrections}
 
-Table~\ref{tab:correctness-history} lists the output-changing fixes that
-affect interpretation of the present validation claim; each is pinned by
-a regression test, and users on affected versions should re-estimate.
-Section~\ref{sec:parity-gaps} discusses the 1.23.0 and 1.25.0 entries;
-none of the 174 defects of 1.29.0 had been caught by a unit test.
+Each fix in Table~\ref{tab:correctness-history} is pinned by a
+regression test; users on affected versions should re-estimate.
+Section~\ref{sec:parity-gaps} discusses 1.23.0 and 1.25.0. The 1.29.0
+count is the numbered items in \path{docs/dev/campaign_phase3/}, each
+counted once, excluding documentation-only corrections.
 
-\begin{table}[!ht]
-\centering\scriptsize
-\begin{tabular}{@{}p{0.08\linewidth}p{0.25\linewidth}p{0.61\linewidth}@{}}
+\begingroup
+\scriptsize
+\setlength{\LTcapwidth}{\linewidth}
+\begin{longtable}{@{}L{0.07\linewidth}L{0.22\linewidth}p{0.65\linewidth}@{}}
 \toprule
 Version & Affected area & Output-changing fix \\
 \midrule
-1.6--1.15 & IV/LIML/Heckman, event study, CS-DiD, TMLE, DML, metalearners, mediation & Small-sample, two-step and rank SE corrections; influence-function, orthogonal-score and AIPW fixes. \\
-1.16.0 & Quantile regression, Newey--West, Arellano--Bond; forest ATE/ATT & SE scaling and GMM weight construction corrected; forest headline moved to the \pkg{grf} AIPW estimand. \\
-1.21.0 & CBPS, entropy balancing, Mahalanobis, genetic matching & GMM basis, exact moment balance, and covariance conventions corrected (up to $8.6\times$ off \pkg{CBPS}); now pinned against \pkg{CBPS}, \pkg{ebal}, \pkg{MatchIt}, \pkg{optmatch}, \pkg{Matching}, \pkg{sbw}. \\
-1.23.0 & CS-DiD unit weights; IPW SEs & Weighted estimand restored; IPW SEs were 9--11\% (up to 89\% weighted) too large; pinned to \code{did::att\_gt} (see text). \\
-1.24.0 & Sun--Abraham, GLMM, PPML-HDFE, dynamic TWFE SEs & Degrees-of-freedom/nesting conventions fixed to the reference rules; SEs moved 0.1--2\% (see text). \\
-1.25.0 & Causal-forest aggregation under a continuous treatment & The binary AIPW score was applied to a continuous treatment ($-1266.6$, $p=0.0000$ on Card); guarded in 1.25.0, replaced by the Riesz-representer average in 1.29.0. Binary results unchanged. \\
-1.26.0 & Evidence grades & A false alias certification (\code{sp.wooldridge\_did} as \code{sp.etwfe}) withdrawn; grades, not estimates, changed. \\
-1.27.0 & ETWFE, \code{sp.wooldridge\_did}, \code{sp.etregress}, RE panel logit/probit, panel FGLS, spatial LM tests & Cohort ATTs read from a saturated regression; clustered SEs account for absorbed effects; the \code{etregress} default is a true MLE with first-stage-aware two-step SEs; \code{lm\_tests} no longer reverses its model-selection conclusion. \\
-1.28.0 & SCM placebo \(p\)-values; Mendelian randomization; evidence grades & Permutation \(p\)-values now rank the treated unit with its placebos, \((1+\#\{\text{placebo}\ge\text{treated}\})/(J+1)\); MR estimators ported to their reference definitions; 31 functions graded T2 on closed-form tests that never ran \proglang{R} or \proglang{Stata} were regraded T1 (see text). \\
-1.29.0 & Cross-language parity campaign (174 defects) and Track A closure & Fourteen families bisected against their reference on identical bytes; 174 output-changing defects fixed, none caught by a unit test; forest defaults follow \pkg{grf}; Gardner two-stage SE as \pkg{did2s}; PSM SE as \code{teffects psmatch}. \\
-1.30.0 & HonestDiD on a raw CS fit; forest ATT/ATC under a continuous treatment & The event-study covariance passed to \code{sp.honest\_did} dropped the cohort-share term off the diagonal (cross-cell entries up to 8\% off \pkg{did}), overstating robustness; now matches \pkg{did} to \(2.8\times10^{-13}\), and the bounds of Listing~\ref{lst:csdid-output} moved in the fourth decimal. ATT and ATC now raise for a continuous treatment, as in \pkg{grf}. \\
-1.31.0 & Entropy-balancing SE; audit applicability; Honest-DiD relative magnitudes; evidence grades & \code{sp.ebalance} SE was twice the Monte Carlo SD; now the M-estimation sandwich (\pkg{WeightIt} to \(3\times10^{-9}\)). \code{sp.audit}: over-identification test not applicable on just-identified fits. \code{sp.causal\_question} forest design reports the forest's own AIPW average. Native relative-magnitudes Honest-DiD set; two parity rows that ran \proglang{R} itself rebuilt on native code; forest T3 re-established by seed replication. \\
+\endfirsthead
+\multicolumn{3}{c}{\textit{(Table \ref{tab:correctness-history} continued)}}\\
+\toprule
+Version & Affected area & Output-changing fix \\
+\midrule
+\endhead
+\midrule
+\multicolumn{3}{r}{\textit{(continued on the next page)}}\\
+\endfoot
 \bottomrule
-\end{tabular}
 \caption{Output-changing correctness fixes through release
 \StatsPAIVersion{}; CHANGELOG and \code{MIGRATION.md} hold the detail.}
 \label{tab:correctness-history}
-\end{table}
+\endlastfoot
+1.6--1.15 & IV/LIML/Heckman, event study, CS-DiD, TMLE, DML, meta-learners & Small-sample, two-step and rank SE corrections; influence-function, orthogonal-score and AIPW fixes. \\
+1.16.0 & Quantile reg., Newey--West, Arellano--Bond, forest ATE & SE scaling and GMM weight construction corrected; forest headline moved to the \pkg{grf} AIPW estimand. \\
+1.21.0 & CBPS, entropy balancing, Mahalanobis, genetic matching & GMM basis, exact moment balance, and covariance conventions corrected (up to $8.6\times$ off \pkg{CBPS}); now pinned against \pkg{CBPS}, \pkg{ebal}, \pkg{MatchIt}, \pkg{optmatch}, \pkg{Matching}, \pkg{sbw}. \\
+1.23.0 & CS-DiD unit weights; IPW SEs & Weighted estimand restored; IPW SEs were 9--11\% (up to 89\% weighted) too large; pinned to \code{did::att\_gt} (see text). \\
+1.24.0 & Sun--Abraham, GLMM, PPML-HDFE, TWFE SEs & Degrees-of-freedom/nesting conventions fixed to the reference rules; SEs moved 0.1--2\% (see text). \\
+1.25.0 & Forest average, continuous treatment & The binary AIPW score was applied to a continuous treatment ($-1266.6$, $p=0.0000$ on Card); guarded in 1.25.0, replaced by the Riesz-representer average in 1.29.0. Binary results unchanged. \\
+1.26.0 & Evidence grades & A false alias certification (\code{sp.wooldridge\_did} as \code{sp.etwfe}) withdrawn; grades, not estimates, changed. \\
+1.27.0 & ETWFE, \code{etregress}, RE logit/probit, FGLS, spatial LM & Cohort ATTs read from a saturated regression; clustered SEs account for absorbed effects; the \code{etregress} default is a true MLE with first-stage-aware two-step SEs; \code{lm\_tests} no longer reverses its model-selection conclusion. \\
+1.28.0 & SCM placebo \(p\)-values; MR; evidence grades & Permutation \(p\)-values now rank the treated unit with its placebos, \((1+\#\{\text{placebo}\ge\text{treated}\})/(J+1)\); MR estimators ported to their reference definitions; 31 functions graded T2 on closed-form tests that never ran \proglang{R} or \proglang{Stata} were regraded T1 (see text). \\
+1.29.0 & Parity campaign; Track A closure & Fourteen families bisected against their reference on identical bytes; 174 output-changing defects fixed, none caught by a unit test; forest defaults follow \pkg{grf}; Gardner two-stage SE as \pkg{did2s}; PSM SE as \code{teffects psmatch}. \\
+1.30.0 & HonestDiD on a CS fit; forest ATT/ATC & The event-study covariance passed to \code{sp.honest\_did} dropped the cohort-share term off the diagonal (cross-cell entries up to 8\% off \pkg{did}), overstating robustness; now matches \pkg{did} to \(2.8\times10^{-13}\), and the bounds of Listing~\ref{lst:csdid-output} moved in the fourth decimal. ATT and ATC now raise for a continuous treatment, as in \pkg{grf}. \\
+1.31.0 & Entropy balancing; IV and HDFE covariances; CS event study; pre-trend tests; forest policy; audit; grades & \code{sp.ebalance} SE was twice the Monte Carlo SD; now the M-estimation sandwich (\pkg{WeightIt} to \(3\times10^{-9}\)). \code{sp.iv(vce=)} silently returned CR1 for CR2/CR3/wild requests; now bit-identical to \code{sp.ivreg} or refused. \code{sp.fast.feols} defaults to \pkg{fixest}'s small-sample factor (the old default over-covered, 0.979). The convenience event study of a Callaway--Sant'Anna fit omitted the cohort-share term of its SEs (up to 0.9\% on \texttt{mpdta}, 47\% on a castle-doctrine panel); it now equals \code{sp.aggte} to \(10^{-15}\), and the grid of Listing~\ref{lst:csdid-output} moved in the fourth decimal. \code{sp.pretrends\_test} on an event study used a diagonal pre-period covariance (\(p=0.603\) against \proglang{Stata}'s 0.293); it now uses the joint one. \code{sp.rate\_split} and \code{sp.forest\_policy\_tree} aggregate 21 sample splits instead of reporting one. Over-identification audit skipped on just-identified fits; native relative-magnitudes Honest-DiD; two parity rows that ran \proglang{R} itself rebuilt natively. \\
+1.32.0 & Silently ignored options; IV weights; quantile, tobit and panel SEs; margins; labels; original-data ledger & Options accepted and then dropped now take effect or raise: \code{sp.iv}/\code{sp.ivreg} returned unweighted estimates for \code{weights=} (4.238 weighted against 3.547 reported; now \proglang{Stata} \code{ivregress [aw=]} to \(10^{-14}\)); \code{alpha=} on 31 estimators still printed 95\% intervals; \code{sp.panel} ignored \code{weights=} and clustered a named \code{cluster=} column on the entity; \code{sp.synth} dropped \code{covariates=} for matrix completion and \code{standardize=False} for the classical method. A fuzzy \code{sp.rdrobust} with a \code{comb} selector chose the sharp bandwidth (now \proglang{R} to \(10^{-12}\)). The \code{sp.qreg} default SE matched neither \proglang{Stata} nor \pkg{quantreg} (3--7\% off on Track A); it is now \proglang{Stata}'s \code{vce(iid)}, with \(t(N-k)\) inference, and module 40's SE budget tightens from \(10^{-1}\) to \(10^{-6}\). \code{sp.tobit} stopped short of the optimum (module 41: \(2\times10^{-6}\) to \(3\times10^{-11}\)). \code{sp.feols} intervals use \pkg{fixest}'s degrees of freedom, CRE random-effects variance components follow \proglang{Stata}, and \code{sp.margins} averages over the estimation sample with the fit's weights. The DML PLR estimate is labelled \code{theta}, not ATE (a variance-weighted average, or a partial coefficient for continuous \(D\)), and \code{sp.cate\_summary} reports \code{Mean}, not \code{Mean (ATE)}; estimates unchanged. The original-data RD row ran the official \pkg{rdrobust} port and so compared the authors' code with itself; it now runs the native selector, and the call trace covers that ledger. \\
+\end{longtable}
+\endgroup

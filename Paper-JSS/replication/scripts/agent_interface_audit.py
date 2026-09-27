@@ -61,13 +61,14 @@ BOUNDARY_SNIPPETS = {
         "mechanical and contractual",
         "not a claim of behavioural",
     ],
+    # Section 3 states the scope once and defers the evidence and its
+    # limits to Section 7 (the JSS v2 review asked for the repeated
+    # disclaimers to be merged).
     "Paper-JSS/manuscript/sections/03-agent-facing-compact.tex": [
-        "The paper's claim is mechanical",
-        "same validation ledger as human calls",
-        "It is not a behavioural claim",
-        "software-interface contribution",
+        "The agent layer is a\nsoftware-interface contribution",
         "tool discovery, failure recovery, result reuse, and citation",
-        "schema/MCP/citation reproducibility",
+        "same validation ledger as human ones",
+        "reports the mechanical evidence for it and what it does not show",
     ],
     "Paper-JSS/manuscript/sections/07-agent-eval.tex": [
         "reports only the \\emph{mechanical} and \\emph{contractual} evidence",

@@ -25,6 +25,7 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 
+from .._aliases import accepts_aliases
 from ..core.results import CausalResult, EconometricResults
 from ..exceptions import MethodIncompatibility, NumericalInstability
 from ._akm import _akm_fit, _bhj_aggregate, _resid
@@ -34,6 +35,7 @@ from ._akm import _akm_fit, _bhj_aggregate, _resid
 # ======================================================================
 
 
+@accepts_aliases(covariates="controls")
 def ssaggregate(
     data: pd.DataFrame,
     y: str,
@@ -443,6 +445,7 @@ def shift_share_se(
     diagnostics["SE (original)"] = float(old_se.iloc[-1])
     diagnostics["N shocks (K)"] = S.shape[1]
 
+    model_info["alpha"] = alpha
     return EconometricResults(
         params=params,
         std_errors=new_se,

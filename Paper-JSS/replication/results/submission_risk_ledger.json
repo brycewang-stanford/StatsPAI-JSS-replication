@@ -14,14 +14,14 @@
       "Paper-JSS/manuscript/sections/09-discussion-compact.tex",
       "Paper-JSS/manuscript/sections/appendix.tex"
     ],
-    "file_count": 2800,
+    "file_count": 2961,
     "forbidden_members": [],
     "legacy_manuscript_sources_present": [],
     "manifest_present": true,
     "present": true,
-    "registry_evidence_file_count": 483,
-    "size_mb_decimal": 25.38,
-    "size_mib": 24.21,
+    "registry_evidence_file_count": 541,
+    "size_mb_decimal": 28.39,
+    "size_mib": 27.07,
     "within_jss_attachment_limit": true
   },
   "checks": [
@@ -92,7 +92,7 @@
     },
     {
       "check": "archive_within_50mb",
-      "detail": "24.21 MiB / 25.38 MB decimal",
+      "detail": "27.07 MiB / 28.39 MB decimal",
       "ok": true
     },
     {
@@ -112,7 +112,7 @@
     },
     {
       "check": "versions_consistent_inside_source",
-      "detail": "package=1.30.1; source=1.30.1; schema=1.30.1",
+      "detail": "package=1.32.0; source=1.32.0; schema=1.32.0",
       "ok": true
     },
     {
@@ -122,17 +122,18 @@
     },
     {
       "check": "final_tagged_release_blocker_identity",
-      "detail": "expected_ordered_subset_of=['clean_combined_worktree', 'package_tag_at_head', 'unreleased_changelog_finalized', 'source_paths_finalized', 'paper_paths_finalized']; observed=[]",
+      "detail": "expected_ordered_subset_of=['clean_combined_worktree', 'package_tag_at_head', 'unreleased_changelog_finalized', 'source_paths_finalized', 'paper_paths_finalized']; observed=['clean_combined_worktree', 'paper_paths_finalized']",
       "ok": true
     },
     {
       "check": "documented_nonblocking_risk_identity",
-      "detail": "expected=['registry_breadth_denominator_disclosed', 'stata_tier3_requires_license', 'methodological_t4_row_disclosed', 'compact_text_may_feel_terse', 'agent_interface_value_boundary']; observed=['registry_breadth_denominator_disclosed', 'stata_tier3_requires_license', 'methodological_t4_row_disclosed', 'compact_text_may_feel_terse', 'agent_interface_value_boundary']",
+      "detail": "expected=['final_tagged_release_cut_pending', 'registry_breadth_denominator_disclosed', 'stata_tier3_requires_license', 'methodological_t4_row_disclosed', 'compact_text_may_feel_terse', 'agent_interface_value_boundary']; observed=['final_tagged_release_cut_pending', 'registry_breadth_denominator_disclosed', 'stata_tier3_requires_license', 'methodological_t4_row_disclosed', 'compact_text_may_feel_terse', 'agent_interface_value_boundary']",
       "ok": true
     }
   ],
   "documented_nonblocking_risk_identity_ok": true,
   "documented_nonblocking_risk_ids": [
+    "final_tagged_release_cut_pending",
     "registry_breadth_denominator_disclosed",
     "stata_tier3_requires_license",
     "methodological_t4_row_disclosed",
@@ -141,7 +142,12 @@
   ],
   "documented_nonblocking_risks": [
     {
-      "evidence": "544/1195 registry symbols are certified/validated; missing evidence paths=0",
+      "evidence": "2 final-release pending paths; source snapshot remains explicitly labelled",
+      "next_action": "commit or intentionally exclude all hand-edited source and Paper-JSS paths; move accepted [Unreleased] changes into a dated CHANGELOG release entry; align pyproject.toml, src/statspai/__init__.py, and schema bundle versions; tag the exact package-source commit used by the JSS archive; re-run make submission-ready after the tag so manifests record a clean release snapshot",
+      "risk": "final_tagged_release_cut_pending"
+    },
+    {
+      "evidence": "558/1255 registry symbols are certified/validated; missing evidence paths=0",
       "next_action": "Keep the validated-core framing and do not promote API-stable breadth without attached evidence notes.",
       "risk": "registry_breadth_denominator_disclosed"
     },
@@ -156,12 +162,12 @@
       "risk": "methodological_t4_row_disclosed"
     },
     {
-      "evidence": "active PDF has 52 pages; PDF-visible evidence-map/checklist routing present; packaged PDF visual-check protocol present; page inventory covers 52/52 pages",
+      "evidence": "active PDF has 53 pages; PDF-visible evidence-map/checklist routing present; packaged PDF visual-check protocol present; page inventory covers 53/53 pages",
       "next_action": "Keep additional reviewer evidence in replication/results and reviewer_evidence_map rather than expanding main.pdf; perform the final full-document human visual spot-check using pdf_visual_check_protocol.md and the PDF render audit before JSS upload.",
       "risk": "compact_text_may_feel_terse"
     },
     {
-      "evidence": "1195 schemas, 9095 documented parameters, and 559 trace tools audited without behavioural benchmark claims",
+      "evidence": "1255 schemas, 9697 documented parameters, and 579 trace tools audited without behavioural benchmark claims",
       "next_action": "Keep the agent section mechanical and contractual unless a behavioural benchmark is actually run and packaged; keep the deferred benchmark protocol labelled as protocol rather than a completed behavioural result.",
       "risk": "agent_interface_value_boundary"
     }
@@ -215,11 +221,23 @@
     ],
     "strict_release_command": "python Paper-JSS/replication/scripts/source_snapshot_manifest.py --strict-release"
   },
-  "final_tagged_release_blocker_count": 0,
+  "final_tagged_release_blocker_count": 2,
   "final_tagged_release_blocker_identity_ok": true,
-  "final_tagged_release_blocker_ids": [],
-  "final_tagged_release_blockers": [],
-  "generated_at_unix": 1790183142,
+  "final_tagged_release_blocker_ids": [
+    "clean_combined_worktree",
+    "paper_paths_finalized"
+  ],
+  "final_tagged_release_blockers": [
+    {
+      "check": "clean_combined_worktree",
+      "detail": "2 hand-edited final-publication gate paths; 30 generated dirty paths"
+    },
+    {
+      "check": "paper_paths_finalized",
+      "detail": "2 Paper-JSS paths still dirty"
+    }
+  ],
+  "generated_at_unix": 1780185600,
   "jss_upload_blocker_count": 0,
   "jss_upload_blockers": [],
   "scope": "JSS source-snapshot upload readiness; final tagged-release readiness is tracked separately.",
@@ -239,28 +257,33 @@
       "re-run make submission-ready after the tag so manifests record a clean release snapshot"
     ],
     "final_tagged_release_blocker_identity_ok": true,
-    "final_tagged_release_blocker_ids": [],
-    "generated_dirty_count": 28,
-    "package_commit": "a24a2534",
-    "package_metadata_version": "1.30.1",
-    "paper_commit": "a8dc94a",
-    "paper_release_blocker_count": 0,
-    "ready_for_final_publication": true,
+    "final_tagged_release_blocker_ids": [
+      "clean_combined_worktree",
+      "paper_paths_finalized"
+    ],
+    "generated_dirty_count": 30,
+    "package_commit": "23da3621",
+    "package_metadata_version": "1.32.0",
+    "paper_commit": "dc4bef2",
+    "paper_release_blocker_count": 2,
+    "ready_for_final_publication": false,
     "release_blocker_breakdown": {
       "generated_status_counts": {
-        "M": 28
+        "M": 30
       },
-      "hand_edited_status_counts": {},
+      "hand_edited_status_counts": {
+        "M": 2
+      },
       "package_code_paths": 0,
       "package_docs_paths": 0,
       "paper_manuscript_paths": 0,
       "paper_other_paths": 0,
-      "paper_replication_paths": 0,
+      "paper_replication_paths": 2,
       "validation_test_paths": 0
     },
-    "release_blocker_count": 0,
-    "schema_bundle_version": "1.30.1",
-    "source_init_version": "1.30.1",
+    "release_blocker_count": 2,
+    "schema_bundle_version": "1.32.0",
+    "source_init_version": "1.32.0",
     "source_release_blocker_count": 0,
     "strict_release_command": "python Paper-JSS/replication/scripts/source_snapshot_manifest.py --strict-release",
     "submission_archive_status": "Audited source-snapshot submission archive; the failing final-publication release gate is a tag/changelog synchronization gate, not a JSS upload reproducibility failure."

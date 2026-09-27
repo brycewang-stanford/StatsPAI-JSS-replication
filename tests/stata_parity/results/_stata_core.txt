@@ -1,5 +1,0 @@
-stata_version=18
-edition=MP
-os=Unix
-machine_type=Mac (Apple Silicon)
-born_date=07 Jun 2023

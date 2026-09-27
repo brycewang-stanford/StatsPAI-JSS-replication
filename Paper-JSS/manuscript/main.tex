@@ -32,6 +32,22 @@
 %% lands inside the output block; \Needspace moves the whole transcript
 %% to the next page rather than splitting it.
 \usepackage{needspace}
+%% Float pages (e.g. the two DiD listings) start at the top and stack
+%% their floats with ordinary spacing, instead of LaTeX's default of
+%% centring them with stretched gaps.
+%% jss.cls is two-sided, hence \flushbottom: a page whose next float does
+%% not fit is stretched to full height, which opened a third of a page
+%% above the Section 4 heading. Ragged bottoms keep the page breaks and put
+%% the slack where a reader expects it.
+\raggedbottom
+\makeatletter
+\setlength{\@fptop}{0pt}
+\setlength{\@fpsep}{\floatsep}
+\setlength{\@fpbot}{0pt plus 1fil}
+\makeatother
+%% The evidence-chain diagram of Section 5.
+\usepackage{tikz}
+\usetikzlibrary{positioning,arrows.meta}
 
 %% Code listing style approximating JSS Sinput / Soutput.  We retain
 %% listings (rather than jss.cls's fancyvrb CodeInput) for the numbered,
@@ -110,33 +126,27 @@
 \Abstract{
 \statspai{} is a \proglang{Python} package for applied causal inference
 and econometrics in which every registered function carries an evidence
-tier that a user or an agent can query at call time. This article asks
-what such a label certifies, and describes the design that makes the
-answer checkable. Parity rows are classified by what the \statspai{}
-side actually executes, verified by a call trace of every module
-(\ParityNativeModuleCount{} of \RParityModuleCount{} run native code,
-\ParityThirdPartyModuleCount{} wrap third-party \proglang{Python}
-libraries, and none call the reference they are compared against);
-evidence is recorded per configuration, so a user can ask whether the
-variant, inference option, and code path just fitted is the one that was
-tested; automated diagnostics distinguish a missing check from one that
-does not exist for the fit; and stochastic estimators are graded by
-seed-replicated equivalence against an explicit margin rather than by
-their sampling standard errors. The evidence covers a twelve-estimator
-core: same-byte parity with canonical \proglang{R} implementations
-(\RParityModuleCount{} modules) and audited \proglang{Stata} bridges
-(\StataParityModuleCount{}), known-truth recovery, Monte Carlo coverage
-at \(B=1{,}000\) reported with bias, Monte Carlo standard deviation, and
-standard-error calibration, and a performance study that keeps
-unfavourable comparisons. Applying the design to the package found
-defects that numerical agreement alone had not: two parity rows that
-compared \proglang{R} with itself, a coverage row that measured a
-different estimator from the one it named, an entropy-balancing standard
-error twice the estimator's Monte Carlo standard deviation, and an audit
-that requested an over-identification test for a just-identified model.
-Seven worked examples, executed verbatim and one returning the same numbers as its
-\proglang{R} and \proglang{Stata} references on identical bytes, and a
-licence-free replication path complete the article. The evidence for
+tier that a user or an agent can query at call time. This article asks what
+such a label certifies and describes a design that makes the answer
+checkable. A label reaches the user through four mechanically verified
+links: the implementation a parity row exercised, established by a call
+trace bound to the source files on that path; the entry point the
+evidence is credited to; the configuration and output it compared, so a
+user can ask whether the variant and inference option just fitted were
+tested, and whether the standard error was, not only the point estimate;
+and the applicability of each automated check to the fit. Stochastic
+estimators are graded by seed-replicated equivalence against an explicit
+margin. The evidence covers a twelve-estimator core: same-byte parity with
+canonical \proglang{R} implementations (\RParityModuleCount{} modules) and
+\proglang{Stata} bridges (\StataParityModuleCount{}), known-truth
+recovery, Monte Carlo coverage reported with bias and standard-error
+calibration, and timings on shared inputs that keep unfavourable
+comparisons. Applying the design to the package found defects that
+numerical agreement alone had not, including parity rows that compared
+\proglang{R} with itself, an IV entry point that silently ignored a
+requested cluster-robust covariance, and a fixed-effects default whose
+clustered standard errors over-covered. Seven worked examples, executed verbatim, and
+a licence-free replication path complete the article. The evidence for
 the agent-facing interface is mechanical and contractual, not a claim of
 behavioural agent superiority.
 }

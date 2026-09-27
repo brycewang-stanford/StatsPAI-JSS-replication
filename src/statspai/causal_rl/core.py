@@ -21,6 +21,7 @@ from typing import Callable, Dict, List, Optional, Sequence
 
 import numpy as np
 import pandas as pd
+
 from .._result_serialize import ResultProtocolMixin
 
 __all__ = [
@@ -40,6 +41,21 @@ __all__ = [
 
 @dataclass
 class CausalBanditResult(ResultProtocolMixin):
+    """Result of :func:`statspai.causal_bandit`.
+
+    Fields: ``optimal_arm``, ``expected_rewards``, ``arm_labels``,
+    ``context``.
+
+    Examples
+    --------
+    >>> import numpy as np, statspai as sp
+    >>> rng = np.random.default_rng(0)
+    >>> res = sp.causal_bandit(["A", "B"], n_samples=100, rng_seed=0,
+    ...     reward_fn=lambda arm, ctx: {"A": 1.0, "B": 0.3}[arm] + rng.normal())
+    >>> isinstance(res, sp.CausalBanditResult)
+    True
+    """
+
     optimal_arm: int
     expected_rewards: np.ndarray
     arm_labels: List[str]
@@ -62,6 +78,24 @@ class CausalBanditResult(ResultProtocolMixin):
 
 @dataclass
 class CFPolicyResult(ResultProtocolMixin):
+    """Result of :func:`statspai.counterfactual_policy_optimization`.
+
+    Fields: ``expected_value_logged``, ``expected_value_target``,
+    ``improvement``, ``n_trajectories``.
+
+    Examples
+    --------
+    >>> import numpy as np, pandas as pd, statspai as sp
+    >>> rng = np.random.default_rng(0)
+    >>> s = rng.normal(size=200); a = 0.5 * s + rng.normal(size=200)
+    >>> df = pd.DataFrame({"s": s, "a": a, "r": s + 2 * a + rng.normal(size=200)})
+    >>> res = sp.counterfactual_policy_optimization(
+    ...     df, state="s", action="a", reward="r",
+    ...     target_policy=lambda si: si + 1.0)
+    >>> isinstance(res, sp.CFPolicyResult)
+    True
+    """
+
     expected_value_logged: float
     expected_value_target: float
     improvement: float
@@ -82,6 +116,23 @@ class CFPolicyResult(ResultProtocolMixin):
 
 @dataclass
 class StructuralMDPResult:
+    """Result of :func:`statspai.structural_mdp`.
+
+    Fields: ``state_dim``, ``action_dim``, ``A``, ``B``, ``reward_coef``.
+
+    Examples
+    --------
+    >>> import numpy as np, pandas as pd, statspai as sp
+    >>> rng = np.random.default_rng(0)
+    >>> s = rng.normal(size=200); a = rng.normal(size=200)
+    >>> df = pd.DataFrame({"s": s, "a": a, "ns": 0.8 * s + 0.2 * a + rng.normal(0, 0.1, 200),
+    ...                    "r": s + 0.5 * a + rng.normal(0, 0.1, 200)})
+    >>> res = sp.structural_mdp(df, state_cols=["s"], action_cols=["a"],
+    ...                         reward="r", next_state_cols=["ns"])
+    >>> isinstance(res, sp.StructuralMDPResult)
+    True
+    """
+
     state_dim: int
     action_dim: int
     A: np.ndarray  # state transition: s_{t+1} = A s_t + B a_t + noise

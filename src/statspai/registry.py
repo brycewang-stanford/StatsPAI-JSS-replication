@@ -21,7 +21,6 @@ from __future__ import annotations
 import inspect
 import re
 from dataclasses import asdict, dataclass, field
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 # Family-template agent-native seed data lives in a dedicated module so its
@@ -30,7 +29,6 @@ from ._causal_family_seeds import CAUSAL_FAMILY_SEEDS as _CAUSAL_FAMILY_SEEDS
 from ._parity_taxonomy import (
     CROSS_LANGUAGE_STATUSES,
     NON_ESTIMATOR_LEAVES,
-    TRACK_A_ALIASES,
     validation_tier_for,
 )
 
@@ -881,6 +879,36 @@ def _build_registry() -> None:
                     "Regressor columns (alternative to formula)",
                 ),
                 ParamSpec("quantile", "float", False, 0.5, "Quantile (0-1)"),
+                ParamSpec(
+                    "vce",
+                    "str",
+                    False,
+                    None,
+                    "None/'iid' = Stata qreg default (fitted sparsity, "
+                    "Hall-Sheather); 'robust' = Stata vce(robust); 'nid' = "
+                    "quantreg se='nid'; 'kernel' = qreg2 heteroskedasticity-"
+                    "robust Powell sandwich; 'cluster <var>' = Parente-Santos "
+                    "Silva (2016) cluster-robust, as qreg2, cluster(); "
+                    "'powell' = pre-1.32 kernel SE",
+                    ["iid", "robust", "nid", "kernel", "cluster", "powell"],
+                ),
+                ParamSpec(
+                    "cluster",
+                    "str",
+                    False,
+                    None,
+                    "Cluster column; implies vce='cluster' (Stata qreg2, "
+                    "cluster(); t(N-k) inference)",
+                ),
+                ParamSpec(
+                    "kernel_scale",
+                    "str",
+                    False,
+                    "mad",
+                    "Bandwidth scale for vce='kernel'/'cluster': 'mad' "
+                    "(qreg2 default) or 'silverman' (qreg2, silverman)",
+                    ["mad", "silverman"],
+                ),
             ],
             returns="EconometricResults",
             example='sp.qreg(df, "wage ~ education", quantile=0.9)',
@@ -926,6 +954,37 @@ def _build_registry() -> None:
                     0.05,
                     "Significance level for confidence intervals",
                 ),
+                ParamSpec(
+                    "method",
+                    "str",
+                    False,
+                    "twostep",
+                    "'twostep' (Heckman 1979 probit + OLS with IMR) or 'ml' "
+                    "(full-information ML, Stata's default heckman)",
+                    ["twostep", "ml"],
+                ),
+                ParamSpec(
+                    "vce",
+                    "str",
+                    False,
+                    None,
+                    "method='ml' only: None/'oim', 'robust' or 'cluster' "
+                    "(e.g. vce='cluster firm'); robust= is an alias",
+                ),
+                ParamSpec(
+                    "cluster",
+                    "str",
+                    False,
+                    None,
+                    "method='ml' only: cluster column (vce(cluster c))",
+                ),
+                ParamSpec(
+                    "weights",
+                    "str",
+                    False,
+                    None,
+                    "method='ml' only: sampling weights [pw=] (imply robust SEs)",
+                ),
             ],
             returns="EconometricResults",
             example='sp.heckman(df, y="wage", x=["education", "experience"], select="employed", z=["age", "kids"])',
@@ -959,6 +1018,24 @@ def _build_registry() -> None:
                     False,
                     0.05,
                     "Significance level for confidence intervals",
+                ),
+                ParamSpec(
+                    "vce",
+                    "str",
+                    False,
+                    None,
+                    "None/'oim' (observed information), 'robust' or "
+                    "'cluster', e.g. vce='cluster firm'; robust= is an alias",
+                ),
+                ParamSpec(
+                    "cluster", "str", False, None, "Cluster column (vce(cluster c))"
+                ),
+                ParamSpec(
+                    "weights",
+                    "str",
+                    False,
+                    None,
+                    "Sampling weights [pw=]: weighted likelihood, robust SEs",
                 ),
             ],
             returns="EconometricResults",
@@ -1706,8 +1783,8 @@ def _build_registry() -> None:
             alternatives=["rd_honest", "rdrbounds", "bounds"],
             typical_n_min=500,
             limitations=[
-                "observation-level weights are not yet supported — passing a "
-                "weight column raises NotImplementedError",
+                "the weighted rbc bootstrap is not supported — passing "
+                "weights= with bootstrap='rbc' raises MethodIncompatibility",
             ],
         )
     )
@@ -1835,7 +1912,17 @@ def _build_registry() -> None:
             params=[
                 ParamSpec("data", "DataFrame", True),
                 ParamSpec("y", "str", True, description="Outcome"),
-                ParamSpec("treat", "str", True, description="Treatment variable"),
+                ParamSpec(
+                    "treat",
+                    "str",
+                    True,
+                    description=(
+                        "Treatment variable. model='plr' also accepts a list "
+                        "of treatment columns: each is fitted with the others "
+                        "as controls on one split, and the result carries the "
+                        "joint covariance across treatments."
+                    ),
+                ),
                 ParamSpec(
                     "covariates",
                     "list",
@@ -1898,6 +1985,22 @@ def _build_registry() -> None:
                         "(DoubleML trimming_rule='truncate'). Default 0.01 = "
                         "historical clip."
                     ),
+                ),
+                ParamSpec(
+                    "cluster",
+                    "str",
+                    False,
+                    None,
+                    "One-way cluster column: folds over whole clusters and the "
+                    "Chiang-Kato-Ma-Sasaki cluster variance (DoubleML "
+                    "DoubleMLClusterData, all four models).",
+                ),
+                ParamSpec(
+                    "sample_weight",
+                    "str",
+                    False,
+                    None,
+                    "Observation weights (column or array); weights= is an " "alias.",
                 ),
             ],
             returns="CausalResult",
@@ -2647,7 +2750,8 @@ def _build_registry() -> None:
                 " with little-bag variances and the doubly-robust average conditional "
                 "LATE (compliance-weighted scores). Given grf's forest, the local "
                 "solve, scores, average and BLP match grf to 1e-13 (T2); the forest "
-                "itself is T3."
+                "itself is checked only statistically (a stochastic screen against grf on "
+                "known-truth designs, not a seed-replicated equivalence test)."
             ),
             params=[
                 ParamSpec(
@@ -2878,7 +2982,8 @@ def _build_registry() -> None:
                 "split on the gradient of all contrasts (multi-arm R-learner with GRF "
                 "weights). Propensities from a probability forest, doubly-robust per-"
                 "arm ATEs, BLPs per contrast. Operators match grf to 1e-13 (T2); forest"
-                " statistics match grf within Monte Carlo error (T3)."
+                " statistics are screened against grf on known-truth designs (a stochastic "
+                "screen, not a seed-replicated equivalence test)."
             ),
             params=[
                 ParamSpec(
@@ -4066,6 +4171,23 @@ def _build_registry() -> None:
                     "random_state=42); passing that split's labels reproduces "
                     "the default exactly.",
                 ),
+                ParamSpec(
+                    "weights",
+                    "str",
+                    False,
+                    None,
+                    "Sampling weights for the AIPW average (estimate/se): "
+                    "weighted nuisance fits, mean and influence function. The "
+                    "CATE fit is unweighted.",
+                ),
+                ParamSpec(
+                    "cluster",
+                    "str",
+                    False,
+                    None,
+                    "Cluster column: folds over whole clusters; SE from centred "
+                    "cluster sums of the influence function with G/(G-1).",
+                ),
             ],
             returns="Meta-learner result with CATE predictions",
             example='sp.metalearner(df, y="outcome", treat="treat", covariates=["x1","x2"], learner="x")',
@@ -4278,6 +4400,15 @@ def _build_registry() -> None:
                     "method='llr' only: reproduce Stata psmatch2's SUBSTITUTE "
                     "for LLR (lpoly-smoothed outcome + nearest-neighbour "
                     "matching) rather than genuine local linear regression.",
+                ),
+                ParamSpec(
+                    "weights",
+                    "str",
+                    False,
+                    None,
+                    "Frequency weights (Stata [fw=], positive integers; the "
+                    "only weight teffects matching accepts). Sampling weights "
+                    "and cluster= are refused: use sp.ipw / sp.aipw / sp.tmle.",
                 ),
             ],
             returns="MatchEstimator result",
@@ -4529,6 +4660,23 @@ def _build_registry() -> None:
                     "nuisances on the full sample (not cross-fitted). Not "
                     "combinable with Q / g1W.",
                 ),
+                ParamSpec(
+                    "weights",
+                    "str",
+                    False,
+                    None,
+                    "Observation weights (R tmle obsWeights): weighted Super "
+                    "Learner fits, fluctuation, plug-in and influence function. "
+                    "ATE only; not with fold_indices.",
+                ),
+                ParamSpec(
+                    "cluster",
+                    "str",
+                    False,
+                    None,
+                    "Cluster column: influence function summed within clusters "
+                    "with G/(G-1) (R tmle id= for equal cluster sizes).",
+                ),
             ],
             returns="TMLE result",
             example='sp.tmle(df, y="outcome", treat="treat", covariates=["x1","x2","x3"])',
@@ -4617,7 +4765,19 @@ def _build_registry() -> None:
                     "cluster",
                     "str",
                     False,
-                    description="Cluster variable: entity, time, or twoway",
+                    description="Cluster variable: entity, time, twoway, or "
+                    "any column name",
+                ),
+                ParamSpec(
+                    "ssc",
+                    "str",
+                    False,
+                    None,
+                    "Small-sample convention: None keeps linearmodels; "
+                    "'stata' = xtreg/areg/regress (G/(G-1)*(N-1)/(N-K), "
+                    "t(G-1), z for RE, xtreg vce(robust) = cluster on unit); "
+                    "'fixest' = R fixest default ssc() (fe/twoway/pooled/fd)",
+                    ["stata", "fixest"],
                 ),
                 ParamSpec(
                     "lags", "int", False, 1, "AR lags for dynamic panel (ab/system)"
@@ -5514,6 +5674,31 @@ def _build_registry() -> None:
                 ),
                 ParamSpec(
                     "trim", "float", False, 0.0, "Propensity score trimming threshold"
+                ),
+                ParamSpec(
+                    "weights",
+                    "str",
+                    False,
+                    None,
+                    "Sampling-weight column (Stata [pw=]); weights the logit "
+                    "and multiplies each IPW weight",
+                ),
+                ParamSpec(
+                    "cluster",
+                    "str",
+                    False,
+                    None,
+                    "Cluster column: cluster bootstrap, or cluster-summed "
+                    "sandwich with se_method='sandwich'",
+                ),
+                ParamSpec(
+                    "se_method",
+                    "str",
+                    False,
+                    "bootstrap",
+                    "'sandwich' = teffects ipw robust M-estimation SE "
+                    "(needs normalize=True, trim=0)",
+                    ["bootstrap", "sandwich"],
                 ),
             ],
             returns="CausalResult",
@@ -10442,6 +10627,16 @@ def _build_registry() -> None:
                 ParamSpec("extra_files", "dict", False),
                 ParamSpec("include_git_sha", "bool", False, True),
                 ParamSpec("overwrite", "bool", False, True),
+                ParamSpec(
+                    "strict",
+                    "bool",
+                    False,
+                    False,
+                    "Delivery mode: refuse to write a pack that a third party "
+                    "could not rerun (no code, data or environment, or any "
+                    "failed step) instead of writing a partial one. Verify "
+                    "the result with sp.verify_replication_pack.",
+                ),
             ],
             returns="ReplicationPack",
             example=(
@@ -13947,13 +14142,13 @@ def _build_registry() -> None:
                     "expose_pre_vcov",
                     "bool",
                     False,
-                    False,
-                    "Publish the true pre-period covariance into "
-                    "model_info['vcv_pre']. With True, pretrends_test / "
-                    "pretrends_power / sensitivity_rr / honest_did use the "
-                    "full covariance of the pre-treatment coefficients; with "
-                    "False (default) the key is withheld and those tools fall "
-                    "back to a diagonal covariance and warn.",
+                    True,
+                    "Publish the pre-period covariance into "
+                    "model_info['vcv_pre'] (default). pretrends_test / "
+                    "pretrends_power / sensitivity_rr then use the full "
+                    "cluster-robust covariance of the pre-treatment "
+                    "coefficients; False withholds the key and restores the "
+                    "pre-1.31 diagonal fallback, which warns.",
                 ),
             ],
             returns="CausalResult with event_study DataFrame",
@@ -15579,6 +15774,23 @@ def _build_registry() -> None:
                     "accounts for the estimated nuisance parameters at finite "
                     "``n``.",
                     enum=["influence", "sandwich"],
+                ),
+                ParamSpec(
+                    "weights",
+                    "str",
+                    False,
+                    None,
+                    "Sampling-weight column (Stata [pw=]): weighted logit and "
+                    "outcome fits, weighted mean of the AIPW scores, weighted "
+                    "robust SEs.",
+                ),
+                ParamSpec(
+                    "cluster",
+                    "str",
+                    False,
+                    None,
+                    "Cluster column: SEs sum the influence function within "
+                    "clusters (Stata vce(cluster c)).",
                 ),
             ],
             returns="CausalResult",
@@ -17402,7 +17614,16 @@ def _build_registry() -> None:
                     True,
                     description="DiD or event-study result with pre-period coefficients",
                 ),
-                ParamSpec("type", "str", False, "wald", "Test statistic", ["wald"]),
+                ParamSpec(
+                    "type",
+                    "str",
+                    False,
+                    "auto",
+                    "Test statistic: 'auto' follows the estimator's own "
+                    "convention (F(K, G-1) for sp.event_study, chi2 Wald "
+                    "otherwise); 'wald' or 'f' force one.",
+                    ["auto", "wald", "f"],
+                ),
                 ParamSpec("alpha", "float", False, 0.05),
             ],
             returns="dict with statistic / pvalue / pre_periods",
@@ -18015,66 +18236,62 @@ _FULL_REGISTRY_BUILT = False
 # Public value objects that are exported for construction, serialization, and
 # static typing but are not statistical functions.  Keep these out of the
 # agent function catalog and parity denominator.
-_NON_FUNCTION_PUBLIC_EXPORTS: frozenset = frozenset({"OOFBundle", "OOFPredictions"})
-
-
-# Public symbols whose Track A parity is represented by the R/Stata
-# harness. This conservative seed is supplemented by parsing the live
-# harness artifacts when the source tree is available.
-_CERTIFIED_SEED_FUNCTIONS: frozenset = frozenset(
-    {
-        "regress",
-        "iv",
-        "ivreg",
-        "feols",
-        "hdfe_ols",
-        "callaway_santanna",
-        "sun_abraham",
-        "rdrobust",
-        "synth",
-        "dml",
-        "rddensity",
-        "honest_did",
-        "psm",
-        "causal_forest",
-        "did_imputation",
-        # "wooldridge_did" was here on the strength of an alias to Track A
-        # module 17_etwfe that measurement refuted -- the two are different
-        # estimators (see _parity_taxonomy.REFUTED_ALIASES). Removed rather
-        # than left for the index to override, so a reader of this list is
-        # not invited to restore the alias.
-        "augsynth",
-        "gsynth",
-        "bacon_decomposition",
-        "sensemakr",
-        "evalue",
-        "mixed",
-        "melogit",
-        "frontier",
-        "xtfrontier",
-        "oaxaca",
-        "dfl_decompose",
-        "rif_decomposition",
-        "var",
-        "local_projections",
-        "panel",
-        "mediate",
-    }
+# ``SurrogateResult`` is a deprecated container no function returns; it is
+# exported for backward compatibility only, so it is not offered to agents.
+_NON_FUNCTION_PUBLIC_EXPORTS: frozenset = frozenset(
+    {"OOFBundle", "OOFPredictions", "SurrogateResult"}
 )
+
+
+#: Method cards for frontier modules with no numerical evidence (review
+#: 2026-09, section 6.7): what is heuristic or unvalidated, stated where
+#: agents read it (tool descriptions, sp.result_card).
+_NEURAL_NO_EVIDENCE = (
+    "no numerical evidence -- only API/unit tests; no known-truth or cross-"
+    "package comparison in the parity index, and estimates depend on "
+    "network initialisation, training schedule and seed. Treat intervals as"
+    " unvalidated and report results across seeds."
+)
+_LLM_PROPOSAL_ONLY = (
+    "LLM output is a proposal, not evidence -- only a heuristic step: it is"
+    " not reproducible across model versions or providers, has no numerical"
+    " evidence, and must be checked against domain knowledge and data (e.g."
+    " sp.llm_dag_validate) before it constrains an analysis."
+)
+_FRONTIER_METHOD_LIMITATIONS: Dict[str, List[str]] = {
+    "tarnet": [_NEURAL_NO_EVIDENCE],
+    "cfrnet": [_NEURAL_NO_EVIDENCE],
+    "dragonnet": [_NEURAL_NO_EVIDENCE],
+    "cevae": [_NEURAL_NO_EVIDENCE],
+    "gnn_causal": [_NEURAL_NO_EVIDENCE],
+    "deepiv": [_NEURAL_NO_EVIDENCE],
+    "llm_dag_propose": [_LLM_PROPOSAL_ONLY],
+    "llm_dag_constrained": [_LLM_PROPOSAL_ONLY],
+    "llm_dag_validate": [_LLM_PROPOSAL_ONLY],
+    "llm_dag": [_LLM_PROPOSAL_ONLY],
+    "llm_unobserved_confounders": [_LLM_PROPOSAL_ONLY],
+    "llm_sensitivity_priors": [_LLM_PROPOSAL_ONLY],
+    "llm_causal_assess": [_LLM_PROPOSAL_ONLY],
+    "causal_mas": [_LLM_PROPOSAL_ONLY],
+}
 
 
 _CERTIFIED_VARIANT_LIMITATIONS: Dict[str, Dict[str, List[str]]] = {
     "rdrobust": {
         "limitations": [
-            "R-parity certification applies to bwselect='cct' or manually "
-            "matched h/b bandwidths; the dependency-light default "
-            "bwselect='mserd' uses StatsPAI's calibrated selector and can "
-            "differ from rdrobust::rdrobust defaults.",
+            "R-parity certification applies only to the configurations "
+            "enumerated by sp.validation_scope(function='rdrobust') -- the "
+            "default native mserd / triangular / p=1 / nn path (Track A 06), "
+            "a manual bandwidth, and the weighted rows -- other selectors, "
+            "kernels and vce choices are pinned for sp.rdbwselect or not at "
+            "all for this entry point.",
         ],
         "validation_notes": [
-            "Variant-level certification: bwselect='cct' delegates to "
-            "official rdrobust for canonical R parity; default mserd is "
-            "documented as a bandwidth-convention gap.",
+            "Variant-level certification: the native default path (CCT "
+            "three-stage bandwidth cascade and bias-corrected operator) "
+            "matches rdrobust::rdrobust on Track A 06; weights= is pinned in "
+            "tests/reference_parity/test_rd_weights_parity.py; "
+            "bwselect='cct' delegates to the official port.",
         ],
     },
     "rddensity": {
@@ -18120,8 +18337,10 @@ _CERTIFIED_VARIANT_LIMITATIONS: Dict[str, Dict[str, List[str]]] = {
             "influence function inflates the standard error (conservative, "
             "over-covering inference), so inspect the sp.audit overlap "
             "diagnostic before interpreting the ATE on that kind of sample.",
-            "The forest is compared with grf only statistically (tier T3: "
-            "RMSE, pointwise variances, coverage), not bit-for-bit; given a "
+            "The forest is compared with grf only statistically, not bit-for-"
+            "bit: the AIPW ATE/ATT by seed-replicated equivalence (T3, within "
+            "0.1 sampling SE at 500-8,000 trees), CATE RMSE, pointwise "
+            "variances and coverage by a stochastic screen; given a "
             "fitted forest, the inference operators match grf / sandwich "
             "to 1e-14.",
             "Doubly-robust averages (average_treatment_effect, "
@@ -19379,9 +19598,6 @@ def _expand_family_seeds() -> None:
 _expand_family_seeds()
 
 
-_SP_CALL_RE = re.compile(r"\bsp\.([a-zA-Z_][a-zA-Z0-9_]*)\s*\(")
-
-
 #: Collapse a dependency's *internal* module path to its public one so the
 #: exported schema is byte-stable across dependency versions.  pandas >= 3.0
 #: stringifies public types as ``pandas.DataFrame`` while older pandas exposes
@@ -19821,124 +20037,6 @@ def _auto_spec_from_callable(name: str, obj: Any) -> Optional[FunctionSpec]:
     # this attribute, so its absence (or False) means "hand-written".
     object.__setattr__(spec, "_auto", True)
     return spec
-
-
-def _repo_root() -> Optional[Path]:
-    """Return the source-tree root when this package is imported in-place."""
-    here = Path(__file__).resolve()
-    for parent in here.parents:
-        if (parent / "pyproject.toml").exists() and (
-            parent / "src" / "statspai" / "__init__.py"
-        ).exists():
-            return parent
-    return None
-
-
-def _strip_markdown(text: str) -> str:
-    return text.replace("`", "").replace("\\", "").strip()
-
-
-def _api_name_from_readme_cell(text: str) -> str:
-    clean = _strip_markdown(text)
-    clean = re.sub(r"\(.*$", "", clean).strip()
-    if clean.startswith("sp."):
-        clean = clean[3:]
-    return clean.split(".")[-1]
-
-
-#: Track A module -> aliases that inherit the module's grade.
-#:
-#: Derived from :mod:`statspai._parity_taxonomy`, the single source of truth
-#: shared with ``scripts/build_parity_index.py``. Every entry there names the
-#: pytest that *proves* the equivalence on the module's committed bytes, so
-#: this table can no longer assert an equivalence nobody measured. The
-#: previous hand-written version claimed ``17_etwfe -> wooldridge_did``,
-#: which measurement refuted (see ``_parity_taxonomy.REFUTED_ALIASES``).
-_TRACK_A_MODULE_ALIASES: Dict[str, Tuple[str, ...]] = {}
-for _proof in TRACK_A_ALIASES.values():
-    for _module in _proof.module.split(" + "):
-        _TRACK_A_MODULE_ALIASES.setdefault(_module, ())
-        _TRACK_A_MODULE_ALIASES[_module] += (_proof.alias,)
-del _proof, _module
-
-
-def _append_evidence(
-    evidence: Dict[str, List[str]],
-    name: str,
-    note: str,
-) -> None:
-    notes = evidence.setdefault(name, [])
-    if note not in notes:
-        notes.append(note)
-
-
-def _scan_parity_readme(root: Path) -> Dict[str, List[str]]:
-    """Map API names to Track A parity evidence from tests/r_parity."""
-    readme = root / "tests" / "r_parity" / "README.md"
-    if not readme.exists():
-        return {}
-
-    r_results = root / "tests" / "r_parity" / "results"
-    py_modules = {p.stem.replace("_py", "") for p in r_results.glob("*_py.json")}
-    r_modules = {p.stem.replace("_R", "") for p in r_results.glob("*_R.json")}
-    matched = py_modules & r_modules
-    number_to_module = {module.split("_", 1)[0]: module for module in py_modules}
-
-    evidence: Dict[str, List[str]] = {}
-    for line in readme.read_text(encoding="utf-8").splitlines():
-        parts = [part.strip() for part in line.strip().strip("|").split("|")]
-        if len(parts) < 4 or not parts[0].isdigit():
-            continue
-        number, _method, api_cell, _reference = parts[:4]
-        module_id = number_to_module.get(number, number)
-        api_name = _api_name_from_readme_cell(api_cell)
-        if api_name and module_id in matched:
-            note = f"R parity module {module_id}"
-            _append_evidence(evidence, api_name, note)
-            for alias in _TRACK_A_MODULE_ALIASES.get(module_id, ()):
-                _append_evidence(evidence, alias, note)
-
-    st_results = root / "tests" / "stata_parity" / "results"
-    stata_modules = {
-        p.stem.replace("_Stata", "") for p in st_results.glob("*_Stata.json")
-    }
-    for name, notes in list(evidence.items()):
-        for note in list(notes):
-            module_id = note.split(" ", 3)[-1]
-            if module_id in stata_modules:
-                notes.append(f"Stata parity module {module_id}")
-    return evidence
-
-
-def _scan_reference_tests(root: Path) -> Dict[str, List[str]]:
-    """Map sp.* calls in parity pytest suites to reference-test evidence."""
-    evidence: Dict[str, List[str]] = {}
-    for rel_dir in ("tests/reference_parity", "tests/external_parity"):
-        base = root / rel_dir
-        if not base.exists():
-            continue
-        # Sort on the POSIX string, not the raw Path: ``WindowsPath`` sorts
-        # case-insensitively with backslash separators, so a bare
-        # ``sorted(rglob(...))`` could order the note list differently on
-        # Windows and drift agent_cards.json even with forward-slash content.
-        for path in sorted(
-            base.rglob("test_*.py"),
-            key=lambda p: p.relative_to(root).as_posix(),
-        ):
-            try:
-                text = path.read_text(encoding="utf-8")
-            except OSError:
-                continue
-            # ``as_posix()`` (not ``str()``) so the note is byte-identical on
-            # Windows and POSIX. ``str(PurePath)`` emits OS-native separators,
-            # which made the Windows runners write ``tests\reference_parity\...``
-            # backslash notes: that both failed the JSS evidence-grade marker
-            # check (markers are forward-slash) and drifted agent_cards.json
-            # away from the POSIX-generated committed bundle (stale on Windows).
-            rel = path.relative_to(root).as_posix()
-            for name in sorted(set(_SP_CALL_RE.findall(text))):
-                evidence.setdefault(name, []).append(rel)
-    return evidence
 
 
 #: Curated **negative** guidance + scaling cost, keyed by function name.
@@ -20381,7 +20479,12 @@ def _index_evidence_note(record: Dict[str, Any]) -> str:
     citation = tests[0] if tests else ""
     reference = str(record.get("reference") or "").strip()
     versions = record.get("reference_versions") or {}
-    version_txt = ", ".join(f"{k} {v}" for k, v in sorted(versions.items()) if v)
+    # ``R`` is recorded as "R version 4.5.2 (...)"; do not print "R R version".
+    version_txt = ", ".join(
+        str(v) if str(v).startswith(f"{k} ") else f"{k} {v}"
+        for k, v in sorted(versions.items())
+        if v
+    )
     tolerance = str(record.get("tolerance") or "").strip()
     module = str(record.get("module_id") or "").strip()
 
@@ -20430,6 +20533,41 @@ def _index_evidence_note(record: Dict[str, Any]) -> str:
     return head
 
 
+#: Cap on the extra evidence files listed per function; the parity index
+#: (``sp.parity_status``) keeps the full list.
+_MAX_ADDITIONAL_EVIDENCE_NOTES = 4
+
+
+def _index_evidence_notes(record: Dict[str, Any]) -> List[str]:
+    """All registry notes for one parity-index record, in display order.
+
+    The Track A module lines come first, one per reference language actually
+    joined for the module (``sides``), then the self-describing note of
+    :func:`_index_evidence_note`, then up to
+    ``_MAX_ADDITIONAL_EVIDENCE_NOTES`` further evidence files. Everything is
+    read from the record, never from a test tree on disk.
+    """
+    notes: List[str] = []
+    module = str(record.get("module_id") or "").strip()
+    sides = record.get("sides") or []
+    if module and record.get("source") == "track_a":
+        if "R" in sides:
+            notes.append(f"R parity module {module}")
+        if "Stata" in sides:
+            notes.append(f"Stata parity module {module}")
+    head = _index_evidence_note(record)
+    if head:
+        notes.append(head)
+    primary = set(t for t in (record.get("test") or []) if isinstance(t, str))
+    extra = [
+        t
+        for t in (record.get("additional_tests") or [])
+        if isinstance(t, str) and t not in primary
+    ]
+    notes.extend(extra[:_MAX_ADDITIONAL_EVIDENCE_NOTES])
+    return notes
+
+
 def _apply_validation_evidence() -> None:
     """Attach validation evidence tiers after full registry expansion.
 
@@ -20457,59 +20595,27 @@ def _apply_validation_evidence() -> None:
             # evidence before the status itself says "validated".
             fs.validation_status = "api_stable"
 
-    certified: Dict[str, List[str]] = {
-        name: ["Track A parity seed"] for name in _CERTIFIED_SEED_FUNCTIONS
-    }
     api_contract: Dict[str, List[str]] = {
         name: [f"API/unit contract evidence: {note}" for note in notes]
         for name, notes in _VALIDATED_TEST_SEED_FUNCTIONS.items()
     }
-    validated: Dict[str, List[str]] = {}
-    root = _repo_root()
-    if root is not None:
-        for name, notes in _scan_parity_readme(root).items():
-            certified.setdefault(name, []).extend(notes)
-        for name, notes in _scan_reference_tests(root).items():
-            validated.setdefault(name, []).extend(notes)
-
-    for name, notes in certified.items():
-        spec = _REGISTRY.get(name)
-        if spec is None or spec.stability != "stable":
-            continue
-        spec.validation_status = "certified"
-        for note in notes:
-            if note not in spec.validation_notes:
-                spec.validation_notes.append(note)
-
-    for name, notes in validated.items():
-        spec = _REGISTRY.get(name)
-        if (
-            spec is None
-            or spec.stability != "stable"
-            or spec.validation_status == "certified"
-        ):
-            continue
-        spec.validation_status = "validated"
-        for note in notes[:5]:
-            if note not in spec.validation_notes:
-                spec.validation_notes.append(note)
 
     # ------------------------------------------------------------------ #
-    #  Reconcile against the committed parity index.
+    #  The committed parity index is the only source of tiers and notes.
     # ------------------------------------------------------------------ #
-    # The scans above are heuristics: `_scan_parity_readme` reads one API
-    # name per README row and so misses the other functions a module
-    # exercises, while `_scan_reference_tests` credits every ``sp.f(`` call
-    # site in a parity test -- including the DGP helper that *builds* the
-    # fixture. `_parity_index.json` is the artifact-backed record, produced
-    # by `scripts/build_parity_index.py` from the committed goldens
-    # themselves, and it is packaged in the wheel.
-    #
-    # Making it authoritative here closes a reconciliation gap that ran in
-    # both directions: the scan-derived tiers under-stated 85 functions that
-    # hold cross-language evidence and over-stated 3 that do not. The single
-    # grade -> tier mapping lives in `_parity_taxonomy.validation_tier_for`,
-    # so the registry and the index cannot disagree by construction.
+    # `_parity_index.json` is produced by `scripts/build_parity_index.py`
+    # from the committed goldens and is packaged in the wheel, so what this
+    # pass attaches is the same in a source checkout and in a pip install.
+    # Until 1.31.0 a checkout additionally scanned `tests/` at import time
+    # (`_scan_parity_readme` / `_scan_reference_tests`) and a wheel fell back
+    # to a bare "Track A parity seed" note: the grades agreed, but 557
+    # functions printed different evidence notes depending on whether a test
+    # tree sat next to the package -- so the notes the JSS manuscript prints
+    # were not the notes an installed release returns. The scans were also
+    # heuristics (one API name per README row; every ``sp.f(`` call site in a
+    # parity test, DGP helpers included). The single grade -> tier mapping
+    # lives in `_parity_taxonomy.validation_tier_for`, so the registry and
+    # the index cannot disagree by construction.
     index_records = _parity_index_records()
     for name, record in index_records.items():
         spec = _REGISTRY.get(name)
@@ -20524,25 +20630,13 @@ def _apply_validation_evidence() -> None:
         # Attach the artifact alongside the tier. A tier without a note that
         # names a reference, a tolerance and an existing file is exactly the
         # unbacked claim the JSS validation-evidence audit exists to catch.
-        note = _index_evidence_note(record)
-        if note and note not in spec.validation_notes:
-            spec.validation_notes.append(note)
+        for note in _index_evidence_notes(record):
+            if note not in spec.validation_notes:
+                spec.validation_notes.append(note)
 
-    # "Track A parity seed" is a bare assertion: it names no reference, no
-    # tolerance and no file. It exists so a wheel with no test tree still
-    # marks the flagship estimators, but in a checkout the index supplies a
-    # real note for every function that has one -- so a seed left standing on
-    # a function the index cannot give cross-language evidence for is exactly
-    # the unbacked claim this pass removes. `sp.wooldridge_did` carried one
-    # on the strength of the refuted 17_etwfe alias.
     _index_statuses = {
         fn: rec.get("status", "unverified") for fn, rec in index_records.items()
     }
-    for name, spec in _REGISTRY.items():
-        if "Track A parity seed" not in spec.validation_notes:
-            continue
-        if _index_statuses.get(name, "unverified") not in CROSS_LANGUAGE_STATUSES:
-            spec.validation_notes.remove("Track A parity seed")
 
     # A tier that no artifact backs is withdrawn rather than left standing:
     # a dataset loader picked up by a test scan must not read as `validated`.
@@ -20571,6 +20665,14 @@ def _apply_validation_evidence() -> None:
             note = f"API/unit contract evidence: {path}"
             if note not in spec.validation_notes:
                 spec.validation_notes.append(note)
+
+    for name, lims in _FRONTIER_METHOD_LIMITATIONS.items():
+        spec = _REGISTRY.get(name)
+        if spec is None:
+            continue
+        for limitation in lims:
+            if limitation not in spec.limitations:
+                spec.limitations.append(limitation)
 
     for name, payload in _CERTIFIED_VARIANT_LIMITATIONS.items():
         spec = _REGISTRY.get(name)
@@ -20888,7 +20990,39 @@ def describe_function(name: str) -> Dict[str, Any]:
     aliases = getattr(getattr(statspai, name, None), "__statspai_aliases__", None)
     if aliases:
         out["aliases"] = dict(aliases)
+    out["support_tier"] = support_tier(name)
     return out
+
+
+def support_tier(name: str) -> str:
+    """Maintenance tier derived from ``stability`` and ``validation_status``.
+
+    * ``"core"`` -- stable, with numerical evidence (``certified`` or
+      ``validated``);
+    * ``"extension"`` -- stable and contract-tested, but no numerical
+      evidence in the parity index (``api_stable``);
+    * ``"research"`` -- experimental / deprecated, or a frontier module whose
+      method card says its output is heuristic or unvalidated (LLM, neural).
+
+    Derived, never stored, so it cannot drift from the two axes it reads.
+
+    Examples
+    --------
+    >>> import statspai as sp
+    >>> sp.support_tier("callaway_santanna")
+    'core'
+    >>> sp.support_tier("llm_dag_propose")
+    'research'
+    """
+    _ensure_full_registry()
+    spec = _REGISTRY[name]
+    if spec.stability in ("experimental", "deprecated") or (
+        name in _FRONTIER_METHOD_LIMITATIONS
+    ):
+        return "research"
+    if spec.validation_status in ("certified", "validated"):
+        return "core"
+    return "extension"
 
 
 def function_schema(name: str, *, agent_native: bool = False) -> Dict[str, Any]:

@@ -20,7 +20,7 @@ PYTHONPATH := $(if $(wildcard $(STATSPAI_SRC)/statspai),$(STATSPAI_SRC):$(PYTHON
 export PYTHONPATH
 export SOURCE_DATE_EPOCH FORCE_SOURCE_DATE
 
-.PHONY: orig-parity-data headline-numbers-check appendices-check all reproduce-jss reproduce-jss-fast reproduce-jss-full reproduce-tier1 reproduce-tier1-transcript reproduce-tier2 reproduce-tier3 notebooks notebooks-execute replication figures appendices inventory performance-artifacts manuscript manuscript-claims manuscript-claims-check track-b-tables track-b-tables-check forest-seed-table forest-seed-table-check markdown pdf bib-split bib-split-check verify listings-execute-audit jss-style bibliography-metadata-audit jss-house-style-audit snapshot release-audit release-boundary-audit reproduction-environment-audit manuscript-artifact-audit data-provenance-audit pdf-render-audit pdf-visual-check-protocol jss-formal-compliance-audit validation-evidence gap-ledger stata-bridge-audit stata-rerun-protocol agent-interface-audit agent-benchmark-protocol experiment-triage submission-risk-ledger reviewer-evidence-map editor-screening-checklist audit submission-package verify-submission-package submission-ready arxiv clean
+.PHONY: orig-parity-data headline-numbers-check appendices-check all reproduce-jss reproduce-jss-fast reproduce-jss-full reproduce-tier1 reproduce-tier1-transcript reproduce-tier2 reproduce-tier3 notebooks notebooks-execute replication figures appendices inventory performance-artifacts manuscript manuscript-claims manuscript-claims-check cover-letter cover-letter-check cover-letter-sync track-b-tables track-b-tables-check forest-seed-table forest-seed-table-check markdown pdf bib-split bib-split-check verify listings-execute-audit jss-style bibliography-metadata-audit jss-house-style-audit snapshot release-audit release-boundary-audit reproduction-environment-audit manuscript-artifact-audit data-provenance-audit pdf-render-audit pdf-visual-check-protocol jss-formal-compliance-audit validation-evidence gap-ledger stata-bridge-audit stata-rerun-protocol agent-interface-audit agent-benchmark-protocol experiment-triage submission-risk-ledger reviewer-evidence-map editor-screening-checklist audit submission-package verify-submission-package submission-ready arxiv clean
 
 all: replication figures appendices inventory performance-artifacts manuscript verify snapshot
 
@@ -42,7 +42,15 @@ reproduce-tier2:
 reproduce-tier3:
 	$(PYTHON) replication/reproduce.py --tier 3
 
-reproduce-jss-full: reproduce-jss reproduce-tier1-transcript audit
+# The cover letter quotes the registry census, the page count, the archive
+# size and the Tier-1 step count, and Tier 1 and `audit` both check it. Sync
+# it once the PDF exists (Tier 1 then sees the current census), and again
+# after Tier 1 (the letter then quotes the transcript just written).
+reproduce-jss-full: reproduce-jss
+	$(MAKE) cover-letter-sync PYTHON="$(PYTHON)"
+	$(MAKE) reproduce-tier1-transcript PYTHON="$(PYTHON)"
+	$(MAKE) cover-letter-sync PYTHON="$(PYTHON)"
+	$(MAKE) audit PYTHON="$(PYTHON)"
 
 # Tier-B replication notebooks (one-click reviewer reproduction).
 # `notebooks` regenerates the .ipynb from the single-source-of-truth builder;
@@ -89,6 +97,19 @@ manuscript-claims:
 
 manuscript-claims-check:
 	$(PYTHON) replication/scripts/generate_manuscript_claims.py --check
+
+# cover-letter.md is rendered from cover-letter.template.md; its numbers come
+# from generated_claims.tex, main.pdf, the audit JSONs and the package
+# manifest. The submission targets run it with --sync, which repackages until
+# the archive size printed in the letter is the size of the archive holding it.
+cover-letter:
+	$(PYTHON) replication/scripts/render_cover_letter.py
+
+cover-letter-check:
+	$(PYTHON) replication/scripts/render_cover_letter.py --check
+
+cover-letter-sync:
+	$(PYTHON) replication/scripts/render_cover_letter.py --sync
 
 track-b-tables:
 	$(PYTHON) replication/scripts/generate_track_b_tables.py
@@ -257,18 +278,18 @@ verify-submission-package: submission-package
 	$(PYTHON) replication/scripts/submission_risk_ledger.py
 	$(PYTHON) replication/scripts/reviewer_evidence_map.py
 	$(PYTHON) replication/scripts/editor_screening_checklist.py
-	$(PYTHON) replication/scripts/jss_submission_package.py
+	$(PYTHON) replication/scripts/render_cover_letter.py --sync
 	$(PYTHON) replication/scripts/verify_submission_package.py
 
 submission-ready: reproduce-jss-full
 	$(PYTHON) replication/scripts/source_snapshot_manifest.py
 	$(PYTHON) replication/scripts/bibliography_metadata_audit.py
-	$(PYTHON) replication/scripts/jss_submission_package.py
+	$(PYTHON) replication/scripts/render_cover_letter.py --sync
 	$(PYTHON) replication/scripts/jss_full_audit.py
 	$(PYTHON) replication/scripts/submission_risk_ledger.py
 	$(PYTHON) replication/scripts/reviewer_evidence_map.py
 	$(PYTHON) replication/scripts/editor_screening_checklist.py
-	$(PYTHON) replication/scripts/jss_submission_package.py
+	$(PYTHON) replication/scripts/render_cover_letter.py --sync
 	$(PYTHON) replication/scripts/verify_submission_package.py
 
 clean:

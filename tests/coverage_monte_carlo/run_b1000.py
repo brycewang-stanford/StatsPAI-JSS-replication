@@ -16,6 +16,8 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from scipy.stats import t as t_dist
+
 import statspai as sp
 
 HERE = Path(__file__).resolve().parent
@@ -238,8 +240,9 @@ def coverage_dml_plr() -> dict:
         d = 0.5 * x1 + 0.3 * np.sin(2 * x2) + rng.normal(size=n)
         y = truth * d + x1 + 0.5 * x2**2 + rng.normal(size=n)
         df = pd.DataFrame({"y": y, "d": d, "x1": x1, "x2": x2})
-        r = sp.dml(df, y="y", d="d", X=["x1", "x2"], model="plr",
-                   n_folds=5, random_state=seed)
+        r = sp.dml(
+            df, y="y", d="d", X=["x1", "x2"], model="plr", n_folds=5, random_state=seed
+        )
         acc.add(r.estimate, r.se, r.ci)
     return acc.summary("sp.dml(model='plr') theta")
 
@@ -295,6 +298,35 @@ def coverage_panel_fe() -> dict:
         lo, hi = r.conf_int().loc["d"].values
         acc.add(r.params["d"], r.std_errors["d"], (lo, hi))
     return acc.summary("sp.panel two-way FE")
+
+
+def coverage_fast_feols() -> dict:
+    """``sp.fast.feols`` on the same two-way FE DGP, unit-clustered CR1.
+
+    The suite's HDFE member is ``sp.fast.feols``; the row above runs
+    ``sp.panel``, a different entry point of the same absorption family.
+    This row measures the member itself on identical draws (same seeds),
+    with unit and period effects absorbed and CR1 errors by unit.
+    """
+    truth = 1.5
+    acc = _Draws(truth)
+    for seed in range(B):
+        rng = np.random.default_rng(seed)
+        n_units, n_time = 50, 6
+        rows = []
+        for i in range(n_units):
+            ai = rng.normal()
+            for t in range(n_time):
+                d = rng.binomial(1, 0.5)
+                y = ai + 0.3 * t + truth * d + rng.normal(scale=0.8)
+                rows.append({"i": i, "t": t, "d": d, "y": y})
+        df = pd.DataFrame(rows)
+        r = sp.fast.feols("y ~ d | i + t", data=df, vcov="cr1", cluster="i")
+        est, se = float(r.coef()["d"]), float(r.se()["d"])
+        # fixest's clustered inference: t with G - 1 degrees of freedom.
+        crit = float(t_dist.ppf(0.975, n_units - 1))
+        acc.add(est, se, (est - crit * se, est + crit * se))
+    return acc.summary("sp.fast.feols two-way FE (CR1 by unit)")
 
 
 def coverage_sdid() -> dict:
@@ -403,6 +435,7 @@ def main() -> None:
         coverage_cs,
         coverage_sun_abraham,
         coverage_panel_fe,
+        coverage_fast_feols,
         coverage_rd,
         coverage_sdid,
         coverage_ebalance,

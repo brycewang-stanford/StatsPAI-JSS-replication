@@ -35,6 +35,7 @@ from typing import Any, Callable, Dict, List, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
+
 from .._result_serialize import ResultProtocolMixin
 
 __all__ = [
@@ -71,6 +72,13 @@ class AssimilationResult(ResultProtocolMixin):
     final_ci : tuple
     method : str
     diagnostics : dict
+
+    Examples
+    --------
+    >>> import statspai as sp
+    >>> res = sp.causal_kalman([0.45, 0.55, 0.50], [0.1, 0.1, 0.1])
+    >>> isinstance(res, sp.AssimilationResult)
+    True
     """
 
     posterior_mean: np.ndarray

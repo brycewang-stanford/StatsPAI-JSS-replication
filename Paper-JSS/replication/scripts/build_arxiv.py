@@ -157,12 +157,26 @@ def _write_metadata(pages: int) -> int:
     The LaTeX abstract is built from generated count macros, so its text
     is taken from the compiled PDF rather than from the source.
     """
-    text = subprocess.run(["pdftotext", "-l", "1", str(PDF_OUT), "-"],
+    # -raw keeps a line-final hyphen as typeset. Default pdftotext
+    # (Poppler >= 25) dehyphenates, which turned the compound
+    # "seed-replicated" into "seedreplicated" on the submission form.
+    text = subprocess.run(["pdftotext", "-raw", "-l", "1", str(PDF_OUT), "-"],
                           capture_output=True, text=True, check=True).stdout
     match = re.search(r"Abstract\s*(.*?)\s*Keywords:", text, re.S)
     if not match:
         sys.exit("FAIL -- could not locate the abstract on page 1 of the arXiv PDF")
-    abstract = re.sub(r"-\n(?=[a-z])", "-", match.group(1))
+    # A hyphen at a line end is either part of a compound the author wrote
+    # ("seed-replicated") or TeX's own hyphenation ("differ-ences"). Keep it
+    # only when the hyphenated word occurs in the LaTeX abstract.
+    source = (MANUSCRIPT / "main.tex").read_text(encoding="utf-8")
+    source_abstract = source[source.index("\\Abstract{"):source.index("\\Keywords{")]
+    source_abstract = re.sub(r"\s+", " ", source_abstract)
+
+    def _rejoin(m: re.Match) -> str:
+        left, right = m.group(1), m.group(2)
+        return f"{left}-{right}" if f"{left}-{right}" in source_abstract else left + right
+
+    abstract = re.sub(r"(\w+)-\n(\w+)", _rejoin, match.group(1))
     abstract = re.sub(r"\s+", " ", abstract).strip()
     abstract = abstract.translate(str.maketrans({"\u2019": "'", "\u2018": "'",
                                                  "\u201c": '"', "\u201d": '"'}))

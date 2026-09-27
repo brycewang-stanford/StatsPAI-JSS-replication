@@ -22,7 +22,7 @@ Unified API for causal inference and econometrics:
 >>> sp.outreg2(result, filename="results.xlsx")
 """
 
-__version__ = "1.30.1"
+__version__ = "1.32.0"
 __author__ = "Biaoyue Wang and Scott Rozelle"
 __email__ = "brycew6m@stanford.edu"
 
@@ -300,6 +300,7 @@ from .output._lineage import (
     lineage_summary,
 )
 from .output._replication_pack import ReplicationPack, replication_pack
+from .output._replication_verify import ReplicationVerification, verify_replication_pack
 from .output.collection import Collection, CollectionItem, collect
 from .output.estimates import estclear, eststo, esttab
 from .output.modelsummary import coefplot, coefplot_tikz, modelsummary
@@ -898,6 +899,7 @@ from .registry import (
     function_schema,
     list_functions,
     search_functions,
+    support_tier,
 )
 
 # Advanced IV
@@ -934,6 +936,7 @@ from .regression.truncreg import truncreg
 
 # Count Data
 from .regression.zeroinflated import hurdle, zinb, zip_model
+from .result_card import ResultCard, result_card
 
 # Rigorous (data-driven) Lasso — faithful port of R's hdm package
 from .rlasso import (  # noqa: E402
@@ -1386,6 +1389,8 @@ __all__ = [
     # Replication pack (audited archive)
     "ReplicationPack",
     "replication_pack",
+    "verify_replication_pack",
+    "ReplicationVerification",
     # great_tables adapter (manuscript/reporting tables)
     "gt",
     "is_great_tables_available",
@@ -1701,6 +1706,7 @@ __all__ = [
     "benjamini_hochberg",
     # AI / Agent Registry
     "list_functions",
+    "support_tier",
     "describe_function",
     "function_schema",
     "agent_schema",
@@ -1726,6 +1732,8 @@ __all__ = [
     "parity_summary",
     "validation_scope",
     "ValidationScope",
+    "result_card",
+    "ResultCard",
     "help",
     "HelpResult",
     # Data Generating Processes
@@ -1811,6 +1819,7 @@ __all__ = [
     "mice",
     "MICEResult",
     "mi_estimate",
+    "mi_test",
     # Mendelian Randomization
     "mendelian_randomization",
     "MRResult",
@@ -2421,6 +2430,63 @@ __all__ = [
     # of the agent-native design contract ("help tools must resolve for every
     # public symbol").  All run cleanly and build valid schemas; listing them
     # here closes the drift and makes ``from statspai import *`` complete.
+    # Lazily exported but absent from __all__ until 1.31 (so invisible to
+    # sp.list_functions); tests/test_lazy_exports_in_all.py now forbids this.
+    "ALearningResult",
+    "AssimilationResult",
+    "BalkePearlResult",
+    "BayesianDMLResult",
+    "CFPolicyResult",
+    "CausalBanditResult",
+    "CausalMASResult",
+    "CausalPolicyForestResult",
+    "ConcordanceResult",
+    "ContinuousConformalResult",
+    "EvidenceSynthesisResult",
+    "EvidenceWithoutInjusticeResult",
+    "FairnessAudit",
+    "FairnessResult",
+    "GNNCausalResult",
+    "InterferenceConformalResult",
+    "MLBoundsResult",
+    "MRBMAResult",
+    "MVMRResult",
+    "MediationMRResult",
+    "QLearningResult",
+    "SNMMResult",
+    "SharpOPEResult",
+    "StructuralMDPResult",
+    "SurrogateResult",
+    "a_learning",
+    "anthropic_client",
+    "assimilative_causal",
+    "balke_pearl",
+    "bayes_dml",
+    "causal_bandit",
+    "causal_kalman",
+    "causal_mas",
+    "causal_policy_forest",
+    "conformal_continuous",
+    "conformal_interference",
+    "counterfactual_fairness",
+    "counterfactual_policy_optimization",
+    "demographic_parity",
+    "echo_client",
+    "equalized_odds",
+    "evidence_without_injustice",
+    "fairness_audit",
+    "gnn_causal",
+    "heterogeneity_of_effect",
+    "long_term_from_short",
+    "mr_bma",
+    "mr_multivariable",
+    "openai_client",
+    "particle_filter",
+    "proximal_surrogate_index",
+    "q_learning",
+    "rwd_rct_concordance",
+    "sharp_ope_unobserved",
+    "snmm",
     # GRF family: these were reachable as sp.<name> through _register_lazy
     # but absent from __all__, so sp.list_functions() never saw them.
     "iv_forest",
@@ -3070,6 +3136,7 @@ _register_lazy(
     "mice",
     "MICEResult",
     "mi_estimate",
+    "mi_test",
 )
 _register_lazy(
     "survey",

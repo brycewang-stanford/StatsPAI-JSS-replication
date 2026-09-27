@@ -4,7 +4,7 @@ What is the staggered DiD effect of treatment on lemp in mpdta.csv?
 Run the appropriate estimator and recommend any required diagnostics.
 
 # tools/list
-tools returned: 559
+tools returned: 579
 required tools present: {'callaway_schema_in_manifest': True, 'callaway_santanna': True, 'audit_result': True, 'honest_did_from_result': True, 'bibtex': True}
 
 # tools/list manifest entry for callaway_santanna
@@ -25,7 +25,7 @@ missing suggested functions: ['sp.sensitivity_rr', 'sp.bacon_decomposition']
 # tools/call honest_did_from_result(result_id='r_01', method='SD', e=0)
 result_id: r_02
 restriction: smoothness
-max rejecting M: 0.007441
+max rejecting M: 0.007458
 citation keys: ['rambachan2023more']
 
 # tools/call audit_result(result_id='missing_result_id')
@@ -45,5 +45,5 @@ The Callaway-Sant'Anna simple ATT on lemp is -0.0330
 (SE 0.0078, 95% CI [-0.0482, -0.0178]).
 The audit recommends follow-up diagnostics ['sp.sensitivity_rr', 'sp.bacon_decomposition'].
 The handle-based Honest-DiD follow-up remains significant for smoothness
-violations up to M=0.0074; citations are
+violations up to M=0.0075; citations are
 verified by resolving ['callaway2021difference', 'rambachan2023more'] against paper.bib.

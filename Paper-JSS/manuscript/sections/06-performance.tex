@@ -7,145 +7,131 @@ DiD (\code{sp.callaway\_santanna}), classical synthetic control
 (\code{sp.synth(method="classic")}), and double machine learning
 (\code{sp.dml(model="plr")}). The goal is not to declare universal
 speed superiority over the reference implementations. It is to
-certify that the unified \proglang{Python}/\pkg{NumPy}/\pkg{Numba} stack is fast enough
-for routine applied work, to identify where the \proglang{R}
-reference remains faster, and to make the performance tradeoffs
+measure, on identical inputs and tasks, whether the unified
+\proglang{Python} stack imposes a cost on routine work, to identify
+where the reference remains faster, and to make the comparison
 reproducible from the source tree.
 
 \subsection{Benchmark protocol}
 
-The benchmark harness lives under \code{tests/perf/}. Each module has
-a \proglang{Python} script and a companion \proglang{R} script that
-construct identical seed-fixed synthetic data-generating processes
-and record median wall-clock time after one warmup iteration. The
-three econometric rows use their canonical \proglang{R} packages; the DML
-row uses \pkg{DoubleML} Python so language-runtime and \pkg{R6} dispatch
-do not dominate a cheap-linear-learner comparison. All rows were
-measured on one machine (Apple Silicon arm64, 8 physical cores, 24~GB
-unified memory, macOS~26), with \statspai{} 1.30.1 on the \proglang{Python}
-side, after the 1-minute load average had stayed below 1.5 for five
-minutes. The \proglang{Python}-side result files record the \statspai{}
-version and source commit and the load at the start of each module
-(1.35 to 1.67 on eight cores); the reference-side files record the
-\proglang{R} and reference-package versions (\pkg{fixest}~0.14.0,
-\pkg{did}~2.3.0, \pkg{Synth}~1.1.10), so a timing can be tied to the
-release and conditions it describes.
-The full per-repetition JSON files are stored under
-\code{tests/perf/results/}; \code{tests/perf/compare\_perf.py}
-regenerates Table~\ref{tab:track-c-perf} and
-Figure~\ref{fig:track-c-loglog}.
+A speed ratio compares two implementations only if both perform the same
+task on the same input, so the protocol fixes both before anything is
+timed. Every input is drawn once, in \proglang{Python}
+(\code{tests/perf/\_data.py}), written as CSV at round-trip precision, and
+read by \emph{both} sides; each side records the SHA-256 of the file it
+read, and the comparator refuses a row whose two sides read different
+bytes or come from different runs. (Seeding \pkg{NumPy} and \proglang{R}
+with the same integer does not give the same data, which is how an
+earlier version of this benchmark compared different samples.) Outside
+the timed call each side records its target quantity, so the table can
+show that the two solved the same problem. Both sides run on one thread
+(\pkg{fixest}, \pkg{data.table}, BLAS, and \pkg{Numba} pinned), under one
+run identifier, on one machine (Apple Silicon arm64, 8 physical cores,
+24~GB, macOS~26), with \statspai{} \StatsPAIVersion{}; each result file
+records the package versions, the source commit, and the 1-minute load
+average at the start. Each timed step starts only after five idle minutes,
+and is discarded and rerun if the load, sampled every 15 seconds, rises
+above 2.5 while it runs. Times are medians over repetitions after a warmup,
+reported with their interquartile range.
 
-All Track-C timings in this paper are CPU timings, because the
-reproducibility target is hardware that applied users and reviewers can
-obtain without a dedicated accelerator. \statspai{} exposes
-accelerator-ready paths for selected workloads (PyTorch CUDA/MPS for
-the neural-causal estimators, a JAX backend for the HDFE residualizer,
-and \code{sp.fast.feols\_jax} with a \code{jax.vmap}-batched bootstrap
-kernel; Section~\ref{sec:perfbackbone}), but those paths do not
-support the headline table: GPU acceleration is a backend contract to
-be benchmarked on separate hardware, not evidence for a universal speed
-claim over \proglang{Stata} or \proglang{R}, whose ecosystems expose
-different acceleration models. The experimental Rayon-parallel Rust
-kernel and the \code{sp.iv(absorb=...)} HDFE path are likewise excluded
-because the submitted build remains reproducible without a compiled
-extension.
-
-% Table 13 floats to the top of the following page and used to land
-% inside this list, splitting the DML item so that the page opened
-% with the fragment "10,000 compares sp.dml(...)". Keep the four
-% design descriptions on one page.
-\Needspace*{17\baselineskip}
+% Keep the four task descriptions on one page.
+\Needspace*{16\baselineskip}
 \begin{description}[leftmargin=1.25em,itemsep=0.2em]
-\item[HDFE.] A deterministic gravity-style panel with two fixed-effect
-factors (firm and year) and $N \in \{10^4,10^5,10^6\}$ rows compares
-\code{sp.fast.feols} with \pkg{fixest::feols}~\citep{berge2018efficient}.
-\item[CS-DiD.] A balanced staggered-adoption panel with
-$N_{\mathrm{units}} \in \{1{,}000,5{,}000,25{,}000\}$ and five time
-periods compares \code{sp.callaway\_santanna} with
-\pkg{did::att\_gt} plus \pkg{did::aggte}.
-\item[SCM.] A two-factor, 30-period synthetic-control panel with
-$n_{\mathrm{donors}} \in \{20,50,100\}$ compares
-\code{sp.synth(method="classic")} with \pkg{Synth::synth}.
-\item[DML.] A partially-linear DML design with linear nuisance learners
-and $N = 1{,}000$, 5{,}000, or 10{,}000 compares
-\code{sp.dml(model="plr")} with \pkg{DoubleML} Python's PLR estimator.
-Both construct their public workflow with the same
-\pkg{scikit-learn} linear learners and five folds inside the timed call.
-The design isolates wrapper and cross-fitting overhead rather than
-benchmarking random-forest training.
+\item[HDFE.] OLS of \(y\) on two regressors with firm and year effects
+absorbed and iid standard errors, \(N \in \{10^4,10^5,10^6\}\):
+\code{sp.fast.feols} against \pkg{fixest::feols}~\citep{berge2018efficient}.
+\item[CS-DiD.] A balanced staggered panel of five periods with cohorts
+first treated in periods 2, 3, and 4 (the same calendar on both sides),
+\(N_{\mathrm{units}} \in \{1{,}000,5{,}000,25{,}000\}\): group-time ATTs
+by outcome regression against the never-treated, analytic standard
+errors (no multiplier bootstrap or uniform band on either side), the
+joint pre-test, and the simple and dynamic aggregations.
+\code{sp.callaway\_santanna} returns all four in one call; the reference
+runs \pkg{did::att\_gt} and two \pkg{did::aggte} calls.
+\item[SCM.] A two-factor, 30-period panel with
+\(n_{\mathrm{donors}} \in \{20,50,100\}\) and the specification of
+\citet{abadie2010synthetic}: one outcome special predictor per
+pre-treatment year and a nested search over \(V\), weights and gap only,
+no placebos, for \code{sp.synth(method="classic")} and
+\pkg{Synth::synth}. The two solvers differ by design (below), and each
+runs at its defaults for this specification. The package's \emph{default}
+call is a different task and is reported separately.
+\item[DML.] Partially linear DML with linear nuisance learners and five
+folds, public-workflow construction included, \(N \in
+\{1{,}000,5{,}000,10{,}000\}\): \code{sp.dml(model="plr")} against
+\pkg{DoubleML} Python in the same process, so that language-runtime
+overhead does not dominate a comparison of milliseconds.
 \end{description}
 
 \subsection{Measured performance results}
 
-Table~\ref{tab:track-c-perf} reports the largest-size row from each
-benchmark module, and Figure~\ref{fig:track-c-loglog} reports the
-scaling curve over all measured sizes.
+Table~\ref{tab:track-c-perf} reports the largest size of each benchmark
+and Figure~\ref{fig:track-c-loglog} all measured sizes. In every row the
+two sides agree on the target quantity: to \(2\times10^{-14}\) for the
+HDFE coefficient, \(4\times10^{-13}\) for the simple ATT, \(5\times10^{-5}\)
+for the SCM gap (two non-convex solvers landing on the same solution),
+and within a hundredth of a standard error for DML, whose folds are
+drawn independently on each side.
 
 \input{tables/track_c_perf.tex}
 
 \begin{figure}[t]
 \centering
 \includegraphics[width=\textwidth]{figures/track_c_loglog.pdf}
-\caption{Log-log scaling of \statspai{} versus the declared reference
-for the four Track-C benchmarks. The harness
-runs both implementations on identical seed-fixed DGPs; points are
-median wall-clock seconds across 3 or 5 reps after a warmup. Hardware:
-Apple Silicon arm64 / 8 cores / 24~GB / macOS~26. The figure is
-regenerated by \code{tests/perf/compare\_perf.py} on every benchmark
-run.}
+\caption{Median wall-clock time of \statspai{} and the reference at
+every measured size (log--log axes), on the shared inputs and settings
+of Table~\ref{tab:track-c-perf}. Three sizes per benchmark show whether
+a gap is stable or growing across the measured range; they are not
+enough to establish an asymptotic order. Regenerated by
+\code{tests/perf/compare\_perf.py}.}
 \label{fig:track-c-loglog}
 \end{figure}
 
-\paragraph{Reading the scaling figure.}
-On the log-log axes of Figure~\ref{fig:track-c-loglog}, a roughly
-constant vertical offset between two parallel lines is a constant-factor
-runtime difference at matched asymptotic order, whereas a widening gap
-(diverging slopes) signals a difference in computational complexity. The
-figure shows whether each table gap is stable across the measured size
-range or, as flagged below for classical SCM, grows with problem size
-and therefore marks a genuine scaling target.
-
-\paragraph{Headline findings.}
-The results are mixed in the useful sense: they document where
-\statspai{} is competitive and where the reference implementation is
-still materially better.
-
 \begin{itemize}[leftmargin=1.25em,itemsep=0.1em]
-\item \textbf{HDFE 2-way FE}: at the largest measured row
-($N = 10^6$), \pkg{fixest} is about $2.5\times$ faster than
-\code{sp.fast.feols}. Both implementations remain sub-second at this
-size, so the practical conclusion is parity of usable scale rather
-than a \statspai{} speed win.
-\item \textbf{Callaway--Sant'Anna staggered DiD}: \statspai{} is
-about $6.5\times$ faster than \pkg{did} at $125{,}000$ observations
-\emph{on the homogeneous-effect DGP used here}. The
-homogeneous DGP is the cleanest case for the vectorized
-group-time-ATT loop; on a heterogeneous-effect DGP with many treated
-cohorts the gap should narrow because the IPW/DR cell-level
-computation dominates on both sides; a heterogeneous-DGP
-companion benchmark remains future work.
-\item \textbf{DML PLR with linear nuisance learners}: \statspai{} and
-\pkg{DoubleML} Python are effectively tied at the largest design
-(\(0.008\) versus \(0.009\) seconds, ratio \(1.14\times\)). This
-same-language comparison supports only the narrow conclusion that the
-unified wrapper adds no material cost when nuisance fitting is cheap.
-\item \textbf{Classical SCM}: \pkg{Synth} is about $4.0\times$ faster
-than \statspai{} at $n_{\mathrm{donors}}=100$, while \statspai{} is the
-faster of the two at 20 and 50 donors (Figure~\ref{fig:track-c-loglog}),
-so the gap is one of scaling rather than fixed overhead. This is the main
-performance gap exposed by Track~C. With more donors than
-pre-treatment periods the inner weight problem is rank-deficient, so
-each candidate \(V\) of the nested optimization is solved by
-\pkg{scipy} SLSQP rather than the exact active-set solver used in the
-full-rank case; that inner loop is the next optimization target.
+\item \textbf{HDFE.} \statspai{} is faster at \(N=10^4\) (0.002 against
+0.004 seconds), \pkg{fixest} is slightly faster at \(10^5\) (0.011
+against 0.013), and \pkg{fixest} is \(1.6\times\) faster at \(10^6\)
+(0.074 against 0.120 seconds), with both on one thread.
+\item \textbf{Callaway--Sant'Anna.} \statspai{} is faster at every size,
+by \(6.1\times\) at 5{,}000 observations and \(15.8\times\) at
+125{,}000 (0.028 against 0.443 seconds); the gap widens with size,
+and we have not profiled the reference to say why. The output check caught an error in the previous version of this benchmark:
+its \proglang{R} leg stored the cohort as an integer column, into which
+\pkg{did} cannot write the \code{Inf} it uses for never-treated units,
+so \pkg{did} silently dropped them and used the last cohort as the
+comparison group. That leg timed a smaller, different problem.
+\item \textbf{Classical SCM.} On the common ADH task \pkg{Synth} is much
+faster: \(4.2\times\) at 20 donors and \(60.7\times\) at 100 (4.4 against
+264 seconds). The cost is in the nested \(V\) search as \statspai{}
+runs it: six starts (equal, regression-based, four random) of a
+Nelder--Mead outer search, each outer evaluation solving the inner
+weight problem by SLSQP because donors outnumber the 15 pre-treatment
+predictors; profiling at 50 donors attributes 99\% of the time to
+about 5{,}000 inner solves of 19 milliseconds. \pkg{Synth} runs one
+BFGS search from its regression-based start. The six starts are there
+to detect non-unique solutions (Section~\ref{sec:scm-identification}),
+so a single-start comparison would time a different procedure; a faster
+exact inner solver for the rank-deficient case is the main engineering
+target this study exposes. The package \emph{default}
+\code{sp.synth(method="classic")}, which uses the outcome path with
+\(V=I\) and runs in-space placebos over every donor, takes 7.5 seconds
+at 100 donors, of which 0.06 seconds is the fit and the rest the 100
+placebo refits; it has no counterpart in the reference call and is not
+in the table.
+\item \textbf{DML PLR.} With linear learners the two \proglang{Python}
+implementations are within 10--20\% of each other at every size
+(\(1.10\times\) at \(N=10{,}000\): 0.0077 against 0.0085 seconds), and the interquartile
+ranges over 15 repetitions do not overlap, so \statspai{}'s wrapper adds
+no cost here; nothing is claimed about flexible learners, whose fitting
+time dominates both.
 \end{itemize}
 
 \paragraph{Interpretation.}
-The benchmark supports a modest claim: the package's unified surface
-does not impose a productivity-prohibitive overhead for representative
-workloads. One row favours \statspai{}, two favour the \proglang{R}
-reference at the largest size, and the same-language DML row is tied.
-It does not support a universal
-``\proglang{Python} is faster'' claim. The SCM and HDFE rows are kept
-in the table precisely because they are useful negative evidence for
-future engineering priorities.
+Two of four comparisons favour the reference at the largest size and
+one of them, classical SCM under the ADH specification, by a wide
+margin. The study supports a narrow claim: on the shared tasks measured
+here the unified interface adds no material overhead to HDFE,
+Callaway--Sant'Anna, or DML, and the nested-\(V\) synthetic-control
+solver is the clear performance gap. It does not support a general
+``\proglang{Python} is faster'' claim, and the SCM row is kept in the
+table because it is negative evidence the package's users need.

@@ -54,17 +54,38 @@ G-estimation." *Statistical Science*, 29(4), 707-731. [@vansteelandt2014structur
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Sequence, Any
+from typing import Any, Dict, List, Optional, Sequence
 
 import numpy as np
 import pandas as pd
-
 from sklearn.linear_model import LogisticRegression
+
+from .._aliases import accepts_aliases
 from .._result_serialize import ResultProtocolMixin
 
 
 @dataclass
 class SNMMResult(ResultProtocolMixin):
+    """Result of :func:`statspai.snmm`.
+
+    Fields: ``blip_params``, ``optimal_actions``, ``value``, ``K``,
+    ``n_obs``, ``detail``.
+
+    Examples
+    --------
+    >>> import numpy as np, pandas as pd, statspai as sp
+    >>> rng = np.random.default_rng(0)
+    >>> n = 400
+    >>> x1 = rng.normal(size=n); a1 = rng.integers(0, 2, n)
+    >>> x2 = x1 + rng.normal(size=n); a2 = rng.integers(0, 2, n)
+    >>> y = x1 + a1 * (1 + x1) + a2 * (0.5 - x2) + rng.normal(size=n)
+    >>> df = pd.DataFrame({"x1": x1, "a1": a1, "x2": x2, "a2": a2, "y": y})
+    >>> res = sp.snmm(df, y="y", actions=["a1", "a2"],
+    ...     stage_covariates=[["x1"], ["x2"]])
+    >>> isinstance(res, sp.SNMMResult)
+    True
+    """
+
     blip_params: List[np.ndarray]
     optimal_actions: np.ndarray
     value: float
@@ -88,9 +109,10 @@ class SNMMResult(ResultProtocolMixin):
         return f"SNMMResult(K={self.K}, V={self.value:.4f})"
 
 
+@accepts_aliases(_strict=True, outcome="y")
 def snmm(
     data: pd.DataFrame,
-    outcome: str,
+    y: str,
     actions: Sequence[str],
     stage_covariates: Sequence[Sequence[str]],
     baseline: Optional[Sequence[str]] = None,
@@ -101,6 +123,20 @@ def snmm(
 
     Parameters mirror :func:`a_learning`. The returned ``blip_params``
     are the stage-wise :math:`\\hat ψ_k`.
+
+    Examples
+    --------
+    >>> import numpy as np, pandas as pd, statspai as sp
+    >>> rng = np.random.default_rng(0)
+    >>> n = 400
+    >>> x1 = rng.normal(size=n); a1 = rng.integers(0, 2, n)
+    >>> x2 = x1 + rng.normal(size=n); a2 = rng.integers(0, 2, n)
+    >>> y = x1 + a1 * (1 + x1) + a2 * (0.5 - x2) + rng.normal(size=n)
+    >>> df = pd.DataFrame({"x1": x1, "a1": a1, "x2": x2, "a2": a2, "y": y})
+    >>> res = sp.snmm(df, y="y", actions=["a1", "a2"],
+    ...     stage_covariates=[["x1"], ["x2"]])
+    >>> len(res.blip_params)
+    2
     """
     actions = list(actions)
     stage_covs: List[List[str]] = [list(c) for c in stage_covariates]
@@ -121,7 +157,7 @@ def snmm(
         X = df[hist].to_numpy(dtype=float)
         return np.column_stack([np.ones(n), X])
 
-    U = df[outcome].to_numpy(dtype=float).copy()
+    U = df[y].to_numpy(dtype=float).copy()
     psis: List[np.ndarray] = []
     optimal_actions = np.zeros((n, K), dtype=int)
 

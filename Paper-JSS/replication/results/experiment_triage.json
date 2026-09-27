@@ -24,13 +24,13 @@
       "status": "PASS"
     },
     {
-      "answer": "The committed B=1000 Track-B artifacts cover all twelve nominal rows (with bias, Monte Carlo SD, SE calibration and interval length) plus three documented robustness failure-mode rows.",
+      "answer": "The committed B=1000 Track-B artifacts cover all thirteen nominal rows -- nine suite members through their own entry points and four supplemental rows -- with bias, Monte Carlo SD, SE calibration and interval length, plus three documented robustness failure-mode rows.",
       "classification": "implemented",
       "failures": [],
       "id": "monte_carlo_validation",
       "jss_upload_blocking": false,
       "metrics": {
-        "b1000_rows": 12,
+        "b1000_rows": 13,
         "coverage_max": 0.968,
         "coverage_min": 0.883,
         "robustness_rows": 3
@@ -61,7 +61,7 @@
       "status": "PASS"
     },
     {
-      "answer": "Tier 1 rebuilds the Section 4-7 headline numbers with Python-only scripts and records a no-R/no-Stata transcript.",
+      "answer": "Tier 1 needs no R or Stata: it recomputes the examples, listings and census, re-tabulates the frozen parity, coverage and timing experiments, and accounts for every generated manuscript input in reproduce_manifest.json.",
       "classification": "implemented",
       "failures": [],
       "id": "tier1_reproduction",
@@ -69,7 +69,7 @@
       "metrics": {
         "tier1_live_external_call_count": 0,
         "tier1_no_r_stata": true,
-        "tier1_steps": "24/24"
+        "tier1_steps": "31/31"
       },
       "primary_evidence": [
         "replication/reproduce.py",
@@ -114,10 +114,10 @@
         "protocol_scoring_dimensions": 6,
         "protocol_task_families": 5,
         "protocol_validity_controls": 6,
-        "schema_files": 1220,
-        "schema_parameters": 9436,
+        "schema_files": 1255,
+        "schema_parameters": 9697,
         "trace_bibtex_entry_count": 2,
-        "trace_tools": 559
+        "trace_tools": 579
       },
       "primary_evidence": [
         "replication/results/agent_interface_audit.md",
@@ -135,10 +135,10 @@
       "id": "full_registry_numeric_validation",
       "jss_upload_blocking": false,
       "metrics": {
-        "api_stable_symbols": 661,
-        "certified_validated_symbols": 556,
+        "api_stable_symbols": 694,
+        "certified_validated_symbols": 558,
         "missing_validation_notes": 0,
-        "unbacked_auto_stable": 568
+        "unbacked_auto_stable": 601
       },
       "primary_evidence": [
         "replication/results/validation_evidence_audit.md",
@@ -156,7 +156,7 @@
       "jss_upload_blocking": false,
       "metrics": {
         "ready_for_final_publication": false,
-        "release_blocker_count": 109,
+        "release_blocker_count": 2,
         "release_boundary_status": "PASS",
         "version_consistent": true
       },

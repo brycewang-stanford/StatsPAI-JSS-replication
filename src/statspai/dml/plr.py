@@ -54,7 +54,11 @@ class DoubleMLPLR(_DoubleMLBase):
     """
 
     _MODEL_TAG = "PLR"
-    _ESTIMAND = "ATE"
+    #: The PLR parameter theta in Y = theta*D + g(X) + e. It equals the ATE
+    #: only under a constant effect; with heterogeneous effects it is a
+    #: variance-weighted average, and with a continuous D it is a partial
+    #: coefficient. Labelled "ATE" before 1.32.0.
+    _ESTIMAND = "theta"
     _REQUIRES_INSTRUMENT = False
     _ML_M_TARGET_BINARY = False  # PLR is agnostic to D type
     _SUPPORTS_SAMPLE_WEIGHT = True
@@ -167,6 +171,15 @@ class DoubleMLPLR(_DoubleMLBase):
             # Var(θ̂) = ( Σ w_i² ψ_score_i² ) / ( Σ w_i d_resid_i² )²
             num = float(np.sum((w**2) * (psi_score**2)))
             se = float(np.sqrt(num)) / abs(denom) if denom != 0 else 0.0
+
+        # Linear score elements (DoubleML convention, theta = -sum psi_b /
+        # sum psi_a) for the cluster-robust recomputation in the base class.
+        self._last_rep_score = {
+            "psi_a": psi_a if self.score == "IV-type" else -(d_resid**2),
+            "psi_b": psi_b if self.score == "IV-type" else d_resid * y_resid,
+            "splits": splits,
+            "weights": sample_weight,
+        }
 
         # Diagnostics: residual scales, partial correlation, and a crude
         # within-R² for each nuisance — analogous to the panel_dml

@@ -152,7 +152,9 @@ def _match(pattern: str, text: str, default: str = "unknown") -> str:
 
 
 def _status_entries(cwd: Path, *, prefix: str = "") -> list[dict[str, str]]:
-    out = _run_git(["status", "--porcelain=v1"], cwd=cwd)
+    # quotepath=false: git otherwise C-quotes non-ASCII paths ("\\345..."),
+    # which then never match the archive member names.
+    out = _run_git(["-c", "core.quotepath=false", "status", "--porcelain=v1"], cwd=cwd)
     entries: list[dict[str, str]] = []
     for line in out.splitlines():
         if not line:
@@ -243,11 +245,13 @@ def _unreleased_changelog() -> dict[str, object]:
     text = _read(path)
     marker = re.search(r"^## \[Unreleased\]\s*$", text, flags=re.MULTILINE)
     if not marker:
+        migration = _unreleased_migration_headings()
         return {
             "present": False,
-            "nonempty": False,
+            "nonempty": bool(migration),
             "line_count": 0,
             "heading_count": 0,
+            "migration_unreleased_headings": len(migration),
         }
     rest = text[marker.end():]
     next_release = re.search(r"^## \[", rest, flags=re.MULTILINE)
@@ -258,12 +262,27 @@ def _unreleased_changelog() -> dict[str, object]:
     ]
     headings = [line for line in content if line.startswith("### ")]
     bullets = [line for line in content if line.lstrip().startswith("- ")]
+    migration = _unreleased_migration_headings()
     return {
         "present": True,
-        "nonempty": bool(headings or bullets),
+        "nonempty": bool(headings or bullets or migration),
         "line_count": len(content),
         "heading_count": len(headings),
+        "migration_unreleased_headings": len(migration),
     }
+
+
+def _unreleased_migration_headings() -> list[str]:
+    """``## Unreleased`` sections left in MIGRATION.md.
+
+    A release must retitle them with its version, as it does the CHANGELOG
+    block; 1.31.0 shipped with eleven, which the CHANGELOG check alone did
+    not see.
+    """
+    path = ROOT / "MIGRATION.md"
+    if not path.exists():
+        return []
+    return re.findall(r"^## Unreleased\b.*$", _read(path), flags=re.MULTILINE)
 
 
 def _git_block(cwd: Path) -> dict[str, object]:
@@ -334,7 +353,9 @@ def _release_gate_checks(
             "ok": not bool(unreleased["nonempty"]),
             "detail": (
                 f"{unreleased['line_count']} non-empty lines across "
-                f"{unreleased['heading_count']} headings"
+                f"{unreleased['heading_count']} headings; "
+                f"{unreleased.get('migration_unreleased_headings', 0)} "
+                "MIGRATION.md Unreleased sections"
             ),
         },
         {

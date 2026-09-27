@@ -200,6 +200,9 @@ def match(
     n_bins: Optional[int] = None,
     # --- inference ---
     alpha: float = 0.05,
+    # --- design ---
+    weights: Optional[str] = None,
+    cluster: Optional[str] = None,
 ) -> CausalResult:
     """
     Estimate treatment effect using matching.
@@ -396,6 +399,51 @@ def match(
     >>> result = sp.match(df, y='wage', treat='training',
     ...                   covariates=['age', 'edu'], method='psm')
     """
+    if cluster is not None:
+        raise MethodIncompatibility(
+            "sp.match: cluster-robust matching inference is not available. "
+            "Abadie-Imbens matching variances assume independent units, and "
+            "neither Stata's teffects nnmatch / psmatch nor R's Matching "
+            "offers a cluster option to check one against.",
+            recovery_hint=(
+                "For clustered data use a weighting estimator with verified "
+                "cluster SEs: sp.aipw(..., cluster=), sp.ipw(..., cluster=, "
+                "se_method='sandwich') or sp.tmle(..., cluster=)."
+            ),
+            alternative_functions=["sp.aipw", "sp.ipw", "sp.tmle"],
+        )
+    if weights is not None:
+        return _match_frequency_weighted(
+            data,
+            weights,
+            y=y,
+            treat=treat,
+            covariates=covariates,
+            distance=distance,
+            method=method,
+            estimand=estimand,
+            n_matches=n_matches,
+            caliper=caliper,
+            caliper_scale=caliper_scale,
+            replace=replace,
+            ties=ties,
+            tie_tolerance=tie_tolerance,
+            m_order=m_order,
+            mahalanobis_cov=mahalanobis_cov,
+            bias_correction=bias_correction,
+            ps_poly=ps_poly,
+            common_support=common_support,
+            kernel=kernel,
+            bwidth=bwidth,
+            se_method=se_method,
+            ai_matches=ai_matches,
+            bootstrap_reps=bootstrap_reps,
+            bootstrap_seed=bootstrap_seed,
+            llr_stata_compat=llr_stata_compat,
+            n_strata=n_strata,
+            n_bins=n_bins,
+            alpha=alpha,
+        )
     estimator = MatchEstimator(
         data=data,
         y=y,
@@ -474,6 +522,69 @@ def match(
 # ======================================================================
 # MatchEstimator
 # ======================================================================
+
+
+class _LazyDistance:
+    """Row access to a distance matrix computed in cached blocks."""
+
+    #: Cells per cached block (~128 MB of float64), so the block holds
+    #: fewer rows as the control pool grows.
+    _CELLS = 1 << 24
+
+    def __init__(self, compute: Any, shape: Tuple[int, int]) -> None:
+        self._compute = compute
+        self.shape = shape
+        self._BLOCK = max(1, min(2048, self._CELLS // max(shape[1], 1)))
+        self._start = -1
+        self._rows: Optional[np.ndarray] = None
+
+    def __getitem__(self, i: int) -> np.ndarray:
+        i = int(i)
+        if self._rows is None or not (self._start <= i < self._start + len(self._rows)):
+            self._start = (i // self._BLOCK) * self._BLOCK
+            stop = min(self._start + self._BLOCK, self.shape[0])
+            self._rows = self._compute(np.arange(self._start, stop))
+        row: np.ndarray = self._rows[i - self._start]
+        return row
+
+
+def _match_frequency_weighted(
+    data: pd.DataFrame, weights: str, **kwargs: Any
+) -> CausalResult:
+    """Frequency weights: each row stands for ``w`` identical observations.
+
+    This is Stata's ``[fw=]`` -- the only weight ``teffects nnmatch`` /
+    ``psmatch`` accept -- and it is exactly an expansion of the data, which
+    is how it is computed. Sampling weights have no matching estimator with
+    a checked variance, so non-integer weights are refused.
+    """
+    if weights not in data.columns:
+        raise MethodIncompatibility(
+            f"sp.match: weights column '{weights}' not in data.",
+            diagnostics={"weights": weights},
+        )
+    w = data[weights].to_numpy(dtype=float)
+    ok = np.isfinite(w)
+    if np.any(w[ok] < 1) or np.any(w[ok] != np.round(w[ok])):
+        raise MethodIncompatibility(
+            "sp.match: weights= are frequency weights (Stata [fw=]) and must "
+            "be positive integers. Matching has no sampling-weight estimator "
+            "with a checked variance (teffects nnmatch / psmatch refuse "
+            "[pw=]).",
+            recovery_hint=(
+                "For survey weights use sp.ipw(..., weights=, "
+                "se_method='sandwich'), sp.aipw(..., weights=) or "
+                "sp.tmle(..., weights=), which match Stata / R to 1e-9."
+            ),
+            alternative_functions=["sp.ipw", "sp.aipw", "sp.tmle"],
+        )
+    keep = data.loc[ok]
+    expanded = keep.loc[keep.index.repeat(w[ok].astype(int))].reset_index(drop=True)
+    result = match(expanded, **kwargs)
+    if isinstance(getattr(result, "model_info", None), dict):
+        result.model_info["frequency_weights"] = weights
+        result.model_info["n_rows_before_expansion"] = int(len(keep))
+    return result
 
 
 class MatchEstimator:
@@ -1708,8 +1819,31 @@ class MatchEstimator:
         idx_from: np.ndarray,
         idx_to: np.ndarray,
         pscore: Optional[np.ndarray] = None,
+    ) -> Any:
+        """Distances between two groups: a matrix, or row blocks on demand.
+
+        With-replacement matching reads the matrix one target row at a time,
+        so for it the rows are computed lazily in blocks (same ``cdist``
+        call, bit-identical values): the full ``n_treated x n_control``
+        matrix was ~0.8 GB at n = 20,000 and grows quadratically. Without
+        replacement the processing order needs every row, so the matrix is
+        built in full as before.
+        """
+        if self.replace and self.method not in ("kernel", "radius", "llr"):
+            return _LazyDistance(
+                lambda rows: self._distance_block(X, idx_from[rows], idx_to, pscore),
+                (len(idx_from), len(idx_to)),
+            )
+        return self._distance_block(X, idx_from, idx_to, pscore)
+
+    def _distance_block(
+        self,
+        X: np.ndarray,
+        idx_from: np.ndarray,
+        idx_to: np.ndarray,
+        pscore: Optional[np.ndarray] = None,
     ) -> np.ndarray:
-        """Compute distance matrix between two groups."""
+        """Compute the distance matrix between two groups."""
         X_from = X[idx_from]
         X_to = X[idx_to]
 
@@ -2324,6 +2458,15 @@ class MatchEstimator:
             if not np.any(finite):
                 return np.array([], dtype=int)
             candidates = np.where(finite)[0]
+            if 0 < k < candidates.size:
+                # Only units at or below the k-th smallest distance can be
+                # among the first k of the (distance, index) sort, ties at
+                # the boundary included, so sorting that subset gives the
+                # same selection as sorting every candidate -- which was
+                # the whole cost of matching (12 s of 12.5 s at n = 30,000).
+                dc = d[candidates]
+                kth = np.partition(dc, k - 1)[k - 1]
+                candidates = candidates[dc <= kth]
             order = np.lexsort((pool_order[candidates], d[candidates]))
             return np.asarray(candidates[order[:k]], dtype=int)
 

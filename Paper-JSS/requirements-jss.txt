@@ -1,13 +1,17 @@
-# Reproducibility environment for the JSS submission build.
-# Runtime dependencies mirror the local StatsPAI 1.20.0 tree plus
-# manuscript tooling.
+# Supported dependency ranges for the JSS replication scripts.
+#
+# These are ranges, not a lock. The exact environment in which every
+# artifact of the submission was regenerated is requirements-jss-lock.txt
+# (Python 3.10.20); use that file to reproduce, and this one to check that
+# a newer environment still runs. Full recomputation of the frozen
+# experiments needs requirements-jss-recompute.txt in addition.
 setuptools>=77.0.0
 wheel>=0.43
-numpy>=1.26,<2.0
+numpy>=1.26,<3.0
 pandas>=2.2,<3.0
 scipy>=1.13,<2.0
 statsmodels>=0.14,<0.15
-linearmodels>=6.0,<7.0
+linearmodels>=6.0,<8.0
 numba>=0.59
 scikit-learn>=1.4,<2.0
 patsy>=0.5

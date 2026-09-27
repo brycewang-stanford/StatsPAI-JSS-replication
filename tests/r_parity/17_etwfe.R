@@ -69,15 +69,18 @@ for (i in seq_len(nrow(grp))) {
   )
 }
 
-# Never-treated comparison group. `ivar` is set because the StatsPAI
-# counterpart (sp.etwfe(cgroup='nevertreated') -> sp.wooldridge_did)
-# absorbs unit fixed effects by two-way demeaning. Point estimates are
-# invariant to this choice; the clustered SE is not.
+# Never-treated comparison group, with etwfe's default fixed-effect
+# structure (no `ivar`: cohort + period effects). Since 1.30.0 the StatsPAI
+# counterpart sp.etwfe(cgroup='nevertreated') fits that same design -- the
+# never- and not-yet-treated branches share one cohort + period basis --
+# and counts its cohort levels in the CR1 factor as fixest does. (Through
+# 1.29 it absorbed unit effects instead and this call set ivar=countyreal;
+# point estimates are invariant to that choice, the clustered SE moves by
+# sqrt(2483/2480) = 1.000605 on this panel.)
 fit_never <- etwfe::etwfe(
   fml    = lemp ~ 0,
   tvar   = year,
   gvar   = first_treat,
-  ivar   = countyreal,
   data   = df,
   vcov   = ~ countyreal,
   cgroup = "never"
@@ -94,7 +97,19 @@ rows[[length(rows) + 1]] <- parity_row(
   n         = nrow(df)
 )
 
-grp_never <- as.data.frame(etwfe::emfx(fit_never, type = "group"))
+# The per-cohort never-treated rows validate sp.wooldridge_did, which
+# absorbs unit fixed effects (nested in the county cluster, so left out of
+# K); their reference therefore sets ivar.
+fit_never_unit <- etwfe::etwfe(
+  fml    = lemp ~ 0,
+  tvar   = year,
+  gvar   = first_treat,
+  ivar   = countyreal,
+  data   = df,
+  vcov   = ~ countyreal,
+  cgroup = "never"
+)
+grp_never <- as.data.frame(etwfe::emfx(fit_never_unit, type = "group"))
 for (i in seq_len(nrow(grp_never))) {
   rows[[length(rows) + 1]] <- parity_row(
     module    = MODULE,

@@ -24,6 +24,7 @@ from ..core._vcov_spec import markout_clusters
 from ..core.results import EconometricResults
 from ..core.utils import parse_formula
 from ..exceptions import DataInsufficient, MethodIncompatibility, NumericalInstability
+from ..output._lineage import records_provenance
 
 # ---------------------------------------------------------------------------
 # Internal helpers
@@ -138,6 +139,48 @@ def _positive_exposure(data: pd.DataFrame, exposure: str) -> np.ndarray:
     return values
 
 
+_PATSY_TOKENS = ("(", ":", "*", "**", "/")
+
+
+def _needs_patsy(formula: str) -> bool:
+    """True when the RHS uses factor / transform / interaction syntax.
+
+    The count models' own parser only understands ``y ~ a + b [| fe]``; it
+    used to read ``C(g)`` as a column called ``C``. Plain formulas keep the
+    original path byte for byte.
+    """
+    rhs = formula.split("~", 1)[1].split("|", 1)[0] if "~" in formula else ""
+    return any(tok in rhs for tok in _PATSY_TOKENS)
+
+
+def _patsy_count_design(
+    formula: str, data: pd.DataFrame, add_constant: bool, fe_vars: List[str]
+) -> Tuple[np.ndarray, np.ndarray, List[str], str, List[str], pd.DataFrame]:
+    """Design for ``C()`` / ``I()`` / interaction formulas via patsy.
+
+    The intercept keeps the count models' ``_cons`` name; rows patsy drops
+    for missing values are dropped from the returned ``data`` too, so
+    offset / exposure / cluster columns stay aligned.
+    """
+    from ..core.utils import create_design_matrices
+
+    lhs, rhs = formula.split("~", 1)
+    rhs = rhs.split("|", 1)[0].strip()
+    if not add_constant and "-1" not in rhs.replace(" ", ""):
+        rhs = rhs + " - 1"
+    y_df, X_df = create_design_matrices(f"{lhs.strip()} ~ {rhs}", data)
+    var_names = ["_cons" if c == "Intercept" else str(c) for c in X_df.columns]
+    kept = data.loc[X_df.index] if len(X_df) != len(data) else data
+    return (
+        y_df.to_numpy(dtype=np.float64).ravel(),
+        X_df.to_numpy(dtype=np.float64),
+        var_names,
+        str(y_df.columns[0]),
+        list(fe_vars),
+        kept,
+    )
+
+
 def _parse_formula_or_xy(
     formula: Optional[str],
     data: Any,
@@ -153,6 +196,8 @@ def _parse_formula_or_xy(
         indep_vars = parsed["exogenous"]
         fe_vars = parsed.get("fixed_effects", [])
         has_constant = parsed["has_constant"]
+        if _needs_patsy(formula) and dep_var in data.columns:
+            return _patsy_count_design(formula, data, add_constant, fe_vars)
         _require_columns(data, [dep_var, *indep_vars], "formula")
 
         y_arr = data[dep_var].values.astype(np.float64)
@@ -955,6 +1000,7 @@ def _overdispersion_test(y: np.ndarray, mu: np.ndarray) -> Tuple[float, float]:
 
 
 @accepts_aliases(vce="robust")
+@records_provenance("sp.poisson")
 @markout_clusters
 def poisson(
     formula: Optional[str] = None,
@@ -1136,6 +1182,8 @@ def poisson(
         "aic": aic,
         "bic": bic,
     }
+    if formula is not None:
+        model_info["formula"] = formula
     if cluster_arr is not None:
         model_info["n_clusters"] = int(len(np.unique(cluster_arr)))
 
@@ -1171,6 +1219,7 @@ def poisson(
         "Overdispersion p-value": od_pval,
     }
 
+    model_info["alpha"] = alpha
     return EconometricResults(
         params=params_series,
         std_errors=se_series,
@@ -1181,6 +1230,7 @@ def poisson(
 
 
 @accepts_aliases(vce="robust")
+@records_provenance("sp.nbreg")
 @markout_clusters
 def nbreg(
     formula: Optional[str] = None,
@@ -1428,6 +1478,8 @@ def nbreg(
         "aic": aic,
         "bic": bic,
     }
+    if formula is not None:
+        model_info["formula"] = formula
     if cluster_arr is not None:
         model_info["n_clusters"] = int(len(np.unique(cluster_arr)))
 
@@ -1462,6 +1514,7 @@ def nbreg(
         diagnostics["N fixed-effect parameters"] = n_fe_params
         diagnostics["Fixed-effect levels"] = fe_level_counts
 
+    model_info["alpha"] = alpha
     return EconometricResults(
         params=params_series,
         std_errors=se_series,
@@ -1471,7 +1524,7 @@ def nbreg(
     )
 
 
-@accepts_aliases(vce="robust")
+@accepts_aliases(id="entity", vce="robust")
 def xtnbreg(
     formula: Optional[str] = None,
     data: pd.DataFrame = None,
@@ -1975,6 +2028,7 @@ def _xtnbreg_hhg(
         diagnostics["Groups dropped (single obs or all-zero outcome)"] = (
             fit.n_dropped_groups
         )
+    model_info["alpha"] = alpha
     return EconometricResults(
         params=pd.Series(params_arr, index=names),
         std_errors=pd.Series(ses_arr, index=names),
@@ -2771,6 +2825,7 @@ def ppmlhdfe(
     if n_cluster is not None:
         diagnostics["N clusters"] = n_cluster
 
+    model_info["alpha"] = alpha
     return EconometricResults(
         params=params_series,
         std_errors=se_series,

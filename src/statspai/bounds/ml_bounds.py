@@ -64,17 +64,29 @@ from typing import List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
-
 from sklearn.base import BaseEstimator, clone
-from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
+from sklearn.ensemble import GradientBoostingRegressor, RandomForestRegressor
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import KFold
+
 from .._result_serialize import ResultProtocolMixin
 
 
 @dataclass
 class MLBoundsResult(ResultProtocolMixin):
-    """ATE bounds produced by :func:`ml_bounds`."""
+    """ATE bounds produced by :func:`ml_bounds`.
+
+    Examples
+    --------
+    >>> import numpy as np, pandas as pd, statspai as sp
+    >>> rng = np.random.default_rng(0)
+    >>> df = pd.DataFrame({"x": rng.normal(size=300), "d": rng.integers(0, 2, 300)})
+    >>> df["y"] = df.x + 0.5 * df.d + rng.normal(size=300)
+    >>> res = sp.ml_bounds(df, y="y", treat="d", covariates=["x"],
+    ...                    n_splits=2, n_bootstrap=20, random_state=0)
+    >>> isinstance(res, sp.MLBoundsResult)
+    True
+    """
 
     lower: float
     upper: float

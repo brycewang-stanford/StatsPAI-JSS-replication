@@ -22,10 +22,11 @@ What the evidence supports, and what these tests pin:
    (TOST, 5%) establishes ``|mean_sp - mean_grf| < delta`` with
    ``delta = 0.1 x`` grf's mean reported sampling SE, at 500, 2,000 and
    8,000 trees on both datasets (upper TOST bound <= 0.056 sampling SE).
-2. **The same algorithmic noise.** The two engines' seed-to-seed SDs are
+2. **Comparable algorithmic noise.** The two engines' seed-to-seed SDs are
    within a factor of two of each other at every tree count (observed
    ratios 0.78-1.48), about 6-8% of the sampling SE at the default 2,000
-   trees, and fall with the number of trees.
+   trees, and fall with the number of trees. This is a bound on the ratio,
+   not a test that the variances are equal.
 3. **No claim of identity.** The engines are independent implementations;
    the seed means are not pinned to agree within their combined Monte
    Carlo error (at 8,000 trees, where that error is smallest, the gap is at
@@ -39,8 +40,14 @@ this file drew R seeds ``1000 + k`` and concluded, wrongly, that StatsPAI's
 forest was several times noisier than grf's.
 
 The margin ``delta`` was fixed after inspecting the grf_data fixture on an
-earlier engine, not pre-registered; the module-13 dataset and the spaced-seed
-rerun were both run after it was fixed.
+earlier engine, not pre-registered; grf_data is therefore development data,
+and the module-13 dataset and the spaced-seed rerun were both run after the
+margin was fixed.
+
+The TOST uses a normal critical value; with 20 seeds per engine at 8,000
+trees a Welch t reference is the more honest one, and
+``test_equivalence_survives_welch_t_critical_values`` repeats the test with
+Welch-Satterthwaite degrees of freedom.
 """
 
 from __future__ import annotations
@@ -70,6 +77,11 @@ def _load(ds):
     )
 
 
+def _welch_df(p, q):
+    a, b = p.var(ddof=1) / p.size, q.var(ddof=1) / q.size
+    return (a + b) ** 2 / (a**2 / (p.size - 1) + b**2 / (q.size - 1))
+
+
 def _stats(py, r, trees, stat):
     p = np.array([row[stat] for row in py[trees]])
     q = np.array([row[stat] for row in r[trees]])
@@ -91,8 +103,27 @@ def test_equivalent_within_a_tenth_of_the_sampling_se(ds, stat, trees):
 
 
 @pytest.mark.parametrize("ds", sorted(DATASETS))
+@pytest.mark.parametrize("stat", ["ate", "att"])
 @pytest.mark.parametrize("trees", TREES)
-def test_engines_have_the_same_algorithmic_noise(ds, trees):
+def test_equivalence_survives_welch_t_critical_values(ds, stat, trees):
+    """Claim 1 with t_{0.95, Welch df} in place of z (20 seeds at 8,000 trees)."""
+    from scipy.stats import t as t_dist
+
+    py, r = _load(ds)
+    p = np.array([row[stat] for row in py[trees]])
+    q = np.array([row[stat] for row in r[trees]])
+    diff, se_diff, _, _, sampling_se = _stats(py, r, trees, stat)
+    crit = float(t_dist.ppf(0.95, _welch_df(p, q)))
+    assert abs(diff) + crit * se_diff < DELTA_SAMPLING_SE * sampling_se, (
+        ds,
+        stat,
+        trees,
+    )
+
+
+@pytest.mark.parametrize("ds", sorted(DATASETS))
+@pytest.mark.parametrize("trees", TREES)
+def test_engines_have_comparable_algorithmic_noise(ds, trees):
     """Claim 2: seed-to-seed SDs within a factor of two of each other."""
     py, r = _load(ds)
     _, _, sd_py, sd_r, _ = _stats(py, r, trees, "ate")

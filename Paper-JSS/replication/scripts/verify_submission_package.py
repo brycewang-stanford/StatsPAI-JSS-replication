@@ -686,7 +686,7 @@ ACTIVE_COMPARATIVE_SCOPE_SNIPPETS = (
     r"\code{csdid}",
     r"\code{reghdfe}",
     r"\code{sdid}",
-    "T3 stochastic agreement",
+    "T3 equivalence claim",
     "T4",
     "separate licensed runtime",
     "larger dependency surface",
@@ -694,10 +694,10 @@ ACTIVE_COMPARATIVE_SCOPE_SNIPPETS = (
 ACTIVE_SOURCE_SNAPSHOT_SCOPE_SNIPPETS = (
     "This article describes \\statspai{} \\StatsPAIVersion{}",
     "The unification itself has costs",
-    # 1.29.0 ported the fect/interflex CV selectors; the manuscript now
-    # discloses that they can only be graded T3 (random folds).
+    # 1.29.0 ported the fect/interflex CV selectors; their folds are random,
+    # so the manuscript reports a stochastic screen, not a T3 equivalence test.
     "cross-validation selectors for the",
-    "can only be graded T3",
+    "stochastic screen of the selection, not an equivalence test",
 )
 
 
@@ -1731,7 +1731,16 @@ def main() -> int:
             "packaged_public_dataset_csv_count": 9,
             "public_original_extract_csv_count": 7,
             "same_byte_r_stata_fixture_csv_count": EXPECTED_R_STATA_FIXTURE_CSV_COUNT,
-            "reference_fixture_csv_count": 229,
+            # Counted from the archive itself (the rule of
+            # data_provenance_audit._classify): new reference-parity
+            # fixtures arrive with most releases, and a literal went stale
+            # at 1.32.0 (237 -> 250).
+            "reference_fixture_csv_count": sum(
+                1
+                for name in zf.namelist()
+                if name.startswith("tests/reference_parity/_fixtures/")
+                and name.endswith(".csv")
+            ),
             "forbidden_raw_member_count": 0,
             "high_risk_path_hit_count": 0,
             "csv_parse_failure_count": 0,
@@ -2410,7 +2419,12 @@ def main() -> int:
                     "limitations reviewer card does not point to "
                     f"{required_path}"
                 )
-        if limitations_metrics.get("pdf_pages", 999) > 52:
+        # One page ceiling, defined in jss_formal_compliance_audit.py and
+        # read back from its payload rather than repeated here.
+        page_ceiling = _read_json_member(
+            zf, "Paper-JSS/replication/results/jss_formal_compliance_audit.json"
+        ).get("page_ceiling", 0)
+        if limitations_metrics.get("pdf_pages", 999) > page_ceiling:
             return _fail("limitations reviewer card has stale PDF page count")
         if limitations_metrics.get("documented_nonblocking_risk_count") != len(
             expected_risk_ids
@@ -2987,9 +3001,11 @@ def main() -> int:
             )
         submission_status = str(
             source_readiness.get("submission_archive_status")
-            or source_snapshot_json.get("jss_source_snapshot", {}).get(
-                "submission_archive_status", ""
+            or _read_json_member(
+                zf, "Paper-JSS/replication/results/source_snapshot_manifest.json"
             )
+            .get("jss_source_snapshot", {})
+            .get("submission_archive_status", "")
         )
         if "not a JSS upload reproducibility failure" not in submission_status:
             return _fail(
@@ -3206,7 +3222,10 @@ def main() -> int:
             return _fail(
                 "jss_full_audit.md does not report a passing release boundary audit"
             )
-        if "checked_files=8" not in audit:
+        boundary_scope = _read_json_member(
+            zf, "Paper-JSS/replication/results/release_boundary_audit.json"
+        ).get("checked_files") or []
+        if not boundary_scope or f"checked_files={len(boundary_scope)}" not in audit:
             return _fail(
                 "jss_full_audit.md does not report the JSS/JOSS release "
                 "boundary audit scope"
@@ -3678,10 +3697,13 @@ def main() -> int:
             return _fail(str(exc))
         if manuscript_page_count <= 0:
             return _fail("main.pdf page count could not be determined")
-        if manuscript_page_count > 52:
+        page_ceiling = _read_json_member(
+            zf, "Paper-JSS/replication/results/jss_formal_compliance_audit.json"
+        ).get("page_ceiling", 0)
+        if manuscript_page_count > page_ceiling:
             return _fail(
                 f"main.pdf is {manuscript_page_count} pages, above the "
-                "local conservative 52-page screening ceiling"
+                f"local conservative {page_ceiling}-page screening ceiling"
             )
         expected_formal_audit_summary = (
             "JSS formal compliance audit: PASS "
@@ -4095,7 +4117,12 @@ def main() -> int:
                 "computational details do not frame Tier-1 timing against "
                 "the JSS one-hour threshold"
             )
-        if "are the acceptance evidence, and\neach is regenerated rather than quoted" not in comp_details:
+        if not _has_snippet(
+            comp_details,
+            "the acceptance evidence for this paper is the Track~A--D "
+            "artifacts, worked examples, and audit scripts, each regenerated "
+            "rather than quoted",
+        ):
             return _fail(
                 "computational details do not separate broad pytest sweeps "
                 "from the JSS reviewer evidence contract"
@@ -4145,14 +4172,19 @@ def main() -> int:
             zf,
             "tests/coverage_monte_carlo/results_b1000/coverage_b1000.json",
         )
-        if len(track_b_nominal) != 12:
+        track_b_words = {12: "twelve", 13: "thirteen", 14: "fourteen"}
+        track_b_word = track_b_words.get(len(track_b_nominal))
+        if track_b_word is None:
             return _fail(
-                "Track B B=1000 nominal artifact count is not twelve rows"
+                "Track B B=1000 nominal artifact has an unexpected row count: "
+                f"{len(track_b_nominal)}"
             )
-        if "twelve \\(B=1{,}000\\) rows" not in active_manuscript:
+        if not _has_snippet(
+            active_manuscript, f"{track_b_word} \\(B=1{{,}}000\\) rows"
+        ):
             return _fail(
-                "active manuscript does not state the twelve-row Track B "
-                "B=1000 artifact boundary"
+                f"active manuscript does not state the {track_b_word}-row "
+                "Track B B=1000 artifact boundary"
             )
         for row in track_b_nominal:
             rate = row.get("rate")
@@ -4266,8 +4298,8 @@ def main() -> int:
         if "MIT licence, which is GPL-compatible" not in cover_letter:
             return _fail("cover letter lacks GPL-compatible license disclosure")
         if (
-            "every Section 4--7 headline number was" not in cover_letter
-            or "rebuilt without R or Stata" not in cover_letter
+            not _has_snippet(cover_letter, "without R or Stata")
+            or not _has_snippet(cover_letter, "re-tabulates the frozen")
         ):
             return _fail(
                 "cover letter does not disclose the no-R/no-Stata Tier-1 "
@@ -4618,7 +4650,7 @@ def main() -> int:
                 + ", ".join(external_review_artifacts)
             )
         if (
-            "every Section 4--7 headline number rebuilt without" not in manuscript_readme
+            "re-tabulates the frozen" not in manuscript_readme
             or "R or Stata" not in manuscript_readme
         ):
             return _fail(
@@ -4713,13 +4745,14 @@ def main() -> int:
             not in release_boundary
         ):
             return _fail("release_boundary_audit.md lacks source-snapshot boundary scope")
-        if "Disclosure files checked: 8" not in release_boundary:
+        release_scope = len(release_boundary_json.get("checked_files", []))
+        if f"Disclosure files checked: {release_scope}" not in release_boundary:
             return _fail(
                 "release_boundary_audit.md does not report the JSS/JOSS "
                 "disclosure check"
             )
         checked_release_boundary = set(release_boundary_json.get("checked_files", []))
-        if len(checked_release_boundary) != 8:
+        if len(checked_release_boundary) != release_scope or release_scope < 8:
             return _fail(
                 "release_boundary_audit.json has unexpected checked file count"
             )
@@ -4783,7 +4816,15 @@ def main() -> int:
                 "reproduction_environment_audit.md has stale manuscript "
                 "README reviewer command count"
             )
-        if "Docker base image: python:3.12-slim" not in reproduction_environment:
+        docker_from = re.search(
+            r"(?m)^FROM\s+([^\s@]+)",
+            _read_member(zf, "Paper-JSS/replication/Dockerfile"),
+        )
+        if (
+            docker_from is None
+            or f"Docker base image: {docker_from.group(1)}"
+            not in reproduction_environment
+        ):
             return _fail("reproduction_environment_audit.md lacks Docker base image")
         if "Requirements source version comment: True" not in reproduction_environment:
             return _fail(
@@ -5052,7 +5093,7 @@ def main() -> int:
             "verify_citations.py",
             "SUMMARY",
             "RESULT: OK -- all required steps reproduced.",
-            "Every Section 4-7 headline number was rebuilt without R or Stata.",
+            "Tier 1 needs no R or Stata: it recomputes the examples, listings and census and re-tabulates the frozen parity, coverage and timing experiments.",
         ):
             if snippet not in transcript:
                 return _fail(f"Tier-1 reviewer transcript lacks {snippet!r}")
@@ -5076,6 +5117,19 @@ def main() -> int:
             )
 
         reproduce = _read_member(zf, "Paper-JSS/replication/reproduce.py")
+        driver_paths = sorted(
+            set(
+                re.findall(
+                    r"[\"']((?:tests|scripts)/[\w./-]+\.(?:py|R))[\"']", reproduce
+                )
+            )
+        )
+        absent = [p for p in driver_paths if p not in set(zf.namelist())]
+        if not driver_paths or absent:
+            return _fail(
+                "replication/reproduce.py runs files the archive does not contain: "
+                f"{absent[:8]}"
+            )
         if "JSS one-hour threshold" not in reproduce:
             return _fail(
                 "replication/reproduce.py does not frame Tier-1 timing against "
@@ -5087,15 +5141,43 @@ def main() -> int:
             )
 
         dockerfile = _read_member(zf, "Paper-JSS/replication/Dockerfile")
-        if "Paper-JSS/requirements-jss.txt" not in dockerfile:
-            return _fail("Dockerfile does not install Paper-JSS/requirements-jss.txt")
+        if "Paper-JSS/requirements-jss-lock.txt" not in dockerfile:
+            return _fail(
+                "Dockerfile does not install the exact Paper-JSS/requirements-jss-lock.txt"
+            )
+        if not re.search(r"(?m)^FROM\s+\S+@sha256:[0-9a-f]{64}\s*$", dockerfile):
+            return _fail("Dockerfile base image is not pinned by digest")
+        # The Tier A fixture lock must be verifiable on the archive itself.
+        fixture_lock = _read_json_member(zf, "tests/r_parity/TIER_A_FIXTURE_LOCK.json")
+        unlocked = [
+            item["path"]
+            for item in fixture_lock.get("files", [])
+            if item["path"] not in set(zf.namelist())
+        ]
+        if not fixture_lock.get("files") or unlocked:
+            return _fail(
+                f"fixture lock covers files the archive does not contain: {unlocked[:8]}"
+            )
+        # Every COPY source must ship: the archive has to build its own image.
+        member_names = set(zf.namelist())
+        for copy_line in re.findall(r"(?m)^COPY\s+(.+)$", dockerfile):
+            for source in copy_line.split()[:-1]:
+                if source.startswith("--"):
+                    continue
+                source = source.rstrip("/")
+                if source not in member_names and not any(
+                    name.startswith(source + "/") for name in member_names
+                ):
+                    return _fail(
+                        f"Dockerfile copies {source!r}, which the archive does not contain"
+                    )
         for snippet in (
             "COPY tests ./tests",
             "COPY scripts ./scripts",
             "COPY docs ./docs",
             "poppler-utils",
-            "python -m pip install --upgrade pip setuptools wheel",
-            'CMD ["make", "reproduce-jss-full"]',
+            "--no-deps -e .",
+            'CMD ["python", "replication/reproduce.py", "--clean"]',
         ):
             if snippet not in dockerfile:
                 return _fail(f"Dockerfile lacks full-audit container snippet: {snippet}")
@@ -5116,10 +5198,13 @@ def main() -> int:
             if package not in requirements:
                 return _fail(f"requirements-jss.txt lacks {package}")
         if (
-            "local StatsPAI 1.20.0 tree" not in requirements
-            or "local StatsPAI 1.16.1 tree" in requirements
+            "These are ranges, not a lock" not in requirements
+            or "requirements-jss-lock.txt" not in requirements
         ):
-            return _fail("requirements-jss.txt carries a stale StatsPAI version comment")
+            return _fail(
+                "requirements-jss.txt does not state that it holds ranges and "
+                "point to the exact lock"
+            )
 
         r_env = _read_member(zf, "tests/r_parity/R_ENVIRONMENT.md")
         for snippet in ("R 4.5.2", "renv.lock", "verify_reproduce.py"):

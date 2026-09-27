@@ -92,6 +92,64 @@ def _claims() -> dict[str, int | str]:
         "NoStataModuleCount": r_modules - stata_modules,
         **_orig_parity_claims(),
         **_track_a_verdict_claims(),
+        **_cross_not_certified_claims(),
+        **_agent_card_strata_claims(),
+    }
+
+
+def _agent_card_strata_claims() -> dict[str, int]:
+    """Where the schemas without curated agent metadata sit.
+
+    The schema table reports how many registered symbols carry a curated or
+    inherited agent card; this splits the rest into result/exception
+    classes plus infrastructure (where planning metadata has little to say)
+    and estimator entry points, using the same strata as
+    ``sp.parity_summary()['denominators']``.
+    """
+    import inspect
+
+    import statspai as sp
+    from statspai import registry as _registry
+    from statspai.parity import INFRASTRUCTURE_CATEGORIES
+
+    curated = {c["name"] for c in sp.agent_cards()}
+    class_infra = estimator = 0
+    for name, spec in _registry._REGISTRY.items():
+        if name in curated:
+            continue
+        obj = getattr(sp, name, None)
+        if inspect.isclass(obj) or spec.category in INFRASTRUCTURE_CATEGORIES:
+            class_infra += 1
+        else:
+            estimator += 1
+    return {
+        "AgentUncuratedClassInfra": class_infra,
+        "AgentUncuratedEstimator": estimator,
+    }
+
+
+def _cross_not_certified_claims() -> dict[str, object]:
+    """Symbols with cross-language evidence that the tier gate keeps out of
+    ``certified`` (the tier also requires a stable API), named so the text
+    can explain the difference between the two counts."""
+    import statspai as sp
+    from statspai.parity import CROSS_LANGUAGE_STATUSES, parity_matrix
+
+    cross = {
+        r["function"]
+        for r in parity_matrix(fmt="records")
+        if r.get("status") in CROSS_LANGUAGE_STATUSES
+    }
+    certified = set(sp.list_functions(validation_status="certified"))
+    if certified - cross:
+        raise ValueError(f"certified without cross-language evidence: {sorted(certified - cross)}")
+    gap = sorted(cross - certified)
+    return {
+        "ParityCrossNotCertified": len(gap),
+        "ParityCrossNotCertifiedNames": ", ".join(
+            "\\code{" + g.replace("_", "\\_") + "}" for g in gap
+        )
+        or "none",
     }
 
 

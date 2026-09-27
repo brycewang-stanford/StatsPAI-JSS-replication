@@ -14,7 +14,6 @@ import re
 import os
 import sys
 import time
-import unicodedata
 import zipfile
 from pathlib import Path
 from typing import Iterable
@@ -30,6 +29,12 @@ from _paths import statspai_root as _statspai_root
 HERE = Path(__file__).resolve().parent
 PAPER_DIR = _PAPER_ROOT
 ROOT = _statspai_root()  # see _paths.py: worktree-safe
+# The ASCII transliteration lives in StatsPAI's scripts/ascii_source.py, the
+# module the Tier A fixture lock and the Track A implementation trace hash
+# through; sharing it is what keeps those gates valid on the archive.
+if str(ROOT / "scripts") not in sys.path:
+    sys.path.insert(0, str(ROOT / "scripts"))
+from ascii_source import ASCII_SOURCE_SUFFIXES, ascii_source_text  # noqa: E402
 BUILD_DIR = PAPER_DIR / "build"
 ARCHIVE = BUILD_DIR / "statspai-jss-submission.zip"
 MANIFEST_JSON = BUILD_DIR / "statspai-jss-submission-manifest.json"
@@ -38,112 +43,7 @@ MAX_ATTACHMENT_MB = 50.0
 SOURCE_DATE_EPOCH = int(os.environ.get("SOURCE_DATE_EPOCH", "1780185600"))
 FIXED_ZIP_DATETIME = time.gmtime(SOURCE_DATE_EPOCH)[:6]
 EVIDENCE_PATH_RE = re.compile(r"(?P<path>(?:tests|scripts|Paper-JSS)/[^\s,;:)`]+\.py)")
-ASCII_SOURCE_SUFFIXES = {".py", ".R", ".do", ".sh", ".toml"}
 ASCII_DATA_SUFFIXES = {".csv", ".json", ".lock"}
-
-ASCII_TRANSLITERATION = str.maketrans({
-    "\u2010": "-",
-    "\u2011": "-",
-    "\u2012": "-",
-    "\u2013": "-",
-    "\u2014": "--",
-    "\u2015": "--",
-    "\u2212": "-",
-    "\u2026": "...",
-    "\u00d7": "x",
-    "\u00b7": "*",
-    "\u2248": "~",
-    "\u2264": "<=",
-    "\u2265": ">=",
-    "\u2260": "!=",
-    "\u2261": "==",
-    "\u221e": "inf",
-    "\u2208": "in",
-    "\u2190": "<-",
-    "\u2192": "->",
-    "\u2194": "<->",
-    "\u21d2": "=>",
-    "\u221a": "sqrt",
-    "\u2211": "sum",
-    "\u222b": "integral",
-    "\u2202": "partial",
-    "\u22a5": "perp",
-    "\u201c": '"',
-    "\u201d": '"',
-    "\u2018": "'",
-    "\u2019": "'",
-    "\u00a7": "Section ",
-    "\u00b1": "+/-",
-    "\u2022": "*",
-    "\u26a0": "WARNING",
-    "\u2705": "OK",
-    "\u2713": "OK",
-    "\ufe0f": "",
-    "\u2500": "-",
-    "\u2501": "-",
-    "\u2550": "=",
-    "\u2502": "|",
-    "\u2503": "|",
-    "\u250c": "+",
-    "\u2510": "+",
-    "\u2514": "+",
-    "\u2518": "+",
-    "\u251c": "+",
-    "\u2524": "+",
-    "\u253c": "+",
-    "\u2554": "+",
-    "\u2557": "+",
-    "\u255a": "+",
-    "\u255d": "+",
-    "\u2551": "|",
-    "\u03b1": "alpha",
-    "\u03b2": "beta",
-    "\u03b3": "gamma",
-    "\u03b4": "delta",
-    "\u03b5": "epsilon",
-    "\u03b7": "eta",
-    "\u03b8": "theta",
-    "\u03ba": "kappa",
-    "\u03bb": "lambda",
-    "\u03bc": "mu",
-    "\u03bd": "nu",
-    "\u03c0": "pi",
-    "\u03c1": "rho",
-    "\u03c3": "sigma",
-    "\u03c4": "tau",
-    "\u03c6": "phi",
-    "\u03c7": "chi",
-    "\u03c8": "psi",
-    "\u03c9": "omega",
-    "\u0393": "Gamma",
-    "\u0394": "Delta",
-    "\u03a3": "Sigma",
-    "\u03a6": "Phi",
-    "\u03a8": "Psi",
-    "\u03a9": "Omega",
-    "\u2080": "0",
-    "\u2081": "1",
-    "\u2082": "2",
-    "\u2083": "3",
-    "\u2084": "4",
-    "\u2085": "5",
-    "\u2086": "6",
-    "\u2087": "7",
-    "\u2088": "8",
-    "\u2089": "9",
-    "\u00b9": "1",
-    "\u00b2": "2",
-    "\u00b3": "3",
-    "\u2070": "0",
-    "\u2074": "4",
-    "\u2075": "5",
-    "\u2076": "6",
-    "\u2077": "7",
-    "\u2078": "8",
-    "\u2079": "9",
-    "\u207b": "-",
-})
-
 
 def _generated_at_unix() -> int:
     return SOURCE_DATE_EPOCH
@@ -159,8 +59,13 @@ PAPER_INCLUDE_DIRS = [
 PAPER_INCLUDE_FILES = [
     PAPER_DIR / "Makefile",
     PAPER_DIR / "requirements-jss.txt",
+    # The exact lock the Dockerfile installs and the manuscript cites, and the
+    # extra dependencies of full recomputation.
+    PAPER_DIR / "requirements-jss-lock.txt",
+    PAPER_DIR / "requirements-jss-recompute.txt",
     PAPER_DIR / "README.md",
     PAPER_DIR / "cover-letter.md",
+    PAPER_DIR / "cover-letter.template.md",
     PAPER_DIR / "JOSS-JSS-OVERLAP.md",
     PAPER_DIR / "REVIEWER-HARDENING-AUDIT.md",
     PAPER_DIR / "manuscript" / "main.tex",
@@ -228,12 +133,16 @@ ROOT_INCLUDE_FILES = [
     ROOT / "README.md",
     ROOT / "CHANGELOG.md",
     ROOT / "MIGRATION.md",
+    # `make pdf` re-derives manuscript/jss-bib.bib from the master bib.
+    ROOT / "paper.bib",
+    ROOT / "tools" / "bib_subset.py",
     ROOT / "tests" / "conftest.py",
     ROOT / "tests" / "test_api_stable_evidence.py",
     ROOT / "tests" / "test_jss_reproduction_environment.py",
     ROOT / "tests" / "test_jss_formal_compliance.py",
     ROOT / "tests" / "test_jss_manuscript_artifacts.py",
     ROOT / "tests" / "test_jss_validation_api.py",
+    ROOT / "tests" / "test_registry_install_independence.py",
     ROOT / "tests" / "test_jss_release_manifest.py",
     ROOT / "tests" / "test_augsynth_backend.py",
     ROOT / "tests" / "test_gsynth_backend.py",
@@ -243,6 +152,9 @@ ROOT_INCLUDE_FILES = [
     ROOT / "tests" / "test_rddensity_io.py",
     ROOT / "tests" / "test_stability_audit.py",
     ROOT / "tests" / "test_schema_export.py",
+    # Imported by the provenance tracer and the fixture lock (hash gates).
+    ROOT / "scripts" / "ascii_source.py",
+    ROOT / "scripts" / "tier_a_fixture_lock.py",
     ROOT / "scripts" / "dump_schemas.py",
     ROOT / "scripts" / "schema_quality.py",
     ROOT / "scripts" / "stability_audit.py",
@@ -434,11 +346,22 @@ def _excluded(path: Path) -> bool:
         return True
     if path in EXCLUDED_FILES:
         return True
+    # Track C inputs (~80 MB of CSV) are regenerated byte for byte by
+    # tests/perf/_data.py, which records their hashes in the result files;
+    # the archive carries the generator, not the data.
+    if ROOT / "tests" / "perf" / "data" in path.parents:
+        return True
     if (
         PAPER_DIR / "manuscript" in path.parents
         and path.suffix.lower() in {".md", ".pdf", ".tex"}
         and any(token in path.name for token in ("\u8bc4\u5ba1", "\u4e2d\u6587"))
     ):
+        return True
+    # Internal review notes and the authors' responses to them (审稿意见-*)
+    # are working documents, not submission material. They were kept out
+    # only because nothing listed them, until an uncommitted edit to one put
+    # it among the source snapshot's dirty paths, which the archive carries.
+    if path.parent == PAPER_DIR and path.name.startswith("\u5ba1\u7a3f\u610f\u89c1"):
         return True
     if path.name in EXCLUDED_NAMES:
         return True
@@ -463,10 +386,7 @@ def _ascii_source_bytes(path: Path) -> tuple[bytes | None, bool]:
         return None, False
     except UnicodeDecodeError:
         text = data.decode("utf-8")
-    text = text.replace("\u5f85\u6838\u9a8c", "pending verification")
-    text = text.translate(ASCII_TRANSLITERATION)
-    text = unicodedata.normalize("NFKD", text)
-    return text.encode("ascii", "ignore"), True
+    return ascii_source_text(text).encode("ascii"), True
 
 
 def _jss_archive_root_readme_bytes() -> bytes:
@@ -524,6 +444,20 @@ def _zip_info(path: Path, arcname: str) -> zipfile.ZipInfo:
     return info
 
 
+#: Repository files named by the standalone driver: whatever Tier 1 or a
+#: ``--recompute`` group runs has to be inside the archive it is run from.
+DRIVER_PATH_RE = re.compile(r"[\"'](?P<path>(?:tests|scripts)/[\w./-]+\.(?:py|R))[\"']")
+
+
+def _driver_referenced_files() -> list[Path]:
+    text = (PAPER_DIR / "replication" / "reproduce.py").read_text(encoding="utf-8")
+    paths = {ROOT / m.group("path") for m in DRIVER_PATH_RE.finditer(text)}
+    missing = sorted(str(p.relative_to(ROOT)) for p in paths if not p.is_file())
+    if missing:
+        raise SystemExit(f"reproduce.py names files that do not exist: {missing}")
+    return sorted(paths)
+
+
 def main() -> int:
     BUILD_DIR.mkdir(parents=True, exist_ok=True)
     if ARCHIVE.exists():
@@ -536,6 +470,7 @@ def main() -> int:
     candidates.extend(_iter_files(ROOT_INCLUDE_DIRS + ROOT_INCLUDE_FILES))
     candidates.extend(registry_evidence_files)
     candidates.extend(source_snapshot_listed_files)
+    candidates.extend(_driver_referenced_files())
     files = sorted({path.resolve() for path in candidates if not _excluded(path)})
     registry_evidence_rel = sorted(
         str(path.relative_to(ROOT))

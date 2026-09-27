@@ -6,7 +6,7 @@ The public repository is the JSS submission archive
 ``jss_submission_package.py``) minus the documents addressed to the JSS
 editors, with machine-local paths scrubbed from generated audit output.
 Deriving it from the archive keeps one packaging rule set: anything the
-archive excludes (notes, e-mail drafts, third-party PDFs, review drafts)
+archive excludes (notes, e-mail drafts, third-party PDFs, internal review files)
 is excluded here too.
 
 Additional public-only rules:

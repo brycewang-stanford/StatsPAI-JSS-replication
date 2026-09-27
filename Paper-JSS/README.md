@@ -47,7 +47,7 @@ cd Paper-JSS
 STATA_EXE=/path/to/stata-mp ../.venv/bin/python replication/reproduce.py --tier 3
 ```
 
-- Tier 1 needs Python only. It rebuilds the worked examples, figures, Track-A parity rollup, Track-C performance table/figure, supplemental tables, registry inventory, citation verifier, agent-interface audit, release-boundary audit, reproduction-environment audit, manuscript-artifact audit, and Python-side validation guards. The audited transcript target writes `replication/results/reproduce_tier1_output.txt`; the current transcript reports 24/24 steps passed (the added step executes every manuscript code listing verbatim), states that every Section 4-7 headline number was rebuilt without R or Stata, and ends with `RESULT: OK -- all required steps reproduced.` The reproduction-environment audit also inspects `tier1()` and fails if it contains live R/Stata dependency markers.
+- Tier 1 needs Python only. It recomputes the worked examples, their figures and tables, every manuscript listing and transcript, the registry census and the MCP trace, and re-tabulates the frozen parity, coverage, forest-seed and timing experiments; it then accounts for each of the twelve generated manuscript inputs in `replication/results/reproduce_manifest.json` (recomputed / re-tabulated / not rebuilt) and fails if one was not rebuilt. `--clean` deletes those inputs first. The audited transcript target writes `replication/results/reproduce_tier1_output.txt` and ends with `RESULT: OK -- all required steps reproduced.` The reproduction-environment audit also inspects `tier1()` and fails if it contains live R/Stata dependency markers. The frozen experiments are recomputed by `--recompute {parity-py,montecarlo,forest-seed,performance,provenance}`; groups whose reference side needs R fail without R instead of reusing the frozen reference.
 - Tier 2 additionally needs R and the packages pinned in `tests/r_parity/renv.lock`; it re-runs R reference checks on the committed CSV bytes. The reproduction-environment audit now requires the R reproducibility report to contain 89/89 reproduced modules and zero non-reproduced rows.
 - Tier 3 additionally needs a Stata license; it re-runs the Stata bridge do-files when `STATA_EXE` names a local Stata executable or Stata is available on `PATH`. If no Stata executable is available, the tier records a documented optional-runtime skip; that skip is not evidence of a live Stata rerun. No main paper headline number depends on a paid Stata license, and the JSS upload evidence for this leg is the committed Stata JSON/do/provenance bundle plus `replication/results/stata_bridge_audit.md`. The generated `replication/results/stata_rerun_protocol.{json,md}` gives licensed reviewers the exact rerun commands, checklist, and drift-interpretation boundary without making missing Stata a JSS upload blocker or claiming a fresh live rerun on this machine.
 
@@ -58,7 +58,7 @@ cd Paper-JSS
 make submission-ready PYTHON=../.venv/bin/python
 ```
 
-This audited packaging target runs `reproduce-jss-full` and then rebuilds `build/statspai-jss-submission.zip`, so the archive contains the latest audit, reproduction, source-snapshot, evidence-map, PDF-review, and Tier-1 transcript artifacts. It excludes repository metadata, caches, prior build products, local notes, active external-review artifacts, and historical or inactive manuscript drafts, leaving one authoritative English manuscript and reviewer package. The current package is 24.21 MiB (25.38 MB decimal) with 2,800 files, including 483 registry evidence files referenced by validation notes. Use `make submission-package` only when the audit artifacts are already current and you need a quick zip refresh.
+This audited packaging target runs `reproduce-jss-full` and then rebuilds `build/statspai-jss-submission.zip`, so the archive contains the latest audit, reproduction, source-snapshot, evidence-map, PDF-review, and Tier-1 transcript artifacts. It excludes repository metadata, caches, prior build products, local notes, active external-review artifacts, and historical or inactive manuscript drafts, leaving one authoritative English manuscript and reviewer package. The current package is 27.07 MiB (28.39 MB decimal) with 2,961 files, including 541 registry evidence files referenced by validation notes. Use `make submission-package` only when the audit artifacts are already current and you need a quick zip refresh.
 
 The generated root `README.md` inside the zip is a JSS-only release
 entry point. It routes reviewers to `Paper-JSS/README.md`, the manuscript
@@ -77,7 +77,7 @@ It also verifies the reproduction environment advertised in the cover letter: `r
 
 ## Data Provenance Audit
 
-The data provenance audit classifies prospective JSS archive data/result members with the same include/exclude rules as `jss_submission_package.py` and excludes `data_provenance_audit.json` from its own data counts. The current report covers 819 scoped data/result files and 336 CSV files: 9 packaged public dataset CSVs, 7 public original-data extract CSVs, 91 same-byte R/Stata fixture CSVs, and 229 reference fixture CSVs. It reports zero forbidden raw-data members, zero high-risk private/credential path hits, zero CSV parse failures, and zero unknown categories. This keeps original-data claims limited to public package extracts and documented public-data rows, keeps calibrated/synthetic fixtures separate from original-data extracts, and rejects raw binary/statistical data formats such as Stata, RDS, SAS, Excel, parquet, and feather files in the prospective archive.
+The data provenance audit classifies prospective JSS archive data/result members with the same include/exclude rules as `jss_submission_package.py` and excludes `data_provenance_audit.json` from its own data counts. The current report covers 876 scoped data/result files and 357 CSV files: 9 packaged public dataset CSVs, 7 public original-data extract CSVs, 91 same-byte R/Stata fixture CSVs, and 250 reference fixture CSVs. It reports zero forbidden raw-data members, zero high-risk private/credential path hits, zero CSV parse failures, and zero unknown categories. This keeps original-data claims limited to public package extracts and documented public-data rows, keeps calibrated/synthetic fixtures separate from original-data extracts, and rejects raw binary/statistical data formats such as Stata, RDS, SAS, Excel, parquet, and feather files in the prospective archive.
 
 ```bash
 cd Paper-JSS
@@ -226,11 +226,11 @@ make manuscript-artifact-audit PYTHON=../.venv/bin/python
 
 ## PDF Render Audit
 
-The formal audit extracts text from `manuscript/main.pdf` (the active PDF is 52 pages); the render audit adds a visual sanity guard. It renders the first, second, middle,
-and last pages with Poppler `pdftoppm`, then scans all 52 PDF pages with
+The formal audit extracts text from `manuscript/main.pdf` (the active PDF is 53 pages); the render audit adds a visual sanity guard. It renders the first, second, middle,
+and last pages with Poppler `pdftoppm`, then scans all 53 PDF pages with
 the same raster dimension and blank/dark-page thresholds. The generated
 `replication/results/pdf_render_audit.{json,md}` records both the
-sampled-page metrics and the full-document machine scan (`52/52` pages,
+sampled-page metrics and the full-document machine scan (`53/53` pages,
 `0` failures). It also records that the final full-document human visual
 spot-check is still an upload-time manual action and is not certified by
 the machine render audit. The final package verifier rejects an archive
@@ -332,7 +332,7 @@ marking that study as nonblocking for this JSS source-snapshot upload.
 
 ## Release Readiness
 
-The archive describes the tagged 1.30.1 release (PyPI wheel and git tag v1.30.1). `replication/results/source_snapshot_manifest.{json,md}` reports package/source/schema versions, tags at HEAD, dirty-path counts, whether the top `[Unreleased]` changelog section is still populated, and the final-publication gate. The manifest includes a structured checklist for the release cut: hand-edited worktree blockers, package tag at `HEAD`, version consistency, finalized changelog, finalized package source paths, and finalized Paper-JSS paths.
+The archive describes the tagged 1.32.0 release (PyPI wheel and git tag v1.32.0). `replication/results/source_snapshot_manifest.{json,md}` reports package/source/schema versions, tags at HEAD, dirty-path counts, whether the top `[Unreleased]` changelog section is still populated, and the final-publication gate. The manifest includes a structured checklist for the release cut: hand-edited worktree blockers, package tag at `HEAD`, version consistency, finalized changelog, finalized package source paths, and finalized Paper-JSS paths.
 
 ```bash
 cd Paper-JSS
@@ -346,6 +346,23 @@ The release-boundary audit below fails if the manuscript's release claim drifts 
 ```bash
 cd Paper-JSS
 make release-boundary-audit PYTHON=../.venv/bin/python
+```
+
+## Review-Period Freeze
+
+The manuscript's numbers are anchored to the tagged release above. At that
+tag the StatsPAI repository hashes every experiment artifact the manuscript
+re-tabulates -- the Track A and original-data parity results, the Track B
+coverage runs and mechanism studies, the forest seed study, and the Track C
+timings -- into `tests/jss_review_freeze.json`. Development continues on
+`main` during review, but a change to any of those artifacts must be recorded
+in `docs/dev/jss_review_changes.md`, with its reason and its effect on the
+paper, or `tests/test_jss_review_freeze.py` fails. To compare the paper with
+the package, check out the tag rather than `main`; the ledger lists anything
+that has moved since.
+
+```bash
+python scripts/jss_review_freeze.py --check   # from the StatsPAI root
 ```
 
 ## Reproduction Environment Audit
@@ -380,8 +397,8 @@ make jss-style PYTHON=../.venv/bin/python
 
 ## Manuscript Length
 
-`manuscript/main.tex` now compiles compact submission-facing versions of the introduction, architecture, agent API, worked-example, validation, computational-detail, and discussion sections. The longer source notes remain in `manuscript/sections/` for auditability, but they are not printed in the active 52-page PDF. The one printed appendix is the complete 89-module Track A ledger (Appendix A, generated by `replication/scripts/gen_appendix_parity.py`); the remaining detailed tables are generated and shipped as supplemental artifacts rather than printed in the main manuscript.
+`manuscript/main.tex` now compiles compact submission-facing versions of the introduction, architecture, agent API, worked-example, validation, computational-detail, and discussion sections. The longer source notes remain in `manuscript/sections/` for auditability, but they are not printed in the active 53-page PDF. The one printed appendix is the complete 89-module Track A ledger (Appendix A, generated by `replication/scripts/gen_appendix_parity.py`); the remaining detailed tables are generated and shipped as supplemental artifacts rather than printed in the main manuscript.
 
 ## What "Validated" Means Here
 
-The paper uses "validated" as a registry evidence tier, not as a blanket claim about all exported helpers. The full audit currently reports 556 certified/validated symbols and 568 stable auto-registered symbols that remain API-stable but not parity-backed; the hand-written stable API surface now has zero unbacked entries because API-only helpers carry unit-contract evidence while remaining `api_stable`. In the live registry, the status counts are 414 `certified`, 142 `validated`, 661 `api_stable`, and 3 `experimental`. The full audit also decomposes the 641-symbol API-stable denominator into class-like/function-like and category counts, so the breadth claim stays auditable rather than becoming an unqualified validation claim. `replication/scripts/validation_evidence_audit.py` fails if any certified/validated symbol lacks registry-attached evidence notes, if a certified symbol lacks attached R/Stata parity-module evidence, or if a validated symbol is backed only by unit/regression tests. `scripts/stability_audit.py --check` fails if any hand-written stable API entry lacks attached evidence. `replication/scripts/validate_claims.py` fails if the active manuscript, cover letter, README, or stability guide drifts back to a blanket "Validated" claim. See `docs/guides/stability.md` and `Paper-JSS/REVIEWER-HARDENING-AUDIT.md`.
+The paper uses "validated" as a registry evidence tier, not as a blanket claim about all exported helpers. The full audit currently reports 558 certified/validated symbols and 601 stable auto-registered symbols that remain API-stable but not parity-backed; the hand-written stable API surface now has zero unbacked entries because API-only helpers carry unit-contract evidence while remaining `api_stable`. In the live registry, the status counts are 414 `certified`, 144 `validated`, 694 `api_stable`, and 3 `experimental`. The full audit also decomposes the 694-symbol API-stable denominator into class-like/function-like and category counts, so the breadth claim stays auditable rather than becoming an unqualified validation claim. `replication/scripts/validation_evidence_audit.py` fails if any certified/validated symbol lacks registry-attached evidence notes, if a certified symbol lacks attached R/Stata parity-module evidence, or if a validated symbol is backed only by unit/regression tests. `scripts/stability_audit.py --check` fails if any hand-written stable API entry lacks attached evidence. `replication/scripts/validate_claims.py` fails if the active manuscript, cover letter, README, or stability guide drifts back to a blanket "Validated" claim. See `docs/guides/stability.md` and `Paper-JSS/REVIEWER-HARDENING-AUDIT.md`.

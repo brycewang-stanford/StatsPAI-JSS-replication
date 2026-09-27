@@ -44,10 +44,15 @@ from __future__ import annotations
 
 import datetime as _dt
 import hashlib
+import json
+import os
 import sys
 import uuid
-from dataclasses import dataclass, field, asdict
-from typing import Any, Dict, Mapping, Optional
+import warnings
+from dataclasses import asdict, dataclass, field
+from typing import Any, Callable, Dict, List, Mapping, Optional, TypeVar, cast
+
+_F = TypeVar("_F", bound=Callable[..., Any])
 
 __all__ = [
     "Provenance",
@@ -104,8 +109,8 @@ def compute_data_hash(data: Any, length: int = 12) -> Optional[str]:
     if data is None:
         return None
     try:
-        import pandas as pd
         import numpy as np
+        import pandas as pd
 
         if isinstance(data, pd.DataFrame):
             if len(data) > MAX_HASH_ROWS:
@@ -198,8 +203,8 @@ def _summarise_value(v: Any) -> Any:
             items = items[:50] + [("...", f"(+{len(v) - 50} more)")]
         return {str(k): _summarise_value(val) for k, val in items}
     try:
-        import pandas as pd
         import numpy as np
+        import pandas as pd
 
         if isinstance(v, pd.DataFrame):
             return {
@@ -388,7 +393,254 @@ def attach_provenance(
             return result
     except Exception:
         return result
+    _note_listwise_deletion(result, function, params, data)
+    _capture_if_requested(result, prov)
     return result
+
+
+#: When set, every attached provenance record is also appended (JSON lines)
+#: to this file together with the result's headline numbers.
+#: ``sp.verify_replication_pack`` sets it for the rerun of a pack's script.
+CAPTURE_ENV = "STATSPAI_CAPTURE_RESULTS"
+
+
+def headline_numbers(result: Any, limit: int = 60) -> Dict[str, Any]:
+    """``{name: [estimate, se]}`` for a result's reported coefficients.
+
+    ``EconometricResults``-style ``params`` / ``std_errors`` series, or a
+    ``CausalResult``'s scalar ``estimate`` / ``se``. Empty when neither is
+    present.
+    """
+    import numpy as np
+
+    out: Dict[str, Any] = {}
+
+    def _f(v: Any) -> Optional[float]:
+        try:
+            x = float(v)
+        except (TypeError, ValueError):
+            return None
+        return x if np.isfinite(x) else None
+
+    params: Any = getattr(result, "params", None)
+    ses: Any = getattr(result, "std_errors", None)
+    if hasattr(params, "items") and type(result).__name__ != "CausalResult":
+        for i, (k, v) in enumerate(params.items()):
+            if i >= limit:
+                break
+            se = ses.get(k) if hasattr(ses, "get") else None
+            out[str(k)] = [_f(v), _f(se)]
+        return out
+    if hasattr(result, "estimate"):
+        out["estimate"] = [
+            _f(getattr(result, "estimate", None)),
+            _f(getattr(result, "se", None)),
+        ]
+    return out
+
+
+def result_record(result: Any) -> Optional[Dict[str, Any]]:
+    """Replication record: provenance key plus headline numbers."""
+    prov = getattr(result, "_provenance", None)
+    if prov is None:
+        return None
+    return {
+        "function": prov.function,
+        "params": prov.params,
+        "data_hash": prov.data_hash,
+        "data_shape": prov.data_shape,
+        "numbers": headline_numbers(result),
+    }
+
+
+def _capture_if_requested(result: Any, prov: Any) -> None:
+    path = os.environ.get(CAPTURE_ENV)
+    if not path:
+        return
+    try:
+        rec = result_record(result)
+        if rec is None:
+            return
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(rec, default=str) + "\n")
+    except Exception as exc:  # noqa: BLE001 — capture must never break a fit
+        warnings.warn(
+            f"{CAPTURE_ENV}: could not record {getattr(prov, 'function', '?')}: "
+            f"{type(exc).__name__}: {exc}",
+            RuntimeWarning,
+            stacklevel=3,
+        )
+
+
+def records_provenance(function: str, *, data_arg: str = "data") -> Callable[[_F], _F]:
+    """Decorator: attach a :class:`Provenance` record to the returned result.
+
+    The call is bound to the wrapped signature, so ``params`` are the
+    arguments as the function received them; ``data_arg`` is fingerprinted
+    rather than stored. Place it *outside* decorators that rewrite the data
+    (e.g. ``markout_clusters``) so the fingerprint and ``data_shape`` describe
+    the caller's input. Like :func:`attach_provenance` it never raises and
+    never overwrites a record an inner call already set.
+    """
+    import functools
+    import inspect
+
+    def deco(fn: _F) -> _F:
+        sig = inspect.signature(fn)
+
+        @functools.wraps(fn)
+        def wrapper(*args: Any, **kwargs: Any) -> Any:
+            result = fn(*args, **kwargs)
+            try:
+                bound = sig.bind_partial(*args, **kwargs)
+            except TypeError:
+                return result
+            params: Dict[str, Any] = {}
+            data = None
+            for name, value in bound.arguments.items():
+                kind = sig.parameters[name].kind
+                if name == data_arg:
+                    data = value
+                elif kind is inspect.Parameter.VAR_KEYWORD:
+                    params.update(value)
+                elif kind is not inspect.Parameter.VAR_POSITIONAL:
+                    params[name] = value
+            return attach_provenance(
+                result, function=function, params=params, data=data
+            )
+
+        return cast(_F, wrapper)
+
+    return deco
+
+
+def _reported_nobs(result: Any) -> Optional[int]:
+    """The estimation-sample size a result reports, if it reports one."""
+    import numpy as np
+
+    for owner, keys in (
+        (result, ("n_obs", "nobs")),
+        (getattr(result, "data_info", None), ("nobs", "n_obs")),
+        (getattr(result, "model_info", None), ("n_obs", "nobs")),
+    ):
+        if owner is None:
+            continue
+        for key in keys:
+            value = (
+                owner.get(key)
+                if isinstance(owner, Mapping)
+                else getattr(owner, key, None)
+            )
+            if isinstance(value, (int, np.integer)) and not isinstance(value, bool):
+                return int(value)
+            if isinstance(value, (float, np.floating)) and float(value).is_integer():
+                return int(value)
+    return None
+
+
+def _referenced_columns(params: Optional[Mapping[str, Any]], columns: Any) -> List[str]:
+    """Data columns named by the call's arguments (strings, lists, formulas)."""
+    import re
+
+    cols = set(map(str, columns))
+    found: List[str] = []
+
+    def add(name: Any) -> None:
+        if isinstance(name, str) and name in cols and name not in found:
+            found.append(name)
+
+    for value in (params or {}).values():
+        if isinstance(value, str):
+            if value in cols:
+                add(value)
+            elif "~" in value:
+                for token in re.findall(r"[A-Za-z_][A-Za-z0-9_.]*", value):
+                    add(token)
+        elif isinstance(value, (list, tuple)):
+            for item in value:
+                add(item)
+    return found
+
+
+#: Designs in which a missing value is information, not a dropped row:
+#: attrition / truncation-by-death bounds use the missing outcomes to set
+#: the trimming share, censoring weights model them, a surrogate index or
+#: a transport weight is built precisely where the outcome is unobserved,
+#: and imputation fills them. The listwise-deletion note would be false.
+_MISSING_BY_DESIGN = frozenset(
+    {
+        "lee_bounds",
+        "manski_bounds",
+        "horowitz_manski",
+        "selection_bounds",
+        "survivor_average_causal_effect",
+        "ipcw",
+        "clone_censor_weight",
+        "surrogate_index",
+        "transport_weights",
+        "mice",
+        "heckman",
+    }
+)
+
+
+def _note_listwise_deletion(
+    result: Any,
+    function: str,
+    params: Optional[Mapping[str, Any]],
+    data: Any,
+) -> None:
+    """Warn when rows with missing values were dropped from the estimation.
+
+    Estimators drop rows with a missing value in any variable they use
+    (listwise deletion), as Stata and R do -- but R prints how many rows
+    went and Stata shows the smaller N, while StatsPAI said nothing. The
+    note fires only when the result's reported N equals the input rows
+    minus the incomplete ones, i.e. when listwise deletion demonstrably
+    happened; estimators that impute, trim to a bandwidth or subset the
+    sample for other reasons do not match and stay silent. Never raises.
+    """
+    try:
+        import pandas as pd
+
+        if function.split(".")[-1] in _MISSING_BY_DESIGN:
+            return
+        if not isinstance(data, pd.DataFrame) or len(data) == 0:
+            return
+        used = _referenced_columns(params, data.columns)
+        if not used:
+            return
+        incomplete = data[used].isna()
+        n_dropped = int(incomplete.any(axis=1).sum())
+        if n_dropped == 0:
+            return
+        nobs = _reported_nobs(result)
+        if nobs is None or nobs != len(data) - n_dropped:
+            return
+        by_column = {c: int(n) for c, n in incomplete.sum().items() if n}
+        info = {"n_rows_dropped_missing": n_dropped, "missing_by_column": by_column}
+        model_info = getattr(result, "model_info", None)
+        if isinstance(model_info, dict):
+            model_info.setdefault("listwise_deletion", info)
+    except Exception:
+        return
+    from ..exceptions import AssumptionWarning
+
+    name = function.split(".")[-1]
+    warnings.warn(
+        AssumptionWarning(
+            f"{name}: {n_dropped} of {len(data)} rows dropped for missing "
+            f"values (listwise deletion) -- by column: {by_column}.",
+            recovery_hint=(
+                "Estimates use complete cases only, which is unbiased only if "
+                "missingness is unrelated to the outcome given the model's "
+                "variables. Impute with sp.mice to check, or drop the rows "
+                "explicitly to silence this note."
+            ),
+            diagnostics=info,
+        ),
+        stacklevel=3,
+    )
 
 
 def get_provenance(result: Any) -> Optional[Provenance]:

@@ -29,7 +29,7 @@ module can compare the two implementations on identical bytes.
 
 Standard errors are optional and resampling-based (unit block
 bootstrap or unit jackknife), exactly as in ``fect``; they are
-stochastic (T3) and are not part of the deterministic parity claim.
+stochastic and are not part of the deterministic parity claim.
 
 References
 ----------

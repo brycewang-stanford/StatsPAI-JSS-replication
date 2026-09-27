@@ -13,3 +13,4 @@ line by line; quoted output values are pinned by assertions).
 | 04-examples-compact.tex | `lst:csdid` | PASS | 0.0 |
 | 04-examples-compact.tex | `lst:csdid-output` | PASS | 0.0 |
 | 04-examples-compact.tex | `lst:fect` | PASS | 0.0 |
+| 05-parity-compact.tex | `lst:scope` | PASS | 0.0 |

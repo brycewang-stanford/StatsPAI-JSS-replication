@@ -72,6 +72,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 import numpy as np
 import pandas as pd
 
+from .._aliases import accepts_aliases
 from ..core.results import CausalResult
 from ..exceptions import ConvergenceFailure, DataInsufficient, MethodIncompatibility
 
@@ -536,6 +537,7 @@ def _cls_exact(
     return best
 
 
+@accepts_aliases(weights="sample_weight")
 def dml_model_averaging(
     data: pd.DataFrame,
     y: str,
@@ -961,7 +963,7 @@ def dml_model_averaging(
 
     return DMLAveragingResult(
         method="DML (PLR) with model averaging",
-        estimand="ATE",
+        estimand="theta",
         estimate=theta_avg,
         se=se_avg,
         pvalue=pvalue,

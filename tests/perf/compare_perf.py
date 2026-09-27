@@ -45,27 +45,39 @@ PAPER_FIGURES_DIR.mkdir(parents=True, exist_ok=True)
 ESTIMATORS = {
     "01_hdfe": {
         "name": "HDFE 2-way FE",
+        "task": "OLS, 2 absorbed FE, iid SE",
+        "short": ("HDFE", "OLS, two absorbed FE, iid SE"),
         "ref": "fixest::feols",
         "ref_side": "R",
         "x_label": "N (observations)",
+        "agreement": "exact",
     },
     "02_csdid": {
-        "name": "CS-DiD simple ATT",
+        "name": "CS-DiD",
+        "task": "ATT(g,t), pre-test, simple + dynamic agg.",
+        "short": ("CS-DiD", "ATT(g,t), pre-test, simple and dynamic aggregation"),
         "ref": "did::att_gt",
         "ref_side": "R",
         "x_label": "N (observations)",
+        "agreement": "exact",
     },
     "03_scm": {
-        "name": "Classical SCM",
+        "name": "Classical SCM (ADH)",
+        "task": "special predictors, nested V, no placebos",
+        "short": ("SCM", "ADH special predictors, nested V, no placebos"),
         "ref": "Synth::synth",
         "ref_side": "R",
         "x_label": "n_donors",
+        "agreement": "solver",
     },
     "04_dml": {
         "name": "DML PLR (lin. learners)",
+        "task": "PLR, linear learners, 5 folds",
+        "short": ("DML", "PLR, linear learners, 5 folds"),
         "ref": "doubleml-for-py",
         "ref_side": "doubleml_py",
         "x_label": "N (observations)",
+        "agreement": "folds",
     },
 }
 
@@ -74,22 +86,73 @@ def load(estimator: str, side: str) -> list[dict]:
     path = RESULTS_DIR / f"{estimator}_{side}.json"
     if not path.exists():
         return []
-    return json.loads(path.read_text())["rows"]
+    return json.loads(path.read_text(encoding="utf-8"))["rows"]
+
+
+def load_hardware(estimator: str, side: str) -> dict:
+    path = RESULTS_DIR / f"{estimator}_{side}.json"
+    if not path.exists():
+        return {}
+    return json.loads(path.read_text(encoding="utf-8")).get("hardware") or {}
+
+
+class PairingError(RuntimeError):
+    """The two sides of a row did not time the same input in the same run."""
+
+
+def check_pairing(allow_mixed: bool = False) -> list[str]:
+    """Refuse rows whose sides read different bytes or came from other runs.
+
+    A speed ratio is a statement about two implementations of one task on
+    one input. Pairing a fresh Python timing with a stale R timing, or two
+    sides that read different data, silently changes what the ratio means.
+    """
+    problems: list[str] = []
+    for est, cfg in ESTIMATORS.items():
+        py, ref = load(est, "py"), load(est, cfg["ref_side"])
+        if not py or not ref:
+            problems.append(f"{est}: a side is missing")
+            continue
+        run_py = load_hardware(est, "py").get("run_id")
+        run_ref = load_hardware(est, cfg["ref_side"]).get("run_id")
+        if run_py != run_ref or run_py in (None, "unset"):
+            problems.append(f"{est}: run ids differ ({run_py} vs {run_ref})")
+        ref_by_n = {row["n"]: row for row in ref}
+        for row in py:
+            other = ref_by_n.get(row["n"])
+            if other is None:
+                problems.append(f"{est} n={row['n']}: no reference row")
+                continue
+            h1 = row.get("extra", {}).get("data_sha256")
+            h2 = other.get("extra", {}).get("data_sha256")
+            if not h1 or h1 != h2:
+                problems.append(f"{est} n={row['n']}: input hashes differ")
+    if problems and not allow_mixed:
+        raise PairingError("; ".join(problems))
+    return problems
+
+
+def agreement(est: str, prow: dict, rrow: dict) -> str:
+    """How far the two sides' target quantity is apart, in the row's terms."""
+    a = prow.get("extra", {}).get("estimate")
+    b = rrow.get("extra", {}).get("estimate")
+    if a is None or b is None:
+        return "n/a"
+    kind = ESTIMATORS[est]["agreement"]
+    diff = abs(a - b)
+    if kind == "exact":
+        return f"{diff / max(abs(b), 1e-300):.0e}"
+    if kind == "folds":
+        se = rrow.get("extra", {}).get("se") or float("nan")
+        return f"{diff / se:.2f} SE"
+    return f"{diff:.3f}"
 
 
 def measured_versions() -> list[str]:
-    """StatsPAI versions recorded by the Python-side result files.
-
-    Older files predate the field and contribute "unrecorded"; a table
-    built from them should say so rather than imply the current release.
-    """
+    """StatsPAI versions recorded by the Python-side result files."""
     versions = set()
-    for est, cfg in ESTIMATORS.items():
-        path = RESULTS_DIR / f"{est}_py.json"
-        if not path.exists():
-            continue
-        hw = json.loads(path.read_text()).get("hardware") or {}
-        versions.add(hw.get("statspai_version") or "unrecorded")
+    for est in ESTIMATORS:
+        versions.add(load_hardware(est, "py").get("statspai_version") or "unrecorded")
     return sorted(versions)
 
 
@@ -97,12 +160,12 @@ def render_md() -> str:
     lines: list[str] = [
         "# Track C performance report",
         "",
-        "Generated by `tests/perf/compare_perf.py`. Hardware:",
-        "Apple Silicon arm64, 8 physical cores, 24 GB RAM, macOS 26.",
-        "",
-        "Each row reports the median wall-clock time across 3 or 5 reps "
-        "after a warmup. "
-        "The ratio is `reference_time / sp_time` (>1 means sp is faster).",
+        "Generated by `tests/perf/compare_perf.py`. Both sides of every row read",
+        "the same input file (`tests/perf/_data.py`; SHA-256 checked), run the",
+        "task named below on one thread, and were timed in one run.",
+        "`ratio` is `reference_time / sp_time` (>1 means sp is faster);",
+        "`agreement` compares the target quantity of the two sides outside",
+        "the timed call.",
         "",
     ]
     for est, cfg in ESTIMATORS.items():
@@ -110,23 +173,39 @@ def render_md() -> str:
         r = load(est, cfg["ref_side"])
         if not py or not r:
             continue
-        lines.append(f"## {est}: {cfg['name']}")
+        lines.append(f"## {est}: {cfg['name']} -- {cfg['task']}")
         lines.append("")
-        lines.append(f"| n | sp (s) | {cfg['ref']} (s) | ratio ref/sp |")
-        lines.append("|---:|---:|---:|---:|")
+        lines.append(
+            f"| n | sp median (IQR) s | {cfg['ref']} median (IQR) s | ratio | agreement |"
+        )
+        lines.append("|---:|---:|---:|---:|---:|")
         r_by_n = {row["n"]: row for row in r}
         for prow in py:
             rrow = r_by_n.get(prow["n"])
-            ratio = (
-                rrow["median_time_s"] / prow["median_time_s"]
-                if rrow and prow["median_time_s"] > 0
-                else None
-            )
-            ratio_s = f"{ratio:.2f}" if ratio is not None else "—"
+            if rrow is None:
+                continue
+            ratio = rrow["median_time_s"] / prow["median_time_s"]
             lines.append(
-                f"| {prow['n']} | {prow['median_time_s']:.4f} | "
-                f"{rrow['median_time_s']:.4f} | {ratio_s} |"
+                f"| {prow['n']} | {prow['median_time_s']:.4f} ({prow['iqr_time_s']:.4f}) | "
+                f"{rrow['median_time_s']:.4f} ({rrow['iqr_time_s']:.4f}) | {ratio:.2f} | "
+                f"{agreement(est, prow, rrow)} |"
             )
+        if est == "03_scm":
+            lines.append("")
+            lines.append(
+                "Package-default `sp.synth(method='classic')` (V = I, placebos):"
+            )
+            lines.append("")
+            lines.append(
+                "| n_donors | default (s) | without placebos (s) | ADH starts |"
+            )
+            lines.append("|---:|---:|---:|---:|")
+            for prow in py:
+                x = prow.get("extra", {})
+                lines.append(
+                    f"| {prow['n']} | {x.get('default_workflow_s', float('nan')):.3f} | "
+                    f"{x.get('default_no_placebo_s', float('nan')):.3f} | {x.get('starts')} |"
+                )
         lines.append("")
     return "\n".join(lines) + "\n"
 
@@ -148,8 +227,7 @@ def render_tex() -> str:
         "fixest::feols": "\\pkg{fixest}",
         "did::att_gt": "\\pkg{did}",
         "Synth::synth": "\\pkg{Synth}",
-        "DoubleML::DoubleMLPLR": "\\pkg{DoubleML}",
-        "doubleml-for-py": "\\pkg{DoubleML} Python",
+        "doubleml-for-py": "\\pkg{DoubleML}",
     }
     for est, cfg in ESTIMATORS.items():
         py = load(est, "py")
@@ -157,34 +235,32 @@ def render_tex() -> str:
         if not py or not r:
             continue
         r_by_n = {row["n"]: row for row in r}
-        ratios = []
-        for prow in py:
-            rrow = r_by_n.get(prow["n"])
-            if rrow and prow["median_time_s"] > 0:
-                ratios.append(rrow["median_time_s"] / prow["median_time_s"])
-        if not ratios:
-            continue
         max_n = max(prow["n"] for prow in py)
         last = next(p for p in py if p["n"] == max_n)
-        last_r = r_by_n.get(max_n, {}).get("median_time_s", float("nan"))
-        ratio_max = (
-            last_r / last["median_time_s"] if last["median_time_s"] > 0 else None
-        )
-        ratio_str = (
-            f"sp $\\mathbf{{{ratio_max:.1f}\\times}}$"
-            if ratio_max and ratio_max > 1.5
-            else (
-                f"R $\\mathbf{{{1/ratio_max:.1f}\\times}}$"
-                if ratio_max and ratio_max < 0.67
-                else f"tie ${ratio_max:.2f}\\times$"
+        rlast = r_by_n[max_n]
+        ratio = rlast["median_time_s"] / last["median_time_s"]
+        if ratio > 1.5:
+            faster = f"sp $\\mathbf{{{ratio:.1f}\\times}}$"
+        elif ratio < 1 / 1.5:
+            faster = (
+                f"ref. $\\mathbf{{{1 / ratio:.0f}\\times}}$"
+                if ratio < 0.1
+                else (f"ref. $\\mathbf{{{1 / ratio:.1f}\\times}}$")
             )
-        )
-        est_tex = _tex(est)
+        else:
+            faster = f"tie ${ratio:.2f}\\times$"
         max_n_tex = f"{max_n:,}".replace(",", "{,}")
+
+        def fmt(row: dict) -> str:
+            m, q = row["median_time_s"], row["iqr_time_s"]
+            digits = 3 if m >= 0.01 else 4
+            return f"{m:.{digits}f} ({q:.{digits}f})"
+
         rows.append(
-            f"\\code{{{est_tex}}} & {cfg['name']} & "
+            f"{_tex(cfg['short'][0])} & {_tex(cfg['short'][1])} & "
             f"{ref_tex.get(cfg['ref'], _tex(cfg['ref']))} & {max_n_tex} & "
-            f"{last['median_time_s']:.3f} & {last_r:.3f} & {ratio_str} \\\\"
+            f"{fmt(last)} & {fmt(rlast)} & {faster} & "
+            f"{_tex(agreement(est, last, rlast))} \\\\"
         )
     body = "\n".join(rows)
     return (
@@ -194,25 +270,26 @@ def render_tex() -> str:
         "\\begingroup\n"
         "\\footnotesize\n"
         "\\setlength{\\tabcolsep}{2pt}\n"
-        "\\begin{tabular}{@{}p{0.10\\linewidth}p{0.20\\linewidth}"
-        "p{0.13\\linewidth}r r r p{0.14\\linewidth}@{}}\n"
+        "\\begin{tabular}{@{}l>{\\raggedright\\arraybackslash}p{0.21\\linewidth}"
+        "l r r r l r@{}}\n"
         "\\toprule\n"
-        "Module & Estimator & Reference & Max. $N$ & sp & Ref. & Faster path \\\\\n"
+        "Estimator & Common task & Ref. & Max.~$N$ & \\statspai{} (s) & Ref. (s) "
+        "& Faster & Agree \\\\\n"
         "\\midrule\n"
         f"{body}\n"
         "\\bottomrule\n"
         "\\end{tabular}\n"
         "\\endgroup\n"
-        "\\caption{Track C measured performance on Apple Silicon arm64 / "
-        "8 cores / 24~GB, "
-        f"\\statspai{{}} {' / '.join(measured_versions())}. "
-        "Times are median seconds at the largest sample size, "
-        "across 3 or 5 repetitions after one warmup, "
-        "using seed-fixed DGPs. Bold denotes a gap of at least $1.5\\times$. "
-        "The DML row uses \\pkg{DoubleML} Python with the same linear learners, "
-        "five folds, and public-workflow construction cost. "
-        "The Callaway--Sant'Anna row uses "
-        "a homogeneous-effect DGP favourable to the vectorised group-time loop.}\n"
+        "\\caption{Track C at the largest measured size (Apple Silicon arm64, "
+        "one thread on both sides, "
+        f"\\statspai{{}} {' / '.join(measured_versions())}). "
+        "Both sides read the same input file (SHA-256 checked) and run the "
+        "task shown; times are median seconds with the interquartile range in "
+        "parentheses. ``Agree'' compares the target quantity outside the timed "
+        "call: relative difference of the coefficient or simple ATT (HDFE, "
+        "CS), absolute difference of the average post-treatment gap between "
+        "the two non-convex SCM solvers, and the DML difference in units of "
+        "its SE (the folds are drawn independently on each side).}\n"
         "\\label{tab:track-c-perf}\n"
         "\\end{table}\n"
     )
@@ -277,6 +354,17 @@ def render_figure() -> Path:
 
 
 def main() -> None:
+    import argparse
+
+    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap.add_argument(
+        "--allow-mixed",
+        action="store_true",
+        help="render even if the sides of a row came from different runs or inputs",
+    )
+    problems = check_pairing(allow_mixed=ap.parse_args().allow_mixed)
+    for p in problems:
+        print(f"WARNING: {p}")
     md = render_md()
     tex = render_tex()
     (RESULTS_DIR / "perf_table.md").write_text(md, encoding="utf-8")

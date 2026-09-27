@@ -1,8 +1,8 @@
 {
-  "archive_present": false,
+  "archive_present": true,
   "checks": [
     {
-      "evidence": "main.pdf pages=52; class=article jss; missing_front_matter=[]",
+      "evidence": "main.pdf pages=53; class=article jss; missing_front_matter=[]",
       "ok": true,
       "requirement": "PDF manuscript in JSS LaTeX article style"
     },
@@ -22,17 +22,17 @@
       "requirement": "PDF text is synchronized with polished manuscript prose"
     },
     {
-      "evidence": "pdf_render_audit renders representative pages and rejects blank, overwhelmingly dark, or implausibly small rasters, then scans every PDF page with the same machine thresholds; status=PASS; sampled=[1, 2, 26, 52]; rendered=4; full_scan=52/52; full_failures=0; min_width=910; min_height=1287; min_ink_ratio=0.085421; max_dark_ratio=0.02163; failures=0.",
+      "evidence": "pdf_render_audit renders representative pages and rejects blank, overwhelmingly dark, or implausibly small rasters, then scans every PDF page with the same machine thresholds; status=PASS; sampled=[1, 2, 27, 53]; rendered=4; full_scan=53/53; full_failures=0; min_width=910; min_height=1287; min_ink_ratio=0.058779; max_dark_ratio=0.022155; failures=0.",
       "ok": true,
       "requirement": "rendered PDF page-sample sanity check passes"
     },
     {
-      "evidence": "active manuscript markup counts={'proglang': 157, 'pkg': 219, 'code': 518}; caption_label_failures=[].",
+      "evidence": "active manuscript markup counts={'proglang': 158, 'pkg': 221, 'code': 551}; caption_label_failures=[].",
       "ok": true,
       "requirement": "JSS markup macros and labelled floats are used"
     },
     {
-      "evidence": "pyproject.toml uses setuptools, src layout, and console entry points; development classifier is Beta rather than Alpha; pip --no-deps --target install/import probe ok=True; version=1.30.1; functions=1220; scripts=['statspai', 'statspai-mcp']; dist_infos=['statspai-1.30.1.dist-info'].",
+      "evidence": "pyproject.toml uses setuptools, src layout, and console entry points; development classifier is Beta rather than Alpha; pip --no-deps --target install/import probe ok=True; version=1.32.0; functions=1255; scripts=['statspai', 'statspai-mcp']; dist_infos=['statspai-1.32.0.dist-info'].",
       "ok": true,
       "requirement": "source code is packaged for installation"
     },
@@ -57,12 +57,12 @@
       "requirement": "standalone replication script covers manuscript results"
     },
     {
-      "evidence": "Tier-1 transcript file is included and records 24/24 successful steps.",
+      "evidence": "Tier-1 transcript file is included and records 31/31 successful steps.",
       "ok": true,
       "requirement": "reviewer output transcript for standalone replication script is included"
     },
     {
-      "evidence": "Tier-1 transcript reports 24/24 steps in 1.0 minutes; JSS asks for a short reviewer-verification path when full replication is heavier.",
+      "evidence": "Tier-1 transcript reports 31/31 steps in 1.1 minutes; JSS asks for a short reviewer-verification path when full replication is heavier.",
       "ok": true,
       "requirement": "short reviewer replication path completes within one hour"
     },
@@ -87,12 +87,12 @@
       "requirement": "platform dependencies and RNG seeds are disclosed"
     },
     {
-      "evidence": "cover-letter expected snippets=['52 pages', '24/24', '89-module R-parity', '85-module Stata bridge', '1,220 registered public functions', '1,220 public functions', '9,436 schema parameters', 'tagged 1.30.1 release', '13 PASS evidence cards', '5 suggested review routes', 'editor triage', 'statistical validation', 'quick reproduction', 'agent-interface review', 'limitations/release-boundary review']; missing=[]; package manifest absent; size not checked",
+      "evidence": "cover-letter expected snippets=['53 pages', '31/31', '89-module R-parity', '85-module Stata bridge', '1,255 registered public functions', '1,255 public functions', '9,697 schema parameters', 'tagged 1.32.0 release', '13 PASS evidence cards', '5 suggested review routes', 'editor triage', 'statistical validation', 'quick reproduction', 'agent-interface review', 'limitations/release-boundary review', '2,961 files']; missing=[]; cover-letter archive-size disclosures=[(27.07, 28.39)]; expected=27.07 MiB (28.39 MB decimal); exact fixed-point match required.",
       "ok": true,
       "requirement": "cover letter numeric summary is synchronized with generated audit artifacts"
     },
     {
-      "evidence": "cover-letter PDF/manual-review snippets=['pdf_render_audit.{json,md}', 'representative PDF pages and an all-page machine scan', 'final full-document visual spot-check remains an upload-time manual action', '52-row page inventory', 'rather than a machine-verified PASS']; missing=[].",
+      "evidence": "cover-letter PDF/manual-review snippets=['pdf_render_audit.{json,md}', 'representative PDF pages and an all-page machine scan', 'final full-document visual spot-check remains an upload-time manual action', '53-row page inventory', 'rather than a machine-verified PASS']; missing=[].",
       "ok": true,
       "requirement": "cover letter PDF visual-check boundary is explicit"
     },
@@ -102,18 +102,18 @@
       "requirement": "cover letter related-review and conflict disclosures are explicit"
     },
     {
-      "evidence": "manuscript_artifact_audit maps active table/figure inputs to generators; artifacts=12; hash_mismatches=0; float_labels=21; missing_refs=0; dangling_refs=0; compact_sections=10/10; compact_missing_anchors=0.",
+      "evidence": "manuscript_artifact_audit maps active table/figure inputs to generators; artifacts=12; hash_mismatches=0; float_labels=22; missing_refs=0; dangling_refs=0; compact_sections=10/10; compact_missing_anchors=0.",
       "ok": true,
       "requirement": "active manuscript tables and figures map to generators and prose"
     },
     {
-      "evidence": "submission archive has not been built in this tree yet.",
-      "ok": null,
+      "evidence": "archive=27.07 MiB (28.39 MB decimal); files=2961; evidence_files=541",
+      "ok": true,
       "requirement": "JSS attachment size and archive source set are bounded"
     },
     {
-      "evidence": "submission archive has not been built in this tree yet.",
-      "ok": null,
+      "evidence": "submission packager normalizes source suffixes and the verifier decodes checked source/data files as ASCII.",
+      "ok": true,
       "requirement": "ASCII source/data contract is enforced inside the archive"
     }
   ],
@@ -121,11 +121,11 @@
   "generated_at_unix": 1780185600,
   "install_probe": {
     "dist_infos": [
-      "statspai-1.30.1.dist-info"
+      "statspai-1.32.0.dist-info"
     ],
-    "expected_version": "1.30.1",
-    "function_count": 1220,
-    "import_output_tail": "{\"function_count\": 1220, \"version\": \"1.30.1\"}",
+    "expected_version": "1.32.0",
+    "function_count": 1255,
+    "import_output_tail": "{\"function_count\": 1255, \"version\": \"1.32.0\"}",
     "import_returncode": 0,
     "install_command": "<STATSPAI_ROOT>/.venv/bin/python -m pip install --quiet --disable-pip-version-check --no-deps --target <tmp>/target <STATSPAI_ROOT>",
     "install_output_tail": "",
@@ -135,7 +135,7 @@
       "statspai",
       "statspai-mcp"
     ],
-    "version": "1.30.1"
+    "version": "1.32.0"
   },
   "missing_pdf_boundary_snippets": [],
   "official_sources": [
@@ -157,16 +157,16 @@
     }
   ],
   "official_sources_checked": "2026-08-09",
-  "page_ceiling": 52,
-  "page_count": 52,
+  "page_ceiling": 53,
+  "page_count": 53,
   "pdf_boundary_snippets": [
     "evidence tier that a user",
     "or an agent can query at call time",
     "certified/validated",
     "API-stable",
     "not parity-backed",
-    "This article describes StatsPAI 1.30.1",
-    "tag v1.30.1",
+    "This article describes StatsPAI 1.32.0",
+    "tag v1.32.0",
     "not a behavioural claim",
     "matched arms, task families",
     "before any behavioural claim",
@@ -182,24 +182,24 @@
   "pdf_render": {
     "failure_count": 0,
     "full_document_failure_count": 0,
-    "full_document_max_dark_ratio": 0.02163,
-    "full_document_max_white_ratio": 0.94777,
+    "full_document_max_dark_ratio": 0.022155,
+    "full_document_max_white_ratio": 0.950649,
     "full_document_min_height": 1287,
-    "full_document_min_ink_ratio": 0.05223,
+    "full_document_min_ink_ratio": 0.049351,
     "full_document_min_width": 910,
-    "full_document_rendered_page_count": 52,
-    "max_dark_ratio": 0.02163,
-    "max_white_ratio": 0.914579,
+    "full_document_rendered_page_count": 53,
+    "max_dark_ratio": 0.022155,
+    "max_white_ratio": 0.941221,
     "min_height": 1287,
-    "min_ink_ratio": 0.085421,
+    "min_ink_ratio": 0.058779,
     "min_width": 910,
-    "page_count": 52,
+    "page_count": 53,
     "rendered_page_count": 4,
     "sampled_pages": [
       1,
       2,
-      26,
-      52
+      27,
+      53
     ],
     "status": "PASS"
   },
@@ -214,13 +214,13 @@
     "pretending it is a strict R/Synth parity pass",
     "harshest reviewer"
   ],
-  "pdf_text_chars": 153762,
+  "pdf_text_chars": 156849,
   "status": "PASS",
   "tier1_transcript": {
     "complete": true,
-    "minutes": 1.0,
-    "passed": 24,
-    "total": 24,
+    "minutes": 1.1,
+    "passed": 31,
+    "total": 31,
     "within_one_hour": true
   }
 }

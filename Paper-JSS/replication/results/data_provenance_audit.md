@@ -6,16 +6,16 @@ Prospective JSS archive data/result members, using the same include/exclude rule
 
 ## Summary
 
-- Prospective archive files: `2869`
-- Scoped data/result files: `842`
-- CSV files: `344`
-- JSON files: `497`
+- Prospective archive files: `2956`
+- Scoped data/result files: `876`
+- CSV files: `357`
+- JSON files: `518`
 - Lockfiles: `1`
 - Packaged public dataset CSVs: `9`
 - Public original-data extract CSVs: `7`
 - Same-byte R/Stata fixture CSVs: `91`
-- Reference fixture CSVs: `237`
-- Generated result JSON files: `333`
+- Reference fixture CSVs: `250`
+- Generated result JSON files: `335`
 - Forbidden raw-data members: `0`
 - High-risk private/credential path hits: `0`
 - CSV parse failures: `0`
@@ -34,16 +34,16 @@ Prospective JSS archive data/result members, using the same include/exclude rule
 |---|---:|
 | `environment_or_fixture_lock` | 2 |
 | `generated_monte_carlo_result_json` | 3 |
-| `generated_original_parity_result_json` | 25 |
-| `generated_paper_audit_or_example_json` | 32 |
+| `generated_original_parity_result_json` | 26 |
+| `generated_paper_audit_or_example_json` | 33 |
 | `generated_performance_result_json` | 9 |
 | `generated_r_parity_result_json` | 179 |
 | `generated_stata_result_json` | 85 |
-| `other_generated_or_schema_json` | 10 |
+| `other_generated_or_schema_json` | 11 |
 | `packaged_public_dataset_csv` | 9 |
 | `public_original_extract_csv` | 7 |
-| `reference_fixture_csv` | 237 |
-| `reference_result_json` | 143 |
+| `reference_fixture_csv` | 250 |
+| `reference_result_json` | 161 |
 | `runtime_schema_bundle_json` | 5 |
 | `same_byte_r_stata_fixture_csv` | 91 |
 | `schema_bundle_json` | 5 |
@@ -73,14 +73,14 @@ Prospective JSS archive data/result members, using the same include/exclude rule
 
 | Path | Bytes |
 |---|---:|
-| `src/statspai/schemas/functions.json` | 2015104 |
-| `schemas/functions.json` | 2015104 |
-| `src/statspai/schemas/agent_cards.json` | 1888635 |
-| `schemas/agent_cards.json` | 1888635 |
+| `src/statspai/schemas/functions.json` | 2074934 |
+| `schemas/functions.json` | 2074934 |
+| `src/statspai/schemas/agent_cards.json` | 1916278 |
+| `schemas/agent_cards.json` | 1916278 |
 | `tests/reference_parity/_fixtures/spatial_survey_R.json` | 1770980 |
 | `tests/reference_parity/_fixtures/grf_family_R.json` | 1462468 |
-| `src/statspai/schemas/tools.json` | 1218857 |
-| `schemas/tools.json` | 1218857 |
+| `src/statspai/schemas/tools.json` | 1233468 |
+| `schemas/tools.json` | 1233468 |
 | `tests/reference_parity/_fixtures/grf_family_stat_data.csv` | 1084216 |
 | `tests/reference_parity/_fixtures/did_synth_scpi_R.json` | 835308 |
 

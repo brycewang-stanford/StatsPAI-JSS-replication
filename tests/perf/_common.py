@@ -158,6 +158,25 @@ def hardware_record() -> dict[str, Any]:
             rec["statspai_commit"] = out.stdout.strip()
     except ImportError:
         pass
+    # One run of the benchmark suite writes one run id on both sides;
+    # compare_perf.py refuses to pair rows from different runs.
+    rec["run_id"] = os.environ.get("STATSPAI_PERF_RUN_ID", "unset")
+    rec["thread_env"] = {
+        k: os.environ.get(k)
+        for k in (
+            "OMP_NUM_THREADS",
+            "OPENBLAS_NUM_THREADS",
+            "MKL_NUM_THREADS",
+            "VECLIB_MAXIMUM_THREADS",
+            "NUMBA_NUM_THREADS",
+        )
+    }
+    try:
+        import numba
+
+        rec["numba_threads"] = int(numba.get_num_threads())
+    except ImportError:
+        pass
     jax_rec = _jax_record()
     if jax_rec:
         rec["jax"] = jax_rec

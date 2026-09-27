@@ -73,8 +73,8 @@ joined to a canonical \proglang{R} reference and
 \code{37} & PPML + HDFE & rel $\le \ensuremath{4.9\times 10^{-13}}$ {\footnotesize (post PPML FE-score fix; robust SE within 0.5\% of fixest)} & rel $\le \ensuremath{2.2\times 10^{-15}}$ & \textbf{PASS} \\
 \code{38} & DR-DID (SZ 2020) & rel $\le \ensuremath{2.6\times 10^{-15}}$ {\footnotesize (panel DR-DID calibrated propensity parity with R/Stata)} & rel $\le \ensuremath{2.2\times 10^{-16}}$ & \textbf{PASS} \\
 \code{39} & ARIMA(2,0,0)$^{\dagger}$ & rel $\le \ensuremath{7.4\times 10^{-7}}$ {\footnotesize (stats::arima ML / tightly converged Stata arima)} & rel $\le \ensuremath{9.3\times 10^{-9}}$ & \textbf{PASS} \\
-\code{40} & Quantile reg (median) & rel $\le \ensuremath{3.3\times 10^{-15}}$ {\footnotesize (post sqrt(n) sandwich-scaling fix)} & rel $\le \ensuremath{4.4\times 10^{-15}}$ & \textbf{PASS} \\
-\code{41} & Tobit (left-censored) & rel $\le \ensuremath{2.8\times 10^{-8}}$ {\footnotesize (post observed-information Hessian fix)} & rel $\le \ensuremath{2.8\times 10^{-8}}$ & \textbf{PASS} \\
+\code{40} & Quantile reg (median) & rel $\le \ensuremath{3.3\times 10^{-15}}$ {\footnotesize (Hendricks-Koenker nid sandwich (1.32))} & rel $\le \ensuremath{4.4\times 10^{-15}}$ & \textbf{PASS} \\
+\code{41} & Tobit (left-censored) & rel $\le \ensuremath{1.1\times 10^{-13}}$ {\footnotesize (post observed-information Hessian fix)} & rel $\le \ensuremath{4.6\times 10^{-12}}$ & \textbf{PASS} \\
 \code{42} & Negative binomial & rel $\le \ensuremath{5.1\times 10^{-10}}$ & rel $\le \ensuremath{1\times 10^{-11}}$ & \textbf{PASS} \\
 \code{43} & Heckman 2-step & rel $\le \ensuremath{1\times 10^{-11}}$ & rel $\le \ensuremath{1\times 10^{-11}}$ & \textbf{PASS} \\
 \code{44} & Multinomial logit & rel $\le \ensuremath{2.6\times 10^{-7}}$ {\footnotesize (post observed-information Hessian fix)} & rel $\le \ensuremath{1.5\times 10^{-11}}$ & \textbf{PASS} \\

@@ -35,17 +35,16 @@ causal effects on hypergraphs." *NeurIPS 2022*.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Optional, Sequence, Dict, Any
+from typing import Any, Dict, Optional, Sequence
 
 import numpy as np
 import pandas as pd
 from scipy import stats
-
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.linear_model import LogisticRegression
 
-from ..exceptions import DataInsufficient, MethodIncompatibility
 from .._result_serialize import ResultProtocolMixin
+from ..exceptions import DataInsufficient, MethodIncompatibility
 
 _GNN_CAUSAL_ALTERNATIVES = [
     "sp.gnn_causal",
@@ -88,6 +87,26 @@ def _normalize_covariates(covariates: Sequence[str] | str) -> list[str]:
 
 @dataclass
 class GNNCausalResult(ResultProtocolMixin):
+    """Result of :func:`statspai.gnn_causal`.
+
+    Fields: ``ate``, ``se``, ``ci``, ``pvalue``, ``feature_map``, ``n_obs``,
+    ``n_layers``, ``detail``.
+
+    Examples
+    --------
+    >>> import numpy as np, pandas as pd, statspai as sp
+    >>> rng = np.random.default_rng(0)
+    >>> n = 300
+    >>> A = np.triu((rng.random((n, n)) < 0.01).astype(float), 1)
+    >>> A = A + A.T                     # undirected network
+    >>> df = pd.DataFrame({"x": rng.normal(size=n), "t": rng.integers(0, 2, n)})
+    >>> df["y"] = df.x + df.t + rng.normal(size=n)
+    >>> res = sp.gnn_causal(df, y="y", treat="t", covariates=["x"],
+    ...                     adjacency=A, n_trees=50)
+    >>> isinstance(res, sp.GNNCausalResult)
+    True
+    """
+
     ate: float
     se: float
     ci: tuple[float, float]
@@ -151,6 +170,20 @@ def gnn_causal(
     Returns
     -------
     GNNCausalResult
+
+    Examples
+    --------
+    >>> import numpy as np, pandas as pd, statspai as sp
+    >>> rng = np.random.default_rng(0)
+    >>> n = 300
+    >>> A = np.triu((rng.random((n, n)) < 0.01).astype(float), 1)
+    >>> A = A + A.T                     # undirected network
+    >>> df = pd.DataFrame({"x": rng.normal(size=n), "t": rng.integers(0, 2, n)})
+    >>> df["y"] = df.x + df.t + rng.normal(size=n)
+    >>> res = sp.gnn_causal(df, y="y", treat="t", covariates=["x"],
+    ...                     adjacency=A, n_trees=50)
+    >>> res.n_obs
+    300
     """
     if not isinstance(data, pd.DataFrame):
         raise _gnn_error(

@@ -25,6 +25,8 @@ from typing import Any, Optional, Sequence
 
 import numpy as np
 import pandas as pd
+
+from .._aliases import accepts_aliases
 from .._result_serialize import ResultProtocolMixin
 
 __all__ = [
@@ -37,7 +39,20 @@ __all__ = [
 
 @dataclass
 class ContinuousConformalResult(ResultProtocolMixin):
-    """Output of :func:`conformal_continuous`."""
+    """Output of :func:`conformal_continuous`.
+
+    Examples
+    --------
+    >>> import numpy as np, pandas as pd, statspai as sp
+    >>> rng = np.random.default_rng(0)
+    >>> t = rng.uniform(0, 5, 300); x = rng.normal(size=300)
+    >>> train = pd.DataFrame({"y": 2 + 0.7 * t + 0.5 * x + rng.normal(0, 0.5, 300),
+    ...                       "t": t, "x": x})
+    >>> res = sp.conformal_continuous(train, y="y", treatment="t",
+    ...     covariates=["x"], test_data=pd.DataFrame({"t": [1.0], "x": [0.0]}))
+    >>> isinstance(res, sp.ContinuousConformalResult)
+    True
+    """
 
     alpha: float
     quantile: float
@@ -63,7 +78,20 @@ class ContinuousConformalResult(ResultProtocolMixin):
 
 @dataclass
 class InterferenceConformalResult(ResultProtocolMixin):
-    """Output of :func:`conformal_interference`."""
+    """Output of :func:`conformal_interference`.
+
+    Examples
+    --------
+    >>> import numpy as np, pandas as pd, statspai as sp
+    >>> rng = np.random.default_rng(0)
+    >>> df = pd.DataFrame({"cluster": np.repeat(np.arange(12), 8),
+    ...                    "treat": rng.integers(0, 2, 96), "x": rng.normal(size=96)})
+    >>> df["y"] = 1 + 0.6 * df.treat + 0.4 * df.x + rng.normal(0, 0.3, 96)
+    >>> res = sp.conformal_interference(df, y="y", treatment="treat",
+    ...     cluster="cluster", covariates=["x"], test_clusters=[0, 1])
+    >>> isinstance(res, sp.InterferenceConformalResult)
+    True
+    """
 
     alpha: float
     quantile: float
@@ -88,6 +116,7 @@ class InterferenceConformalResult(ResultProtocolMixin):
 # -------------------------------------------------------------------------
 
 
+@accepts_aliases(treat="treatment")
 def conformal_continuous(
     data: pd.DataFrame,
     *,
@@ -254,6 +283,7 @@ def conformal_continuous(
 # -------------------------------------------------------------------------
 
 
+@accepts_aliases(treat="treatment")
 def conformal_interference(
     data: pd.DataFrame,
     *,

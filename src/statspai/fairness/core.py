@@ -11,8 +11,8 @@ from typing import Any, Callable, Dict, List, Optional, Sequence
 import numpy as np
 import pandas as pd
 
-from ..exceptions import DataInsufficient, MethodIncompatibility, NumericalInstability
 from .._result_serialize import ResultProtocolMixin
+from ..exceptions import DataInsufficient, MethodIncompatibility, NumericalInstability
 
 __all__ = [
     "counterfactual_fairness",
@@ -32,7 +32,17 @@ __all__ = [
 
 @dataclass
 class FairnessResult(ResultProtocolMixin):
-    """Single fairness diagnostic."""
+    """Single fairness diagnostic.
+
+    Examples
+    --------
+    >>> import numpy as np, pandas as pd, statspai as sp
+    >>> rng = np.random.default_rng(0)
+    >>> df = pd.DataFrame({"g": rng.integers(0, 2, 200), "pred": rng.integers(0, 2, 200)})
+    >>> res = sp.demographic_parity(df, predictions="pred", protected="g")
+    >>> isinstance(res, sp.FairnessResult)
+    True
+    """
 
     metric: str
     value: float
@@ -63,7 +73,17 @@ class FairnessResult(ResultProtocolMixin):
 
 @dataclass
 class FairnessAudit:
-    """One-shot dashboard of fairness diagnostics."""
+    """One-shot dashboard of fairness diagnostics.
+
+    Examples
+    --------
+    >>> import numpy as np, pandas as pd, statspai as sp
+    >>> rng = np.random.default_rng(0)
+    >>> df = pd.DataFrame({"g": rng.integers(0, 2, 200), "pred": rng.integers(0, 2, 200)})
+    >>> res = sp.fairness_audit(df, predictions="pred", protected="g")
+    >>> isinstance(res, sp.FairnessAudit)
+    True
+    """
 
     demographic_parity: FairnessResult
     equalized_odds: Optional[FairnessResult]

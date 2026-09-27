@@ -50,6 +50,7 @@ import pandas as pd
 from scipy import stats
 from scipy.spatial import cKDTree
 
+from .._aliases import accepts_aliases
 from ..core.results import EconometricResults
 from ..exceptions import MethodIncompatibility
 from ._psd import se_from_vcov
@@ -344,6 +345,7 @@ def _spatiotemporal_meat(
     return meat
 
 
+@accepts_aliases(id="unit")
 def conley(
     result: EconometricResults,
     data: pd.DataFrame,
@@ -556,6 +558,10 @@ def conley(
     # ``X̂`` and the *structural* residuals through the same kernel machinery
     # is the correct spatial-HAC estimator for IV.
     iv_info = (result.data_info or {}).get("iv")
+    if iv_info is not None:
+        from .iv_wild import _reject_weighted
+
+        _reject_weighted(iv_info)
     if iv_info is not None:
         X_struct = np.asarray(iv_info["X"], dtype=float)
         W_inst = np.asarray(iv_info["W"], dtype=float)
@@ -821,6 +827,7 @@ def _finalise(
     data_info["df_resid"] = df_resid
     data_info["vcov"] = V
 
+    model_info["alpha"] = alpha
     new_result = EconometricResults(
         params=result.params.copy(),
         std_errors=se,

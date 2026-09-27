@@ -1,6 +1,8 @@
 {
   "dockerfile": {
-    "base_image": "python:3.12-slim",
+    "base_digest": "019e31cc1f52e4139d338bca44f27b71339a9da261738fd80fab9cf4595152fc",
+    "base_image": "python:3.10.20-slim-bookworm",
+    "lock_python": "3.10.20",
     "required_apt_missing": []
   },
   "failures": [],
@@ -8,7 +10,7 @@
   "makefile": {
     "pandoc_markdown_optional": true,
     "required_targets_missing": [],
-    "target_count": 65
+    "target_count": 68
   },
   "r_environment_present": true,
   "r_expected_reproduced_modules": 89,
@@ -17,13 +19,14 @@
   "r_repro_report_rows": 89,
   "r_reproduced_modules": 89,
   "random_seeding": {
-    "checked_file_count": 37,
-    "seeded_stochastic_file_count": 19,
-    "stochastic_file_count": 19,
+    "checked_file_count": 42,
+    "seeded_stochastic_file_count": 15,
+    "stochastic_file_count": 15,
     "stochastic_files": [
       "Paper-JSS/replication/scripts/ex01_card.py",
       "Paper-JSS/replication/scripts/ex06_causal_impact.py",
       "tests/coverage_monte_carlo/mechanisms/dml_plr_learners.py",
+      "tests/coverage_monte_carlo/mechanisms/feols_ssc.py",
       "tests/coverage_monte_carlo/mechanisms/forest_trees.py",
       "tests/coverage_monte_carlo/mechanisms/rd_drawwise_reference.py",
       "tests/coverage_monte_carlo/run_b1000.py",
@@ -31,15 +34,10 @@
       "tests/coverage_monte_carlo/test_coverage.py",
       "tests/coverage_monte_carlo/test_coverage_robustness.py",
       "tests/coverage_monte_carlo/test_size_power.py",
-      "tests/perf/01_hdfe_perf.R",
-      "tests/perf/01_hdfe_perf.py",
-      "tests/perf/02_csdid_perf.R",
-      "tests/perf/02_csdid_perf.py",
-      "tests/perf/03_scm_perf.R",
-      "tests/perf/03_scm_perf.py",
       "tests/perf/04_dml_perf.R",
       "tests/perf/04_dml_perf.py",
-      "tests/perf/05_feols_jax_bootstrap_bench.py"
+      "tests/perf/05_feols_jax_bootstrap_bench.py",
+      "tests/perf/_data.py"
     ],
     "unseeded_stochastic_file_count": 0,
     "unseeded_stochastic_files": []

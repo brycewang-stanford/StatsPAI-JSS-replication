@@ -1,4 +1,9 @@
-"""Statistical parity (tier T3): the fect / interflex CV selectors vs R.
+"""Stochastic screen (not T3): the fect / interflex CV selectors vs R.
+
+T3 is reserved for seed-replicated equivalence tests against a stated margin
+(``test_grf_seed_mc_equivalence.py``). The gates below are Monte Carlo
+tolerance checks: they would catch a large discrepancy but do not establish
+equivalence.
 
 ``sp.fect(cv=True)`` ports ``fect::fect(CV = TRUE)`` (factor number ``r``
 under ``method="ife"``, penalty ``lambda`` under ``method="mc"``) and

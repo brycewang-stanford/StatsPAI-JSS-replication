@@ -11,8 +11,8 @@
     "08-computational-details-compact.tex",
     "09-discussion-compact.tex"
   ],
-  "n_listings": 7,
-  "n_pass": 7,
+  "n_listings": 8,
+  "n_pass": 8,
   "n_fail": 0,
   "status": "PASS",
   "rows": [
@@ -28,7 +28,7 @@
       "label": "lst:validation-tier-output",
       "status": "PASS",
       "seconds": 0.0,
-      "stdout_bytes": 241,
+      "stdout_bytes": 415,
       "transcript_verified": true,
       "section": "02-architecture-compact.tex"
     },
@@ -44,7 +44,7 @@
       "label": "lst:card-cate",
       "status": "PASS",
       "seconds": 0.0,
-      "stdout_bytes": 95,
+      "stdout_bytes": 90,
       "transcript_verified": true,
       "section": "04-examples-compact.tex"
     },
@@ -60,7 +60,7 @@
       "label": "lst:csdid-output",
       "status": "PASS",
       "seconds": 0.0,
-      "stdout_bytes": 307,
+      "stdout_bytes": 375,
       "transcript_verified": true,
       "section": "04-examples-compact.tex"
     },
@@ -71,6 +71,14 @@
       "stdout_bytes": 0,
       "transcript_verified": false,
       "section": "04-examples-compact.tex"
+    },
+    {
+      "label": "lst:scope",
+      "status": "PASS",
+      "seconds": 0.0,
+      "stdout_bytes": 0,
+      "transcript_verified": true,
+      "section": "05-parity-compact.tex"
     }
   ]
 }

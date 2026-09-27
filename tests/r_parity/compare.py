@@ -149,7 +149,7 @@ TRACK_A_SNAPSHOT_ROWS: list[dict[str, Any]] = [
         "label": "AIPW ATE",
         "data": "clean-overlap DGP",
         "tol": "0.01",
-        "verdict": "T3; seed-replicated, operator exact",
+        "verdict": "one draw (S); T3 by seed study",
     },
     {
         "module": "11_psm",
@@ -657,7 +657,14 @@ TOLERANCES: dict[str, dict[str, float]] = {
         # (se_cluster_if / se_didimputation / se_stata_did_imputation).
     },  # point row; side-specific SE diagnostics
     "17_etwfe": {"rel_est": 1e-6, "rel_se": 1e-3},  # emfx + cluster SE
-    # parity; B: observed worst 6.0e-4 on the Stata side (1.7x margin).
+    # parity. R side <= 5.5e-6 (marginaleffects' forward-difference emfx;
+    # see the module note). A: the 6.0e-4 Stata rows (simple ATT on both
+    # control groups, not-yet cohort rows; 1.7x margin) are a K convention,
+    # reconstructed exactly: jwdid ivar() absorbs unit effects nested in the
+    # cluster and leaves them out of K (17), sp.etwfe and R etwfe's default
+    # fit cohort + period effects and count them (20), and
+    # sqrt((2500-17)/(2500-20)) = 1.000605. The per-cohort never rows, where
+    # both sides absorb unit effects, agree with Stata to 2e-15.
     # A on est: the 7.9e-6 R-side residual is augsynth's OSQP solver
     # tolerance (synth_qp runs OSQP at eps=1e-8); with OSQP tightened to
     # 1e-13 augsynth returns -0.36277067318038575, which agrees with the
@@ -763,16 +770,16 @@ TOLERANCES: dict[str, dict[str, float]] = {
     "38_drdid": {"rel_est": 1e-6, "rel_se": 1e-6},  # panel DRDID calibrated PS
     # rel_se sentinel (was 1e-2): no SE row joins on this fixture.
     "39_arima": {"rel_est": 1e-6, "rel_se": 1e-6},  # innovations-MLE exact convention
-    # A: sp uses a Powell-type iid kernel sandwich
-    # (regression/quantile.py) while quantreg reports se='nid'
-    # (Hendricks-Koenker difference-quotient sandwich, chosen to match
-    # Stata qreg); different sparsity estimators by construction.
-    # Observed 7.3% (R) / 3.0% (Stata), 1.4x margin.
-    "40_qreg": {"rel_est": 1e-6, "rel_se": 1e-1},  # Powell SE method choice
+    # 1.32: sp.qreg(vce="nid") is quantreg's se="nid" (1e-15) and Stata's
+    # qreg, vce(robust) (2e-8: Stata zeroes fitted differences below
+    # sqrt(eps) where quantreg subtracts sqrt(eps)). The 1e-1 budget covered
+    # the old Silverman-kernel iid sandwich, 7.3% (R) / 3.0% (Stata) off.
+    "40_qreg": {"rel_est": 1e-6, "rel_se": 1e-6},
     "41_tobit": {
         "rel_est": 1e-6,
-        "rel_se": 1e-5,
-    },  # observed-info Hessian; obs worst 2.0e-6 (2026-06 tighten)
+        "rel_se": 1e-6,
+    },  # Newton polish on complex-step scores (1.32); obs worst 3.4e-11 (R) /
+    # 1.1e-11 (Stata), was 2.0e-6 with the 2nd-difference Hessian
     "42_nbreg": {
         "rel_est": 1e-6,
         "rel_se": 5e-3,
@@ -932,9 +939,9 @@ TIER_LABEL = {
     "unclassified": "unclassified",
 }
 TIER_LABEL_MD = {
-    "machine": "machine-level point estimate (≤1e-6)",
-    "iterative": "iterative/cross-fit (≤1e-3)",
-    "moderate": "moderate (≤5e-2)",
+    "machine": "machine-level point estimate (\u22641e-6)",
+    "iterative": "iterative/cross-fit (\u22641e-3)",
+    "moderate": "moderate (\u22645e-2)",
     "methodological": "methodological/T4 disclosure (T3/T4, not deterministic T2)",
     "unclassified": "unclassified",
 }
@@ -1119,7 +1126,7 @@ def _has_any_stata(modules: list[str]) -> bool:
 
 def fmt(x: float | None, prec: int = 6) -> str:
     if x is None:
-        return "—"
+        return "\u2014"
     if abs(x) >= 1 or x == 0.0:
         return f"{x:.{prec}f}"
     return f"{x:.{prec}g}"
@@ -1248,8 +1255,8 @@ def render_md(modules: list[str]) -> str:
                     lines.append(f"- **{k}**: `{v}`")
         lines.append("")
         lines.append(
-            "| stat | py est | R est | abs Δ | rel Δ "
-            "| py SE | R SE | abs Δ SE | rel Δ SE |"
+            "| stat | py est | R est | abs \u0394 | rel \u0394 "
+            "| py SE | R SE | abs \u0394 SE | rel \u0394 SE |"
         )
         lines.append("|---|---:|---:|---:|---:|---:|---:|---:|---:|")
         for d in diffs:
@@ -1815,7 +1822,7 @@ HEADLINE: dict[str, dict[str, Any]] = {
         "headline_filter": lambda d: d.statistic.startswith("beta_"),
         "metric": "rel_est",
         "verdict": "\\textbf{PASS}",
-        "gap_note": "post sqrt(n) sandwich-scaling fix",
+        "gap_note": "Hendricks-Koenker nid sandwich (1.32)",
     },
     "41_tobit": {
         "name": "Tobit (left-censored)",

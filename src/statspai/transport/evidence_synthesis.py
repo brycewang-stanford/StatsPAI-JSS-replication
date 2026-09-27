@@ -41,7 +41,16 @@ __all__ = [
 
 @dataclass
 class EvidenceSynthesisResult(ResultProtocolMixin):
-    """Output of :func:`synthesise_evidence`."""
+    """Output of :func:`synthesise_evidence`.
+
+    Examples
+    --------
+    >>> import statspai as sp
+    >>> res = sp.synthesise_evidence(rct_estimate=0.50, rct_se=0.20,
+    ...                              rwd_estimate=0.42, rwd_se=0.10)
+    >>> isinstance(res, sp.EvidenceSynthesisResult)
+    True
+    """
 
     pooled_estimate: float
     pooled_se: float
@@ -94,7 +103,16 @@ class HeterogeneityResult(ResultProtocolMixin):
 
 @dataclass
 class ConcordanceResult(ResultProtocolMixin):
-    """RCT-vs-RWD concordance report."""
+    """RCT-vs-RWD concordance report.
+
+    Examples
+    --------
+    >>> import statspai as sp
+    >>> res = sp.rwd_rct_concordance(rct_estimate=0.50, rct_se=0.20,
+    ...                              rwd_estimate=0.42)
+    >>> isinstance(res, sp.ConcordanceResult)
+    True
+    """
 
     rwd_inside_rct_ci: bool
     relative_difference: float

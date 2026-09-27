@@ -1,0 +1,76 @@
+{
+  "inputs": [
+    {
+      "file": "manuscript/generated_claims.tex",
+      "step": "manuscript claims (registry census)",
+      "provenance": "recomputed",
+      "sha256": "c37cbb3bfd4e2f2ab8bd76f4dfaf8d5585ccb6b57f42ef7de6780ec739fca45b"
+    },
+    {
+      "file": "manuscript/figures/ex02_basque_gap.pdf",
+      "step": "generate_figures.py",
+      "provenance": "recomputed",
+      "sha256": "7f7309667462cc669471ce5a08e2a3afb7a892ecd8578ba870b350d46b1aa3f8"
+    },
+    {
+      "file": "manuscript/figures/ex03_mpdta_event_study.pdf",
+      "step": "generate_figures.py",
+      "provenance": "recomputed",
+      "sha256": "b4a16ff2f8ecabca623b320535a24d4bda235b7fcfccbebe3dc378c2aad0c44c"
+    },
+    {
+      "file": "replication/tables/ex07_agent_trace.tex",
+      "step": "ex07_agent_trace.py",
+      "provenance": "recomputed",
+      "sha256": "a4a26fe180c4cc1d169cd60e447a87dc4e028a9beb2434d1c33cb18807b29c67"
+    },
+    {
+      "file": "replication/tables/ex08_three_way.tex",
+      "step": "ex08_fect_interflex.py (StatsPAI side; R/Stata goldens frozen)",
+      "provenance": "recomputed",
+      "sha256": "a595a31e88e20efb843fb6a69f326225f2c006a5f2926e375ece485ee7c01db7"
+    },
+    {
+      "file": "manuscript/tables/track_a_cross_language_snapshot.tex",
+      "step": "Track-A parity rollup",
+      "provenance": "re-tabulated from frozen artifacts",
+      "sha256": "ebcc37b23596ae9759f0d9e0ece1c9c09f67281779b82b2126c38a1993e05866"
+    },
+    {
+      "file": "manuscript/tables/appendix_b_parity.tex",
+      "step": "gen_appendix_parity.py",
+      "provenance": "re-tabulated from frozen artifacts",
+      "sha256": "f46199c3384eefb4b2b0e0971812008702e31764fa4c36ca598ffee8df646881"
+    },
+    {
+      "file": "manuscript/tables/headline_parity.tex",
+      "step": "generate_headline_parity_table.py",
+      "provenance": "re-tabulated from frozen artifacts",
+      "sha256": "1fad9d41d512b66d7666c274e5429ad05e3aea5bbfeb0e4c6c2c7f09ee2f1d7f"
+    },
+    {
+      "file": "manuscript/tables/track_b_monte_carlo.tex",
+      "step": "generate_track_b_tables.py",
+      "provenance": "re-tabulated from frozen artifacts",
+      "sha256": "b00597a32d8c702c6b32c20ce4e58a668bda0636543d56319e199f996c9b8513"
+    },
+    {
+      "file": "manuscript/tables/forest_seed_mc.tex",
+      "step": "generate_forest_seed_table.py",
+      "provenance": "re-tabulated from frozen artifacts",
+      "sha256": "3642309a1fe765ff0d64896988a60406b43d25ca22c5e74d612348628e7cc09f"
+    },
+    {
+      "file": "manuscript/tables/track_c_perf.tex",
+      "step": "Track-C performance artifacts",
+      "provenance": "re-tabulated from frozen artifacts",
+      "sha256": "26038a20a7d40a59083318af976edf6c9f86f57ad1d50a23a8bce3787d0d90ef"
+    },
+    {
+      "file": "manuscript/figures/track_c_loglog.pdf",
+      "step": "Track-C performance artifacts",
+      "provenance": "re-tabulated from frozen artifacts",
+      "sha256": "628438bf2b8adfc5a1cf1e91b5d28d93472a9577eb1a43ee486905e9de67674b"
+    }
+  ]
+}

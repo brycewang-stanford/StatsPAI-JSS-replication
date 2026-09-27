@@ -18,8 +18,10 @@ The suite now validates all three faces of the inference machinery:
 
 ## Headline B=1000 Coverage Audit
 
-The canonical Track B audit materializes twelve known-truth DGPs at
-`B=1000` (each row records B=1000 draws), and since the 2026-09 JSS review
+The canonical Track B audit materializes twelve known-truth DGPs in
+thirteen rows at `B=1000` (each row records B=1000 draws; the two-way FE
+panel is run through `sp.panel` and, since the JSS v2 review, through the
+suite's HDFE member `sp.fast.feols` itself), and since the 2026-09 JSS review
 each row records every draw's estimate, SE and interval, so the table
 reports why a rate is what it is: bias, Monte Carlo SD, mean reported SE
 and their ratio (SE calibration). The 99% Wilson band around nominal 0.95
@@ -33,6 +35,7 @@ is approximately `[0.935, 0.967]`.
 | `sp.callaway_santanna` (REG, simple ATT) | Homogeneous staggered timing | 0.947 | -0.0007 | 0.1080 | 0.1090 | 1.01 |
 | `sp.sun_abraham` (overall ATT) | Homogeneous staggered timing | 0.950 | -0.0007 | 0.1214 | 0.1234 | 1.02 |
 | `sp.panel` two-way FE | Known-coefficient FE panel | 0.948 | -0.0024 | 0.1245 | 0.1233 | 0.99 |
+| `sp.fast.feols` (CR1 by unit) | Same FE panel, same draws | 0.955 | -0.0057 | 0.1026 | 0.1013 | 0.99 |
 | `sp.rdrobust` sharp (robust CI) | Known-jump curved RD | 0.934 | -0.0061 | 0.1222 | 0.1201 | 0.98 |
 | `sp.sdid` (placebo SE) | Factor-model panel, 1 treated | 0.928 | +0.0003 | 0.3095 | 0.3071 | 0.99 |
 | `sp.ebalance` (M-estimation SE) | CIA with 2 covariates | 0.945 | -0.0014 | 0.0799 | 0.0774 | 0.97 |
@@ -43,7 +46,9 @@ is approximately `[0.935, 0.967]`.
 Interpretation:
 
 - Closed-form OLS, DiD, IV, both staggered aggregations
-  (Callaway-Sant'Anna and Sun-Abraham), the two-way FE panel, entropy
+  (Callaway-Sant'Anna and Sun-Abraham), the two-way FE panel (both entry
+  points; `sp.fast.feols` with the pre-1.31 `ssc="statspai"` default
+  over-covered at 0.979 with SE/SD 1.08, see `mechanisms/feols_ssc.py`), entropy
   balancing and the causal forest sit inside the Wilson band with SE/SD
   within a few percent of 1.
 - Sharp RD (0.934) and SDID (0.928) have calibrated SEs (0.98, 0.99); the

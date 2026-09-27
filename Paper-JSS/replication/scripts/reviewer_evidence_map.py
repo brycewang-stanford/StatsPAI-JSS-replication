@@ -1048,7 +1048,7 @@ def _cards(artifacts: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
             },
             failures=[
                 "compact PDF exceeds the intended JSS page budget"
-                if formal.get("page_count", 999) > 52
+                if formal.get("page_count", 999) > formal.get("page_ceiling", 0)
                 else "",
                 "documented nonblocking risks disappeared"
                 if len(risk_details) != len(risk.get("documented_nonblocking_risk_ids") or [])

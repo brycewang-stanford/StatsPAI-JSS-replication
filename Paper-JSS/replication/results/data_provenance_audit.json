@@ -28,13 +28,13 @@
     {
       "category": "generated_paper_audit_or_example_json",
       "path": "Paper-JSS/replication/results/claim_lint.json",
-      "size_bytes": 4091,
+      "size_bytes": 4182,
       "suffix": ".json"
     },
     {
       "category": "generated_paper_audit_or_example_json",
       "path": "Paper-JSS/replication/results/editor_screening_checklist.json",
-      "size_bytes": 14063,
+      "size_bytes": 14153,
       "suffix": ".json"
     },
     {
@@ -94,19 +94,19 @@
     {
       "category": "generated_paper_audit_or_example_json",
       "path": "Paper-JSS/replication/results/experiment_triage.json",
-      "size_bytes": 8289,
+      "size_bytes": 8477,
       "suffix": ".json"
     },
     {
       "category": "generated_paper_audit_or_example_json",
       "path": "Paper-JSS/replication/results/jss_formal_compliance_audit.json",
-      "size_bytes": 10093,
+      "size_bytes": 10258,
       "suffix": ".json"
     },
     {
       "category": "generated_paper_audit_or_example_json",
       "path": "Paper-JSS/replication/results/jss_full_audit.json",
-      "size_bytes": 211723,
+      "size_bytes": 226864,
       "suffix": ".json"
     },
     {
@@ -118,13 +118,13 @@
     {
       "category": "generated_paper_audit_or_example_json",
       "path": "Paper-JSS/replication/results/listings_execute_audit.json",
-      "size_bytes": 1835,
+      "size_bytes": 2023,
       "suffix": ".json"
     },
     {
       "category": "generated_paper_audit_or_example_json",
       "path": "Paper-JSS/replication/results/manuscript_artifact_audit.json",
-      "size_bytes": 14624,
+      "size_bytes": 14790,
       "suffix": ".json"
     },
     {
@@ -136,43 +136,49 @@
     {
       "category": "generated_paper_audit_or_example_json",
       "path": "Paper-JSS/replication/results/pdf_render_audit.json",
-      "size_bytes": 15758,
+      "size_bytes": 16012,
       "suffix": ".json"
     },
     {
       "category": "generated_paper_audit_or_example_json",
       "path": "Paper-JSS/replication/results/pdf_visual_check_protocol.json",
-      "size_bytes": 23050,
+      "size_bytes": 22545,
       "suffix": ".json"
     },
     {
       "category": "generated_paper_audit_or_example_json",
       "path": "Paper-JSS/replication/results/release_boundary_audit.json",
-      "size_bytes": 3129,
+      "size_bytes": 3055,
+      "suffix": ".json"
+    },
+    {
+      "category": "generated_paper_audit_or_example_json",
+      "path": "Paper-JSS/replication/results/reproduce_manifest.json",
+      "size_bytes": 2991,
       "suffix": ".json"
     },
     {
       "category": "generated_paper_audit_or_example_json",
       "path": "Paper-JSS/replication/results/reproduction_environment_audit.json",
-      "size_bytes": 3453,
+      "size_bytes": 3458,
       "suffix": ".json"
     },
     {
       "category": "generated_paper_audit_or_example_json",
       "path": "Paper-JSS/replication/results/reviewer_evidence_map.json",
-      "size_bytes": 30380,
+      "size_bytes": 31778,
       "suffix": ".json"
     },
     {
       "category": "generated_paper_audit_or_example_json",
       "path": "Paper-JSS/replication/results/source_snapshot_manifest.json",
-      "size_bytes": 34800,
+      "size_bytes": 13043,
       "suffix": ".json"
     },
     {
       "category": "generated_paper_audit_or_example_json",
       "path": "Paper-JSS/replication/results/stata_bridge_audit.json",
-      "size_bytes": 37620,
+      "size_bytes": 37633,
       "suffix": ".json"
     },
     {
@@ -184,25 +190,25 @@
     {
       "category": "generated_paper_audit_or_example_json",
       "path": "Paper-JSS/replication/results/submission_risk_ledger.json",
-      "size_bytes": 11136,
+      "size_bytes": 12252,
       "suffix": ".json"
     },
     {
       "category": "generated_paper_audit_or_example_json",
       "path": "Paper-JSS/replication/results/validation_evidence_audit.json",
-      "size_bytes": 615885,
+      "size_bytes": 584908,
       "suffix": ".json"
     },
     {
       "category": "schema_bundle_json",
       "path": "schemas/agent_cards.json",
-      "size_bytes": 1888635,
+      "size_bytes": 1916278,
       "suffix": ".json"
     },
     {
       "category": "schema_bundle_json",
       "path": "schemas/functions.json",
-      "size_bytes": 2015104,
+      "size_bytes": 2074934,
       "suffix": ".json"
     },
     {
@@ -220,13 +226,13 @@
     {
       "category": "schema_bundle_json",
       "path": "schemas/tools.json",
-      "size_bytes": 1218857,
+      "size_bytes": 1233468,
       "suffix": ".json"
     },
     {
       "category": "other_generated_or_schema_json",
       "path": "src/statspai/_parity_index.json",
-      "size_bytes": 594135,
+      "size_bytes": 598092,
       "suffix": ".json"
     },
     {
@@ -448,13 +454,13 @@
     {
       "category": "runtime_schema_bundle_json",
       "path": "src/statspai/schemas/agent_cards.json",
-      "size_bytes": 1888635,
+      "size_bytes": 1916278,
       "suffix": ".json"
     },
     {
       "category": "runtime_schema_bundle_json",
       "path": "src/statspai/schemas/functions.json",
-      "size_bytes": 2015104,
+      "size_bytes": 2074934,
       "suffix": ".json"
     },
     {
@@ -472,13 +478,19 @@
     {
       "category": "runtime_schema_bundle_json",
       "path": "src/statspai/schemas/tools.json",
-      "size_bytes": 1218857,
+      "size_bytes": 1233468,
       "suffix": ".json"
     },
     {
       "category": "other_generated_or_schema_json",
       "path": "tests/coverage_monte_carlo/mechanisms/results_dml_plr_learners.json",
       "size_bytes": 1481,
+      "suffix": ".json"
+    },
+    {
+      "category": "other_generated_or_schema_json",
+      "path": "tests/coverage_monte_carlo/mechanisms/results_feols_ssc.json",
+      "size_bytes": 425,
       "suffix": ".json"
     },
     {
@@ -496,7 +508,7 @@
     {
       "category": "generated_monte_carlo_result_json",
       "path": "tests/coverage_monte_carlo/results_b1000/coverage_b1000.json",
-      "size_bytes": 5065,
+      "size_bytes": 5493,
       "suffix": ".json"
     },
     {
@@ -733,7 +745,7 @@
     {
       "category": "generated_original_parity_result_json",
       "path": "tests/orig_parity/results/05_lee_original_py.json",
-      "size_bytes": 991,
+      "size_bytes": 1042,
       "suffix": ".json"
     },
     {
@@ -809,39 +821,45 @@
       "suffix": ".json"
     },
     {
+      "category": "generated_original_parity_result_json",
+      "path": "tests/orig_parity/results/_implementation_trace.json",
+      "size_bytes": 24202,
+      "suffix": ".json"
+    },
+    {
       "category": "generated_performance_result_json",
       "path": "tests/perf/results/01_hdfe_R.json",
-      "size_bytes": 1327,
+      "size_bytes": 1970,
       "suffix": ".json"
     },
     {
       "category": "generated_performance_result_json",
       "path": "tests/perf/results/01_hdfe_py.json",
-      "size_bytes": 1843,
+      "size_bytes": 2490,
       "suffix": ".json"
     },
     {
       "category": "generated_performance_result_json",
       "path": "tests/perf/results/02_csdid_R.json",
-      "size_bytes": 1250,
+      "size_bytes": 2133,
       "suffix": ".json"
     },
     {
       "category": "generated_performance_result_json",
       "path": "tests/perf/results/02_csdid_py.json",
-      "size_bytes": 1675,
+      "size_bytes": 2733,
       "suffix": ".json"
     },
     {
       "category": "generated_performance_result_json",
       "path": "tests/perf/results/03_scm_R.json",
-      "size_bytes": 1216,
+      "size_bytes": 2078,
       "suffix": ".json"
     },
     {
       "category": "generated_performance_result_json",
       "path": "tests/perf/results/03_scm_py.json",
-      "size_bytes": 1652,
+      "size_bytes": 3014,
       "suffix": ".json"
     },
     {
@@ -853,19 +871,19 @@
     {
       "category": "generated_performance_result_json",
       "path": "tests/perf/results/04_dml_doubleml_py.json",
-      "size_bytes": 2138,
+      "size_bytes": 2477,
       "suffix": ".json"
     },
     {
       "category": "generated_performance_result_json",
       "path": "tests/perf/results/04_dml_py.json",
-      "size_bytes": 1900,
+      "size_bytes": 2445,
       "suffix": ".json"
     },
     {
       "category": "environment_or_fixture_lock",
       "path": "tests/r_parity/TIER_A_FIXTURE_LOCK.json",
-      "size_bytes": 109485,
+      "size_bytes": 109321,
       "suffix": ".json"
     },
     {
@@ -2150,7 +2168,7 @@
     {
       "category": "environment_or_fixture_lock",
       "path": "tests/r_parity/renv.lock",
-      "size_bytes": 41778,
+      "size_bytes": 48009,
       "suffix": ".lock"
     },
     {
@@ -2348,13 +2366,13 @@
     {
       "category": "generated_r_parity_result_json",
       "path": "tests/r_parity/results/17_etwfe_R.json",
-      "size_bytes": 3385,
+      "size_bytes": 3386,
       "suffix": ".json"
     },
     {
       "category": "generated_r_parity_result_json",
       "path": "tests/r_parity/results/17_etwfe_py.json",
-      "size_bytes": 4604,
+      "size_bytes": 4990,
       "suffix": ".json"
     },
     {
@@ -2630,7 +2648,7 @@
     {
       "category": "generated_r_parity_result_json",
       "path": "tests/r_parity/results/40_qreg_py.json",
-      "size_bytes": 844,
+      "size_bytes": 862,
       "suffix": ".json"
     },
     {
@@ -3224,7 +3242,7 @@
     {
       "category": "generated_r_parity_result_json",
       "path": "tests/r_parity/results/_implementation_trace.json",
-      "size_bytes": 29739,
+      "size_bytes": 133181,
       "suffix": ".json"
     },
     {
@@ -4156,6 +4174,33 @@
     },
     {
       "category": "reference_fixture_csv",
+      "columns": 11,
+      "header_preview": [
+        "g",
+        "x1",
+        "x2",
+        "z",
+        "d",
+        "db",
+        "di",
+        "y",
+        "yb",
+        "yi",
+        "fold"
+      ],
+      "path": "tests/reference_parity/_fixtures/dml_cluster_data.csv",
+      "rows": 720,
+      "size_bytes": 92994,
+      "suffix": ".csv"
+    },
+    {
+      "category": "reference_result_json",
+      "path": "tests/reference_parity/_fixtures/dml_cluster_doubleml.json",
+      "size_bytes": 425,
+      "suffix": ".json"
+    },
+    {
+      "category": "reference_fixture_csv",
       "columns": 13,
       "header_preview": [
         "y",
@@ -4539,6 +4584,44 @@
       "path": "tests/reference_parity/_fixtures/fect_interflex_cv_R.json",
       "size_bytes": 70330,
       "suffix": ".json"
+    },
+    {
+      "category": "reference_fixture_csv",
+      "columns": 4,
+      "header_preview": [
+        "g",
+        "x",
+        "x2",
+        "y"
+      ],
+      "path": "tests/reference_parity/_fixtures/feols_inference_df_data.csv",
+      "rows": 300,
+      "size_bytes": 19022,
+      "suffix": ".csv"
+    },
+    {
+      "category": "reference_result_json",
+      "path": "tests/reference_parity/_fixtures/feols_varying_slopes_R.json",
+      "size_bytes": 3221,
+      "suffix": ".json"
+    },
+    {
+      "category": "reference_fixture_csv",
+      "columns": 8,
+      "header_preview": [
+        "g",
+        "h",
+        "z",
+        "x",
+        "y",
+        "cl",
+        "z2",
+        "w"
+      ],
+      "path": "tests/reference_parity/_fixtures/feols_varying_slopes_data.csv",
+      "rows": 2000,
+      "size_bytes": 205503,
+      "suffix": ".csv"
     },
     {
       "category": "reference_result_json",
@@ -5348,6 +5431,108 @@
       "suffix": ".csv"
     },
     {
+      "category": "reference_fixture_csv",
+      "columns": 8,
+      "header_preview": [
+        "id",
+        "x1",
+        "z1",
+        "z2",
+        "w",
+        "g",
+        "d",
+        "y"
+      ],
+      "path": "tests/reference_parity/_fixtures/iv_weights_data.csv",
+      "rows": 900,
+      "size_bytes": 121175,
+      "suffix": ".csv"
+    },
+    {
+      "category": "reference_result_json",
+      "path": "tests/reference_parity/_fixtures/iv_weights_stata.json",
+      "size_bytes": 2025,
+      "suffix": ".json"
+    },
+    {
+      "category": "reference_fixture_csv",
+      "columns": 11,
+      "header_preview": [
+        "id",
+        "g",
+        "x1",
+        "x2",
+        "w",
+        "y",
+        "y2",
+        "z3",
+        "s",
+        "yh",
+        "yq"
+      ],
+      "path": "tests/reference_parity/_fixtures/ldv_design_data.csv",
+      "rows": 1200,
+      "size_bytes": 201665,
+      "suffix": ".csv"
+    },
+    {
+      "category": "reference_result_json",
+      "path": "tests/reference_parity/_fixtures/ldv_design_stata.json",
+      "size_bytes": 11474,
+      "suffix": ".json"
+    },
+    {
+      "category": "reference_fixture_csv",
+      "columns": 8,
+      "header_preview": [
+        "yl",
+        "yb",
+        "yc",
+        "x",
+        "z",
+        "g",
+        "w",
+        "expo"
+      ],
+      "path": "tests/reference_parity/_fixtures/margins_ext_data.csv",
+      "rows": 700,
+      "size_bytes": 72715,
+      "suffix": ".csv"
+    },
+    {
+      "category": "reference_result_json",
+      "path": "tests/reference_parity/_fixtures/margins_ext_stata.json",
+      "size_bytes": 12268,
+      "suffix": ".json"
+    },
+    {
+      "category": "reference_fixture_csv",
+      "columns": 11,
+      "header_preview": [
+        "treat",
+        "age",
+        "education",
+        "black",
+        "hispanic",
+        "married",
+        "nodegree",
+        "re74",
+        "re75",
+        "re78",
+        "fw"
+      ],
+      "path": "tests/reference_parity/_fixtures/match_fw_data.csv",
+      "rows": 2675,
+      "size_bytes": 178950,
+      "suffix": ".csv"
+    },
+    {
+      "category": "reference_result_json",
+      "path": "tests/reference_parity/_fixtures/match_fw_stata.json",
+      "size_bytes": 321,
+      "suffix": ".json"
+    },
+    {
       "category": "reference_result_json",
       "path": "tests/reference_parity/_fixtures/matching_R.json",
       "size_bytes": 15848,
@@ -5389,6 +5574,28 @@
       "category": "reference_result_json",
       "path": "tests/reference_parity/_fixtures/mht_R.json",
       "size_bytes": 758,
+      "suffix": ".json"
+    },
+    {
+      "category": "reference_fixture_csv",
+      "columns": 6,
+      "header_preview": [
+        "y",
+        "x1",
+        "x2",
+        "x3",
+        "_mi_m",
+        "_mi_id"
+      ],
+      "path": "tests/reference_parity/_fixtures/mi_test_flong.csv",
+      "rows": 3600,
+      "size_bytes": 324700,
+      "suffix": ".csv"
+    },
+    {
+      "category": "reference_result_json",
+      "path": "tests/reference_parity/_fixtures/mi_test_stata.json",
+      "size_bytes": 69265,
       "suffix": ".json"
     },
     {
@@ -6135,6 +6342,35 @@
       "suffix": ".csv"
     },
     {
+      "category": "reference_fixture_csv",
+      "columns": 7,
+      "header_preview": [
+        "id",
+        "st",
+        "t",
+        "x1",
+        "x2",
+        "y",
+        "w"
+      ],
+      "path": "tests/reference_parity/_fixtures/panel_ssc_data.csv",
+      "rows": 540,
+      "size_bytes": 40722,
+      "suffix": ".csv"
+    },
+    {
+      "category": "reference_result_json",
+      "path": "tests/reference_parity/_fixtures/panel_ssc_fixest.json",
+      "size_bytes": 7700,
+      "suffix": ".json"
+    },
+    {
+      "category": "reference_result_json",
+      "path": "tests/reference_parity/_fixtures/panel_ssc_stata.json",
+      "size_bytes": 12959,
+      "suffix": ".json"
+    },
+    {
       "category": "reference_result_json",
       "path": "tests/reference_parity/_fixtures/panel_stata.json",
       "size_bytes": 889,
@@ -6403,6 +6639,35 @@
       "category": "reference_result_json",
       "path": "tests/reference_parity/_fixtures/pstest_stata.json",
       "size_bytes": 2094,
+      "suffix": ".json"
+    },
+    {
+      "category": "reference_fixture_csv",
+      "columns": 7,
+      "header_preview": [
+        "obs",
+        "g",
+        "gs",
+        "g_miss",
+        "x1",
+        "x2",
+        "y"
+      ],
+      "path": "tests/reference_parity/_fixtures/qreg_cluster_data.csv",
+      "rows": 600,
+      "size_bytes": 46201,
+      "suffix": ".csv"
+    },
+    {
+      "category": "reference_result_json",
+      "path": "tests/reference_parity/_fixtures/qreg_cluster_stata.json",
+      "size_bytes": 13947,
+      "suffix": ".json"
+    },
+    {
+      "category": "reference_result_json",
+      "path": "tests/reference_parity/_fixtures/qreg_nid_R.json",
+      "size_bytes": 901,
       "suffix": ".json"
     },
     {
@@ -6909,6 +7174,29 @@
       "path": "tests/reference_parity/_fixtures/rd_vce_R.json",
       "size_bytes": 5977,
       "suffix": ".json"
+    },
+    {
+      "category": "reference_result_json",
+      "path": "tests/reference_parity/_fixtures/rd_weights_R.json",
+      "size_bytes": 3266,
+      "suffix": ".json"
+    },
+    {
+      "category": "reference_fixture_csv",
+      "columns": 7,
+      "header_preview": [
+        "y",
+        "yf",
+        "x",
+        "d",
+        "z1",
+        "cl",
+        "w"
+      ],
+      "path": "tests/reference_parity/_fixtures/rd_weights_data.csv",
+      "rows": 1500,
+      "size_bytes": 155632,
+      "suffix": ".csv"
     },
     {
       "category": "reference_result_json",
@@ -7535,6 +7823,12 @@
     },
     {
       "category": "reference_result_json",
+      "path": "tests/reference_parity/_fixtures/sunab_event_time_R.json",
+      "size_bytes": 201,
+      "suffix": ".json"
+    },
+    {
+      "category": "reference_result_json",
       "path": "tests/reference_parity/_fixtures/survey_R.json",
       "size_bytes": 535,
       "suffix": ".json"
@@ -7569,6 +7863,18 @@
       "category": "reference_result_json",
       "path": "tests/reference_parity/_fixtures/survey_calib_stata.json",
       "size_bytes": 15393,
+      "suffix": ".json"
+    },
+    {
+      "category": "reference_result_json",
+      "path": "tests/reference_parity/_fixtures/survey_calibrated_design_R.json",
+      "size_bytes": 1314,
+      "suffix": ".json"
+    },
+    {
+      "category": "reference_result_json",
+      "path": "tests/reference_parity/_fixtures/survey_calibrated_design_stata.json",
+      "size_bytes": 736,
       "suffix": ".json"
     },
     {
@@ -7615,6 +7921,12 @@
       "category": "reference_result_json",
       "path": "tests/reference_parity/_fixtures/survey_design_stata.json",
       "size_bytes": 6155,
+      "suffix": ".json"
+    },
+    {
+      "category": "reference_result_json",
+      "path": "tests/reference_parity/_fixtures/survey_domain_R.json",
+      "size_bytes": 1041,
       "suffix": ".json"
     },
     {
@@ -7953,6 +8265,30 @@
       "columns": 8,
       "header_preview": [
         "id",
+        "g",
+        "x1",
+        "x2",
+        "x3",
+        "w",
+        "d",
+        "y"
+      ],
+      "path": "tests/reference_parity/_fixtures/teffects_design_data.csv",
+      "rows": 1500,
+      "size_bytes": 173076,
+      "suffix": ".csv"
+    },
+    {
+      "category": "reference_result_json",
+      "path": "tests/reference_parity/_fixtures/teffects_design_stata.json",
+      "size_bytes": 1991,
+      "suffix": ".json"
+    },
+    {
+      "category": "reference_fixture_csv",
+      "columns": 8,
+      "header_preview": [
+        "id",
         "t",
         "v",
         "l",
@@ -8069,6 +8405,30 @@
       "path": "tests/reference_parity/_fixtures/tmle_data.csv",
       "rows": 2000,
       "size_bytes": 63292,
+      "suffix": ".csv"
+    },
+    {
+      "category": "reference_result_json",
+      "path": "tests/reference_parity/_fixtures/tmle_design_R.json",
+      "size_bytes": 858,
+      "suffix": ".json"
+    },
+    {
+      "category": "reference_fixture_csv",
+      "columns": 8,
+      "header_preview": [
+        "g",
+        "x1",
+        "x2",
+        "x3",
+        "w",
+        "d",
+        "y",
+        "yb"
+      ],
+      "path": "tests/reference_parity/_fixtures/tmle_design_data.csv",
+      "rows": 960,
+      "size_bytes": 92007,
       "suffix": ".csv"
     },
     {
@@ -8548,7 +8908,7 @@
     {
       "category": "generated_stata_result_json",
       "path": "tests/stata_parity/results/40_qreg_Stata.json",
-      "size_bytes": 1147,
+      "size_bytes": 1191,
       "suffix": ".json"
     },
     {
@@ -8952,42 +9312,42 @@
     "category_counts": {
       "environment_or_fixture_lock": 2,
       "generated_monte_carlo_result_json": 3,
-      "generated_original_parity_result_json": 25,
-      "generated_paper_audit_or_example_json": 32,
+      "generated_original_parity_result_json": 26,
+      "generated_paper_audit_or_example_json": 33,
       "generated_performance_result_json": 9,
       "generated_r_parity_result_json": 179,
       "generated_stata_result_json": 85,
-      "other_generated_or_schema_json": 10,
+      "other_generated_or_schema_json": 11,
       "packaged_public_dataset_csv": 9,
       "public_original_extract_csv": 7,
-      "reference_fixture_csv": 237,
-      "reference_result_json": 143,
+      "reference_fixture_csv": 250,
+      "reference_result_json": 161,
       "runtime_schema_bundle_json": 5,
       "same_byte_r_stata_fixture_csv": 91,
       "schema_bundle_json": 5
     },
-    "csv_file_count": 344,
+    "csv_file_count": 357,
     "csv_parse_failure_count": 0,
     "forbidden_raw_member_count": 0,
-    "generated_result_json_count": 333,
+    "generated_result_json_count": 335,
     "high_risk_path_hit_count": 0,
-    "json_file_count": 497,
+    "json_file_count": 518,
     "largest_data_files": [
       {
         "path": "src/statspai/schemas/functions.json",
-        "size_bytes": 2015104
+        "size_bytes": 2074934
       },
       {
         "path": "schemas/functions.json",
-        "size_bytes": 2015104
+        "size_bytes": 2074934
       },
       {
         "path": "src/statspai/schemas/agent_cards.json",
-        "size_bytes": 1888635
+        "size_bytes": 1916278
       },
       {
         "path": "schemas/agent_cards.json",
-        "size_bytes": 1888635
+        "size_bytes": 1916278
       },
       {
         "path": "tests/reference_parity/_fixtures/spatial_survey_R.json",
@@ -8999,11 +9359,11 @@
       },
       {
         "path": "src/statspai/schemas/tools.json",
-        "size_bytes": 1218857
+        "size_bytes": 1233468
       },
       {
         "path": "schemas/tools.json",
-        "size_bytes": 1218857
+        "size_bytes": 1233468
       },
       {
         "path": "tests/reference_parity/_fixtures/grf_family_stat_data.csv",
@@ -9016,18 +9376,18 @@
     ],
     "lockfile_count": 1,
     "packaged_public_dataset_csv_count": 9,
-    "prospective_archive_file_count": 2869,
+    "prospective_archive_file_count": 2956,
     "public_original_extract_csv_count": 7,
-    "reference_fixture_csv_count": 237,
+    "reference_fixture_csv_count": 250,
     "same_byte_r_stata_fixture_csv_count": 91,
-    "scoped_data_file_count": 842,
+    "scoped_data_file_count": 876,
     "self_audit_json_excluded_from_data_counts": true,
     "suffix_counts": {
-      ".csv": 344,
-      ".json": 497,
+      ".csv": 357,
+      ".json": 518,
       ".lock": 1
     },
-    "total_data_bytes": 50350121,
+    "total_data_bytes": 52536417,
     "unknown_category_count": 0
   },
   "unknown_category_paths": []

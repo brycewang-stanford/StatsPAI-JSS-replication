@@ -41,17 +41,38 @@ regimes." *Statistical Science*, 29(4), 640-661. [@schulte2014mathbf]
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Sequence, Any
+from typing import Any, Dict, List, Optional, Sequence
 
 import numpy as np
 import pandas as pd
-
 from sklearn.linear_model import LogisticRegression
+
+from .._aliases import accepts_aliases
 from .._result_serialize import ResultProtocolMixin
 
 
 @dataclass
 class ALearningResult(ResultProtocolMixin):
+    """Result of :func:`statspai.a_learning`.
+
+    Fields: ``psi``, ``value``, ``optimal_actions``, ``K``, ``n_obs``,
+    ``detail``.
+
+    Examples
+    --------
+    >>> import numpy as np, pandas as pd, statspai as sp
+    >>> rng = np.random.default_rng(0)
+    >>> n = 400
+    >>> x1 = rng.normal(size=n); a1 = rng.integers(0, 2, n)
+    >>> x2 = x1 + rng.normal(size=n); a2 = rng.integers(0, 2, n)
+    >>> y = x1 + a1 * (1 + x1) + a2 * (0.5 - x2) + rng.normal(size=n)
+    >>> df = pd.DataFrame({"x1": x1, "a1": a1, "x2": x2, "a2": a2, "y": y})
+    >>> res = sp.a_learning(df, y="y", actions=["a1", "a2"],
+    ...     stage_covariates=[["x1"], ["x2"]])
+    >>> isinstance(res, sp.ALearningResult)
+    True
+    """
+
     psi: List[np.ndarray]
     value: float
     optimal_actions: np.ndarray
@@ -78,9 +99,10 @@ class ALearningResult(ResultProtocolMixin):
         return f"ALearningResult(K={self.K}, V={self.value:.4f})"
 
 
+@accepts_aliases(_strict=True, outcome="y")
 def a_learning(
     data: pd.DataFrame,
-    outcome: str,
+    y: str,
     actions: Sequence[str],
     stage_covariates: Sequence[Sequence[str]],
     baseline: Optional[Sequence[str]] = None,
@@ -92,7 +114,8 @@ def a_learning(
     Parameters
     ----------
     data : pd.DataFrame
-    outcome : str
+    y : str
+        Final outcome column (``outcome=`` is accepted as an alias).
     actions : sequence of str, length K
     stage_covariates : sequence of sequences of str
         Covariates observed just before stage k's decision.
@@ -103,6 +126,20 @@ def a_learning(
     Returns
     -------
     ALearningResult
+
+    Examples
+    --------
+    >>> import numpy as np, pandas as pd, statspai as sp
+    >>> rng = np.random.default_rng(0)
+    >>> n = 400
+    >>> x1 = rng.normal(size=n); a1 = rng.integers(0, 2, n)
+    >>> x2 = x1 + rng.normal(size=n); a2 = rng.integers(0, 2, n)
+    >>> y = x1 + a1 * (1 + x1) + a2 * (0.5 - x2) + rng.normal(size=n)
+    >>> df = pd.DataFrame({"x1": x1, "a1": a1, "x2": x2, "a2": a2, "y": y})
+    >>> res = sp.a_learning(df, y="y", actions=["a1", "a2"],
+    ...     stage_covariates=[["x1"], ["x2"]])
+    >>> res.K
+    2
     """
     actions = list(actions)
     stage_covs: List[List[str]] = [list(c) for c in stage_covariates]
@@ -123,7 +160,7 @@ def a_learning(
         X = df[hist].to_numpy(dtype=float)
         return np.column_stack([np.ones(n), X])
 
-    Y_tilde = df[outcome].to_numpy(dtype=float).copy()
+    Y_tilde = df[y].to_numpy(dtype=float).copy()
     psis: List[np.ndarray] = []
     optimal_actions = np.zeros((n, K), dtype=int)
 

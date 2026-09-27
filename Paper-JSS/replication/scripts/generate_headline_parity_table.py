@@ -46,7 +46,7 @@ ROWS = [
      "STATA_NOTE"),
     ("05_lee_original", "rd_jump_robust",
      r"\code{rdrobust::RDsenate}", "robust RD jump", "%.3f", "%.3f",
-     r'\code{bwselect="cct"} path'),
+     "native default selector"),
     ("04b_nsw_psid_original", "adj_ols_att",
      r"\code{causalsens::lalonde.psid}", "adjusted OLS ATT", "%.0f", "%.1f",
      "public composite extract"),
@@ -72,7 +72,19 @@ def _sci(x: float) -> str:
     return rf"{mant:.1f}\times10^{{{exp}}}"
 
 
+def _orig_provenance() -> dict[str, str]:
+    """Registered implementation kind of each original-data module."""
+    import importlib.util
+
+    path = ORIG_RESULTS.parent / "compare_orig.py"
+    spec = importlib.util.spec_from_file_location("_compare_orig_hp", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return dict(module.ORIG_IMPLEMENTATION_PROVENANCE)
+
+
 def build_table() -> str:
+    provenance = _orig_provenance()
     lines = [
         HEADER
         + "% Cells come from tests/orig_parity/results/*.json; do not hand edit.",
@@ -105,6 +117,11 @@ def build_table() -> str:
             note_txt = rel_txt + "; " + note
         else:
             note_txt = rel_txt
+        kind = provenance.get(module, "native")
+        if kind == "statsmodels_nuisance":
+            stat_label = stat_label + r"$^{\ddagger}$"
+        elif kind != "native":
+            raise ValueError(f"{module}: a {kind} row cannot be printed as parity")
         lines.append(
             f"{extract} & {stat_label} & {pub_cell} & "
             f"${val_fmt % sp_est}$ & ${val_fmt % r_est}$ & {note_txt} \\\\"

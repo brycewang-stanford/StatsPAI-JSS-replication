@@ -1,12 +1,11 @@
 \section{Discussion}\label{sec:discussion}
 
-\statspai{} is a unification and validation project, not a new-estimator
-paper. The claim is that a single \proglang{Python} package can expose
-the applied causal workflow through shared result surfaces, explicit
-validation status, reproducible parity artifacts, and machine-readable
-agent schemas. It is not a claim that \statspai{} dominates specialized
-reference packages in their home domains, nor that the MCP interface
-replaces empirical judgement.
+The article's claim is about what a validation label in a broad
+statistical package can be made to mean: attached to the implementation
+that ran, to the entry point that was tested, to the configuration and
+the output that were compared, and to checks that apply to the fit, with
+each attachment verified rather than asserted. The same design would
+serve any package that publishes evidence tiers.
 
 The main limitations are as follows. First, \RegistryAutoUnbacked{} stable auto-registered symbols remain API-stable but not parity-backed
 (\RegistryAutoUnbackedClasslike{} class-like, \RegistryAutoUnbackedFunctionlike{} function-like), and the other \RegistryOtherApiEvidence{} symbols of the
@@ -22,21 +21,21 @@ three implementations within \(4\times10^{-4}\)
 (Section~\ref{sec:scm-identification}), so the disclosure is about
 data-dependent non-uniqueness, not a standing numerical defect. The
 causal-forest row is T3: the two forest engines are equivalent to
-within a tenth of a sampling standard error and equally noisy across
-seeds, which is an equivalence claim, not parity. The
+within a tenth of a sampling standard error, with seed-to-seed spreads
+of the same order, which is an equivalence claim, not parity. The
 \ParityThirdPartyModuleCount{} Track~A rows served by third-party
 \proglang{Python} libraries validate \statspai{}'s wrappers of those
 libraries, not native algorithms. The configuration map behind
-\code{sp.validation\_scope} covers the twelve suite estimators; for
-the rest of the registry the evidence notes name the artifact but not
-its configuration. Third,
+\code{sp.validation\_scope} covers the twelve suite estimators, and
+within them only the dimensions a fitted object records; for the rest
+of the registry the evidence notes name the artifact but not its
+configuration or the outputs it compared. Third,
 the \pkg{fect} and \pkg{interflex} cross-validation selectors for the
 factor number, penalty, and kernel bandwidth are ported in
-1.29.0 but can only be graded T3: their folds are random,
-so the three-ecosystem parity of Section~\ref{sec:ex-fect} is
-established at user-specified tuning values, and the selectors are
-checked by given-fold score equality plus across-seed agreement of the
-selection. Fourth, Stata reproduction requires a
+1.29.0, but their folds are random, so the three-ecosystem parity of
+Section~\ref{sec:ex-fect} is established at user-specified tuning
+values, and the selectors carry only given-fold score equality and a
+stochastic screen of the selection, not an equivalence test. Fourth, Stata reproduction requires a
 separate licence, so Stata rows are migration bridges rather than the
 licence-free core of the archive; \NoStataModuleCount{} of the \RParityModuleCount{} modules carry no Stata
 reference, each with a measured reason. Fifth, Bayesian, causal-discovery,
@@ -75,8 +74,9 @@ examples are executed end-to-end.
 
 The roadmap is to resolve or further bound the remaining
 classical-SCM reference-disagreement disclosure, extend
-\(B=1{,}000\) coverage beyond the headline rows, close the two measured
-performance gaps of Section~\ref{sec:performance}, and move the agent
+\(B=1{,}000\) coverage beyond the headline rows, replace the inner
+solver of the nested synthetic-control search that dominates the
+performance gap of Section~\ref{sec:performance}, and move the agent
 interface from mechanical conformance to scored behavioural
 benchmarking.
 
@@ -84,8 +84,8 @@ A final limitation is institutional: a large surface is maintained by a
 small team with one principal author. The risk is bounded by
 properties verifiable from the archive: the package is MIT-licensed with
 no relicensing clause, so the validated core can be forked; every
-output-changing fix is pinned by a regression test; and the parity
-harness is scripted and environment-pinned (\code{renv.lock}, recorded
+output-changing fix is pinned by a regression test; and the
+cross-language parity harness is fully scripted and environment-pinned (\code{renv.lock}, recorded
 Stata versions, per-row JSON provenance), so any third party with the
 reference runtimes can re-execute it.
 

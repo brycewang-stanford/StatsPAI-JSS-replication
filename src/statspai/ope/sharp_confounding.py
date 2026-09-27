@@ -27,8 +27,8 @@ import pandas as pd
 from sklearn.ensemble import GradientBoostingClassifier, GradientBoostingRegressor
 from sklearn.tree import DecisionTreeClassifier
 
-from ..exceptions import DataInsufficient, MethodIncompatibility
 from .._result_serialize import ResultProtocolMixin
+from ..exceptions import DataInsufficient, MethodIncompatibility
 
 __all__ = [
     "sharp_ope_unobserved",
@@ -113,7 +113,19 @@ def _normalize_covariates(covariates: Sequence[str] | str) -> List[str]:
 
 @dataclass
 class SharpOPEResult(ResultProtocolMixin):
-    """Output of :func:`sharp_ope_unobserved`."""
+    """Output of :func:`sharp_ope_unobserved`.
+
+    Examples
+    --------
+    >>> import numpy as np, pandas as pd, statspai as sp
+    >>> rng = np.random.default_rng(0)
+    >>> df = pd.DataFrame({"a": rng.integers(0, 2, 200), "r": rng.normal(size=200),
+    ...                    "e": 0.5, "pi": 0.5})
+    >>> res = sp.sharp_ope_unobserved(df, actions="a", rewards="r",
+    ...     logging_prob="e", target_prob="pi", gamma=1.5)
+    >>> isinstance(res, sp.SharpOPEResult)
+    True
+    """
 
     gamma: float
     point_estimate: float  # the IPS point estimate
@@ -137,7 +149,20 @@ class SharpOPEResult(ResultProtocolMixin):
 
 @dataclass
 class CausalPolicyForestResult(ResultProtocolMixin):
-    """Output of :func:`causal_policy_forest`."""
+    """Output of :func:`causal_policy_forest`.
+
+    Examples
+    --------
+    >>> import numpy as np, pandas as pd, statspai as sp
+    >>> rng = np.random.default_rng(0)
+    >>> X = rng.normal(size=(200, 2)); A = rng.integers(0, 2, 200)
+    >>> R = (A == (X[:, 0] > 0)).astype(float) + rng.normal(0, 0.3, 200)
+    >>> df = pd.DataFrame({"x0": X[:, 0], "x1": X[:, 1], "a": A, "r": R})
+    >>> res = sp.causal_policy_forest(df, actions="a", rewards="r",
+    ...     covariates=["x0", "x1"], n_trees=5, depth=2)
+    >>> isinstance(res, sp.CausalPolicyForestResult)
+    True
+    """
 
     policy_value: float
     policy_value_se: float

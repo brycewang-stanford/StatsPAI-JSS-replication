@@ -38,18 +38,19 @@
     "docs/stats.md",
     "docs/jss_source_audit_dossier.md"
   ],
+  "claim_count_source": "manuscript snapshot (generated_claims.tex, jss_full_audit.json)",
   "claim_counts": {
-    "api_stable": 661,
+    "api_stable": 694,
     "certified": 414,
-    "certified_validated": 556,
+    "certified_validated": 558,
     "experimental": 3,
     "r_modules": 89,
-    "registry": 1220,
-    "registry_evidence_unique": 490,
+    "registry": 1255,
+    "registry_evidence_unique": 541,
     "stata_modules": 85,
-    "unbacked_auto": 568,
+    "unbacked_auto": 601,
     "unbacked_handwritten": 0,
-    "validated": 142
+    "validated": 144
   },
   "failures": [],
   "forbidden_snippet_count": 162,

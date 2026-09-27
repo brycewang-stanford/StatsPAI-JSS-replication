@@ -4,7 +4,7 @@ Status: PASS
 Checked files: 37
 JOSS-protected files: 8
 Historical drift files: 10
-Dynamic counts: 414 certified; 142 validated; 661 API-stable; 3 experimental; 556 certified/validated; 568 API-stable auto-registered but not parity-backed; 0 unbacked hand-written stable
+Dynamic counts: 414 certified; 144 validated; 694 API-stable; 3 experimental; 558 certified/validated; 601 API-stable auto-registered but not parity-backed; 0 unbacked hand-written stable
 
 Purpose: keep the JSS submission from drifting back to a blanket
 `Validated` claim; `validated` must remain an evidence tier with

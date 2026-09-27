@@ -53,7 +53,7 @@ separate Stata license.
 | `37_ppmlhdfe` | 2 | R+Stata | 18 MP | ppmlhdfe y x1 x2, absorb(origin) vce(robust) |
 | `38_drdid` | 3 | R+Stata | 18 MP | drdid y x, ivar(id) time(post) treatment(treated) drimp |
 | `39_arima` | 4 | R+Stata | 18 MP | arima y, ar(1/2), tight MLE tolerances |
-| `40_qreg` | 3 | R+Stata | 18 MP | qreg y x1 x2 |
+| `40_qreg` | 3 | R+Stata | 18 MP | qreg y x1 x2, vce(robust) |
 | `41_tobit` | 3 | R+Stata | 18 MP | tobit y x, ll(0) |
 | `42_nbreg` | 3 | R+Stata | 18 MP | nbreg y x1 x2 |
 | `43_heckman` | 3 | R+Stata | 18 MP | heckman y x, select(sel = z) twostep |

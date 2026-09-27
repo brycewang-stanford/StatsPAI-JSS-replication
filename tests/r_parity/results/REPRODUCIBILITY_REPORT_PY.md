@@ -11,11 +11,11 @@ This is the Python counterpart of `REPRODUCIBILITY_REPORT.md`. Both sides matter
 | `03_hdfe` | ✅ reproduces | same bytes | 2/2 | 0.00e+00 | 0.00e+00 |
 | `04_csdid` | ✅ reproduces | same bytes | 19/19 | 0.00e+00 | 0.00e+00 |
 | `05_sunab` | ✅ reproduces | same bytes | 16/16 | 0.00e+00 | 0.00e+00 |
-| `06_rd` | ✅ reproduces | same bytes | 8/8 | 0.00e+00 | 0.00e+00 |
+| `06_rd` | ✅ reproduces | same bytes | 10/10 | 0.00e+00 | 0.00e+00 |
 | `07_scm` | ✅ reproduces | same bytes | 18/18 | 0.00e+00 | 0.00e+00 |
 | `08_dml` | ✅ reproduces | same bytes | 1/1 | 0.00e+00 | 0.00e+00 |
 | `09_rddensity` | ✅ reproduces | same bytes | 6/6 | 0.00e+00 | 0.00e+00 |
-| `10_honest_did` | ✅ reproduces | in-script | 11/11 | 0.00e+00 | 0.00e+00 |
+| `10_honest_did` | ✅ reproduces | in-script | 23/23 | 0.00e+00 | 0.00e+00 |
 | `11_psm` | ✅ reproduces | same bytes | 5/5 | 0.00e+00 | 0.00e+00 |
 | `12_sdid` | ✅ reproduces | same bytes | 2/2 | 0.00e+00 | 0.00e+00 |
 | `13_causal_forest` | ✅ reproduces | same bytes | 2/2 | 0.00e+00 | 0.00e+00 |
@@ -78,7 +78,7 @@ This is the Python counterpart of `REPRODUCIBILITY_REPORT.md`. Both sides matter
 | `70_policy_tree` | ✅ reproduces | same bytes | 8/8 | 0.00e+00 | 0.00e+00 |
 | `71_dml_family` | ✅ reproduces | same bytes | 3/3 | 0.00e+00 | 0.00e+00 |
 | `72_tmle` | ✅ reproduces | same bytes | 1/1 | 0.00e+00 | 0.00e+00 |
-| `73_did2s` | ✅ reproduces | same bytes | 2/2 | 0.00e+00 | 0.00e+00 |
+| `73_did2s` | ✅ reproduces | same bytes | 2/2 | 5.52e-15 | 1.73e-18 |
 | `74_cic` | ✅ reproduces | same bytes | 10/10 | 0.00e+00 | 0.00e+00 |
 | `75_stacked` | ✅ reproduces | same bytes | 14/14 | 0.00e+00 | 0.00e+00 |
 | `76_pretrends` | ✅ reproduces | in-script | 8/8 | 0.00e+00 | 0.00e+00 |

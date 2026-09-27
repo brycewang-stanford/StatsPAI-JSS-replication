@@ -7,13 +7,16 @@
       "side": "R",
       "n": 10000,
       "n_reps": 5,
-      "median_time_s": 0.00435900688171387,
-      "iqr_time_s": 9.41753387451172e-05,
-      "min_time_s": 0.00426006317138672,
-      "max_time_s": 0.00452399253845215,
+      "median_time_s": 0.004,
+      "iqr_time_s": 0.001,
+      "min_time_s": 0.004,
+      "max_time_s": 0.00500000000000012,
       "peak_mem_mb": null,
       "extra": {
-        "n_firms": 200,
+        "data_sha256": "d06441451af0fcf366197e2b690324082b92c1b6a05417dc6c91163ab6723595",
+        "task": "OLS, two absorbed FE (firm, year), iid SE",
+        "estimate": 2.00072979850424,
+        "se": 0.00506379577956577,
         "package": "fixest"
       }
     },
@@ -22,13 +25,16 @@
       "side": "R",
       "n": 100000,
       "n_reps": 5,
-      "median_time_s": 0.0086209774017334,
-      "iqr_time_s": 0.000166177749633789,
-      "min_time_s": 0.00845718383789062,
-      "max_time_s": 0.00923395156860352,
+      "median_time_s": 0.0109999999999999,
+      "iqr_time_s": 0.00100000000000011,
+      "min_time_s": 0.0109999999999999,
+      "max_time_s": 0.012,
       "peak_mem_mb": null,
       "extra": {
-        "n_firms": 632,
+        "data_sha256": "4267435b499955780cc9d20acf102851c0f5fb99629b8add07dd3b16dd5266fc",
+        "task": "OLS, two absorbed FE (firm, year), iid SE",
+        "estimate": 1.99822369701714,
+        "se": 0.00158339727779666,
         "package": "fixest"
       }
     },
@@ -37,21 +43,27 @@
       "side": "R",
       "n": 1000000,
       "n_reps": 5,
-      "median_time_s": 0.0487449169158936,
-      "iqr_time_s": 0.000551223754882812,
-      "min_time_s": 0.0483591556549072,
-      "max_time_s": 0.0492949485778809,
+      "median_time_s": 0.0739999999999998,
+      "iqr_time_s": 0.000999999999999446,
+      "min_time_s": 0.0739999999999998,
+      "max_time_s": 0.0759999999999996,
       "peak_mem_mb": null,
       "extra": {
-        "n_firms": 2000,
+        "data_sha256": "7b73253642cc278a23d4b76d04cf56638486a77e642db84271a32c81987dd934",
+        "task": "OLS, two absorbed FE (firm, year), iid SE",
+        "estimate": 1.99977328186142,
+        "se": 0.000500965642179941,
         "package": "fixest"
       }
     }
   ],
   "hardware": {
     "reference_package": "fixest 0.14.0",
-    "platform": "darwin20",
-    "R_version": "R version 4.5.2 (2025-10-31)"
+    "platform": "aarch64-apple-darwin20",
+    "R_version": "R version 4.5.2 (2025-10-31)",
+    "run_id": "20260927T012126",
+    "load_avg_1m_at_start": 1.43,
+    "threads": 1
   },
   "extra": []
 }

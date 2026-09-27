@@ -73,8 +73,8 @@ def test_reproduction_environment_audit_guards_seeded_stochastic_outputs() -> No
     assert {
         "Paper-JSS/replication/scripts/ex06_causal_impact.py",
         "tests/coverage_monte_carlo/run_b1000.py",
-        "tests/perf/01_hdfe_perf.py",
-        "tests/perf/01_hdfe_perf.R",
+        # Track C inputs are drawn once, in Python, and read by both sides.
+        "tests/perf/_data.py",
     } <= set(rng["stochastic_files"])
 
     md = (RESULTS / "reproduction_environment_audit.md").read_text()

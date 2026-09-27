@@ -1,18 +1,10 @@
 \section{Agent-facing interface checks}\label{sec:agentbench}
 
-The agent-facing design described in Section~\ref{sec:agent} is the
-most contestable claim in this paper: a reviewer may reasonably ask
-whether a machine-readable schema \emph{actually} improves the
-behaviour of an LLM agent on a real empirical task, or whether a
-\emph{statsmodels-plus-prompting} baseline performs equivalently well.
-That question needs frozen model releases, fixed prompts, matched tool
-budgets, and a scoring rubric; it cannot be inferred from schema
-coverage, and Section~\ref{sec:agentbench-behavioural} states what
-answering it would take. The present section reports only the
-\emph{mechanical} and \emph{contractual} evidence that the agent-facing
-surface is correctly wired up. We refer to \citet{patil2023gorilla}
-and \citet{liang2023helm} as methodological precedents for tool-use
-and holistic-LLM benchmarks respectively.
+This section reports only the \emph{mechanical} and \emph{contractual}
+evidence that the agent-facing surface is correctly wired up, which is
+not a behavioural claim. Whether the interface improves an LLM agent's
+empirical work is a question that schema coverage cannot answer
+(Section~\ref{sec:agentbench-behavioural}).
 
 \subsection{Mechanical evidence}\label{sec:agentbench-mechanical}
 
@@ -30,13 +22,11 @@ matters because the headline ``$\RegistryTotal/\RegistryTotal$ emit a schema'' f
 high by construction -- the registry pipes \emph{any} typed signature
 into a JSON Schema -- whereas the
 stronger contract is that every parameter carries a
-non-empty description. We do not turn
-absence of package-distributed, package-wide OpenAI-style tool-schema catalogues
-in \pkg{statsmodels}, \pkg{linearmodels}, or \pkg{scikit-learn} into
-a numerical \emph{zero} score: those projects target different interfaces,
-and Table~\ref{tab:schema-coverage} is an internal completeness audit,
-not a behavioural or package-quality ranking; they do not rule out external
-wrappers.
+non-empty description. Table~\ref{tab:schema-coverage} is an internal
+completeness audit, not a ranking: \pkg{statsmodels},
+\pkg{linearmodels}, and \pkg{scikit-learn} ship no package-distributed,
+package-wide OpenAI-style tool-schema catalogues because they target
+different interfaces, and they do not rule out external wrappers.
 
 \begin{table}[t]
 \centering\small
@@ -60,40 +50,38 @@ Parameters across all schemas                    & \SchemaParameterTotal & --- &
 ``Agent metadata'' means at least one non-empty assumption, pre-condition,
 failure mode, limitation, or typical/minimum sample-size field after explicit
 inheritance. The remaining schemas still emit name, signature, and
-description fields, but are not counted as curated. Counts are regenerated
+description fields, but are not counted as curated. Of those,
+\AgentUncuratedClassInfra{} are result or exception classes and
+infrastructure helpers (Section~\ref{sec:parity}), where planning
+metadata has little to say; the other \AgentUncuratedEstimator{} are
+estimator entry points outside the curated set. Counts are regenerated
 from the live registry; this table makes no cross-package quality claim.}
 \label{tab:schema-coverage}
 \end{table}
 
-The same registry is exported as a versioned offline schema bundle
-covering tool schemas, function schemas, agent cards, result-payload
-validation, and provenance counts, so non-Python clients can discover
-the tool surface without importing \statspai{}.
+A non-empty description is still only mechanical completeness; it does
+not make a parameter's meaning unambiguous to a machine. For the eleven
+registered entry points of the validation suite, 24 of 143 schema
+parameters declare an enumerated domain and 55 a default. Mutually
+exclusive options (\code{robust=} and \code{vce=}), and conditions under
+which an option applies (a clustered covariance needs a cluster
+variable), are stated in the descriptions and enforced at call time by
+typed errors rather than expressed in the schema. Encoding them there,
+for the core first, is the next step for this interface.
 
-To keep this surface honest as the package grows, \statspai{} ships a
-coverage ratchet for agent cards. The ratchet classifies registered
-functions into cumulative documentation tiers, records per-field and
-per-tier counters in a checked JSON floor, and fails CI on any
-regression. The tiers deliberately separate a minimal schema-ready
-description from richer assumptions, failure modes, alternatives, sample
-size guidance, and certified/validated evidence. Lowering the floor
-requires an explicit hand edit, so a schema-quality regression is
-visible in code review rather than hidden behind a large function
-count.
+The same registry is exported as a versioned offline schema bundle, so
+non-\proglang{Python} clients can discover the tool surface without
+importing \statspai{}, and a coverage ratchet fails continuous
+integration if any agent-card counter falls.
 
 \subsection{Contractual trace evidence}\label{sec:agentbench-procedural}
 
-The agent-facing surface is exposed through an MCP server
-(Section~\ref{sec:mcp}) that negotiates Model Context Protocol
-revisions 2024-11-05, 2025-03-26, and 2025-06-18. The protocol test
-suite exercises the \code{initialize} handshake and version
-negotiation, \code{tools/list} and \code{tools/call} with structured
-content, and \code{isError} envelopes; the schema and registry suites
-check that registered functions emit tool schemas, that agent-card
-filters behave as documented, and that MCP tool discovery sees the same
-registry-backed surface as \code{sp.function\_schema()}. These are the
-package's own tests, not an external certification of protocol
-conformance.
+The MCP server (Section~\ref{sec:mcp}) negotiates protocol revisions
+2024-11-05, 2025-03-26, and 2025-06-18; the package's own tests (not an
+external conformance certification) exercise the handshake,
+\code{tools/list} and \code{tools/call}, \code{isError} envelopes, and
+that MCP discovery sees the same registry as
+\code{sp.function\_schema()}.
 
 For this submission we also execute one deterministic end-to-end trace
 through the live MCP server. The script
@@ -136,7 +124,9 @@ using this interface produces \emph{better empirical analyses} than one
 using \pkg{statsmodels} or \proglang{R} packages through a Jupyter MCP
 shim. That question requires frozen model
 releases, fixed prompts, matched tool budgets, and a scoring rubric,
-and belongs in a separate behavioural study. To make that deferral auditable
+and belongs in a separate behavioural study, with
+\citet{patil2023gorilla} and \citet{liang2023helm} as methodological
+precedents for tool-use and holistic-LLM benchmarks. To make that deferral auditable
 rather than vague, the archive includes
 \code{replication/\allowbreak results/\allowbreak agent\_benchmark\_protocol.md}, which records
 the matched arms, task families, scoring dimensions, leakage controls,

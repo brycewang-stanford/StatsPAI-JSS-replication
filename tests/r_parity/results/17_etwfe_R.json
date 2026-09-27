@@ -50,10 +50,10 @@
       "module": "17_etwfe",
       "side": "R",
       "statistic": "att_etwfe_never",
-      "estimate": -0.032976513809656,
-      "se": 0.00777235049839773,
-      "ci_lo": -0.0482100408617375,
-      "ci_hi": -0.0177429867575745,
+      "estimate": -0.0329765138096573,
+      "se": 0.00777705820181374,
+      "ci_lo": -0.0482192677908841,
+      "ci_hi": -0.0177337598284306,
       "n": 2500,
       "extra": []
     },
@@ -97,7 +97,7 @@
   "provenance": {
     "r_version": "R version 4.5.2 (2025-10-31)",
     "platform": "aarch64-apple-darwin20",
-    "running": "macOS Tahoe 26.5.2",
+    "running": "macOS Tahoe 26.6.2",
     "captured_via": "tests/r_parity/_common.R::write_results",
     "packages": {
       "etwfe": "0.6.2",

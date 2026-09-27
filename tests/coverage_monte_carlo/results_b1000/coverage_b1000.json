@@ -96,6 +96,22 @@
     "wall_s": 22.6
   },
   {
+    "name": "sp.fast.feols two-way FE (CR1 by unit)",
+    "B": 1000,
+    "covered": 955,
+    "rate": 0.955,
+    "truth": 1.5,
+    "bias": -0.005703020395997127,
+    "mc_sd": 0.10263139629063545,
+    "mean_se": 0.10130603744203348,
+    "median_se": 0.1013968388178288,
+    "se_sd_ratio": 0.9870862241331223,
+    "rmse": 0.10273847742057526,
+    "mean_ci_length": 0.4071642084303961,
+    "failures": 0,
+    "wall_s": 1.0
+  },
+  {
     "name": "sp.rdrobust sharp (robust CI)",
     "B": 1000,
     "covered": 934,

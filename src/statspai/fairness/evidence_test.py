@@ -67,6 +67,23 @@ class EvidenceWithoutInjusticeResult(FairnessResult):
     Inherits the standard ``metric/value/per_group/threshold/passes/notes``
     fields from :class:`FairnessResult` and adds bootstrap-inference
     artefacts specific to Kwak-Pleasants 2025.
+
+    Examples
+    --------
+    >>> import numpy as np, pandas as pd, statspai as sp
+    >>> rng = np.random.default_rng(0)
+    >>> A = rng.integers(0, 2, 300)
+    >>> df = pd.DataFrame({"A": A, "credit": 600 + 100 * A + rng.normal(0, 30, 300)})
+    >>> def predictor(d): return 1 / (1 + np.exp(-(d["credit"] / 100 - 6)))
+    >>> def intervene(d, a):
+    ...     out = d.copy(); out["A"] = a
+    ...     out["credit"] = 600 + 100 * a + (d["credit"] - (600 + 100 * d["A"]))
+    ...     return out
+    >>> res = sp.evidence_without_injustice(df, predictor, protected="A",
+    ...     admissible_features=["credit"], scm_intervention=intervene,
+    ...     n_boot=99, random_state=0)
+    >>> isinstance(res, sp.EvidenceWithoutInjusticeResult)
+    True
     """
 
     ci: Optional[tuple] = None

@@ -41,15 +41,34 @@ equilibrium conditions." *Statistical Science*, 29(4), 363-396. [@richardson2014
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, Any
+from typing import Any, Dict
 
 import numpy as np
 import pandas as pd
+
 from .._result_serialize import ResultProtocolMixin
 
 
 @dataclass
 class BalkePearlResult(ResultProtocolMixin):
+    """Result of :func:`statspai.balke_pearl`.
+
+    Fields: ``lower``, ``upper``, ``width``, ``lower_monotone``,
+    ``upper_monotone``, ``joint_probs``, ``n_obs``, ``detail``.
+
+    Examples
+    --------
+    >>> import numpy as np, pandas as pd, statspai as sp
+    >>> rng = np.random.default_rng(0)
+    >>> z = rng.integers(0, 2, 400)
+    >>> d = (z & (rng.random(400) < 0.8)).astype(int)
+    >>> y = (rng.random(400) < 0.3 + 0.4 * d).astype(int)
+    >>> res = sp.balke_pearl(pd.DataFrame({"y": y, "d": d, "z": z}),
+    ...                      y="y", treat="d", instrument="z")
+    >>> isinstance(res, sp.BalkePearlResult)
+    True
+    """
+
     lower: float
     upper: float
     width: float
@@ -108,6 +127,18 @@ def balke_pearl(
     Returns
     -------
     BalkePearlResult
+
+    Examples
+    --------
+    >>> import numpy as np, pandas as pd, statspai as sp
+    >>> rng = np.random.default_rng(0)
+    >>> z = rng.integers(0, 2, 400)
+    >>> d = (z & (rng.random(400) < 0.8)).astype(int)
+    >>> y = (rng.random(400) < 0.3 + 0.4 * d).astype(int)
+    >>> res = sp.balke_pearl(pd.DataFrame({"y": y, "d": d, "z": z}),
+    ...                      y="y", treat="d", instrument="z")
+    >>> bool(res.lower <= res.upper)
+    True
     """
     df = data[[y, treat, instrument]].dropna()
     for col in [y, treat, instrument]:

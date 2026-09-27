@@ -3,19 +3,21 @@
 \statspai{} installs from PyPI without compiled extensions of its own;
 its numerical core runs on the scientific \proglang{Python} stack
 (\pkg{numba}'s JIT compiler is the only compilation step, and it is
-optional at runtime). The submitted artifact uses \proglang{Python}
-3.12.1, \pkg{NumPy} 1.26.4,
-\pkg{SciPy} 1.13.0, \pkg{pandas} 2.2.0, \pkg{statsmodels} 0.14.1,
-\pkg{scikit-learn} 1.4.0, \pkg{linearmodels} 6.0, and
-\pkg{matplotlib} 3.8 \citep{hunter2007matplotlib}. Optional heavy backends are isolated under extras
-and are lazily imported. The submitted numerical and timing claims do
+optional at runtime). Every artifact of this article was regenerated in
+one environment, recorded exactly in \path{requirements-jss-lock.txt}:
+\proglang{Python} 3.10.20 with \pkg{NumPy} 2.2.6, \pkg{SciPy} 1.15.3,
+\pkg{pandas} 2.3.3, \pkg{statsmodels} 0.14.6, \pkg{scikit-learn} 1.6.1,
+\pkg{linearmodels} 7.0, \pkg{Numba} 0.65.1, and \pkg{matplotlib} 3.10.9
+\citep{hunter2007matplotlib}. \path{requirements-jss.txt} states the
+supported version ranges; it is not the lock. Optional heavy backends
+are isolated under extras and are lazily imported. The submitted numerical and timing claims do
 not require a compiled Rust extension, GPU, or commercial software.
 
 The \proglang{R} parity harness is pinned by
 \path{tests/r_parity/renv.lock}. The reference environment uses
 \proglang{R} 4.5.2; the packages behind the twelve-estimator suite are
 \pkg{fixest} 0.14.0, \pkg{did} 2.3.0,
-\pkg{Synth} 1.1-10, \pkg{synthdid} 0.0.9, \pkg{rdrobust} 3.0.0,
+\pkg{Synth} 1.1-10, \pkg{synthdid} 0.0.9, \pkg{rdrobust} 4.0.0,
 \pkg{rddensity} 2.6, \pkg{HonestDiD} 0.2.8, \pkg{DoubleML} 1.0.2,
 \pkg{grf} 2.6.1, and \pkg{MatchIt} 4.7.2, joined by \pkg{fect} 2.4.1
 and \pkg{interflex} 1.4.0 for the three-ecosystem worked example; the
@@ -38,8 +40,10 @@ provenance, and the main paper remains auditable from the
 \subsection{Distribution and installation}
 
 The package is distributed through PyPI
-(\code{pip install statspai}); this article describes release \StatsPAIVersion{}
-(tag \code{v\StatsPAIVersion{}}). Optional extras are exposed as
+(\code{pip install statspai==\StatsPAIVersion{}}); this article
+describes release \StatsPAIVersion{} (tag \code{v\StatsPAIVersion{}}),
+and the replication archive carries the same source as a snapshot with
+its file hashes. Optional extras are exposed as
 \code{dev}, \code{performance}, \code{bayes}, \code{deepiv},
 \code{neural}, \code{fixest}, \code{rd-cct}, and \code{plotting}
 bundles. The \code{rd-cct} extra installs the official \pkg{rdrobust}
@@ -58,60 +62,76 @@ than quoted.
 
 \subsection{Reproducibility of this paper}\label{sec:reproducibility}
 
-Reviewers can rebuild the paper's evidence along three paths, driven by
-one standalone script, \path{Paper-JSS/replication/reproduce.py}. The
-\emph{licence-free path} (\code{--tier 1}; the default) needs only the
-pinned \proglang{Python} environment and runs in under ten minutes on
-commodity hardware, inside the JSS one-hour threshold for a reviewer
-verification path. It is important to be precise about what it does.
-It \emph{recomputes} the seven worked examples, every manuscript listing
-and transcript, the known-truth recovery tests, the seed-replicated
-forest analysis, and the configuration map; it only \emph{re-derives
-tables} from frozen artifacts for the three experiments that cost hours
---- Track~A parity, Track~B Monte Carlo, and Track~C timing. Each of
-those has a separate, documented recomputation entry point
-(Table~\ref{tab:reproduction}). The \emph{\proglang{R} path} (\code{--tier 2}) adds the
-pinned \code{renv} environment and re-executes the cross-language
-parity modules themselves, which the licence-free path can only replay
-from frozen artifacts; by construction the paper's parity claim is a
-comparison against \proglang{R}, so auditing the rows at full strength
-requires this path. The \emph{\proglang{Stata} path} (\code{--tier 3})
-re-executes the migration bridges and requires a Stata licence. A
-Dockerfile reproduces the licence-free environment exactly.
+The evidence is rebuilt by one standalone script,
+\path{Paper-JSS/replication/reproduce.py}, and the script distinguishes
+two things a reader might mean by ``reproduced''. Its default
+licence-free path (\code{--tier 1}; a few minutes on the laptop of
+Section~\ref{sec:performance}, well inside the JSS one-hour threshold,
+while the longer recomputations are separate scripts) runs every generator the manuscript reads
+and then accounts for each of the twelve generated inputs of the compiled
+article, one by one, in \path{replication/results/reproduce_manifest.json}.
+Five are \emph{recomputed} from the installed package on that run: the
+figures and tables of the worked examples, every printed listing and
+transcript (replayed statement by statement and compared line for line),
+the registry census behind every count in the text, and the MCP trace.
+Seven are \emph{re-tabulated} from frozen experiment artifacts: the
+Track~A and original-data parity tables, the Track~B coverage table, the
+forest seed table, and the Track~C table and figure. The frozen
+experiments have their own entry points (Table~\ref{tab:reproduction});
+each writes the artifact its table reads, so a recompute followed by
+Tier~1 rebuilds the tables from fresh numbers. A group whose reference
+side needs \proglang{R} fails when \proglang{R} is missing instead of
+reusing the frozen reference, so fresh \proglang{Python} numbers are never
+silently paired with old reference numbers; the timing comparator
+likewise refuses rows whose two sides read different input bytes or came
+from different runs. The \emph{\proglang{R} path} (\code{--tier 2}) adds
+the pinned \code{renv} environment and re-executes every \proglang{R}
+reference of Track~A on the committed bytes (module 81 needs the archived
+\pkg{DIDmultiplegt}~0.1.4, whose current release returns \code{NaN} on
+its own example, in a private library); since the parity claim is a
+comparison with \proglang{R}, auditing it at full strength requires this
+path. The \emph{\proglang{Stata} path} (\code{--tier 3}) re-executes the
+migration bridges and requires a Stata licence.
 
-Two further checks are on the paper rather than the package. The
-listing audit replays each printed transcript statement by statement and
-compares the printed output line for line with what the code produces.
-And both sides of every parity row are re-derivable:
-\path{tests/r_parity/verify_reproduce.py} re-runs each \proglang{R}
-reference on the committed bytes, and
+Tier~1 was verified from a clean start: a fresh virtual environment
+built from the lock and the \code{v\StatsPAIVersion{}} source, in a copy
+of the archive whose generated inputs had been deleted first
+(\code{--clean}), rebuilt all twelve. The Dockerfile pins the same
+environment---the \proglang{Python} base image by digest and every
+package by the lock---leaving only the \TeX{} system packages that
+typeset the PDF unpinned. Both sides of every parity row are also
+re-derivable on their own: \path{tests/r_parity/verify_reproduce.py}
+re-runs each \proglang{R} reference on the committed bytes and
 \path{tests/r_parity/verify_reproduce_py.py} does the same for the
-\statspai{} side and also regenerates each fixture CSV byte for byte;
-all \RParityModuleCount{} modules clear a \(10^{-9}\) reproduction
-floor with no exemptions. On the licence-free path the parity,
-coverage, and timing experiments are frozen evidence on that path;
-Table~\ref{tab:reproduction} lists how to recompute each.
+\statspai{} side, regenerating each fixture CSV byte for byte; all
+\RParityModuleCount{} modules clear a \(10^{-9}\) reproduction floor
+with no exemptions.
 
 \begin{table}[!ht]
 \centering\scriptsize
-\begin{tabular}{@{}L{0.19\linewidth}L{0.15\linewidth}L{0.30\linewidth}L{0.13\linewidth}L{0.11\linewidth}@{}}
+\begin{tabular}{@{}L{0.21\linewidth}L{0.13\linewidth}L{0.27\linewidth}L{0.15\linewidth}L{0.11\linewidth}@{}}
 \toprule
-Artifact & Tier~1 does & Full recomputation & Needs & Time \\
+Artifact & Tier~1 & Full recomputation & Needs & Time \\
 \midrule
-Worked examples, listings (Sec.~\ref{sec:examples}) & recomputes & \code{reproduce.py} (Tier~1) & \proglang{Python} & \(<\)10 min \\
-Track~A, \statspai{} side (Tab.~\ref{tab:track-a-parity}) & re-reads JSON & \code{--recompute parity-py} (and fixture bytes) & \proglang{Python} & \(\sim\)15 min \\
-Track~A, \proglang{R} side & re-reads JSON & \code{--tier 2} & \proglang{R} 4.5.2, \code{renv.lock} & 30--60 min \\
-Track~A, \proglang{Stata} side & re-reads JSON & \code{--tier 3} & \proglang{Stata} 18 & \(\sim\)30 min \\
-Forest seeds (Tab.~\ref{tab:forest-seed-mc}) & re-analyses frozen draws & \code{--recompute forest-seed} & \proglang{Python}; \proglang{R} for \pkg{grf} side & \(\sim\)30 min + \(\sim\)20 min \\
-Track~B (Tabs.~\ref{tab:track-b-b1000}--\ref{tab:track-b-robustness}) & re-reads JSON & \code{--recompute montecarlo} & \proglang{Python} & \(\sim\)80 min \\
-Track~C (Fig.~\ref{fig:track-c-loglog}) & re-reads JSON & \code{--recompute performance} & \proglang{Python}; \proglang{R} for reference legs & hardware-dependent \\
+Worked examples, listings, census (Sec.~\ref{sec:examples}) & recomputes & \code{reproduce.py} (Tier~1) & \proglang{Python} & a few min \\
+Track~A, \statspai{} side (Tab.~\ref{tab:track-a-parity}) & re-tabulates & \code{--recompute parity-py} (and fixture bytes) & \proglang{Python} & \(\sim\)15 min \\
+Track~A, \proglang{R} side & re-tabulates & \code{--tier 2} & \proglang{R} 4.5.2, \code{renv.lock} & 30--60 min \\
+Track~A, \proglang{Stata} side & re-tabulates & \code{--tier 3} & \proglang{Stata} 18 & \(\sim\)30 min \\
+Implementation trace & re-reads & \code{--recompute provenance} & \proglang{Python} & \(\sim\)15 min \\
+Forest seeds (Tab.~\ref{tab:forest-seed-mc}) & re-tabulates & \code{--recompute forest-seed} (both sides) & \proglang{Python}, \proglang{R} & \(\sim\)50 min \\
+Track~B and mechanisms (Sec.~\ref{sec:track-b}) & re-tabulates & \code{--recompute montecarlo} & \proglang{Python}; \proglang{R} for the RD draw-wise check & \(\sim\)2 h \\
+Track~C (Tab.~\ref{tab:track-c-perf}) & re-tabulates & \code{--recompute performance} (both sides, one run) & \proglang{Python}, \proglang{R}, \pkg{DoubleML} & \(\sim\)1 h \\
 \bottomrule
 \end{tabular}
 \caption{What the licence-free path recomputes and how to recompute the
 rest (options of \code{replication/reproduce.py}); each writes to the
-artifact path the paper reads.}
+artifact path the paper reads. Dependencies beyond the lock for full
+recomputation are listed in \code{requirements-jss-recompute.txt} and
+\code{tests/r\_parity/renv.lock}.}
 \label{tab:reproduction}
-\end{table} The replication archive contains the
+\end{table}
+
+The replication archive contains the
 manuscript sources, replication scripts, selected package
 source, validation tests, R/Stata/reference parity artifacts, Monte
 Carlo and performance artifacts, and the deterministic MCP trace, and

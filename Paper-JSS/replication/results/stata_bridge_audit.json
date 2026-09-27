@@ -545,7 +545,7 @@
       "row_count": 3,
       "stata_algorithm": "",
       "stata_bridge_status": "",
-      "stata_command": "qreg y x1 x2",
+      "stata_command": "qreg y x1 x2, vce(robust)",
       "stata_version": 18
     },
     {

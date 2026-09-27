@@ -31,8 +31,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from .llm_dag import _classify_variable
+from .._aliases import accepts_aliases
 from .._result_serialize import ResultProtocolMixin
+from .llm_dag import _classify_variable
 
 __all__ = ["causal_mas", "CausalMASResult"]
 
@@ -64,6 +65,14 @@ class CausalMASResult(ResultProtocolMixin):
         ``'heuristic'`` or the LLM client's repr.
     final_threshold : float
         Confidence cutoff that produced ``edges``.
+
+    Examples
+    --------
+    >>> import statspai as sp
+    >>> res = sp.causal_mas(["age", "treatment", "mortality"],
+    ...                     treatment="treatment", outcome="mortality", rounds=1)
+    >>> isinstance(res, sp.CausalMASResult)
+    True
     """
 
     edges: List[Tuple[str, str]]
@@ -188,6 +197,7 @@ def _run_llm_agent(client: Any, role: str, prompt: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+@accepts_aliases(treat="treatment", y="outcome")
 def causal_mas(
     variables: Sequence[str],
     *,

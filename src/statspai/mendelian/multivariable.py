@@ -27,6 +27,7 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 
+from .._aliases import accepts_aliases
 from .._result_serialize import ResultProtocolMixin
 from ..exceptions import MethodIncompatibility
 
@@ -47,7 +48,20 @@ __all__ = [
 
 @dataclass
 class MVMRResult(ResultProtocolMixin):
-    """Multivariable MR output."""
+    """Multivariable MR output.
+
+    Examples
+    --------
+    >>> import numpy as np, pandas as pd, statspai as sp
+    >>> rng = np.random.default_rng(0)
+    >>> bx1 = rng.uniform(0.1, 0.5, 30); bx2 = rng.uniform(0.1, 0.5, 30)
+    >>> snp = pd.DataFrame({"beta_x1": bx1, "beta_x2": bx2,
+    ...                     "beta_y": 0.4 * bx1 + rng.normal(0, 0.02, 30),
+    ...                     "se_y": rng.uniform(0.01, 0.05, 30)})
+    >>> res = sp.mr_multivariable(snp)
+    >>> isinstance(res, sp.MVMRResult)
+    True
+    """
 
     exposures: List[str]
     # Columns: exposure, estimate, se, ci_low, ci_high, p_value.
@@ -74,7 +88,20 @@ class MVMRResult(ResultProtocolMixin):
 
 @dataclass
 class MediationMRResult(ResultProtocolMixin):
-    """Two-step MR output."""
+    """Two-step MR output.
+
+    Examples
+    --------
+    >>> import numpy as np, pandas as pd, statspai as sp
+    >>> rng = np.random.default_rng(1)
+    >>> bx = rng.uniform(0.1, 0.5, 30); bm = 0.5 * bx + rng.normal(0, 0.02, 30)
+    >>> se = lambda: rng.uniform(0.01, 0.05, 30)
+    >>> snp = pd.DataFrame({"beta_x": bx, "se_x": se(), "beta_m": bm, "se_m": se(),
+    ...     "beta_y": 0.2 * bx + 0.6 * bm + rng.normal(0, 0.02, 30), "se_y": se()})
+    >>> res = sp.mr_mediation(snp)
+    >>> isinstance(res, sp.MediationMRResult)
+    True
+    """
 
     exposure: str
     mediator: str
@@ -107,7 +134,20 @@ class MediationMRResult(ResultProtocolMixin):
 
 @dataclass
 class MRBMAResult(ResultProtocolMixin):
-    """MR-BMA (Bayesian Model Averaging) output."""
+    """MR-BMA (Bayesian Model Averaging) output.
+
+    Examples
+    --------
+    >>> import numpy as np, pandas as pd, statspai as sp
+    >>> rng = np.random.default_rng(0)
+    >>> bx1 = rng.uniform(0.1, 0.5, 30); bx2 = rng.uniform(0.1, 0.5, 30)
+    >>> snp = pd.DataFrame({"beta_x1": bx1, "beta_x2": bx2,
+    ...                     "beta_y": 0.4 * bx1 + rng.normal(0, 0.02, 30),
+    ...                     "se_y": rng.uniform(0.01, 0.05, 30)})
+    >>> res = sp.mr_bma(snp)
+    >>> isinstance(res, sp.MRBMAResult)
+    True
+    """
 
     exposures: List[str]
     marginal_inclusion: pd.Series  # P(exposure in the causal set)
@@ -158,6 +198,7 @@ def _ivw(
 # -------------------------------------------------------------------------
 
 
+@accepts_aliases(y="outcome")
 def mr_multivariable(
     snp_associations: pd.DataFrame,
     *,
@@ -493,6 +534,7 @@ def mr_mediation(
 # -------------------------------------------------------------------------
 
 
+@accepts_aliases(y="outcome")
 def mr_bma(
     snp_associations: pd.DataFrame,
     *,

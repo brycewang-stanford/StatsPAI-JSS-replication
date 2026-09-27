@@ -7,14 +7,19 @@
       "side": "R",
       "n": 20,
       "n_reps": 3,
-      "median_time_s": 1.1590781211853,
-      "iqr_time_s": 0.0199320316314697,
-      "min_time_s": 1.13795900344849,
-      "max_time_s": 1.17782306671143,
+      "median_time_s": 0.724,
+      "iqr_time_s": 0.00650000000000006,
+      "min_time_s": 0.72,
+      "max_time_s": 0.733,
       "peak_mem_mb": null,
       "extra": {
         "n_donors": 20,
-        "T": 30
+        "T": 30,
+        "data_sha256": "146232ff011e7a6b4435a74d4e743f7f203c0240c0f3d361c019fd2616491f01",
+        "task": "ADH special predictors (each pre-year), nested V, no placebos",
+        "estimate": 0.00650596150623489,
+        "loss_v": 0.133102716298176,
+        "package": "Synth"
       }
     },
     {
@@ -22,14 +27,19 @@
       "side": "R",
       "n": 50,
       "n_reps": 3,
-      "median_time_s": 1.51156115531921,
-      "iqr_time_s": 0.0258309841156006,
-      "min_time_s": 1.47112607955933,
-      "max_time_s": 1.52278804779053,
+      "median_time_s": 1.298,
+      "iqr_time_s": 0.0210000000000004,
+      "min_time_s": 1.281,
+      "max_time_s": 1.323,
       "peak_mem_mb": null,
       "extra": {
         "n_donors": 50,
-        "T": 30
+        "T": 30,
+        "data_sha256": "5136e8e44a562d6190319d62505cfeb9695634f6b297abf7cb232e6557802eec",
+        "task": "ADH special predictors (each pre-year), nested V, no placebos",
+        "estimate": 0.182734763600336,
+        "loss_v": 0.066149463694543,
+        "package": "Synth"
       }
     },
     {
@@ -37,20 +47,29 @@
       "side": "R",
       "n": 100,
       "n_reps": 3,
-      "median_time_s": 1.87089991569519,
-      "iqr_time_s": 0.122602939605713,
-      "min_time_s": 1.83104395866394,
-      "max_time_s": 2.07624983787537,
+      "median_time_s": 4.353,
+      "iqr_time_s": 0.108000000000001,
+      "min_time_s": 4.256,
+      "max_time_s": 4.472,
       "peak_mem_mb": null,
       "extra": {
         "n_donors": 100,
-        "T": 30
+        "T": 30,
+        "data_sha256": "43fcca958cb11c4d44b71eb924d71a7ab4448342897cc9164ad80dbd87b87298",
+        "task": "ADH special predictors (each pre-year), nested V, no placebos",
+        "estimate": -0.0282670398531714,
+        "loss_v": 0.0287057162408226,
+        "package": "Synth"
       }
     }
   ],
   "hardware": {
     "reference_package": "Synth 1.1.10",
-    "R_version": "R version 4.5.2 (2025-10-31)"
+    "platform": "aarch64-apple-darwin20",
+    "R_version": "R version 4.5.2 (2025-10-31)",
+    "run_id": "20260927T012126",
+    "load_avg_1m_at_start": 1.38,
+    "threads": 1
   },
   "extra": []
 }

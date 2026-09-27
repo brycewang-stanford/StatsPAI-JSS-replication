@@ -5,9 +5,365 @@ Internal version-to-version migrations are at the top; the long-form
 
 ---
 
+<a id="plr-theta-label"></a>
+
+## 1.32.0 — DML PLR estimate is labelled `theta`; `cate_summary` row `Mean`
+
+**Who is affected.** Code that indexes a partially linear DML result by
+its old label, e.g. `sp.dml(..., model="plr").params["ATE"]`,
+`sp.regtable(..., keep=["ATE"])` for a PLR column, or
+`sp.cate_summary(res).loc["Mean (ATE)"]`.
+
+**What changed.** No number changes; two labels were wrong.
+
+- `sp.dml(model="plr")` (and `sp.DoubleMLPLR`, `sp.dml_model_averaging`)
+  now report `estimand == "theta"`. The PLR parameter theta in
+  `Y = theta*D + g(X) + e` equals the ATE only under a constant effect;
+  with heterogeneous effects of a binary `D` it is a variance-weighted
+  average, and with a continuous `D` (years of schooling, a dose) it is a
+  partial coefficient. `model="irm"` still reports `ATE`, and the IV
+  models `LATE`.
+- `sp.cate_summary` names its first row `Mean` instead of `Mean (ATE)`. It
+  is the plain average of the fitted conditional effects, not the
+  estimator's doubly-robust average (`cf.average_treatment_effect()` for a
+  forest), and for a continuous treatment it averages partial effects.
+
+**What to do.**
+
+```python
+res = sp.dml(df, y="y", d="d", X=X, model="plr")
+res.estimate            # unchanged, prefer this
+res.params["theta"]     # was res.params["ATE"]
+sp.regtable(ols, res, keep=["d", "theta"])
+sp.cate_summary(cf).loc["Mean"]   # was .loc["Mean (ATE)"]
+```
+
+---
+
+<a id="qreg-t-inference"></a>
+
+## 1.32.0 — ⚠️ `sp.qreg` p-values and intervals use t(N - k)
+
+**Who is affected.** Anyone reading p-values, stars or confidence intervals
+from `sp.qreg` (any `vce`), including `result.ci` and `detail["pvalue"]`.
+
+**What changes.** The statistic is referred to t with N - k degrees of
+freedom, as Stata `qreg` and R `quantreg` do, instead of the normal.
+Coefficients and standard errors do not change; intervals widen by the
+ratio of the t and normal critical values. `detail` has a new `t` column;
+the old `z` column still exists and holds the same statistic.
+
+**To reproduce old numbers.** `2 * scipy.stats.norm.sf(abs(b / se))` and
+`b +/- scipy.stats.norm.ppf(0.975) * se` from `detail`.
+
+---
+
+<a id="panel-cre-theta"></a>
+
+## 1.32.0 — ⚠️ `sp.panel(method="mundlak" | "chamberlain")` mean coefficients move slightly
+
+**Who is affected.** Anyone reading the coefficients on the unit means
+(`_mean_<x>`), the Chamberlain terms or the constant of a correlated
+random-effects fit, or the Mundlak Wald statistic built on them.
+
+**What changes.** The random-effects variance components no longer count
+the unit-mean columns as degrees of freedom (they add no rank). theta is now
+Stata's, and the mean coefficients and the constant move by a few parts in
+ten thousand on typical panels. The coefficients on the original
+regressors (the FE estimates) are unchanged.
+
+**To reproduce old numbers.** Fit `linearmodels.panel.RandomEffects`
+directly on the augmented design.
+
+---
+
+<a id="panel-weights-cluster"></a>
+
+## 1.32.0 — ⚠️ `sp.panel(weights=, cluster=)` and `sp.did_summary(cluster=)` take effect
+
+**Who is affected.** Anyone who passed `weights=` to `sp.panel`, passed
+`cluster=` with a column name other than the panel entity (e.g. a state
+id for county panels), or passed `cluster=` to `sp.did_summary`.
+
+**What changes.** `sp.panel` weighted `fe` / `twoway` / `pooled` fits are
+now WLS (they were unweighted) and a named cluster column is clustered on
+(it used to cluster on the entity). Weights with `re` / `be` / `fd` /
+`mundlak` / `chamberlain` / GMM now raise. The CS row of `sp.did_summary`
+clusters on the requested variable through the multiplier bootstrap.
+
+**To reproduce old numbers.** Drop `weights=`; use `cluster='entity'`;
+for `did_summary`, drop `cluster=` (the CS row always clustered by unit).
+
+---
+
+<a id="pwcorr-pairwise"></a>
+
+## 1.32.0 — ⚠️ `sp.pwcorr` deletes missing values pairwise
+
+**Who is affected.** Anyone calling `sp.pwcorr` on data with missing values.
+
+**What changes.** Each correlation now uses every row on which *that pair*
+is observed (Stata `pwcorr`'s default); it used to drop any row with a gap
+in any listed variable. The text output reports the range of pairwise N;
+`output="dataframe"` carries `.attrs["nobs"]` and `.attrs["pvalues"]`.
+
+**To reproduce old numbers.** `sp.pwcorr(..., listwise=True)`.
+
+---
+
+<a id="margins-stata-semantics"></a>
+
+## 1.32.0 — ⚠️ `sp.margins` / `margins_at` / `contrast` / `pwcompare` follow Stata's averaging
+
+**Who is affected.** Users of the margins family with (a) `poisson` /
+`nbreg` / `glm` fits that used `exposure=` / `offset=`, (b) weighted fits,
+(c) `data=` containing rows outside the estimation sample, (d)
+`method="mem"` with factor variables, (e) p-values / intervals from
+`margins_at` / `contrast` / `pwcompare` after `regress`, or (f) the default
+`variables` list of a model with `C()` terms.
+
+**What changes.** (a) The offset / exposure is part of the prediction --
+this is the largest change (the AME scales with the mean exposure). (b) The
+average is weighted by the fit's weights. (c) Rows missing the outcome or a
+model / cluster / weight variable are dropped (Stata `e(sample)`), with a
+warning when the remaining count differs from the fit's `nobs`; they used to
+be averaged in or to raise. (d) `atmeans` sets factor indicators to their
+shares. (e) t(df) instead of N(0, 1). (f) Factor variables get discrete-change
+rows (`"2.g"`), as Stata's `dydx(*)`; transformations such as `I(x**2)` are
+differentiated through, so an `x + I(x**2)` model reports the total effect
+of `x`. `margins_at` / `contrast` / `pwcompare` now run after logit / probit
+/ poisson on the response scale instead of raising.
+
+**To reproduce old numbers.** There is no switch for (a)-(e): those were
+defects against Stata (see `tests/reference_parity/test_r2_postest_parity.py`
+and `test_margins_ext_parity.py`). For (f) pass `variables=[...]` listing the
+continuous variables, and pre-compute a transformed column (e.g. `x2`) if
+you want it treated as an independent regressor.
+
+---
+
+<a id="mice-categorical"></a>
+
+## 1.32.0 — ⚠️ `sp.mice` imputes categorical and binary variables with models
+
+**Who is affected.** Anyone using `sp.mice` on data with non-numeric
+columns or binary variables, and anyone whose other variables are imputed
+from data that contains categorical columns.
+
+**What changes.** Two-level variables default to proper `'logreg'`
+(parameters drawn from their posterior; the MLE was used before) and
+multi-level non-numeric variables to the new `'polyreg'` (they used to get
+`'sample'`, random draws from their own marginal, which attenuates every
+association with them). Categorical columns now enter the other variables'
+equations as dummies (they were ignored). Imputed values and pooled
+estimates change.
+
+**To reproduce old numbers.** Not exactly (the random streams differ);
+`method={"var": "sample"}` restores the marginal draw for a variable.
+
+---
+
+<a id="rdrobust-fuzzy-comb"></a>
+
+## 1.32.0 — ⚠️ `sp.rdrobust` fuzzy designs with a `comb` bandwidth selector
+
+**Who is affected.** `sp.rdrobust(fuzzy=..., bwselect="msecomb1" |
+"msecomb2" | "cercomb1" | "cercomb2")`.
+
+**What changes.** The bandwidth is now the fuzzy (Wald-ratio) one, as R
+`rdrobust`; the comb recursion used to drop the first stage and return the
+sharp bandwidth, moving h and the estimate substantially (h 0.18 vs 0.32,
+estimate 0.29 vs 0.56 on the test design).
+
+**To reproduce old numbers.** Compute the sharp comb bandwidth
+(`sp.rdrobust(data, y=..., x=..., bwselect="msecomb2")` without `fuzzy=`)
+and pass it as `h=` / `b=`.
+
+---
+
+<a id="mcp-sample-rule"></a>
+
+## 1.32.0 — MCP `data_sample_n` draws a different (deterministic) sample
+
+**Who is affected.** MCP clients that pass `data_sample_n`.
+
+**What changes.** The sample is the `data_sample_n` rows with the smallest
+seed-0 uniform keys, in file order, identical whether the file is loaded
+whole or streamed; it used to be `DataFrame.sample(random_state=0)` on the
+loaded frame (different rows, shuffled order).
+
+**To reproduce old numbers.** Load the file yourself and call
+`df.sample(n, random_state=0)`.
+
+---
+
+
+<a id="qreg-default-se"></a>
+
+## 1.32.0 — ⚠️ `sp.qreg` default standard errors follow Stata's `qreg`
+
+**Who is affected.** Anyone reading standard errors, p-values or intervals
+from `sp.qreg` (and `sp.sqreg`, which calls it) without choosing a variance.
+
+**What changes.** The default SE is now Stata's `qreg` default,
+`vce(iid)`: the sparsity is the difference quotient of the mean fitted
+quantiles at `tau +/- h` with the Hall-Sheather bandwidth. It used to be a
+Gaussian-kernel density of the residuals with a Silverman bandwidth, which
+matched neither Stata's `qreg` nor R's `quantreg` (2-8% off). Coefficients are
+unchanged. New choices: `vce="robust"` (Stata `vce(robust)`) and
+`vce="nid"` (R `quantreg` `se="nid"`).
+
+**To reproduce old numbers.** `sp.qreg(..., vce="powell")`.
+
+---
+
+<a id="tobit-polish"></a>
+
+## 1.32.0 — ⚠️ `sp.tobit` estimates move by ~1e-6
+
+**Who is affected.** Anyone comparing `sp.tobit` output digit by digit
+with an earlier release.
+
+**What changes.** The fit is Newton-polished to the optimum and the SEs
+come from the polished observed information; coefficients move by ~1e-6
+and SEs by up to ~5e-5 (relative), towards Stata `tobit` and R `censReg`
+(now 1e-11 apart on the Track A fixture). There is no switch: the old
+digits were an optimiser stopping short.
+
+---
+
+<a id="iv-weights-alpha"></a>
+
+## 1.32.0 — ⚠️ `sp.iv(weights=)` and fit-time `alpha=` take effect
+
+**Who is affected.** (1) Anyone who passed `weights=` to `sp.iv` or
+`sp.ivreg`. (2) Anyone who passed `alpha=` to one of the 31 estimators
+listed in the CHANGELOG (`logit`, `poisson`, `cox`, `liml`, `frontier`,
+`cr2_se`, ...) and read intervals from the result. (3) Anyone who read
+intervals from `summary(alpha=...)` on an `EconometricResults`. (4) Users of
+`sp.synth(method="mc", covariates=...)` or
+`sp.synth(method="augmented", placebo=False)`.
+
+**What changes.** (1) The weights are applied: point estimates and SEs are
+now the weighted ones (Stata `ivregress [aw=]`); previously the unweighted
+fit was returned. (2) and (3) Intervals are at the requested level;
+previously they were always 95%. Point estimates, SEs and p-values are
+unchanged. (4) The covariates are used and the placebo loop is skipped.
+
+**Also newly loud.** Unknown keywords on `sp.iv`, `sp.ivreg` (including
+`small=` and `iv_diag=`), `sp.synth(method="classic")` and `sp.augsynth`
+raise `TypeError`; `sp.synth_compare` warns about skipped methods; dropping
+incomplete rows emits an `AssumptionWarning`; NaN standard errors emit a
+`ConvergenceWarning`.
+
+**To reproduce old numbers.** (1) Omit `weights=`. (2)-(3) Omit `alpha=` or
+pass `alpha=0.05`. (4) Omit `covariates=` / call `sp.augsynth` directly.
+To silence the listwise-deletion note, drop incomplete rows before the call.
+
+---
+
+<a id="cs-event-study-share-term"></a>
+
+## 1.31.0 — ⚠️ Callaway--Sant'Anna convenience event study carries the cohort-share term
+
+**Who is affected.** Anyone reading standard errors, confidence intervals or
+p-values from `sp.callaway_santanna(...).model_info['event_study']` (also
+shown by the fit's summary and plots) rather than from
+`sp.aggte(cs, type="dynamic")`.
+
+**What changes.** Those standard errors now include the estimation error of
+the cohort shares that weight each event time, as R `did::aggte` and
+`sp.aggte` do. They grow wherever an event time mixes cohorts (up to 47% on
+the castle-doctrine panel); single-cohort event times and all point
+estimates are unchanged. The table now equals
+`sp.aggte(cs, type="dynamic", bstrap=False)`.
+
+**To reproduce old numbers.** There is no switch: the old numbers treated
+estimated weights as known and were anti-conservative. `sp.aggte` has
+reported the corrected values since the share term was added there.
+
+---
+
+<a id="pretrends-joint-covariance"></a>
+
+## 1.31.0 — ⚠️ `sp.pretrends_test` / `pretrends_power` / `sensitivity_rr` use the joint pre-period covariance
+
+**Who is affected.** Anyone who passed an `sp.event_study` result (without
+`expose_pre_vcov=True`) or a `sun_abraham` / `stacked_did` /
+`did_imputation` result to `sp.pretrends_test`,
+`sp.pretrends_power` or `sp.sensitivity_rr`. Those calls warned "treated as
+MUTUALLY INDEPENDENT" and used a diagonal covariance.
+
+**What changes.** The pre-trend statistics now use the joint cluster-robust
+covariance of the pre-treatment coefficients, the same one the event
+study's own `model_info['pretrend_test']` uses. The p-value can move in
+either direction. On the castle-doctrine panel it moved from 0.603 to 0.277
+(`type="wald"`) and 0.293 (`type="f"`, now matching Stata's `test`). On `sun_abraham` /
+`stacked_did` / `did_imputation` results the pre-period block now comes
+from `sp.event_study_vcov`.
+`type="f"` also switches its denominator degrees of freedom from
+`n_obs - K` to `G - 1` for clustered results, and the default `type` is now
+`"auto"`: F(K, G - 1) on an `sp.event_study` result (its own convention and
+Stata's), chi2 Wald otherwise. Pass `type="wald"` for the old default
+statistic.
+
+**To reproduce old numbers.** `sp.event_study(..., expose_pre_vcov=False)`
+restores the diagonal path for event-study results. Only reproduce old
+numbers this way; the diagonal ignores the covariance between coefficients
+that share a reference period and fixed effects.
+
+---
+
+<a id="feols-ssc-default"></a>
+
+## 1.31.0 — ⚠️ `sp.fast.feols` small-sample correction and `sp.iv(vce=)`
+
+**`sp.fast.feols`.** The default `ssc` is now `"fixest"`, the convention of
+`fixest::feols` and `reghdfe` (and of the parity rows). Coefficients do not
+change. Standard errors change:
+
+* `vcov="cr1"` with absorbed effects nested in the cluster variable (e.g.
+  unit effects, clustered by unit): smaller, because those effects no longer
+  enter the small-sample factor. The old factor over-covered.
+* `vcov="iid"` / `"hc1"` with two or more absorbed dimensions: the residual
+  degrees of freedom fall by one per extra dimension (`n - p - (ΣG_k - 1)`
+  instead of `n - p - Σ(G_k - 1)`), so SEs rise slightly.
+
+```python
+sp.fast.feols("y ~ x | i + t", data=df, vcov="cr1", cluster="i")                  # new default
+sp.fast.feols("y ~ x | i + t", data=df, vcov="cr1", cluster="i", ssc="statspai")  # old numbers
+```
+
+**`sp.iv`.** `vce=` / `vcov=` used to be ignored (CR1 was returned for
+`vce="cr2"`). They are now honoured, bit-identically to `sp.ivreg`, or
+rejected with `MethodIncompatibility` when the chosen `method=` cannot
+compute them. If you passed `vce=` to `sp.iv` before, your SEs change to the
+ones you asked for.
+
+**`sp.validation_scope`.** The return value gained `outputs`, `unchecked`
+and `invariant`; `status` can now be `estimate_only` or `disclosure_only`;
+explicit dimension values outside the domain raise; the forest `trees`
+dimension is the exact count (`"2000"`, not `">=2000"`) and the DML
+`learners` dimension is `linear` / `default` / `other` (not `flexible`).
+<a id="surrogate-result-deprecated"></a>
+
+## 1.31.0 — `SurrogateResult` deprecated
+
+**Who is affected.** Code that imports or constructs
+`statspai.SurrogateResult`.
+
+**What changed.** Nothing in StatsPAI ever returned this class:
+`sp.surrogate_index`, `sp.long_term_from_short` and
+`sp.proximal_surrogate_index` return `sp.CausalResult`. Constructing it now
+raises a `DeprecationWarning`; it will be removed in 1.33. Use the
+`CausalResult` the estimators return (`.estimate`, `.se`, `.ci`,
+`.model_info`).
+
+---
+
 <a id="grf-family-rebuild"></a>
 
-## Unreleased — ⚠️ `iv_forest`, `multi_arm_forest`, `causal_survival_forest` rebuilt on the GRF engine; engine seeding fixed
+## 1.31.0 — ⚠️ `iv_forest`, `multi_arm_forest`, `causal_survival_forest` rebuilt on the GRF engine; engine seeding fixed
 
 **Who is affected.** Anyone calling these three functions, and anyone who
 compares `sp.causal_forest` (or any GRF-engine forest) numbers across
@@ -62,7 +418,7 @@ default is `"split"` (grf's `variable_importance`, also `sp.variable_importance`
 
 <a id="ebalance-mestimation-se"></a>
 
-## Unreleased — ⚠️ `sp.ebalance` standard errors account for the balancing
+## 1.31.0 — ⚠️ `sp.ebalance` standard errors account for the balancing
 
 **Who is affected.** Anyone reading `.se`, `.ci` or `.pvalue` from
 `sp.ebalance`. Point estimates do not change.
@@ -88,7 +444,7 @@ usually be narrower. Use `vce="naive"` only to reproduce earlier numbers.
 
 <a id="causal-question-forest-ate"></a>
 
-## Unreleased — ⚠️ `causal_question(design="causal_forest")` reports the forest's own ATE
+## 1.31.0 — ⚠️ `causal_question(design="causal_forest")` reports the forest's own ATE
 
 **Who is affected.** Anyone reading `.estimate`, `.se` or `.ci` from
 `sp.causal_question(..., design="causal_forest").estimate()`.
@@ -108,7 +464,7 @@ has an effect.
 
 <a id="honest-did-native-rm"></a>
 
-## Unreleased — `sp.honest_did(method="relative_magnitude")` is the Rambachan-Roth set natively
+## 1.31.0 — `sp.honest_did(method="relative_magnitude")` is the Rambachan-Roth set natively
 
 **Who is affected.** Calls with `method="relative_magnitude"` and the
 default `backend="native"`.
@@ -127,7 +483,7 @@ method="relative_magnitude")` follows.
 
 <a id="audit-not-applicable"></a>
 
-## Unreleased — `sp.audit` reports checks that do not exist for a fit as `not_applicable`
+## 1.31.0 — `sp.audit` reports checks that do not exist for a fit as `not_applicable`
 
 **Who is affected.** Code that branches on `sp.audit(...)["checks"][i]
 ["status"]` or on `summary["n_total"]`, for IV fits.
@@ -143,7 +499,7 @@ diluted by checks that cannot be run.
 
 <a id="forest-continuous-att"></a>
 
-## Unreleased — ⚠️ causal forests with a continuous treatment refuse ATT and ATC
+## 1.31.0 — ⚠️ causal forests with a continuous treatment refuse ATT and ATC
 
 **Who is affected.** Code that calls `cf.att()`, or
 `cf.average_treatment_effect(target_sample="treated")` / `"control"`, on a
@@ -199,7 +555,7 @@ same arguments. On this design it returns the 1.28.0 column exactly.
 
 <a id="fe-forest-imputation"></a>
 
-## Unreleased — ⚠️ causal forests with fixed effects: calibration uses imputation scores
+## 1.31.0 — ⚠️ causal forests with fixed effects: calibration uses imputation scores
 
 **Who is affected.** Code that calls `sp.calibration_test(cf)` or
 `sp.calibrate_cate(cf)` on a forest fitted with `fe="twoway"` and a binary

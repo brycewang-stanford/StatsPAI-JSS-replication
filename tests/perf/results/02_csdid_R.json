@@ -7,14 +7,19 @@
       "side": "R",
       "n": 5000,
       "n_reps": 3,
-      "median_time_s": 0.0225841999053955,
-      "iqr_time_s": 0.00142550468444824,
-      "min_time_s": 0.0225260257720947,
-      "max_time_s": 0.0253770351409912,
+      "median_time_s": 0.046,
+      "iqr_time_s": 0.000500000000000056,
+      "min_time_s": 0.0449999999999999,
+      "max_time_s": 0.046,
       "peak_mem_mb": null,
       "extra": {
         "n_units": 1000,
-        "T": 5
+        "T": 5,
+        "data_sha256": "61f62dd27b65412e9bcae0dcd43d3c2242dc3e21b7ceafc0fd95bea94fb01456",
+        "task": "ATT(g,t) reg/never-treated, analytic SE, pre-test, simple + dynamic aggregation",
+        "estimate": -0.0534245692128398,
+        "se": 0.0269983380299023,
+        "package": "did"
       }
     },
     {
@@ -22,14 +27,19 @@
       "side": "R",
       "n": 25000,
       "n_reps": 3,
-      "median_time_s": 0.0460741519927979,
-      "iqr_time_s": 0.000446438789367676,
-      "min_time_s": 0.0459949970245361,
-      "max_time_s": 0.0468878746032715,
+      "median_time_s": 0.109,
+      "iqr_time_s": 0.00099999999999989,
+      "min_time_s": 0.108,
+      "max_time_s": 0.11,
       "peak_mem_mb": null,
       "extra": {
         "n_units": 5000,
-        "T": 5
+        "T": 5,
+        "data_sha256": "a38fd217a19833d28f8dcdf675d760c7c107c7a6de8a78d2cda2ee9241ea86b7",
+        "task": "ATT(g,t) reg/never-treated, analytic SE, pre-test, simple + dynamic aggregation",
+        "estimate": -0.0524963417304503,
+        "se": 0.011457651722217,
+        "package": "did"
       }
     },
     {
@@ -37,20 +47,29 @@
       "side": "R",
       "n": 125000,
       "n_reps": 3,
-      "median_time_s": 0.174669981002808,
-      "iqr_time_s": 0.00447094440460205,
-      "min_time_s": 0.170624017715454,
-      "max_time_s": 0.179565906524658,
+      "median_time_s": 0.443,
+      "iqr_time_s": 0.002,
+      "min_time_s": 0.442,
+      "max_time_s": 0.446,
       "peak_mem_mb": null,
       "extra": {
         "n_units": 25000,
-        "T": 5
+        "T": 5,
+        "data_sha256": "2257edd60a2bead2e6141b0c74d7fde58f1631dcb5f98186be19b14e9f32a68e",
+        "task": "ATT(g,t) reg/never-treated, analytic SE, pre-test, simple + dynamic aggregation",
+        "estimate": -0.0495134320325187,
+        "se": 0.00525510222082555,
+        "package": "did"
       }
     }
   ],
   "hardware": {
     "reference_package": "did 2.3.0",
-    "R_version": "R version 4.5.2 (2025-10-31)"
+    "platform": "aarch64-apple-darwin20",
+    "R_version": "R version 4.5.2 (2025-10-31)",
+    "run_id": "20260927T012126",
+    "load_avg_1m_at_start": 1.4,
+    "threads": 1
   },
   "extra": []
 }

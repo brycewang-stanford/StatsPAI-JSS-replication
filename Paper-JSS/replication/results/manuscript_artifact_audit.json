@@ -1,9 +1,11 @@
 {
   "active_float_labels": [
     "fig:basque-gap",
+    "fig:evidence-chain",
     "fig:mpdta-es",
     "fig:track-c-loglog",
     "tab:agent-trace",
+    "tab:basque-specs",
     "tab:correctness-history",
     "tab:decathlon",
     "tab:ex08-three-way",
@@ -13,7 +15,6 @@
     "tab:related-software",
     "tab:reproduction",
     "tab:schema-coverage",
-    "tab:scope",
     "tab:terminology",
     "tab:track-a-cross-language-snapshot",
     "tab:track-a-parity",
@@ -54,8 +55,8 @@
       {
         "anchors": {
           "boundary": "not a claim that \\statspai{} supersedes specialized packages",
-          "contribution": "Concretely, the article adds",
-          "evidence": "Table~\\ref{tab:scope} makes this boundary explicit"
+          "contribution": "The contribution is a design that makes these failure modes checkable",
+          "evidence": "The validated claim is limited to the"
         },
         "missing_anchors": [],
         "ok": true,
@@ -77,7 +78,7 @@
       },
       {
         "anchors": {
-          "boundary": "It is not a behavioural claim",
+          "boundary": "reports the mechanical evidence for it and what it does not show",
           "contribution": "typed schemas and an MCP server",
           "evidence": "Every public-facing citation emitted by the package"
         },
@@ -101,7 +102,7 @@
         "anchors": {
           "boundary": "only a T2 row is a parity claim",
           "contribution": "twelve-estimator suite with four evidence tracks",
-          "evidence": "(together \\RegistryCertifiedValidated{})"
+          "evidence": "are earned in exactly two ways"
         },
         "missing_anchors": [],
         "ok": true,
@@ -110,9 +111,9 @@
       },
       {
         "anchors": {
-          "boundary": "does not support a universal",
-          "contribution": "fast enough for routine applied work",
-          "evidence": "CPU timings"
+          "boundary": "does not support a general",
+          "contribution": "on identical inputs and tasks",
+          "evidence": "SHA-256 of the file it"
         },
         "missing_anchors": [],
         "ok": true,
@@ -134,9 +135,9 @@
       {
         "anchors": {
           "boundary": "not require a compiled Rust extension, GPU, or commercial software",
-          "contribution": "rebuild the paper's evidence along three paths",
-          "evidence": "runs in under ten minutes",
-          "quick_zip_boundary": "are frozen evidence on that path",
+          "contribution": "The evidence is rebuilt by one standalone script",
+          "evidence": "Tier~1 was verified from a clean start",
+          "quick_zip_boundary": "from frozen experiment artifacts: the",
           "reviewer_commands": "replication/reproduce.py"
         },
         "missing_anchors": [],
@@ -147,7 +148,7 @@
       {
         "anchors": {
           "boundary": "The unification itself has costs",
-          "contribution": "not a new-estimator paper",
+          "contribution": "The article's claim is about what a validation label",
           "evidence": "main limitations are as follows"
         },
         "missing_anchors": [],
@@ -202,7 +203,7 @@
       "hash_equal_to": "tests/perf/figures/track_c_loglog.pdf",
       "missing_sources": [],
       "path": "Paper-JSS/manuscript/figures/track_c_loglog.pdf",
-      "sha256": "4233d1c8f6b80f1107eaa4588801fb970fbbc0525cf09fe000235d4c34fc2039",
+      "sha256": "628438bf2b8adfc5a1cf1e91b5d28d93472a9577eb1a43ee486905e9de67674b",
       "sources": [
         "tests/perf/results/perf_table.tex",
         "tests/perf/figures/track_c_loglog.pdf"
@@ -219,9 +220,11 @@
   "missing_narrative_refs": [],
   "narrative_float_refs": [
     "fig:basque-gap",
+    "fig:evidence-chain",
     "fig:mpdta-es",
     "fig:track-c-loglog",
     "tab:agent-trace",
+    "tab:basque-specs",
     "tab:correctness-history",
     "tab:decathlon",
     "tab:ex08-three-way",
@@ -231,7 +234,6 @@
     "tab:related-software",
     "tab:reproduction",
     "tab:schema-coverage",
-    "tab:scope",
     "tab:terminology",
     "tab:track-a-cross-language-snapshot",
     "tab:track-a-parity",
@@ -335,7 +337,7 @@
       "missing_snippets": [],
       "missing_sources": [],
       "path": "Paper-JSS/manuscript/tables/track_c_perf.tex",
-      "sha256": "4e966a3b2282a2542acd00912267b71890c3792b4bd9597705db7a0dd9e4747d",
+      "sha256": "26038a20a7d40a59083318af976edf6c9f86f57ad1d50a23a8bce3787d0d90ef",
       "sources": [
         "tests/perf/results/perf_table.tex"
       ]

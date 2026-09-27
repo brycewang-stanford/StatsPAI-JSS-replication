@@ -19,7 +19,7 @@
       "record": "viewer, archive filename, and archive timestamp"
     },
     {
-      "action": "Confirm that the viewer reports 52 pages and that the count matches pdf_render_audit and jss_full_audit.",
+      "action": "Confirm that the viewer reports 53 pages and that the count matches pdf_render_audit and jss_full_audit.",
       "id": "page_count_matches_audits",
       "record": "observed page count"
     },
@@ -34,7 +34,7 @@
       "record": "pages checked from inventory plus any mismatch"
     },
     {
-      "action": "Inspect pages 1 through 52 for blank pages, missing content, or unexpected dark/empty pages.",
+      "action": "Inspect pages 1 through 53 for blank pages, missing content, or unexpected dark/empty pages.",
       "id": "all_pages_nonblank",
       "record": "first failing page if any"
     },
@@ -83,24 +83,27 @@
         "validation_tier"
       ],
       "float_markers": [],
-      "heading_candidates": [],
-      "page": 1,
-      "section_markers": [
-        "front_matter"
-      ],
-      "text_chars": 2380
-    },
-    {
-      "boundary_markers": [],
-      "float_markers": [],
       "heading_candidates": [
         "1. Introduction Applied causal work now spans a large and fragmented software stack"
       ],
-      "page": 2,
+      "page": 1,
       "section_markers": [
+        "front_matter",
         "introduction"
       ],
-      "text_chars": 4017
+      "text_chars": 2289
+    },
+    {
+      "boundary_markers": [],
+      "float_markers": [
+        "Figure 3"
+      ],
+      "heading_candidates": [
+        "8. A short paper on the package appeared in theJournal of Open Source Software(Wang and Rozell"
+      ],
+      "page": 2,
+      "section_markers": [],
+      "text_chars": 4154
     },
     {
       "boundary_markers": [],
@@ -112,40 +115,36 @@
       ],
       "page": 3,
       "section_markers": [],
-      "text_chars": 3155
+      "text_chars": 3460
     },
     {
-      "boundary_markers": [
-        "validation_tier"
-      ],
+      "boundary_markers": [],
       "float_markers": [
-        "Figure 3",
-        "Table 1",
-        "Table 2"
+        "Figure 4",
+        "Listing 1",
+        "Table 1"
       ],
       "heading_candidates": [
-        "7. The closest implementations cover important parts of this terrain, but with different cente",
         "2. Software architecture StatsPAIis implemented inPython on top ofNumPy (Harris et al"
       ],
       "page": 4,
       "section_markers": [
         "software_architecture"
       ],
-      "text_chars": 3537
+      "text_chars": 3308
     },
     {
       "boundary_markers": [],
       "float_markers": [
-        "Table 2"
+        "Table 1"
       ],
       "heading_candidates": [
-        "1. Stata bridges require a separate licensed runtime",
-        "2.1. Design principles Seven principles govern the public API",
-        "2.2. Why an integration package?"
+        "2.1. Design principles A single flat namespace exposes routine calls throughsp",
+        "2.2. Why an integration package? Areasonablealternativeistocompose statsmodels, linearmodels, Do"
       ],
       "page": 5,
       "section_markers": [],
-      "text_chars": 3373
+      "text_chars": 3334
     },
     {
       "boundary_markers": [
@@ -155,130 +154,131 @@
         "Listing 2"
       ],
       "heading_candidates": [
-        "2.3. Registry and discovery layer The central data structure is a registry ofFunctionSpecrecords"
+        "2.3. Registry and discovery layer The central data structure is a registry ofFunctionSpecrecords",
+        "2.4. Family dispatchers Family dispatchers reduce method sprawl without hiding assumptions"
       ],
       "page": 6,
       "section_markers": [],
-      "text_chars": 3087
+      "text_chars": 2882
     },
     {
       "boundary_markers": [],
       "float_markers": [],
       "heading_candidates": [
-        "2.4. Family dispatchers Family dispatchers reduce method sprawl without hiding assumptions",
         "2.5. Result-object hierarchy Most estimators return either EconometricResults or CausalResult",
         "2.6. Performance backbone The performance-critical path is high-dimensional fixed-effect absorpt",
-        "2.7. Output pipeline Publication output is unified throughsp"
+        "2.7. Output pipeline and workflow Publication output is unified throughsp",
+        "3. The agent-facing registry API StatsPAI exposes the surface a human Python user calls to LLM"
       ],
       "page": 7,
-      "section_markers": [],
-      "text_chars": 3141
-    },
-    {
-      "boundary_markers": [],
-      "float_markers": [],
-      "heading_candidates": [
-        "2.8. The four-stage workflow The layers combine into a four-stage workflow \u2013 detect (sp",
-        "3. The agent-facing registry API StatsPAI exposes the same surface used by a human Python user",
-        "3.1. Why a schema, not a docstring Docstrings, R help pages, andStata help files are prose inter",
-        "3.2. The function-schema layer The discovery surface lists registered functions, describes a sel",
-        "3.3. The typed exception envelope Estimator failures inherit from StatsPAIError and carry struct"
-      ],
-      "page": 8,
       "section_markers": [
         "agent_registry_api"
       ],
-      "text_chars": 2886
+      "text_chars": 3042
     },
     {
       "boundary_markers": [],
       "float_markers": [],
       "heading_candidates": [
-        "3.5. The bibliography verifier Every public-facing citation emitted by the package must come fro",
-        "3.6. The MCP server Thestatspai-mcp server exposes registered functions as MCP tools",
-        "3.7. Comparison with existing platforms and prior art Generating a JSON schema from a typed sign",
-        "4. Worked examples The paper uses seven worked examples as an end-to-end smoke test of the val"
+        "3.1. Schemas and agent cards Docstrings, R help pages, andStata help files are prose interfaces",
+        "3.2. Typed errors and the MCP server Estimator failures inherit from StatsPAIError and carry str",
+        "3.3. The estimand-first DSL and robustness audit sp",
+        "3.4. The bibliography verifier Every public-facing citation emitted by the package must come fro"
+      ],
+      "page": 8,
+      "section_markers": [],
+      "text_chars": 3308
+    },
+    {
+      "boundary_markers": [],
+      "float_markers": [
+        "Listing 1",
+        "Listing 3",
+        "Table 2"
+      ],
+      "heading_candidates": [
+        "3.5. Comparison with existing platforms and prior art Generating a JSON schema from a typed sign",
+        "4. Worked examples The paper uses seven worked examples as an end-to-end smoke test of the val",
+        "4.1. Card (1995)"
       ],
       "page": 9,
       "section_markers": [
         "worked_examples"
       ],
-      "text_chars": 3188
+      "text_chars": 2282
     },
     {
       "boundary_markers": [],
       "float_markers": [
-        "Listing 1",
-        "Listing 3",
-        "Table 3"
+        "Table 2"
       ],
-      "heading_candidates": [
-        "4.1. Card (1995)"
-      ],
+      "heading_candidates": [],
       "page": 10,
       "section_markers": [],
-      "text_chars": 3035
+      "text_chars": 2505
     },
     {
       "boundary_markers": [],
       "float_markers": [
         "Listing 1",
         "Listing 3",
+        "Listing 4",
         "Table 9"
       ],
       "heading_candidates": [],
       "page": 11,
       "section_markers": [],
-      "text_chars": 2560
-    },
-    {
-      "boundary_markers": [],
-      "float_markers": [
-        "Listing 1",
-        "Listing 4",
-        "Table 8",
-        "Table 9"
-      ],
-      "heading_candidates": [
-        "1. Withgrf\u2019s honest, 2,000-tree defaults the interquartile range spans roughly 6",
-        "9. Second, the treatment here is years of schooling, a continuous variable, so the forest\u2019s sc",
-        "4.2. Abadie\u2013Gardeazabal (2003)"
-      ],
-      "page": 12,
-      "section_markers": [],
-      "text_chars": 3382
+      "text_chars": 3292
     },
     {
       "boundary_markers": [],
       "float_markers": [
         "Figure 1",
-        "Listing 5"
+        "Listing 1",
+        "Listing 4",
+        "Listing 5",
+        "Table 3",
+        "Table 8",
+        "Table 9"
       ],
       "heading_candidates": [
-        "5.4. Re- generated byreplication/scripts/generate_figures",
+        "9. Because schooling is continuous, the forest\u2019s scalar aggregate is the average partial effec",
+        "4.2. Abadie\u2013Gardeazabal (2003)",
         "4.3. Callaway\u2013Sant\u2019Anna staggered DiD"
       ],
+      "page": 12,
+      "section_markers": [],
+      "text_chars": 2999
+    },
+    {
+      "boundary_markers": [],
+      "float_markers": [
+        "Figure 1",
+        "Table 3",
+        "Table 9"
+      ],
+      "heading_candidates": [],
       "page": 13,
       "section_markers": [],
-      "text_chars": 2024
+      "text_chars": 2036
     },
     {
       "boundary_markers": [],
       "float_markers": [
         "Listing 5",
-        "Listing 6",
-        "Table 18"
+        "Listing 6"
       ],
       "heading_candidates": [],
       "page": 14,
       "section_markers": [],
-      "text_chars": 3243
+      "text_chars": 2957
     },
     {
       "boundary_markers": [],
       "float_markers": [
         "Figure 2",
         "Listing 5",
+        "Table 18",
         "Table 9"
       ],
       "heading_candidates": [
@@ -286,7 +286,7 @@
       ],
       "page": 15,
       "section_markers": [],
-      "text_chars": 2246
+      "text_chars": 2306
     },
     {
       "boundary_markers": [],
@@ -300,7 +300,7 @@
       ],
       "page": 16,
       "section_markers": [],
-      "text_chars": 3398
+      "text_chars": 3370
     },
     {
       "boundary_markers": [],
@@ -309,65 +309,55 @@
         "Table 4"
       ],
       "heading_candidates": [
-        "4.8. Cross-example summary Together, theexamplesexercisethesameworkflowrepeatedly"
+        "5. Numerical parity and statistical validity"
       ],
       "page": 17,
-      "section_markers": [],
-      "text_chars": 3311
-    },
-    {
-      "boundary_markers": [],
-      "float_markers": [
-        "Table 4"
-      ],
-      "heading_candidates": [
-        "5. Numerical parity and statistical validity The empirical claim of this paper is intentionall",
-        "9. Everycertified symbol is linked in the registry to a named external reference implementatio"
-      ],
-      "page": 18,
       "section_markers": [
         "validation_evidence"
       ],
-      "text_chars": 3546
+      "text_chars": 3180
     },
     {
       "boundary_markers": [],
       "float_markers": [
+        "Figure 3",
+        "Table 4"
+      ],
+      "heading_candidates": [
+        "9. A label is only as good as the chain that attaches it to the evidence"
+      ],
+      "page": 18,
+      "section_markers": [],
+      "text_chars": 3679
+    },
+    {
+      "boundary_markers": [],
+      "float_markers": [
+        "Figure 3",
         "Table 5",
         "Table 6"
       ],
       "heading_candidates": [
-        "5.1. Twelve-estimator validation suite The reference implementations of Table 6 are cited once h",
-        "5.2. Estimands, identification, and inference contracts"
+        "5.1. Twelve-estimator validation suite The reference implementations of Table 6 are cited once h"
       ],
       "page": 19,
       "section_markers": [],
-      "text_chars": 3410
+      "text_chars": 3085
     },
     {
       "boundary_markers": [],
       "float_markers": [
-        "Table 11",
         "Table 5",
         "Table 6",
         "Table 9"
       ],
       "heading_candidates": [
-        "9. The HDFE member\u2019s coverage row runs through thesp"
+        "9. Every coverage row runs through the member\u2019s own entry point or one asserted bit-identical ",
+        "5.2. Estimands, identification, and inference contracts Numerical agreement does not establish i"
       ],
       "page": 20,
       "section_markers": [],
-      "text_chars": 2686
-    },
-    {
-      "boundary_markers": [],
-      "float_markers": [],
-      "heading_candidates": [
-        "5.3. Track A"
-      ],
-      "page": 21,
-      "section_markers": [],
-      "text_chars": 3513
+      "text_chars": 2798
     },
     {
       "boundary_markers": [],
@@ -377,11 +367,22 @@
         "Table 9"
       ],
       "heading_candidates": [
-        "9. Of the 89 R-joined modules, 88 receive a pass-type verdict, but two non-T2 Track A rows rem"
+        "5.3. Track A"
       ],
+      "page": 21,
+      "section_markers": [],
+      "text_chars": 3447
+    },
+    {
+      "boundary_markers": [],
+      "float_markers": [
+        "Table 7",
+        "Table 9"
+      ],
+      "heading_candidates": [],
       "page": 22,
       "section_markers": [],
-      "text_chars": 3289
+      "text_chars": 3106
     },
     {
       "boundary_markers": [],
@@ -389,10 +390,13 @@
         "Table 8",
         "Table 9"
       ],
-      "heading_candidates": [],
+      "heading_candidates": [
+        "9. R to 3",
+        "6. The native relative-magnitudes set, a port of the Andrews\u2013Roth\u2013Pakes conditional test (Andr"
+      ],
       "page": 23,
       "section_markers": [],
-      "text_chars": 3194
+      "text_chars": 3173
     },
     {
       "boundary_markers": [],
@@ -400,40 +404,47 @@
         "Table 9"
       ],
       "heading_candidates": [
-        "5.4. Nativesp",
-        "5.4. Evidence tiers and hard cases Evidence is attached to configurations"
+        "5.4. Evidence tiers and hard cases Evidence is attached to configurations and outputs"
       ],
       "page": 24,
       "section_markers": [],
-      "text_chars": 3343
+      "text_chars": 3358
     },
     {
       "boundary_markers": [],
       "float_markers": [
         "Listing 3",
-        "Table 10",
-        "Table 11",
+        "Listing 8",
         "Table 5"
       ],
       "heading_candidates": [],
       "page": 25,
       "section_markers": [],
-      "text_chars": 3804
+      "text_chars": 3549
     },
     {
       "boundary_markers": [],
       "float_markers": [
         "Table 10",
-        "Table 11",
-        "Table 9"
+        "Table 3"
       ],
-      "heading_candidates": [
-        "2. On theoriginal Synth",
-        "5.5. Track B"
-      ],
+      "heading_candidates": [],
       "page": 26,
       "section_markers": [],
-      "text_chars": 3503
+      "text_chars": 3611
+    },
+    {
+      "boundary_markers": [],
+      "float_markers": [
+        "Table 11"
+      ],
+      "heading_candidates": [
+        "2. A ledger that pooled the two facts into one tolerance would hide exactly the sensitivity a ",
+        "5.5. Track B"
+      ],
+      "page": 27,
+      "section_markers": [],
+      "text_chars": 3759
     },
     {
       "boundary_markers": [],
@@ -441,41 +452,37 @@
         "Table 12"
       ],
       "heading_candidates": [
-        "5.6. Cross-estimator parity The test suite also asserts equivalence across estimators that shoul",
-        "2. Two estimators fitted to the same data are positively correlated, so this bound is loose"
-      ],
-      "page": 27,
-      "section_markers": [],
-      "text_chars": 3764
-    },
-    {
-      "boundary_markers": [],
-      "float_markers": [
-        "Table 11",
-        "Table 12",
-        "Table 6",
-        "Table 9"
-      ],
-      "heading_candidates": [
-        "6. The two DML rows are distinct configurations",
-        "5.7. High-N analytical parity and pinned fixtures High-N fixtures tighten selected known-truth c"
+        "5.6. Further checks Estimators that should collapse to the same estimand on a given DGP are held",
+        "2. Two estimators on the same data are positively correlated, so this is a loose screen for gr",
+        "5.7. Adjudicating a disagreement A parity ledger is only as credible as its procedure for the ro"
       ],
       "page": 28,
       "section_markers": [],
-      "text_chars": 2554
+      "text_chars": 3749
     },
     {
       "boundary_markers": [],
       "float_markers": [
+        "Table 11"
+      ],
+      "heading_candidates": [],
+      "page": 29,
+      "section_markers": [],
+      "text_chars": 3154
+    },
+    {
+      "boundary_markers": [],
+      "float_markers": [
+        "Table 12",
         "Table 18"
       ],
       "heading_candidates": [
-        "5.8. Adjudicating a disagreement A parity ledger is only as credible as its procedure for the ro",
-        "5.9. Auditing the attachment, not only the number A parity harness checks that two implementatio"
+        "5.8. Auditing the attachment, not only the number A parity harness checks that two implementatio",
+        "5.9. Correctness history and residual risk Every output-changing fix is pinned by a regression t"
       ],
-      "page": 29,
+      "page": 30,
       "section_markers": [],
-      "text_chars": 3573
+      "text_chars": 3122
     },
     {
       "boundary_markers": [
@@ -486,51 +493,38 @@
         "Table 6"
       ],
       "heading_candidates": [
-        "6. Computational performance This section reports the measured Track C benchmark for the four "
+        "6. Computational performance This section reports the measured Track C benchmark for the four ",
+        "6.1. Benchmark protocol A speed ratio compares two implementations only if both perform the same"
       ],
-      "page": 30,
+      "page": 31,
       "section_markers": [
         "performance"
       ],
-      "text_chars": 3310
+      "text_chars": 3258
     },
     {
       "boundary_markers": [],
       "float_markers": [
-        "Figure 3",
+        "Figure 4",
         "Table 13"
       ],
       "heading_candidates": [
-        "6.1. Benchmark protocol The benchmark harness lives undertests/perf/",
-        "3. All Track-C timings in this paper are CPU timings, because the reproducibility target is ha"
-      ],
-      "page": 31,
-      "section_markers": [],
-      "text_chars": 2345
-    },
-    {
-      "boundary_markers": [],
-      "float_markers": [
-        "Figure 3",
-        "Table 13"
-      ],
-      "heading_candidates": [
-        "1. Times are median seconds at the largest sample size, across 3 or 5 repetitions after one wa",
-        "6.2. Measured performance results Table 13 reports the largest-size row from each benchmark modu"
+        "6.2. Measured performance results Table 13 reports the largest size of each benchmark and Figure"
       ],
       "page": 32,
       "section_markers": [],
-      "text_chars": 2727
+      "text_chars": 2897
     },
     {
       "boundary_markers": [],
       "float_markers": [
-        "Figure 3"
+        "Figure 4",
+        "Table 13"
       ],
       "heading_candidates": [],
       "page": 33,
       "section_markers": [],
-      "text_chars": 1972
+      "text_chars": 2022
     },
     {
       "boundary_markers": [],
@@ -538,14 +532,14 @@
         "Table 14"
       ],
       "heading_candidates": [
-        "7. Agent-facing interface checks The agent-facing design described in Section 3 is the most co",
+        "7. Agent-facing interface checks This section reports only themechanical and contractual evide",
         "7.1. Mechanical evidence The function-schema layer is statically inspectable"
       ],
       "page": 34,
       "section_markers": [
         "agent_interface_checks"
       ],
-      "text_chars": 3459
+      "text_chars": 3474
     },
     {
       "boundary_markers": [
@@ -556,12 +550,12 @@
         "Table 15"
       ],
       "heading_candidates": [
-        "7.2. Contractual trace evidence The agent-facing surface is exposed through an MCP server (Secti",
+        "7.2. Contractual trace evidence The MCP server (Section 3",
         "7.3. No behavioural benchmark claim Mechanical and contractual evidence does not answer whether "
       ],
       "page": 35,
       "section_markers": [],
-      "text_chars": 3130
+      "text_chars": 2973
     },
     {
       "boundary_markers": [],
@@ -575,7 +569,7 @@
       "section_markers": [
         "computational_details"
       ],
-      "text_chars": 2964
+      "text_chars": 3221
     },
     {
       "boundary_markers": [],
@@ -584,24 +578,25 @@
       ],
       "heading_candidates": [
         "8.1. Distribution and installation The package is distributed through PyPI (pip install statspai",
-        "8.2. Reproducibility of this paper Reviewers can rebuild the paper\u2019s evidence along three paths,",
-        "9. Discussion StatsPAI is a unification and validation project, not a new-estimator paper"
+        "8.2. Reproducibility of this paper The evidence is rebuilt by one standalone script,Paper-JSS/re"
       ],
       "page": 37,
-      "section_markers": [
-        "discussion"
-      ],
-      "text_chars": 3388
+      "section_markers": [],
+      "text_chars": 3659
     },
     {
       "boundary_markers": [],
       "float_markers": [
         "Table 16"
       ],
-      "heading_candidates": [],
+      "heading_candidates": [
+        "9. Discussion The article\u2019s claim is about what a validation label in a broad statistical pack"
+      ],
       "page": 38,
-      "section_markers": [],
-      "text_chars": 3799
+      "section_markers": [
+        "discussion"
+      ],
+      "text_chars": 3241
     },
     {
       "boundary_markers": [
@@ -613,59 +608,57 @@
       "heading_candidates": [],
       "page": 39,
       "section_markers": [],
-      "text_chars": 2920
+      "text_chars": 3842
     },
     {
       "boundary_markers": [],
       "float_markers": [],
       "heading_candidates": [
-        "3.5. References Abadie A, Diamond A, Hainmueller J (2010)",
-        "6. URLhttps"
+        "3.4. References Abadie A, Diamond A, Hainmueller J (2010)"
       ],
       "page": 40,
       "section_markers": [
         "references"
       ],
-      "text_chars": 2584
+      "text_chars": 2311
+    },
+    {
+      "boundary_markers": [],
+      "float_markers": [],
+      "heading_candidates": [
+        "6. URLhttps"
+      ],
+      "page": 41,
+      "section_markers": [],
+      "text_chars": 2799
     },
     {
       "boundary_markers": [],
       "float_markers": [],
       "heading_candidates": [],
-      "page": 41,
-      "section_markers": [],
-      "text_chars": 2672
-    },
-    {
-      "boundary_markers": [],
-      "float_markers": [],
-      "heading_candidates": [
-        "2. Ho DE, Imai K, King G, Stuart EA (2011)"
-      ],
       "page": 42,
       "section_markers": [],
-      "text_chars": 2858
+      "text_chars": 2853
     },
     {
       "boundary_markers": [],
       "float_markers": [],
       "heading_candidates": [
+        "2. Ho DE, Imai K, King G, Stuart EA (2011)",
         "1.5. Kleiber C, Zeileis A (2008)",
         "6. LaLonde RJ (1986)"
       ],
       "page": 43,
       "section_markers": [],
-      "text_chars": 2881
+      "text_chars": 2775
     },
     {
       "boundary_markers": [],
       "float_markers": [],
-      "heading_candidates": [
-        "2. Wager S, Athey S (2018)"
-      ],
+      "heading_candidates": [],
       "page": 44,
       "section_markers": [],
-      "text_chars": 2677
+      "text_chars": 2799
     },
     {
       "boundary_markers": [],
@@ -674,21 +667,20 @@
         "Table 8"
       ],
       "heading_candidates": [
+        "2. Wager S, Athey S (2018)",
         "2. Zeileis A, K\u00f6ll S, Graham N (2020)"
       ],
       "page": 45,
       "section_markers": [],
-      "text_chars": 2601
+      "text_chars": 2812
     },
     {
       "boundary_markers": [],
-      "float_markers": [
-        "Table 17"
-      ],
+      "float_markers": [],
       "heading_candidates": [],
       "page": 46,
       "section_markers": [],
-      "text_chars": 2173
+      "text_chars": 2239
     },
     {
       "boundary_markers": [],
@@ -698,7 +690,7 @@
       "heading_candidates": [],
       "page": 47,
       "section_markers": [],
-      "text_chars": 2302
+      "text_chars": 2118
     },
     {
       "boundary_markers": [],
@@ -708,7 +700,7 @@
       "heading_candidates": [],
       "page": 48,
       "section_markers": [],
-      "text_chars": 2324
+      "text_chars": 2400
     },
     {
       "boundary_markers": [],
@@ -718,7 +710,7 @@
       "heading_candidates": [],
       "page": 49,
       "section_markers": [],
-      "text_chars": 2286
+      "text_chars": 2054
     },
     {
       "boundary_markers": [],
@@ -728,7 +720,7 @@
       "heading_candidates": [],
       "page": 50,
       "section_markers": [],
-      "text_chars": 2217
+      "text_chars": 2484
     },
     {
       "boundary_markers": [],
@@ -736,23 +728,30 @@
         "Table 17",
         "Table 18"
       ],
-      "heading_candidates": [
-        "1. The ID column is the module\u2019s two-digit prefix in tests/r_parity/"
-      ],
+      "heading_candidates": [],
       "page": 51,
       "section_markers": [],
-      "text_chars": 2470
+      "text_chars": 2691
     },
     {
       "boundary_markers": [],
       "float_markers": [
-        "Listing 6",
-        "Table 18"
+        "Listing 6"
       ],
       "heading_candidates": [],
       "page": 52,
       "section_markers": [],
-      "text_chars": 3704
+      "text_chars": 3507
+    },
+    {
+      "boundary_markers": [],
+      "float_markers": [
+        "Table 18"
+      ],
+      "heading_candidates": [],
+      "page": 53,
+      "section_markers": [],
+      "text_chars": 2301
     }
   ],
   "pdf_render_audit": "replication/results/pdf_render_audit.json",
@@ -769,17 +768,17 @@
     "claimed_manual_acceptance": false,
     "full_document_machine_scan_failures": 0,
     "full_document_machine_scan_not_human_review": true,
-    "full_document_machine_scan_pages": 52,
+    "full_document_machine_scan_pages": 53,
     "jss_upload_blocking": false,
     "machine_render_not_human_review": true,
     "manual_action_required_before_upload": true,
     "manual_visual_check_required": true,
     "manual_visual_check_status": "PENDING_MANUAL_REVIEW",
     "packaged_pdf_member": "Paper-JSS/manuscript/main.pdf",
-    "page_count": 52,
-    "page_inventory_count": 52,
-    "page_inventory_float_marker_count": 78,
-    "page_inventory_min_text_chars": 1972,
+    "page_count": 53,
+    "page_inventory_count": 53,
+    "page_inventory_float_marker_count": 83,
+    "page_inventory_min_text_chars": 2022,
     "page_inventory_section_markers": [
       "agent_interface_checks",
       "agent_registry_api",
@@ -793,15 +792,15 @@
       "validation_evidence",
       "worked_examples"
     ],
-    "page_inventory_text_pages": 52,
+    "page_inventory_text_pages": 53,
     "pdf_render_failure_count": 0,
     "pdf_render_status": "PASS",
     "recorded_by_this_protocol": false,
     "sampled_pages": [
       1,
       2,
-      26,
-      52
+      27,
+      53
     ],
     "scope": "Protocol for the final full-document human visual spot-check before JSS upload; not a completed acceptance record."
   }

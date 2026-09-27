@@ -7,10 +7,10 @@ targets, tiered reproduction driver, reviewer transcript, R lockfile,
 Stata environment note, and deterministic random seeds in stochastic
 paper-reproduction scripts.
 
-Docker base image: python:3.12-slim
+Docker base image: python:3.10.20-slim-bookworm
 Python requirement packages: 23
 Requirements source version comment: True
-Makefile targets: 65
+Makefile targets: 68
 Reviewer README commands checked: 26
 Manuscript README commands checked: 7
 Optional Pandoc Markdown export: True
@@ -30,8 +30,8 @@ Stata environment note present: True
 Stata reproducibility report present: True
 Stata reproduced modules: 85/85
 Stata non-reproduced rows: 0
-Stochastic reproduction files checked: 19
-Seeded stochastic reproduction files: 19
+Stochastic reproduction files checked: 15
+Seeded stochastic reproduction files: 15
 Unseeded stochastic reproduction files: 0
 
 Failures: none

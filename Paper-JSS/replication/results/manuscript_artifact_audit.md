@@ -11,8 +11,8 @@ Table inputs: 9
 Figures: 3
 Generated artifacts checked: 12
 Hash mismatches: 0
-Active table/figure labels: 21
-Narrative table/figure references: 21
+Active table/figure labels: 22
+Narrative table/figure references: 22
 Missing narrative references: 0
 Dangling narrative references: 0
 Worked-example scripts present: 7/7
@@ -38,9 +38,11 @@ Artifacts:
 
 Narrative coverage:
 - PASS -- `fig:basque-gap`
+- PASS -- `fig:evidence-chain`
 - PASS -- `fig:mpdta-es`
 - PASS -- `fig:track-c-loglog`
 - PASS -- `tab:agent-trace`
+- PASS -- `tab:basque-specs`
 - PASS -- `tab:correctness-history`
 - PASS -- `tab:decathlon`
 - PASS -- `tab:ex08-three-way`
@@ -50,7 +52,6 @@ Narrative coverage:
 - PASS -- `tab:related-software`
 - PASS -- `tab:reproduction`
 - PASS -- `tab:schema-coverage`
-- PASS -- `tab:scope`
 - PASS -- `tab:terminology`
 - PASS -- `tab:track-a-cross-language-snapshot`
 - PASS -- `tab:track-a-parity`

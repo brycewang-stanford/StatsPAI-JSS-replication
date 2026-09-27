@@ -239,6 +239,7 @@ def biprobit(
         params=params,
         std_errors=std_errors,
         model_info={
+            "alpha": alpha,
             "model_type": "Bivariate Probit",
             "converged": converged,
             "gradient_norm": grad_norm,
@@ -448,7 +449,7 @@ def _sandwich(H, scores, cluster_vals):
     return (g / (g - 1.0)) * (Hinv @ meat @ Hinv)
 
 
-@accepts_aliases(vce="robust")
+@accepts_aliases(treat="treatment", vce="robust")
 @markout_clusters
 def etregress(
     data: pd.DataFrame,
@@ -679,6 +680,7 @@ def etregress(
         params=params,
         std_errors=std_errors,
         model_info={
+            "alpha": alpha,
             "model_type": "Endogenous Treatment Effects",
             "method": method,
             "vce": robust_kind,

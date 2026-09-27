@@ -1,4 +1,8 @@
-"""Statistical parity (T3): GRF-family forests vs ``grf`` on known-truth designs.
+"""Stochastic screen: GRF-family forests vs ``grf`` on known-truth designs.
+
+Not a T3 grade. T3 means seed-replicated equivalence against a stated margin
+(``test_grf_seed_mc_equivalence.py``, the causal forest); the gates below are
+performance ratios against the design's truth with three ``grf`` seeds.
 
 Two forests grown with independent random streams never produce the same
 predictions, so -- as for the causal forest in

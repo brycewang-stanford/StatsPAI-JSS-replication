@@ -204,10 +204,11 @@ def main() -> int:
                 question="Are the simulation rows implemented as validation evidence?",
                 classification="implemented",
                 answer=(
-                    "The committed B=1000 Track-B artifacts cover all twelve "
-                    "nominal rows (with bias, Monte Carlo SD, SE calibration "
-                    "and interval length) plus three documented robustness "
-                    "failure-mode rows."
+                    "The committed B=1000 Track-B artifacts cover all thirteen "
+                    "nominal rows -- nine suite members through their own entry "
+                    "points and four supplemental rows -- with bias, Monte Carlo "
+                    "SD, SE calibration and interval length, plus three "
+                    "documented robustness failure-mode rows."
                 ),
                 evidence=[
                     "tests/coverage_monte_carlo/results_b1000/coverage_b1000.json",
@@ -222,7 +223,7 @@ def main() -> int:
                 },
                 failures=[
                     "B=1000 coverage headline rows are not complete"
-                    if len(coverage_rows) != 12
+                    if len(coverage_rows) != 13
                     else "",
                     "coverage robustness rows are not complete"
                     if len(robustness_rows) != 3
@@ -255,8 +256,10 @@ def main() -> int:
                 question="Can a reviewer reproduce headline numbers without R or Stata?",
                 classification="implemented",
                 answer=(
-                    "Tier 1 rebuilds the Section 4-7 headline numbers with "
-                    "Python-only scripts and records a no-R/no-Stata transcript."
+                    "Tier 1 needs no R or Stata: it recomputes the examples, "
+                    "listings and census, re-tabulates the frozen parity, "
+                    "coverage and timing experiments, and accounts for every "
+                    "generated manuscript input in reproduce_manifest.json."
                 ),
                 evidence=[
                     "replication/reproduce.py",
@@ -274,8 +277,9 @@ def main() -> int:
                     "reproduction environment audit is not PASS"
                     if _status(repro) != "PASS"
                     else "",
-                    "Tier 1 does not report 24/24 steps"
-                    if tier1_steps != "24/24"
+                    "Tier 1 did not pass every step"
+                    if not tier1_steps
+                    or tier1_steps.split("/")[0] != tier1_steps.split("/")[-1]
                     else "",
                     "Tier 1 is not no-R/no-Stata"
                     if repro.get("tier1_transcript_no_r_stata") is not True

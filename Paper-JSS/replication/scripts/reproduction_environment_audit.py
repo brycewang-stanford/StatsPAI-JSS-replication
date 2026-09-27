@@ -237,28 +237,55 @@ def _function_source(text: str, name: str) -> str:
     return ""
 
 
+LOCK = PAPER_DIR / "requirements-jss-lock.txt"
+
+
 def _check_dockerfile(text: str, failures: list[str]) -> dict[str, object]:
+    """The image pins Python exactly: base image by digest, packages by lock."""
     apt_missing = sorted(pkg for pkg in REQUIRED_APT_PACKAGES if pkg not in text)
     for pkg in apt_missing:
         failures.append(f"Dockerfile missing apt package: {pkg}")
+    base = re.search(
+        r"^FROM (python:(\d+\.\d+\.\d+)-slim[-\w]*)@sha256:([0-9a-f]{64})\s*$",
+        text,
+        re.MULTILINE,
+    )
+    if base is None:
+        failures.append("Dockerfile base image is not pinned as python:X.Y.Z-slim*@sha256:<digest>")
     required_snippets = [
-        "FROM python:3.12-slim",
-        "COPY pyproject.toml README.md README_CN.md CHANGELOG.md LICENSE ./",
+        "COPY Paper-JSS/requirements-jss-lock.txt /tmp/requirements-jss-lock.txt",
+        "python -m pip install --no-cache-dir -r /tmp/requirements-jss-lock.txt",
         "COPY src ./src",
-        "COPY scripts ./scripts",
         "COPY tests ./tests",
-        "COPY docs ./docs",
         "COPY Paper-JSS ./Paper-JSS",
-        "python -m pip install --upgrade pip setuptools wheel",
-        "python -m pip install .",
-        "python -m pip install -r Paper-JSS/requirements-jss.txt",
-        'CMD ["make", "reproduce-jss-full"]',
+        "python -m pip install --no-cache-dir --no-deps -e .",
+        'CMD ["python", "replication/reproduce.py", "--clean"]',
     ]
     for snippet in required_snippets:
         if snippet not in text:
             failures.append(f"Dockerfile missing snippet: {snippet!r}")
+    lock_python = None
+    if LOCK.exists():
+        lock = LOCK.read_text(encoding="utf-8")
+        m = re.search(r"Python (\d+\.\d+\.\d+)", lock)
+        lock_python = m.group(1) if m else None
+        unpinned = [
+            line
+            for line in lock.splitlines()
+            if line.strip() and not line.startswith("#") and "==" not in line
+        ]
+        if unpinned:
+            failures.append(f"requirements-jss-lock.txt has unpinned lines: {unpinned[:3]}")
+        if base is not None and lock_python != base.group(2):
+            failures.append(
+                f"Dockerfile Python {base.group(2)} differs from the lock's {lock_python}"
+            )
+    else:
+        failures.append("requirements-jss-lock.txt is missing")
     return {
-        "base_image": "python:3.12-slim" if "FROM python:3.12-slim" in text else "unknown",
+        "base_image": base.group(1) if base else "unpinned",
+        "base_digest": base.group(3) if base else None,
+        "lock_python": lock_python,
         "required_apt_missing": apt_missing,
     }
 
@@ -269,9 +296,9 @@ def _check_requirements(text: str, failures: list[str]) -> dict[str, object]:
         for line in text.splitlines()
         if line.strip() and not line.lstrip().startswith("#")
     }
-    version_comment_ok = "local StatsPAI 1.20.0 tree" in text
-    if not version_comment_ok or "local StatsPAI 1.16.1 tree" in text:
-        failures.append("requirements-jss.txt has stale StatsPAI version comment")
+    version_comment_ok = "These are ranges, not a lock" in text
+    if not version_comment_ok:
+        failures.append("requirements-jss.txt must say it is a range file, not the lock")
     missing = sorted(REQUIRED_PIP_PACKAGES - packages)
     for pkg in missing:
         failures.append(f"requirements-jss.txt missing package: {pkg}")
@@ -298,12 +325,15 @@ def _check_makefile(text: str, failures: list[str]) -> dict[str, object]:
             "so the Tier-1 transcript is refreshed before packaging"
         )
     fixed_point_snippets = (
-        "replication/scripts/jss_submission_package.py\n\t$(PYTHON) replication/scripts/jss_full_audit.py",
+        "replication/scripts/render_cover_letter.py --sync\n\t$(PYTHON) replication/scripts/jss_full_audit.py",
         "replication/scripts/jss_full_audit.py\n\t$(PYTHON) replication/scripts/submission_risk_ledger.py",
         "replication/scripts/submission_risk_ledger.py\n\t$(PYTHON) replication/scripts/reviewer_evidence_map.py",
         "replication/scripts/reviewer_evidence_map.py\n\t$(PYTHON) replication/scripts/editor_screening_checklist.py",
-        "replication/scripts/editor_screening_checklist.py\n\t$(PYTHON) replication/scripts/jss_submission_package.py",
-        "replication/scripts/verify_submission_package.py",
+        # The final re-package runs inside render_cover_letter.py --sync,
+        # which packages, re-renders the letter from that package's
+        # manifest, and repeats until the letter in the archive is current.
+        "replication/scripts/editor_screening_checklist.py\n\t$(PYTHON) replication/scripts/render_cover_letter.py --sync",
+        "replication/scripts/render_cover_letter.py --sync\n\t$(PYTHON) replication/scripts/verify_submission_package.py",
     )
     for snippet in fixed_point_snippets:
         if snippet not in text:
@@ -384,7 +414,10 @@ def _check_reproduce(text: str, failures: list[str]) -> dict[str, object]:
         "frozen Stata bridge audit",
         "agent interface audit",
         "release boundary audit",
-        "manuscript-artifact audit",
+        "RE-TABULATED from frozen experiment artifacts",
+        "--clean",
+        "MANUSCRIPT_INPUTS",
+        "was NOT reused",
         "optional external-runtime checks skipped",
         "--transcript",
     ]
@@ -435,7 +468,7 @@ def _check_tier1_transcript(failures: list[str]) -> dict[str, bool]:
     if "StatsPAI JSS replication -- Tier 1" not in text:
         failures.append("Tier-1 transcript lacks the replication header")
     complete = "RESULT: OK -- all required steps reproduced." in text
-    no_r_stata = "Every Section 4-7 headline number was rebuilt without R or Stata" in text
+    no_r_stata = "Tier 1 needs no R or Stata: it recomputes the examples, listings and census and re-tabulates the frozen parity, coverage and timing experiments." in text
     if "SUMMARY" in text and not no_r_stata:
         failures.append(
             "Tier-1 transcript does not state the no-R/no-Stata headline path"

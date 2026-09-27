@@ -17,9 +17,11 @@ fold-level standard error) and ``fect:::.fect_apply_cv_rule`` (the
 R's ``c(matrix)`` so the two code paths can be read side by side.
 
 Fold draws are random on both sides and R's stream cannot be reproduced
-from numpy, so the port is validated statistically (tier T3): on a
-fixed panel the StatsPAI CV curve must lie inside the across-seed spread
-of the R curves and select the same value (see
+from numpy, so the port is checked statistically -- a stochastic screen,
+not a seed-replicated equivalence test: given identical folds the per-fold
+scores equal R's; on a fixed panel the StatsPAI CV curve must lie inside
+the across-seed spread of the R curves and the selection must fall in
+R's modal choice (fect) or flat-loss plateau (interflex) (see
 ``tests/reference_parity/test_fect_interflex_cv_parity.py``).
 
 References

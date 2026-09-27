@@ -10,22 +10,18 @@ registry, dispatcher, result object, and output pipeline.
 
 \subsection{Design principles}\label{sec:design-principles}
 
-Seven principles govern the public API. A single flat namespace exposes
-routine calls through \code{sp.<function>}. Mature estimator paths return
-structured result objects rather than raw tuples, while auxiliary
-helpers -- visualization and data-inspection utilities such as
-\code{sp.panel\_view}, which returns Matplotlib handles plus an
-\code{info} dictionary rather than an estimator result -- remain
+A single flat namespace exposes routine calls through
+\code{sp.<function>}. Mature estimator paths return structured result
+objects rather than raw tuples, while auxiliary helpers (plotting and
+data inspection) remain
 registered with explicit stability and validation
 metadata. Method families use dispatchers
-(\code{sp.synth(method=...)}, \code{sp.dml(model=...)},
-\code{sp.did(...)}). Reference parity is
-attempted before broadening a validated claim. Failures are loud:
-assumption violations raise typed exceptions or warnings and record
-diagnostics. Output-changing changes go through the changelog and
-\code{MIGRATION.md}. Finally, every public function must be
-discoverable through the same registry used by human help functions and
-agent schemas.
+(\code{sp.synth(method=...)}, \code{sp.dml(model=...)}). Reference
+parity is attempted before a validated claim is broadened; assumption
+violations raise typed exceptions or warnings and record diagnostics;
+output-changing changes go through the changelog and
+\code{MIGRATION.md}; and every public function is discoverable through
+the registry that serves both help functions and agent schemas.
 
 \subsection{Why an integration package?}\label{sec:why-integration}
 
@@ -80,12 +76,16 @@ label={lst:validation-tier-output},captionpos=b]
 >>> spec = sp.describe_function("callaway_santanna")
 >>> spec["stability"], spec["validation_status"]
 ('stable', 'certified')
->>> for note in spec["validation_notes"][:3]:
-...     print(note)
-Track A parity seed
+>>> import textwrap
+>>> notes = spec["validation_notes"]
+>>> print(*notes[:2], sep="\n")
 R parity module 04_csdid
 Stata parity module 04_csdid
->>> import textwrap
+>>> print(textwrap.fill(notes[2], width=64))
+Cross-language parity (bit-exact) vs did::att_gt + aggte [R
+version 4.5.2 (2025-10-31), did 2.3.0]; tolerance
+rel_est<=1e-06, rel_se<=1e-09; parity module 04_csdid --
+tests/r_parity/04_csdid.py
 >>> print(textwrap.fill(spec["limitations"][0], width=64))
 clustervars is not yet supported with bstrap=False; the analytic
 standard errors do not account for within-cluster dependence, so
@@ -146,22 +146,13 @@ claims in this paper do not depend on a compiled native extension.
 Optional acceleration is treated as a backend choice, not as a separate
 estimator or a hidden requirement.
 
-\subsection{Output pipeline}\label{sec:output}
+\subsection{Output pipeline and workflow}\label{sec:output}\label{sec:workflow}
 
-Publication output is unified through \code{sp.regtable},
-\code{sp.modelsummary}, and result-level exporters. Mixed
-\code{EconometricResults} and \code{CausalResult} objects can be
-rendered as LaTeX, Markdown, HTML, Word, Excel, or JSON-safe agent
-payloads. \code{sp.outreg2} gives a Stata-like migration surface, while
-\code{sp.paper()} uses the same rendering layer to assemble tables,
-figures, citations, and a report.
-
-\subsection{The four-stage workflow}\label{sec:workflow}
-
-The layers combine into a four-stage workflow -- detect
-(\code{sp.detect\_design}, \code{sp.preflight}, \code{sp.recommend}),
-fit (the estimator dispatchers), inspect (\code{summary()},
-\code{plot()}, \code{sp.audit()}, sensitivity wrappers), and report
-(\code{sp.regtable}, export methods, \code{cite()},
-\code{sp.paper()}) -- with the same
-boundaries available to human users and to MCP agents.
+Publication output is unified through \code{sp.regtable} and the
+result-level exporters, which render mixed result classes as LaTeX,
+Markdown, HTML, Word, Excel, or JSON-safe agent payloads. The layers combine into a four-stage
+workflow---detect (\code{sp.detect\_design}, \code{sp.preflight}), fit
+(the dispatchers), inspect (\code{summary()}, \code{sp.audit()},
+sensitivity wrappers), and report (\code{sp.regtable}, \code{cite()},
+\code{sp.paper()})---with the same boundaries for human users and MCP
+agents.

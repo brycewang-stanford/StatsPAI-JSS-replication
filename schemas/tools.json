@@ -1,5 +1,55 @@
 [
   {
+    "description": "G-estimation / A-learning for a K-stage binary-action DTR. Assumptions: Sequential ignorability: each stage-k action is as good as random given the observed history H_k; Positivity: stage propensities bounded away from 0 and 1; Stage contrast (blip) function linear in the history. Pre-conditions: Binary (0/1) action at every stage; One final outcome, higher is better. Failure modes: actions and stage_covariates have different lengths -> Pass one covariate list per decision stage (an empty list for a stage with no new covariates); Propensities pile up at the clipping bounds -> Positivity is doubtful; inspect overlap by stage and treat estimates at clipped histories with caution. Alternatives: sp.q_learning, sp.snmm. Typical minimum N: 200.",
+    "input_schema": {
+      "properties": {
+        "actions": {
+          "description": "actions parameter (Sequence[str]).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "baseline": {
+          "description": "baseline parameter (Optional[Sequence[str]]).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "propensity_bounds": {
+          "default": [
+            0.05,
+            0.95
+          ],
+          "description": "Clip propensity to avoid division blow-up.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "stage_covariates": {
+          "description": "Covariates observed just before stage k's decision.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "y": {
+          "description": "Final outcome column (``outcome=`` is accepted as an alias).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "actions",
+        "stage_covariates",
+        "y"
+      ],
+      "type": "object"
+    },
+    "name": "a_learning"
+  },
+  {
     "description": "OLS with absorbed high-dimensional fixed effects (reghdfe-style). Validation: certified parity evidence.",
     "input_schema": {
       "properties": {
@@ -258,6 +308,10 @@
           "description": "Significance level for confidence intervals and tests.",
           "type": "number"
         },
+        "cluster": {
+          "description": "Cluster column: SEs sum the influence function within clusters (Stata vce(cluster c)).",
+          "type": "string"
+        },
         "covariates": {
           "description": "Confounders to adjust for",
           "items": {
@@ -300,6 +354,10 @@
         },
         "treat": {
           "description": "Binary treatment (0/1)",
+          "type": "string"
+        },
+        "weights": {
+          "description": "Sampling-weight column (Stata [pw=]): weighted logit and outcome fits, weighted mean of the AIPW scores, weighted robust SEs.",
           "type": "string"
         },
         "y": {
@@ -1161,6 +1219,37 @@
       "type": "object"
     },
     "name": "balanceplot"
+  },
+  {
+    "description": "Compute Balke-Pearl bounds on the ATE. Assumptions: Instrument independent of potential outcomes and potential treatments (Z independent of Y(0), Y(1), D(0), D(1)); Exclusion restriction: Z affects Y only through D; No monotonicity assumed; the ATE is partially identified. Pre-conditions: Outcome, treatment and instrument all binary (0/1). Failure modes: A column is not coded 0/1 -> Recode to 0/1; for non-binary outcomes use bounds that allow a bounded continuous outcome; Bounds are wide and include zero -> Expected without further assumptions; if monotonicity is credible, point-identify the LATE instead. Alternatives: sp.manski_bounds, sp.iv_bounds, sp.iv. Typical minimum N: 200.",
+    "input_schema": {
+      "properties": {
+        "alpha": {
+          "default": 0.05,
+          "description": "Significance level for confidence intervals and tests.",
+          "type": "number"
+        },
+        "instrument": {
+          "description": "instrument parameter (str).",
+          "type": "string"
+        },
+        "treat": {
+          "description": "Treatment indicator or first-treatment-period column.",
+          "type": "string"
+        },
+        "y": {
+          "description": "Outcome variable column name or outcome array.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "instrument",
+        "treat",
+        "y"
+      ],
+      "type": "object"
+    },
+    "name": "balke_pearl"
   },
   {
     "description": "Bartik / shift-share IV estimator (Adao-Kolesar-Morales 2019; Borusyak-Hull-Jaravel 2022). Uses pre-period industry / group shares x exogenous shocks as an instrument for local outcome exposure. Validation: certified parity evidence. Assumptions: Exogeneity of shocks conditional on pre-period exposure structure (Borusyak-Hull-Jaravel); Shock-level IV: shocks are independent of region-level unobserved trends; Asymptotic framework: many shocks (L -> inf) -- check via sp.ssaggregate Herfindahl. Pre-conditions: pre-period shares are pre-determined (measured strictly before the outcome window); shocks are as-good-as-random conditional on unit-level controls; >= 50 regions for AKM shift-share SE to be well-sized. Failure modes: Herfindahl of shares too concentrated (one industry dominates) -> Shift-share SE unreliable -- use Adao-Kolesar-Morales shock-level SE via sp.shift_share_se; First-stage F < 10 -> Shares don't predict exposure enough -- report weak-IV-robust CI (sp.anderson_rubin_ci); Shocks correlate with pre-trends -> Shock exogeneity fails -- drop the violating shock dimension or add trend controls. Alternatives: sp.iv, sp.shift_share_se, sp.shift_share_political, sp.shift_sha...",
@@ -3341,7 +3430,7 @@
     "name": "causal_dqn"
   },
   {
-    "description": "Honest generalized random forest for conditional average treatment effects (CATE). Default engine reimplements the GRF algorithm: splits on the causal gradient pseudo-outcome, out-of-bag nuisances and predictions, little-bag variances, cluster-aware sampling and inference. fe='twoway' gives a causal forest with fixed effects for panels (unit and period effects removed within every node and leaf). Validation: certified evidence with scoped limitations. Known limitations: The AIPW ATE/ATT are validated against grf on clean-overlap designs only; under severe propensity-overlap loss the AIPW influence function inflates the standard error (conservative, over-covering inference), so inspect the sp.audit overlap diagnostic before interpreting the ATE on that kind of sample; The forest is compared with grf only statistically (tier T3: RMSE, pointwise variances, coverage), not bit-for-bit; given a fitted forest, the inference operators match grf / sandwich to 1e-14; Doubly-robust averages (average_treatment_effect, best_linear_projection, rate) are not implemented for fe= forests, which have no propensity score; use sp.did_forest for group-time averages; For fe= forests the calibration slo...",
+    "description": "Honest generalized random forest for conditional average treatment effects (CATE). Default engine reimplements the GRF algorithm: splits on the causal gradient pseudo-outcome, out-of-bag nuisances and predictions, little-bag variances, cluster-aware sampling and inference. fe='twoway' gives a causal forest with fixed effects for panels (unit and period effects removed within every node and leaf). Validation: certified evidence with scoped limitations. Known limitations: The AIPW ATE/ATT are validated against grf on clean-overlap designs only; under severe propensity-overlap loss the AIPW influence function inflates the standard error (conservative, over-covering inference), so inspect the sp.audit overlap diagnostic before interpreting the ATE on that kind of sample; The forest is compared with grf only statistically, not bit-for-bit: the AIPW ATE/ATT by seed-replicated equivalence (T3, within 0.1 sampling SE at 500-8,000 trees), CATE RMSE, pointwise variances and coverage by a stochastic screen; given a fitted forest, the inference operators match grf / sandwich to 1e-14; Doubly-robust averages (average_treatment_effect, best_linear_projection, rate) are not implemented for fe= f...",
     "input_schema": {
       "properties": {
         "W_hat": {
@@ -8542,6 +8631,10 @@
     "description": "Double/Debiased Machine Learning supports PLR, binary-D IRM, PLIV, and binary-D/binary-Z IIVM. Python-only external OOFPredictions supports unweighted, unnormalised IRM ATE scoring with exact alignment; caller_declared records are declarations rather than proof against leakage. Validation: certified evidence with scoped limitations. Known limitations: external_predictions, store_oof, and observation_ids are Python-only and absent from JSON/MCP inputs; external records accept no dict, JSON string, or file path; store_oof=True retains individual-level records for get_oof() and get_residuals() in memory only; ordinary serialization omits them; Retained IRM needs at least 10 rows per treatment arm in each training fold or raises DataInsufficient instead of fallback; internal explicit fold_indices require n_rep=1, while external repeated IRM records are allowed when the explicit partition is equivalent for every repeat. Assumptions: Unconfoundedness: Y(d) perp D | X (conditional ignorability); Overlap: 0 < P(D=1 | X) < 1 for the estimand support (strong for IRM); Nuisance-function estimators converge at op(n^{-1/4}) -- fast enough that orthogonal moments give sqrtn CATE. Pre-conditions...",
     "input_schema": {
       "properties": {
+        "cluster": {
+          "description": "One-way cluster column: folds over whole clusters and the Chiang-Kato-Ma-Sasaki cluster variance (DoubleML DoubleMLClusterData, all four models).",
+          "type": "string"
+        },
         "covariates": {
           "description": "List of control variable names",
           "items": {
@@ -8579,6 +8672,10 @@
           "description": "Self-normalize the inverse-propensity weights for the IPW models (irm/iivm); matches DoubleML's normalize_ipw. Rejected for plr/pliv.",
           "type": "boolean"
         },
+        "sample_weight": {
+          "description": "Observation weights (column or array); weights= is an alias.",
+          "type": "string"
+        },
         "score": {
           "description": "Orthogonal score variant (DoubleML-compatible). PLR: 'partialling out' (default) or 'IV-type'. IRM: 'ATE' (default) or 'ATTE'. None selects the model default; defaults reproduce historical output exactly.",
           "enum": [
@@ -8590,7 +8687,7 @@
           "type": "string"
         },
         "treat": {
-          "description": "Treatment variable",
+          "description": "Treatment variable. model='plr' also accepts a list of treatment columns: each is fitted with the others as controls on one split, and the result carries the joint covariance across treatments.",
           "type": "string"
         },
         "trimming_threshold": {
@@ -9825,8 +9922,8 @@
           "type": "array"
         },
         "expose_pre_vcov": {
-          "default": false,
-          "description": "Publish the true pre-period covariance into model_info['vcv_pre']. With True, pretrends_test / pretrends_power / sensitivity_rr / honest_did use the full covariance of the pre-treatment coefficients; with False (default) the key is withheld and those tools fall back to a diagonal covariance and warn.",
+          "default": true,
+          "description": "Publish the pre-period covariance into model_info['vcv_pre'] (default). pretrends_test / pretrends_power / sensitivity_rr then use the full cluster-robust covariance of the pre-treatment coefficients; False withholds the key and restores the pre-1.31 diagonal fallback, which warns.",
           "type": "boolean"
         },
         "ref_period": {
@@ -10323,7 +10420,7 @@
           "type": "string"
         },
         "fml": {
-          "description": "A pyfixest-style formula. Examples: - ``\"Y ~ X1 + X2\"`` -- plain OLS - ``\"Y ~ X1 | firm + year\"`` -- two-way fixed effects - ``\"Y ~ 1 | firm | X1 ~ Z1\"`` -- IV with fixed effects - ``\"Y ~ X1 | csw0(firm, year)\"`` -- multiple estimations",
+          "description": "A pyfixest-style formula. Examples: - ``\"Y ~ X1 + X2\"`` -- plain OLS - ``\"Y ~ X1 | firm + year\"`` -- two-way fixed effects - ``\"Y ~ 1 | firm | X1 ~ Z1\"`` -- IV with fixed effects - ``\"Y ~ X1 | csw0(firm, year)\"`` -- multiple estimations - ``\"Y ~ X1 | firm + state[year]\"`` -- varying slopes: state fixed effects plus state-specific year trends (``state[[year]]`` for the slopes alone). pyfixest does not absorb these, so such formulas run on StatsPAI's own HDFE kernel (``model_info['backend'] == 'statspai-native'``), matching R ``fixest`` for ``vcov`` iid / hetero / ``{'CRV1': col}`` and ``weights=``.",
           "type": "string"
         },
         "lean": {
@@ -12590,8 +12687,29 @@
           "description": "Significance level for confidence intervals",
           "type": "number"
         },
+        "cluster": {
+          "description": "method='ml' only: cluster column (vce(cluster c))",
+          "type": "string"
+        },
+        "method": {
+          "default": "twostep",
+          "description": "'twostep' (Heckman 1979 probit + OLS with IMR) or 'ml' (full-information ML, Stata's default heckman)",
+          "enum": [
+            "twostep",
+            "ml"
+          ],
+          "type": "string"
+        },
         "select": {
           "description": "Binary selection indicator (1 = observed, 0 = not)",
+          "type": "string"
+        },
+        "vce": {
+          "description": "method='ml' only: None/'oim', 'robust' or 'cluster' (e.g. vce='cluster firm'); robust= is an alias",
+          "type": "string"
+        },
+        "weights": {
+          "description": "method='ml' only: sampling weights [pw=] (imply robust SEs)",
           "type": "string"
         },
         "x": {
@@ -13473,6 +13591,10 @@
     "description": "Inverse Probability Weighting for ATE/ATT/ATC with propensity score trimming. Validation: certified parity evidence. Assumptions: Sequential exchangeability / no unmeasured confounding at each time point; Positivity: every treatment level is possible given the past; Correct specification of the treatment and/or outcome models. Pre-conditions: Sequentially measured covariates, (time-varying) treatment, and outcome; Models for the treatment process and the outcome (or weights). Failure modes: Stabilized weights have extreme values (positivity near-violation) -> Truncate weights, simplify the treatment model, or use a doubly-robust estimator (TMLE). Alternatives: sp.tmle, sp.g_computation, sp.ipw. Typical minimum N: 300.",
     "input_schema": {
       "properties": {
+        "cluster": {
+          "description": "Cluster column: cluster bootstrap, or cluster-summed sandwich with se_method='sandwich'",
+          "type": "string"
+        },
         "covariates": {
           "description": "Covariate matrix, DataFrame, or column names.",
           "items": {
@@ -13490,6 +13612,15 @@
           ],
           "type": "string"
         },
+        "se_method": {
+          "default": "bootstrap",
+          "description": "'sandwich' = teffects ipw robust M-estimation SE (needs normalize=True, trim=0)",
+          "enum": [
+            "bootstrap",
+            "sandwich"
+          ],
+          "type": "string"
+        },
         "treat": {
           "description": "Treatment indicator or first-treatment-period column.",
           "type": "string"
@@ -13498,6 +13629,10 @@
           "default": 0.0,
           "description": "Propensity score trimming threshold",
           "type": "number"
+        },
+        "weights": {
+          "description": "Sampling-weight column (Stata [pw=]); weights the logit and multiplies each IPW weight",
+          "type": "string"
         },
         "y": {
           "description": "Outcome variable column name or outcome array.",
@@ -13875,7 +14010,7 @@
     "name": "iv_diag"
   },
   {
-    "description": "Instrumental forest (grf::instrumental_forest): heterogeneous local average treatment effects tau(x) = Cov[Y,Z|x]/Cov[W,Z|x] from an honest generalized random forest that splits on the IV gradient and uses the instrument in its split constraints. Reports out-of-bag CATEs with little-bag variances and the doubly-robust average conditional LATE (compliance-weighted scores). Given grf's forest, the local solve, scores, average and BLP match grf to 1e-13 (T2); the forest itself is T3. Validation: validated evidence tier (known-truth, reference, external-parity, or Monte Carlo artifact). Assumptions: instrument relevance, exclusion and independence given X; monotonicity for a complier interpretation of tau(x). Pre-conditions: instrument varies within covariate cells; first stage not near zero anywhere. Failure modes: DataInsufficient: the instrument has no variation -> Use a varying instrument; UserWarning: compliance score near zero -> Locally weak instrument; trim covariate regions or report the ATE with caution. Alternatives: sp.ivreg, sp.dml, sp.causal_forest. Typical minimum N: 1000.",
+    "description": "Instrumental forest (grf::instrumental_forest): heterogeneous local average treatment effects tau(x) = Cov[Y,Z|x]/Cov[W,Z|x] from an honest generalized random forest that splits on the IV gradient and uses the instrument in its split constraints. Reports out-of-bag CATEs with little-bag variances and the doubly-robust average conditional LATE (compliance-weighted scores). Given grf's forest, the local solve, scores, average and BLP match grf to 1e-13 (T2); the forest itself is checked only statistically (a stochastic screen against grf on known-truth designs, not a seed-replicated equivalence test). Validation: validated evidence tier (known-truth, reference, external-parity, or Monte Carlo artifact). Assumptions: instrument relevance, exclusion and independence given X; monotonicity for a complier interpretation of tau(x). Pre-conditions: instrument varies within covariate cells; first stage not near zero anywhere. Failure modes: DataInsufficient: the instrument has no variation -> Use a varying instrument; UserWarning: compliance score near zero -> Locally weak instrument; trim covariate regions or report the ATE with caution. Alternatives: sp.ivreg, sp.dml, sp.causal_forest. Ty...",
     "input_schema": {
       "properties": {
         "W_hat": {
@@ -14813,7 +14948,7 @@
     "name": "list_replications"
   },
   {
-    "description": "Propose a candidate DAG from variable names + domain description. Assumptions: LLM-proposed graphs / priors are hypotheses to validate, not statistical identification; Human review or data-driven falsification is required before any causal claim. Pre-conditions: Domain context and a bounded list of candidate variables; A configured, logged LLM provider for reproducibility. Failure modes: Proposals are unstable across runs or include hallucinated variables/edges -> Fix the model release and seed, add constraints, and cross-check with constraint-based discovery. Alternatives: sp.llm_dag_constrained, sp.causal_discovery, sp.dag. Typical minimum N: 1.",
+    "description": "Propose a candidate DAG from variable names + domain description. Known limitations: LLM output is a proposal, not evidence -- only a heuristic step: it is not reproducible across model versions or providers, has no numerical evidence, and must be checked against domain knowledge and data (e.g. sp.llm_dag_validate) before it constrains an analysis. Assumptions: LLM-proposed graphs / priors are hypotheses to validate, not statistical identification; Human review or data-driven falsification is required before any causal claim. Pre-conditions: Domain context and a bounded list of candidate variables; A configured, logged LLM provider for reproducibility. Failure modes: Proposals are unstable across runs or include hallucinated variables/edges -> Fix the model release and seed, add constraints, and cross-check with constraint-based discovery. Alternatives: sp.llm_dag_constrained, sp.causal_discovery, sp.dag. Typical minimum N: 1.",
     "input_schema": {
       "properties": {
         "client": {
@@ -14846,7 +14981,7 @@
     "name": "llm_dag_propose"
   },
   {
-    "description": "Propose sensitivity-analysis priors for the substantive setting. Assumptions: LLM-proposed graphs / priors are hypotheses to validate, not statistical identification; Human review or data-driven falsification is required before any causal claim. Pre-conditions: Domain context and a bounded list of candidate variables; A configured, logged LLM provider for reproducibility. Failure modes: Proposals are unstable across runs or include hallucinated variables/edges -> Fix the model release and seed, add constraints, and cross-check with constraint-based discovery. Alternatives: sp.llm_dag_constrained, sp.causal_discovery, sp.dag. Typical minimum N: 1.",
+    "description": "Propose sensitivity-analysis priors for the substantive setting. Known limitations: LLM output is a proposal, not evidence -- only a heuristic step: it is not reproducible across model versions or providers, has no numerical evidence, and must be checked against domain knowledge and data (e.g. sp.llm_dag_validate) before it constrains an analysis. Assumptions: LLM-proposed graphs / priors are hypotheses to validate, not statistical identification; Human review or data-driven falsification is required before any causal claim. Pre-conditions: Domain context and a bounded list of candidate variables; A configured, logged LLM provider for reproducibility. Failure modes: Proposals are unstable across runs or include hallucinated variables/edges -> Fix the model release and seed, add constraints, and cross-check with constraint-based discovery. Alternatives: sp.llm_dag_constrained, sp.causal_discovery, sp.dag. Typical minimum N: 1.",
     "input_schema": {
       "properties": {
         "client": {
@@ -14883,7 +15018,7 @@
     "name": "llm_sensitivity_priors"
   },
   {
-    "description": "Enumerate plausible unobserved confounders for a study. Assumptions: LLM-proposed graphs / priors are hypotheses to validate, not statistical identification; Human review or data-driven falsification is required before any causal claim. Pre-conditions: Domain context and a bounded list of candidate variables; A configured, logged LLM provider for reproducibility. Failure modes: Proposals are unstable across runs or include hallucinated variables/edges -> Fix the model release and seed, add constraints, and cross-check with constraint-based discovery. Alternatives: sp.llm_dag_constrained, sp.causal_discovery, sp.dag. Typical minimum N: 1.",
+    "description": "Enumerate plausible unobserved confounders for a study. Known limitations: LLM output is a proposal, not evidence -- only a heuristic step: it is not reproducible across model versions or providers, has no numerical evidence, and must be checked against domain knowledge and data (e.g. sp.llm_dag_validate) before it constrains an analysis. Assumptions: LLM-proposed graphs / priors are hypotheses to validate, not statistical identification; Human review or data-driven falsification is required before any causal claim. Pre-conditions: Domain context and a bounded list of candidate variables; A configured, logged LLM provider for reproducibility. Failure modes: Proposals are unstable across runs or include hallucinated variables/edges -> Fix the model release and seed, add constraints, and cross-check with constraint-based discovery. Alternatives: sp.llm_dag_constrained, sp.causal_discovery, sp.dag. Typical minimum N: 1.",
     "input_schema": {
       "properties": {
         "client": {
@@ -15641,17 +15776,17 @@
           "type": "number"
         },
         "at": {
-          "description": "Fix covariates at specific values for conditional margins. E.g., ``{'age': 30, 'female': 1}``.",
+          "description": "Fix covariates at specific values for conditional margins. E.g., ``{'age': 30, 'female': 1}``. Every key must be a model variable (Stata error 322 otherwise).",
           "type": "object"
         },
         "eps": {
           "default": 1e-05,
-          "description": "Step size for numerical differentiation.",
+          "description": "Relative step for the central difference used on transformed terms.",
           "type": "number"
         },
         "method": {
           "default": "ame",
-          "description": "- 'ame': Average Marginal Effect (average dy/dx across all obs) - 'mem': Marginal Effect at the Mean (dy/dx at mean of X)",
+          "description": "- 'ame': Average Marginal Effect (average dy/dx across all obs) - 'mem': Marginal Effect at the Mean (Stata ``atmeans``: every design component at its sample mean, factor indicators at their shares, interactions as products of those means)",
           "type": "string"
         },
         "result": {
@@ -15659,7 +15794,7 @@
           "type": "string"
         },
         "variables": {
-          "description": "Variables to compute dy/dx for. Default: all regressors.",
+          "description": "Variables to compute dy/dx for. Default: every model variable, factor variables included (Stata ``dydx(*)``).",
           "items": {
             "type": "string"
           },
@@ -15683,7 +15818,7 @@
           "type": "number"
         },
         "at": {
-          "description": "Mapping of variable names to lists/arrays of values. If multiple variables are given, the Cartesian product of all value lists is used. Example:: at={\"experience\": [1, 5, 10], \"female\": [0, 1]} produces 6 grid points.",
+          "description": "Mapping of variable names to lists/arrays of values. If multiple variables are given, the Cartesian product of all value lists is used. Example:: at={\"experience\": [1, 5, 10], \"female\": [0, 1]} produces 6 grid points. Every key must be a model variable.",
           "type": "object"
         },
         "result": {
@@ -15952,6 +16087,10 @@
         },
         "treatment": {
           "description": "Treatment indicator, treatment variable, or treatment array.",
+          "type": "string"
+        },
+        "weights": {
+          "description": "Frequency weights (Stata [fw=], positive integers; the only weight teffects matching accepts). Sampling weights and cluster= are refused: use sp.ipw / sp.aipw / sp.tmle.",
           "type": "string"
         }
       },
@@ -16797,6 +16936,10 @@
     "description": "Meta-learner framework for CATE: S-, T-, X-, R-, DR-Learner. Validation: certified parity evidence. Assumptions: Unconfoundedness: Y(d) perp D | X; Overlap: 0 < P(D=1 | X) < 1; For R-Learner / DR-Learner: orthogonality between treatment residual and outcome residual. Pre-conditions: binary treatment (0/1); covariates numeric; categoricals encoded; enough treated AND control to train separate outcome models (T/X/DR-Learner). Failure modes: Large divergence across learner types -> Use sp.compare_metalearners to identify which learner is biased; DR-Learner is safest under model misspecification; S-Learner estimates near zero regardless of true effect -> S-Learner regularization smooths treatment coefficient toward zero; use T/X/DR instead; X-Learner fails when treated group is very small -> X-Learner needs well-identified control-outcome model; fall back to T-Learner or weighted T-Learner. Alternatives: sp.causal_forest, sp.dml, sp.tmle, sp.bcf. Typical minimum N: 500.",
     "input_schema": {
       "properties": {
+        "cluster": {
+          "description": "Cluster column: folds over whole clusters; SE from centred cluster sums of the influence function with G/(G-1).",
+          "type": "string"
+        },
         "covariates": {
           "description": "Covariate matrix, DataFrame, or column names.",
           "items": {
@@ -16822,6 +16965,10 @@
         },
         "treat": {
           "description": "Binary treatment column (0/1)",
+          "type": "string"
+        },
+        "weights": {
+          "description": "Sampling weights for the AIPW average (estimate/se): weighted nuisance fits, mean and influence function. The CATE fit is unweighted.",
           "type": "string"
         },
         "y": {
@@ -17366,7 +17513,7 @@
     "name": "msm"
   },
   {
-    "description": "Multi-arm causal forest (grf::multi_arm_causal_forest): CATEs of K-1 arms against a reference, estimated jointly by one forest whose trees split on the gradient of all contrasts (multi-arm R-learner with GRF weights). Propensities from a probability forest, doubly-robust per-arm ATEs, BLPs per contrast. Operators match grf to 1e-13 (T2); forest statistics match grf within Monte Carlo error (T3). Validation: validated evidence tier (known-truth, reference, external-parity, or Monte Carlo artifact). Assumptions: unconfoundedness given X; overlap for every arm. Pre-conditions: every arm observed; propensities bounded away from zero. Failure modes: DataInsufficient: need at least two treatment arms -> Pass a treatment with two or more values; UserWarning: smallest estimated arm propensity -> Poor overlap: pass propensity_bounds= or trim. Alternatives: sp.causal_forest, sp.multi_treatment, sp.metalearner. Typical minimum N: 1000.",
+    "description": "Multi-arm causal forest (grf::multi_arm_causal_forest): CATEs of K-1 arms against a reference, estimated jointly by one forest whose trees split on the gradient of all contrasts (multi-arm R-learner with GRF weights). Propensities from a probability forest, doubly-robust per-arm ATEs, BLPs per contrast. Operators match grf to 1e-13 (T2); forest statistics are screened against grf on known-truth designs (a stochastic screen, not a seed-replicated equivalence test). Validation: validated evidence tier (known-truth, reference, external-parity, or Monte Carlo artifact). Assumptions: unconfoundedness given X; overlap for every arm. Pre-conditions: every arm observed; propensities bounded away from zero. Failure modes: DataInsufficient: need at least two treatment arms -> Pass a treatment with two or more values; UserWarning: smallest estimated arm propensity -> Poor overlap: pass propensity_bounds= or trim. Alternatives: sp.causal_forest, sp.multi_treatment, sp.metalearner. Typical minimum N: 1000.",
     "input_schema": {
       "properties": {
         "W_hat": {
@@ -18689,7 +18836,7 @@
     "input_schema": {
       "properties": {
         "cluster": {
-          "description": "Cluster variable: entity, time, or twoway",
+          "description": "Cluster variable: entity, time, twoway, or any column name",
           "type": "string"
         },
         "entity": {
@@ -18731,6 +18878,14 @@
         "robust": {
           "default": "nonrobust",
           "description": "Standard errors: nonrobust, robust, kernel, driscoll-kraay",
+          "type": "string"
+        },
+        "ssc": {
+          "description": "Small-sample convention: None keeps linearmodels; 'stata' = xtreg/areg/regress (G/(G-1)*(N-1)/(N-K), t(G-1), z for RE, xtreg vce(robust) = cluster on unit); 'fixest' = R fixest default ssc() (fe/twoway/pooled/fd)",
+          "enum": [
+            "stata",
+            "fixest"
+          ],
           "type": "string"
         },
         "time": {
@@ -19285,7 +19440,7 @@
           "type": "array"
         },
         "result": {
-          "description": "A fitted DiD/event-study result carrying event-study estimates in ``result.model_info['event_study']`` (e.g. from ``sp.event_study``, ``sp.callaway_santanna``, ``sp.sun_abraham``). .. note:: If the result does not carry a pre-period covariance matrix in ``model_info['vcv_pre']``, the pre-trend test and power fall back to assuming the pre-period coefficients are mutually independent and warn loudly. ``sp.event_study`` computes the full cluster-robust covariance; pass ``expose_pre_vcov=True`` to it to have this pipeline use the correct covariance instead of the diagonal fallback.",
+          "description": "A fitted DiD/event-study result carrying event-study estimates in ``result.model_info['event_study']`` (e.g. from ``sp.event_study``, ``sp.callaway_santanna``, ``sp.sun_abraham``). .. note:: If the result does not carry a pre-period covariance matrix in ``model_info['vcv_pre']``, the pre-trend test and power fall back to assuming the pre-period coefficients are mutually independent and warn loudly. ``sp.event_study`` writes the full cluster-robust pre-period covariance there by default.",
           "type": "string"
         }
       },
@@ -20283,10 +20438,12 @@
           "type": "string"
         },
         "type": {
-          "default": "wald",
-          "description": "Test statistic",
+          "default": "auto",
+          "description": "Test statistic: 'auto' follows the estimator's own convention (F(K, G-1) for sp.event_study, chi2 Wald otherwise); 'wald' or 'f' force one.",
           "enum": [
-            "wald"
+            "auto",
+            "wald",
+            "f"
           ],
           "type": "string"
         }
@@ -20724,6 +20881,10 @@
           "description": "Estimator or algorithm variant to use.",
           "type": "string"
         },
+        "weights": {
+          "description": "Observation weights.",
+          "type": "string"
+        },
         "y": {
           "description": "Outcome variable column name or outcome array.",
           "type": "string"
@@ -21010,6 +21171,50 @@
     "name": "pwcompare"
   },
   {
+    "description": "Backward-induction Q-learning for a K-stage binary-action DTR. Assumptions: Sequential ignorability: each stage-k action is as good as random given the observed history H_k; Positivity: both actions have positive probability at every history that occurs; Stage-wise Q-functions are correctly specified as linear in the history (with A_k x H_k interactions). Pre-conditions: Binary (0/1) action at every stage; One final outcome, higher is better. Failure modes: actions and stage_covariates have different lengths -> Pass one covariate list per decision stage (an empty list for a stage with no new covariates); Estimated rule is sensitive to the main-effect part of the Q-model -> Q-learning needs the whole Q-function right; compare with A-learning, which models only the contrast and needs a propensity model instead. Alternatives: sp.a_learning, sp.snmm. Typical minimum N: 200.",
+    "input_schema": {
+      "properties": {
+        "actions": {
+          "description": "Column names for the stage-k actions (binary 0/1).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "baseline": {
+          "description": "Baseline covariates in the history at all stages.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "include_interactions": {
+          "default": true,
+          "description": "If True, Q-models include :math:`A_k \\times H_k` interactions, enabling nontrivial optimal rules.",
+          "type": "boolean"
+        },
+        "stage_covariates": {
+          "description": "Covariates observed *before* the stage-k decision (may be empty).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "y": {
+          "description": "Final-stage outcome column, higher is better (``outcome=`` is accepted as an alias).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "actions",
+        "stage_covariates",
+        "y"
+      ],
+      "type": "object"
+    },
+    "name": "q_learning"
+  },
+  {
     "description": "Quantile Difference-in-Differences (QDiD): applies the DiD contrast to quantiles, [Q11(t)-Q10(t)] - [Q01(t)-Q00(t)], on a 2x2 design with bootstrap SE. This is NOT changes-in-changes -- Athey & Imbens (2006) propose CiC and explicitly criticise QDiD; use sp.cic for CiC. Validation: certified parity evidence. Assumptions: CIC rank invariance: the quantile rank in the untreated distribution is stable across groups; Continuous outcome support covering both groups in both periods; SUTVA (no cross-group spillovers). Pre-conditions: panel or repeated cross-section; group is binary 0/1; time is binary 0/1 (pre / post). Failure modes: Outcome heavily discrete / zero-inflated -> CIC rank-matching is unstable on discrete supports -- use QTE regression (sp.qte) or Firpo-RIF; Bootstrap CI across quantiles varies wildly -> Thin tails at extreme quantiles -- restrict to [0.2, 0.8] or raise n_boot to 2000. Alternatives: sp.qte, sp.did, sp.rifreg. Typical minimum N: 500.",
     "input_schema": {
       "properties": {
@@ -21111,14 +21316,39 @@
     "description": "Quantile regression at specified quantile(s). Validation: certified parity evidence. Assumptions: Conditional quantile is linear in covariates; Outcome continuous (or finely discretized) so the check-function minimization is well-posed; Powell (1991) sandwich SEs require a consistent kernel density of the conditional density at zero. Pre-conditions: Continuous outcome variable; Quantile tau strictly in (0,1). Failure modes: Sparse data in tail quantiles gives unstable density estimate and wide SEs -> Estimate a more central quantile or pool more data near the tail; Crossing/degenerate fit when regressors are collinear -> Drop or combine collinear regressors before refitting. Alternatives: sp.regress, sp.feols. Typical minimum N: 200.",
     "input_schema": {
       "properties": {
+        "cluster": {
+          "description": "Cluster column; implies vce='cluster' (Stata qreg2, cluster(); t(N-k) inference)",
+          "type": "string"
+        },
         "formula": {
           "description": "'y ~ x1 + x2' (alternative to y/x)",
+          "type": "string"
+        },
+        "kernel_scale": {
+          "default": "mad",
+          "description": "Bandwidth scale for vce='kernel'/'cluster': 'mad' (qreg2 default) or 'silverman' (qreg2, silverman)",
+          "enum": [
+            "mad",
+            "silverman"
+          ],
           "type": "string"
         },
         "quantile": {
           "default": 0.5,
           "description": "Quantile (0-1)",
           "type": "number"
+        },
+        "vce": {
+          "description": "None/'iid' = Stata qreg default (fitted sparsity, Hall-Sheather); 'robust' = Stata vce(robust); 'nid' = quantreg se='nid'; 'kernel' = qreg2 heteroskedasticity-robust Powell sandwich; 'cluster <var>' = Parente-Santos Silva (2016) cluster-robust, as qreg2, cluster(); 'powell' = pre-1.32 kernel SE",
+          "enum": [
+            "iid",
+            "robust",
+            "nid",
+            "kernel",
+            "cluster",
+            "powell"
+          ],
+          "type": "string"
         },
         "x": {
           "description": "Regressor columns (alternative to formula)",
@@ -24224,7 +24454,7 @@
     "name": "rdrbounds"
   },
   {
-    "description": "Sharp or fuzzy regression-discontinuity with robust bias-corrected CIs (Calonico-Cattaneo-Titiunik 2014). Use fuzzy= for IV-style fuzzy RD. Validation: certified evidence with scoped limitations. Known limitations: observation-level weights are not yet supported -- passing a weight column raises NotImplementedError; R-parity certification applies to bwselect='cct' or manually matched h/b bandwidths; the dependency-light default bwselect='mserd' uses StatsPAI's calibrated selector and can differ from rdrobust::rdrobust defaults.",
+    "description": "Sharp or fuzzy regression-discontinuity with robust bias-corrected CIs (Calonico-Cattaneo-Titiunik 2014). Use fuzzy= for IV-style fuzzy RD. Validation: certified evidence with scoped limitations. Known limitations: the weighted rbc bootstrap is not supported -- passing weights= with bootstrap='rbc' raises MethodIncompatibility; R-parity certification applies only to the configurations enumerated by sp.validation_scope(function='rdrobust') -- the default native mserd / triangular / p=1 / nn path (Track A 06), a manual bandwidth, and the weighted rows -- other selectors, kernels and vce choices are pinned for sp.rdbwselect or not at all for this entry point.",
     "input_schema": {
       "properties": {
         "c": {
@@ -26644,6 +26874,56 @@
       "type": "object"
     },
     "name": "snips"
+  },
+  {
+    "description": "G-estimation of a linear structural nested mean model. Assumptions: Sequential ignorability: each stage-k action is as good as random given the observed history H_k; Positivity: stage propensities bounded away from 0 and 1; Linear structural nested mean (blip) model at each stage. Pre-conditions: Binary (0/1) action at every stage. Failure modes: actions and stage_covariates have different lengths -> Pass one covariate list per decision stage (an empty list for a stage with no new covariates). Alternatives: sp.a_learning, sp.q_learning. Typical minimum N: 200.",
+    "input_schema": {
+      "properties": {
+        "actions": {
+          "description": "actions parameter (Sequence[str]).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "baseline": {
+          "description": "baseline parameter (Optional[Sequence[str]]).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "propensity_bounds": {
+          "default": [
+            0.05,
+            0.95
+          ],
+          "description": "propensity_bounds parameter (tuple).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "stage_covariates": {
+          "description": "stage_covariates parameter (Sequence[Sequence[str]]).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "y": {
+          "description": "Outcome variable column name or outcome array.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "actions",
+        "stage_covariates",
+        "y"
+      ],
+      "type": "object"
+    },
+    "name": "snmm"
   },
   {
     "description": "Lerman-Yitzhaki (1985) Gini source decomposition. Validation: certified parity evidence.",
@@ -29321,6 +29601,10 @@
     "description": "Targeted Maximum Likelihood Estimation for ATE/ATT with double-robustness. Validation: certified parity evidence. Assumptions: Unconfoundedness: Y(d) perp D | X; Overlap: 0 < P(D=1 | X) < 1 on the estimand support; Consistent estimation of at least one of Q(a, x) = E[Y|A, X] or g(x) = P(A=1|X) (double robustness). Pre-conditions: binary treatment 0/1; covariates comprise the confounding set; n >= 500 for asymptotic efficiency. Failure modes: Extreme propensity scores (ATE IF denominator ~ 0) -> Bound propensity scores away from 0/1 (e.g. 0.025 / 0.975) or trim; Super-learner cross-validated risk not improving over baseline -> Nuisances not learnable; widen the candidate library or use stronger base learners. Alternatives: sp.dml, sp.aipw, sp.metalearner, sp.ltmle. Typical minimum N: 500.",
     "input_schema": {
       "properties": {
+        "cluster": {
+          "description": "Cluster column: influence function summed within clusters with G/(G-1) (R tmle id= for equal cluster sizes).",
+          "type": "string"
+        },
         "covariates": {
           "description": "Covariate matrix, DataFrame, or column names.",
           "items": {
@@ -29346,6 +29630,10 @@
           "description": "Binary treatment column (0/1)",
           "type": "string"
         },
+        "weights": {
+          "description": "Observation weights (R tmle obsWeights): weighted Super Learner fits, fluctuation, plug-in and influence function. ATE only; not with fold_indices.",
+          "type": "string"
+        },
         "y": {
           "description": "Outcome variable column name or outcome array.",
           "type": "string"
@@ -29369,6 +29657,10 @@
           "description": "Significance level for confidence intervals",
           "type": "number"
         },
+        "cluster": {
+          "description": "Cluster column (vce(cluster c))",
+          "type": "string"
+        },
         "ll": {
           "default": 0.0,
           "description": "Lower censoring limit (set -inf for none)",
@@ -29377,6 +29669,14 @@
         "ul": {
           "description": "Upper censoring limit (default: none)",
           "type": "number"
+        },
+        "vce": {
+          "description": "None/'oim' (observed information), 'robust' or 'cluster', e.g. vce='cluster firm'; robust= is an alias",
+          "type": "string"
+        },
+        "weights": {
+          "description": "Sampling weights [pw=]: weighted likelihood, robust SEs",
+          "type": "string"
         },
         "x": {
           "description": "Regressors",

@@ -1,0 +1,8 @@
+{
+  "att_event_time": -0.0337825190548335,
+  "se_event_time": 0.0090244048742123,
+  "post_event_times": [0, 1, 2, 3],
+  "n": 2500,
+  "fixest": "0.14.0",
+  "r_version": "R version 4.5.2 (2025-10-31)"
+}

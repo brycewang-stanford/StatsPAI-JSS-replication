@@ -120,6 +120,8 @@ PRELUDE: dict[str, str] = {
         'agg = sp.aggte(cs, type="simple", random_state=0)\n'
         'hd = sp.honest_did(cs, e=0, method="smoothness")\n'
     ),
+    # Section 5.4: the output-level scope of the Card IV fit with HC3 errors.
+    "lst:scope": "import statspai as sp\ncard = sp.datasets.card_1995()\n",
     "lst:fect": (
         "import pandas as pd\n"
         "import statspai as sp\n"
@@ -177,7 +179,7 @@ EXPECTED: dict[str, str] = {
     ),
     "lst:card-cate": (
         "import numpy as np\n"
-        "assert np.isfinite(sp.cate_summary(cf).loc['Mean (ATE)', 'CATE'])\n"
+        "assert np.isfinite(sp.cate_summary(cf).loc['Mean', 'CATE'])\n"
     ),
     "lst:csdid": (
         "assert abs(float(agg.estimate) - (-0.0330)) < 1e-3\n"
@@ -185,6 +187,12 @@ EXPECTED: dict[str, str] = {
     "lst:csdid-output": (
         "assert bool(hd['rejects_zero'].iloc[0])\n"
         "assert not bool(hd['rejects_zero'].iloc[-1])\n"
+        # The text quotes the continuous-search breakdown value, 0.0080.
+        "assert abs(sp.breakdown_m(cs, e=0, method='smoothness') - 0.0080) < 5e-5\n"
+    ),
+    "lst:scope": (
+        "assert scope['outputs']['estimate']['status'] == 'reference'\n"
+        "assert not scope['outputs']['se']['evidence']\n"
     ),
 }
 

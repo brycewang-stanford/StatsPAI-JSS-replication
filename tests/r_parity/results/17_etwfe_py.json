@@ -18,7 +18,7 @@
       "side": "py",
       "statistic": "att_group_notyet_2004",
       "estimate": -0.039017134968663644,
-      "se": 0.009647377142304597,
+      "se": 0.009647377142304599,
       "ci_lo": null,
       "ci_hi": null,
       "n": 2500,
@@ -50,10 +50,10 @@
       "module": "17_etwfe",
       "side": "py",
       "statistic": "att_etwfe_never",
-      "estimate": -0.032976513809653635,
-      "se": 0.0077723427541003575,
-      "ci_lo": -0.04821741330586146,
-      "ci_hi": -0.017735614313445808,
+      "estimate": -0.03297651380964878,
+      "se": 0.007777042347043839,
+      "ci_lo": -0.0482266288057375,
+      "ci_hi": -0.017726398813560057,
       "n": 2500,
       "extra": {}
     },
@@ -94,7 +94,7 @@
   "extra": {
     "method": "Wooldridge ETWFE + emfx simple / group aggregations",
     "n_cohorts": 3,
-    "aggregation_note": "att_etwfe uses the R etwfe default no-ivar fixed-effect structure (StatsPAI panel=False) and sp.etwfe_emfx(weighting='treated'), which averages cohort-time marginal effects over treated post-period observations like etwfe::emfx(type='simple'). Point estimates and clustered delta-method SEs match the R reference. The att_group_* rows are the per-cohort ATTs from the same fits, matching etwfe::emfx(type='group'). The never-treated rows compare against R etwfe(cgroup='never', ivar=countyreal) because sp.etwfe(cgroup='nevertreated') absorbs unit fixed effects by two-way demeaning; point estimates are invariant to the ivar choice, the clustered SE is not.",
-    "se_convention_note": "Both sides now count the same K in the CR1 finite-sample factor: unit effects are nested in the countyreal cluster and dropped, the period effects are not and are counted, which is fixest's ssc(fixef.K='nested') and reghdfe's default (StatsPAI: did._core.fe_dof_not_nested). Through 1.26.0 sp.wooldridge_did counted only the explicit design columns, which put these SE rows near 8e-4 relative; they are now 1.3e-8 to 5.5e-6. That entire residual is R's, not ours: marginaleffects differentiates the emfx aggregation numerically with a forward difference, and re-running emfx(type='group', numderiv='richardson') moves R by exactly the observed gap (1.31e-8 / 5.48e-6 / 2.30e-6 for g=2004/2006/2007) onto 0.0117881770227968 / 0.0131899740310652 / 0.0138580376110556 -- which our analytic delta-method SEs reproduce to 2.2e-10 / 2.5e-9 / 1.3e-9. Stata jwdid, estat group -- an independent second reference that differentiates analytically -- agrees with our three SEs to all 16 committed digits, so R's default is the outlier and the mechanism is triangulated rather than merely plausible. The committed golden keeps the marginaleffects default, because that is the number a user running the canonical reference actually sees. The att_etwfe* rows deliberately do NOT take the same nested-K treatment: sp.etwfe's simple-ATT branch already agrees with Stata jwdid, estat simple to 7e-15, and applying fe_dof_not_nested there would scale its SE by 1.001 and move it 1e-3 away from both references. Measured, not assumed -- the two branches carry different explicit design column counts, so the same CR1 factor needs a different K."
+    "aggregation_note": "att_etwfe uses the R etwfe default no-ivar fixed-effect structure (StatsPAI panel=False) and sp.etwfe_emfx(weighting='treated'), which averages cohort-time marginal effects over treated post-period observations like etwfe::emfx(type='simple'). Point estimates and clustered delta-method SEs match the R reference. The att_group_* rows are the per-cohort ATTs from the same fits, matching etwfe::emfx(type='group'). The never-treated rows compare against R etwfe(cgroup='never') with etwfe's default cohort + period fixed effects, the design sp.etwfe(cgroup='nevertreated') fits since 1.30.0 (through 1.29 it absorbed unit effects and the R call set ivar=countyreal). Stata jwdid is run with ivar(), which absorbs unit effects nested in the cluster and so leaves them out of K: its simple-ATT SEs are sqrt((N-17)/(N-20)) = 1.000605 below ours and R's on both control groups (observed 6.06e-4), inside the 1e-3 budget; dropping ivar() reproduces our SEs to 3e-7 but moves jwdid's estat point estimates by 1e-6, so the do-file keeps ivar(). The per-cohort never rows come from sp.wooldridge_did, which does absorb unit effects, and are compared with etwfe(ivar=countyreal).",
+    "se_convention_note": "Both sides now count the same K in the CR1 finite-sample factor: unit effects are nested in the countyreal cluster and dropped, the period effects are not and are counted, which is fixest's ssc(fixef.K='nested') and reghdfe's default (StatsPAI: did._core.fe_dof_not_nested). Through 1.26.0 sp.wooldridge_did counted only the explicit design columns, which put these SE rows near 8e-4 relative; they are now 1.3e-8 to 5.5e-6. That entire residual is R's, not ours: marginaleffects differentiates the emfx aggregation numerically with a forward difference, and re-running emfx(type='group', numderiv='richardson') moves R by exactly the observed gap (1.31e-8 / 5.48e-6 / 2.30e-6 for g=2004/2006/2007) onto 0.0117881770227968 / 0.0131899740310652 / 0.0138580376110556 -- which our analytic delta-method SEs reproduce to 2.2e-10 / 2.5e-9 / 1.3e-9. Stata jwdid, estat group -- an independent second reference that differentiates analytically -- agrees with our three SEs to all 16 committed digits, so R's default is the outlier and the mechanism is triangulated rather than merely plausible. The committed golden keeps the marginaleffects default, because that is the number a user running the canonical reference actually sees. The att_etwfe* rows deliberately do NOT take the same nested-K treatment: they follow R etwfe's default design, whose CR1 factor counts the cohort levels (fixest's default), and match R to ~1e-6; the 6.06e-4 gap to Stata jwdid is that K difference, reconstructed exactly above."
   }
 }

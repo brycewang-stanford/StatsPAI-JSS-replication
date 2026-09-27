@@ -33,10 +33,12 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 
-from .._aliases import accepts_aliases
+from .._aliases import accepts_aliases, accepts_formula_first
 from .._result_serialize import ResultProtocolMixin
 from ..core.results import EconometricResults
 from ..exceptions import AssumptionWarning, DataInsufficient, MethodIncompatibility
+from ._cre import fit_cre
+from ._ssc import SSCInference, panel_ssc_inference, resolve_ssc
 
 _PANEL_ALTERNATIVES = ["sp.panel", "sp.panel_compare", "sp.feols"]
 
@@ -537,6 +539,7 @@ _CRE_METHODS = {"mundlak", "chamberlain"}
 # ======================================================================
 
 
+@accepts_aliases(id="entity")
 def balance_panel(
     data: pd.DataFrame,
     entity: str,
@@ -606,6 +609,7 @@ def panel(
     wild_reps: int = 999,
     wild_weight_type: str = "rademacher",
     seed: Optional[int] = None,
+    ssc: Optional[str] = None,
 ) -> PanelResults:
     """Public ``sp.panel`` entry point — see ``_dispatch_panel_impl``
     for the full docstring on methods and parameters.
@@ -639,6 +643,7 @@ def panel(
         wild_reps=wild_reps,
         wild_weight_type=wild_weight_type,
         seed=seed,
+        ssc=ssc,
     )
     try:
         from ..output._lineage import attach_provenance as _attach_prov
@@ -663,6 +668,7 @@ def panel(
                 "conley_lat": conley_lat,
                 "conley_lon": conley_lon,
                 "conley_cutoff": conley_cutoff,
+                "ssc": ssc,
             },
             data=data,
             overwrite=False,
@@ -695,6 +701,7 @@ def _dispatch_panel_impl(
     wild_reps: int = 999,
     wild_weight_type: str = "rademacher",
     seed: Optional[int] = None,
+    ssc: Optional[str] = None,
 ) -> PanelResults:
     """
     Unified panel regression with Stata-style syntax.
@@ -735,10 +742,12 @@ def _dispatch_panel_impl(
         Standard errors: ``'nonrobust'``, ``'robust'`` (HC1), ``'kernel'``,
         ``'driscoll-kraay'``.
     cluster : str, optional
-        Cluster variable: ``'entity'``, ``'time'``, or ``'twoway'``
-        (two-way clustering by entity and time).
+        Cluster variable: ``'entity'``, ``'time'``, ``'twoway'`` (two-way
+        clustering by entity and time), or the name of any column.
     weights : str, optional
-        Weight variable name.
+        Analytic-weight column (WLS). Supported for ``'fe'``, ``'twoway'``
+        and ``'pooled'``, where it matches ``sp.feols(weights=)``; other
+        methods raise ``MethodIncompatibility``.
     alpha : float, default 0.05
         Significance level.
     balance : bool, default False
@@ -750,6 +759,18 @@ def _dispatch_panel_impl(
         GMM instrument lag range (for ``'ab'``/``'system'``).
     twostep : bool, default False
         Two-step GMM (for ``'ab'``/``'system'``).
+    ssc : {'stata', 'fixest'}, optional
+        Small-sample convention for the standard errors. By default the
+        linearmodels scaling is kept. ``'stata'`` reproduces the command
+        each method corresponds to -- ``xtreg, fe`` / ``xtreg ... i.t, fe``
+        / ``regress`` / ``regress D.y D.x, nocons`` / ``xtreg, re`` /
+        ``xtreg, be`` -- including ``G/(G-1)*(N-1)/(N-K)`` for clusters,
+        t(G-1) (z for RE), and Stata's rule that ``vce(robust)`` after
+        ``xtreg`` clusters on the panel variable (``areg`` counting when the
+        cluster does not nest the unit). ``'fixest'`` reproduces R
+        ``fixest`` default ``ssc()`` for ``fe`` / ``twoway`` / ``pooled`` /
+        ``fd``. Coefficients are unchanged. Pinned against Stata 18 and
+        fixest 0.14 in ``tests/reference_parity/test_panel_ssc_stata_parity.py``.
     vce : str, optional
         Extended SE menu on the entity-within design (``method='fe'`` only,
         same canonical keyword as ``sp.regress`` / ``sp.feols``):
@@ -882,6 +903,17 @@ def _dispatch_panel_impl(
     # without touching the linearmodels path.
     _vce_l = vce.lower() if isinstance(vce, str) else None
     _cluster_is_pair = isinstance(cluster, (list, tuple))
+    if ssc is not None and (
+        _vce_l in _PANEL_BR_VCE or _cluster_is_pair or canonical in _GMM_METHODS
+    ):
+        raise _panel_method_error(
+            "ssc= applies to the classical panel SEs; the bias-reduced / "
+            "spatial / wild / two-way menu and dynamic-panel GMM carry their "
+            "own conventions.",
+            diagnostics={"ssc": ssc, "vce": vce, "method": canonical},
+            recovery_hint="Drop ssc=, or drop vce= / use a static method.",
+        )
+    ssc_key = resolve_ssc(ssc, canonical)
     if _vce_l in _PANEL_BR_VCE or _cluster_is_pair:
         return _panel_bias_reduced(
             data=data,
@@ -904,6 +936,30 @@ def _dispatch_panel_impl(
         )
 
     # --- Route to estimator ---
+    # ``weights=`` is honoured only where the weighted estimator has a
+    # reference: the within / two-way / pooled fits are WLS and match
+    # ``sp.feols(weights=)`` / R ``fixest`` exactly. linearmodels would accept
+    # weights for RE / BE / FD / CRE too, but Stata ``xtreg`` rejects them for
+    # RE and there is no reference for the others, so refuse loudly instead of
+    # returning an unweighted fit labelled as weighted.
+    if weights is not None and canonical not in _WEIGHTED_METHODS:
+        raise _panel_method_error(
+            f"sp.panel(method={method!r}) does not support weights=.",
+            diagnostics={"method": canonical, "weights": weights},
+            recovery_hint=(
+                "Use method='fe', 'twoway' or 'pooled' with weights=, or "
+                "sp.feols('y ~ x | id', weights=...)."
+            ),
+        )
+    if canonical in _GMM_METHODS and cluster not in (None, "entity", entity):
+        raise _panel_method_error(
+            f"sp.panel(method={method!r}) clusters by entity only "
+            f"(Windmeijer-corrected, as xtabond2); cluster={cluster!r} "
+            "is not supported.",
+            diagnostics={"method": canonical, "cluster": cluster},
+            recovery_hint="Drop cluster= or pass cluster='entity'.",
+        )
+
     if canonical in _GMM_METHODS:
         return _fit_gmm(
             data=data,
@@ -932,6 +988,7 @@ def _dispatch_panel_impl(
             cluster=cluster,
             weights=weights,
             alpha=alpha,
+            ssc=ssc_key,
         )
     else:
         return _fit_linearmodels(
@@ -946,6 +1003,7 @@ def _dispatch_panel_impl(
             cluster=cluster,
             weights=weights,
             alpha=alpha,
+            ssc=ssc_key,
         )
 
 
@@ -966,6 +1024,7 @@ def _fit_linearmodels(
     cluster: Optional[str],
     weights: Optional[str],
     alpha: float,
+    ssc: Optional[str] = None,
 ) -> PanelResults:
     # linearmodels is a core dependency (see pyproject.toml ``dependencies``);
     # import lazily to keep module-import time low, but do not mask a broken
@@ -982,13 +1041,16 @@ def _fit_linearmodels(
     panel_data = data.set_index([entity, time])
     dep = panel_data[dep_var]
     exog = panel_data[indep_vars]
+    w = None if weights is None else _panel_weights(panel_data, weights)
 
     lm_model: Any
     if method == "twoway":
         # Two-way FE: entity + time effects via PanelOLS
-        lm_model = PanelOLS(dep, exog, entity_effects=True, time_effects=True)
+        lm_model = PanelOLS(
+            dep, exog, entity_effects=True, time_effects=True, weights=w
+        )
     elif method == "fe":
-        lm_model = PanelOLS(dep, exog, entity_effects=True)
+        lm_model = PanelOLS(dep, exog, entity_effects=True, weights=w)
     elif method == "fd":
         lm_model = FirstDifferenceOLS(dep, exog)
     elif method == "re":
@@ -996,7 +1058,7 @@ def _fit_linearmodels(
     elif method == "be":
         lm_model = BetweenOLS(dep, add_constant(exog))
     elif method == "pooled":
-        lm_model = PooledOLS(dep, add_constant(exog))
+        lm_model = PooledOLS(dep, add_constant(exog), weights=w)
     else:
         raise _panel_method_error(
             f"Unknown linearmodels method: {method}",
@@ -1004,10 +1066,50 @@ def _fit_linearmodels(
             recovery_hint="Use the public sp.panel() method aliases.",
         )
 
-    cov_kwargs = _build_cov_kwargs(robust, cluster)
+    if ssc is not None:
+        # The covariance is rebuilt natively below; linearmodels only supplies
+        # the coefficients (and RE's theta), so its SE menu limits do not apply.
+        cov_kwargs: Dict[str, Any] = {"cov_type": "unadjusted"}
+    else:
+        if (
+            method == "fd"
+            and cluster is not None
+            and (
+                cluster in ("time", time, "twoway")
+                or (
+                    cluster not in ("entity", entity)
+                    and cluster in panel_data.columns
+                    and panel_data[cluster].groupby(level=0).nunique().max() > 1
+                )
+            )
+        ):
+            raise _panel_method_error(
+                "method='fd' through linearmodels can only cluster on a "
+                "variable that is constant within each unit.",
+                diagnostics={"method": method, "cluster": cluster},
+                recovery_hint="Pass ssc='stata' (Stata regress D.y D.x, "
+                "vce(cluster ...)) to cluster first differences on time or "
+                "another time-varying variable.",
+            )
+        cov_kwargs = _build_cov_kwargs(robust, cluster, panel_data, entity, time)
     lm_result = lm_model.fit(**cov_kwargs)
+    ssc_inf = None
+    if ssc is not None:
+        ssc_inf = panel_ssc_inference(
+            ssc=ssc,
+            method=method,
+            data=data,
+            dep_var=dep_var,
+            exog=list(indep_vars),
+            entity=entity,
+            time=time,
+            robust=robust,
+            cluster=cluster,
+            weights=weights,
+            lm_result=lm_result,
+        )
 
-    return _convert_lm_result(
+    result = _convert_lm_result(
         lm_result,
         method,
         dep_var,
@@ -1018,18 +1120,69 @@ def _fit_linearmodels(
         robust,
         cluster,
         data,
+        ssc_inf=ssc_inf,
     )
+    result.model_info["weights"] = weights
+    return result
 
 
-def _build_cov_kwargs(robust: str, cluster: Optional[str]) -> Dict[str, Any]:
+_WEIGHTED_METHODS = frozenset({"fe", "twoway", "pooled"})
+
+
+def _panel_weights(panel_data: pd.DataFrame, weights: str) -> pd.Series:
+    """Validated analytic weights aligned with ``panel_data``."""
+    if weights not in panel_data.columns:
+        raise _panel_method_error(
+            f"weights column {weights!r} not found in data.",
+            diagnostics={"weights": weights},
+            recovery_hint="Pass the name of a numeric column.",
+        )
+    w = pd.to_numeric(panel_data[weights], errors="coerce").astype(float)
+    if not np.all(np.isfinite(w.to_numpy())) or (w <= 0).any():
+        raise _panel_method_error(
+            f"weights column {weights!r} must be finite and strictly positive.",
+            diagnostics={"weights": weights, "n_bad": int((~(w > 0)).sum())},
+            recovery_hint="Drop rows with missing or non-positive weights first.",
+        )
+    return w
+
+
+def _build_cov_kwargs(
+    robust: str,
+    cluster: Optional[str],
+    panel_data: Optional[pd.DataFrame] = None,
+    entity: Optional[str] = None,
+    time: Optional[str] = None,
+) -> Dict[str, Any]:
     if cluster == "twoway":
         return {"cov_type": "clustered", "cluster_entity": True, "cluster_time": True}
-    elif cluster == "entity":
+    elif cluster == "entity" or (entity is not None and cluster == entity):
         return {"cov_type": "clustered", "cluster_entity": True}
-    elif cluster == "time":
+    elif cluster == "time" or (time is not None and cluster == time):
         return {"cov_type": "clustered", "cluster_time": True}
     elif cluster:
-        return {"cov_type": "clustered", "cluster_entity": True}
+        # A named column: cluster on it. (Before 1.32 any other name silently
+        # clustered by entity while the result reported the requested column.)
+        if panel_data is None or cluster not in panel_data.columns:
+            raise _panel_method_error(
+                f"cluster column {cluster!r} not found in data.",
+                diagnostics={"cluster": cluster},
+                recovery_hint=(
+                    "Pass 'entity', 'time', 'twoway' or the name of a column."
+                ),
+            )
+        col = panel_data[cluster]
+        if col.isna().any():
+            raise _panel_method_error(
+                f"cluster column {cluster!r} has missing values.",
+                diagnostics={"cluster": cluster, "n_missing": int(col.isna().sum())},
+                recovery_hint="Drop rows with a missing cluster id first.",
+            )
+        codes = pd.factorize(col)[0]
+        return {
+            "cov_type": "clustered",
+            "clusters": pd.DataFrame({cluster: codes}, index=panel_data.index),
+        }
     elif robust == "robust":
         return {"cov_type": "robust"}
     elif robust == "kernel" or robust == "driscoll-kraay":
@@ -1059,18 +1212,20 @@ def _binding_n_clusters(
     cluster-robust SE was requested.
 
     Mirrors :func:`_build_cov_kwargs`: ``"time"`` clusters by period,
-    ``"twoway"`` is bounded by the smaller dimension, and every other truthy
-    value (``"entity"`` or a named column) clusters by entity.
+    ``"twoway"`` is bounded by the smaller dimension, ``"entity"`` clusters
+    by entity and any other column name clusters on that column.
     """
     if not cluster:
         return None
     n_entity = int(data[entity].nunique())
     n_time = int(data[time].nunique())
-    if cluster == "time":
+    if cluster == "time" or cluster == time:
         return n_time
     if cluster == "twoway":
         return min(n_entity, n_time)
-    return n_entity
+    if cluster in ("entity", entity) or cluster not in data.columns:
+        return n_entity
+    return int(data[cluster].nunique())
 
 
 def _maybe_warn_few_clusters(n_clusters: int, cluster: Optional[str]) -> None:
@@ -1111,11 +1266,24 @@ def _convert_lm_result(
     robust: str,
     cluster: Optional[str],
     raw_data: pd.DataFrame,
+    ssc_inf: Optional[SSCInference] = None,
 ) -> PanelResults:
     params = lm_result.params
-    std_errors = lm_result.std_errors
+    if ssc_inf is None:
+        std_errors = lm_result.std_errors
+        vcov = pd.DataFrame(
+            np.asarray(lm_result.cov, dtype=float),
+            index=params.index,
+            columns=params.index,
+        )
+    else:
+        vcov = ssc_inf.vcov
+        std_errors = pd.Series(
+            np.sqrt(np.clip(np.diag(vcov.to_numpy()), 0.0, None)),
+            index=params.index,
+        )
 
-    model_info = {
+    model_info: Dict[str, Any] = {
         "model_type": _METHOD_NAMES.get(method, method),
         "method": method,
         "robust": robust,
@@ -1126,6 +1294,11 @@ def _convert_lm_result(
     # machine-readable (``result.violations()``), and warn loudly at fit time
     # when cluster-robust SEs rest on too few clusters to be reliable.
     n_clusters = _binding_n_clusters(cluster, entity, time, raw_data)
+    if ssc_inf is not None:
+        model_info["ssc"] = ssc_inf.convention
+        model_info["ssc_reference"] = ssc_inf.reference
+        model_info["vce_type"] = ssc_inf.vce
+        n_clusters = ssc_inf.n_clusters
     if n_clusters is not None:
         model_info["n_clusters"] = n_clusters
         _maybe_warn_few_clusters(n_clusters, cluster)
@@ -1144,7 +1317,13 @@ def _convert_lm_result(
         "dependent_var": dep_var,
         "fitted_values": lm_result.fitted_values.values.ravel(),
         "residuals": lm_result.resids.values.ravel(),
+        "vcov": vcov,
     }
+    if ssc_inf is not None:
+        if ssc_inf.df_inference is None:
+            data_info["inference"] = "z"
+        else:
+            data_info["df_inference"] = ssc_inf.df_inference
 
     diagnostics = {
         "R-squared": float(lm_result.rsquared),
@@ -1412,6 +1591,7 @@ def _panel_bias_reduced(
         ),
     }
 
+    model_info["alpha"] = alpha
     res = PanelResults(
         params=params,
         std_errors=std_errors,
@@ -1459,6 +1639,7 @@ def _fit_cre(
     cluster: Optional[str],
     weights: Optional[str],
     alpha: float,
+    ssc: Optional[str] = None,
 ) -> PanelResults:
     """
     Correlated Random Effects: adds group means to a RE model.
@@ -1469,7 +1650,6 @@ def _fit_cre(
     """
     # linearmodels is a core dependency (see pyproject.toml ``dependencies``);
     # import lazily here without masking a broken install as optional.
-    from linearmodels.panel import RandomEffects
     from statsmodels.tools import add_constant
 
     df = data.copy()
@@ -1505,9 +1685,31 @@ def _fit_cre(
     dep = panel_data[dep_var]
     exog = add_constant(panel_data[all_exog])
 
-    lm_model = RandomEffects(dep, exog)
-    cov_kwargs = _build_cov_kwargs(robust, cluster)
-    lm_result = lm_model.fit(**cov_kwargs)
+    cov_kwargs = (
+        {"cov_type": "unadjusted"}
+        if ssc is not None
+        else _build_cov_kwargs(robust, cluster, panel_data, entity, time)
+    )
+    # theta from the fit without the unit means: they add columns but no
+    # rank, and linearmodels' variance components count columns (see _cre).
+    lm_result = fit_cre(
+        dep, exog, [c for c in exog.columns if c.startswith("_mean_")], cov_kwargs
+    )
+    ssc_inf = None
+    if ssc is not None:
+        ssc_inf = panel_ssc_inference(
+            ssc=ssc,
+            method=cre_method,
+            data=df,
+            dep_var=dep_var,
+            exog=list(all_exog),
+            entity=entity,
+            time=time,
+            robust=robust,
+            cluster=cluster,
+            weights=weights,
+            lm_result=lm_result,
+        )
 
     result = _convert_lm_result(
         lm_result,
@@ -1520,6 +1722,7 @@ def _fit_cre(
         robust,
         cluster,
         data,
+        ssc_inf=ssc_inf,
     )
 
     # Test: are the Mundlak terms jointly significant?
@@ -1538,7 +1741,7 @@ def _fit_cre(
                     for i, name in enumerate(lm_result.params.index)
                     if name.startswith("_mean_")
                 ]
-                vcov = lm_result.cov
+                vcov = result.data_info["vcov"]
                 V_sub = vcov.values[np.ix_(mean_idx, mean_idx)]
                 wald = float(mean_coefs @ np.linalg.pinv(V_sub) @ mean_coefs)
                 wald_df = len(mean_coefs)
@@ -1622,7 +1825,7 @@ def _fit_gmm(
 
     method_key = {"difference": "ab", "system": "system", "ah": "ah"}[gmm_method]
 
-    model_info = {
+    model_info: Dict[str, Any] = {
         "model_type": _METHOD_NAMES.get(method_key, gmm_method),
         "method": method_key,
         "robust": "robust" if robust else "nonrobust",
@@ -1657,6 +1860,7 @@ def _fit_gmm(
     if "n_instruments" in mi:
         diagnostics["N instruments"] = mi["n_instruments"]
 
+    model_info["alpha"] = alpha
     return PanelResults(
         params=params,
         std_errors=std_errors,
@@ -1678,7 +1882,8 @@ def _fit_gmm(
 # ======================================================================
 
 
-@accepts_aliases(vce="robust")
+@accepts_formula_first()
+@accepts_aliases(id="entity", vce="robust")
 def panel_compare(
     data: pd.DataFrame,
     formula: str,

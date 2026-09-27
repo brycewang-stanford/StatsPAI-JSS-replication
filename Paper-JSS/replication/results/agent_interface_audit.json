@@ -12,7 +12,7 @@
       "rambachan2023more"
     ],
     "estimate": -0.03297651380965374,
-    "honest_max_rejecting_M": 0.007441185915807715,
+    "honest_max_rejecting_M": 0.007458338247963724,
     "missing_suggested_functions": [
       "sp.sensitivity_rr",
       "sp.bacon_decomposition"
@@ -41,7 +41,7 @@
     "stale_handle_hint": "unknown result_id (never cached, or evicted long ago, or the server restarted); re-fit the estimator with as_handle=true.",
     "stale_handle_is_error": true,
     "stale_handle_reason": "unknown",
-    "tool_count": 559,
+    "tool_count": 579,
     "unknown_bibtex_keys": []
   },
   "boundary_files_checked": [
@@ -65,14 +65,14 @@
     "Paper-JSS/manuscript/sections/07-agent-eval.tex"
   ],
   "schema_quality": {
-    "curated_agent_card": 411,
-    "parameter_total": 9436,
-    "parameter_with_default": 3348,
-    "parameter_with_description": 9436,
-    "parameter_with_enum": 468,
-    "public_surface": 1220,
-    "with_nonempty_description": 1220,
-    "with_typed_parameter": 1188
+    "curated_agent_card": 417,
+    "parameter_total": 9697,
+    "parameter_with_default": 3395,
+    "parameter_with_description": 9697,
+    "parameter_with_enum": 477,
+    "public_surface": 1255,
+    "with_nonempty_description": 1255,
+    "with_typed_parameter": 1221
   },
   "status": "PASS"
 }

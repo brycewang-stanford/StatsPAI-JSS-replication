@@ -326,8 +326,8 @@ REQUIRED_SNIPPETS = {
         "licence-free replication path",
     ],
     "Paper-JSS/manuscript/sections/05-parity-compact.tex": [
-        "(together \\RegistryCertifiedValidated{})",
-        "\\RegistryAutoUnbacked{} stable auto-registered\nsymbols are API-stable but not parity-backed",
+        "are earned in exactly two ways",
+        "\\RegistryAutoUnbacked{} stable auto-registered symbols are\nAPI-stable but not parity-backed",
         "stochastic T3 equivalence claim",
         "\\RParityPassCount{} receive a pass-type verdict",
         "two\nnon-T2 Track A rows",
@@ -365,7 +365,7 @@ REQUIRED_SNIPPETS = {
         "before any behavioural claim is made",
     ],
     "Paper-JSS/manuscript/tables/track_a_cross_language_snapshot.tex": [
-        "T3; seed-replicated",
+        "one draw (S); T3 by seed study",
         "Basque replica",
         "mpdta} replica",
     ],
@@ -527,6 +527,55 @@ def _claim_counts() -> dict[str, int]:
     }
 
 
+#: generated_claims.tex macro behind each registry-census count. The
+#: documents this lint checks quote the census of the JSS snapshot -- the
+#: release the manuscript describes -- so they are held to the manuscript's
+#: generated macros. Whether those macros still equal the live registry is
+#: a separate gate (`generate_manuscript_claims.py --check`, part of `make
+#: verify`), which passes on the release and is expected to drift on `main`
+#: while the paper is under review; this lint no longer reports that drift
+#: once per document.
+_SNAPSHOT_MACROS = {
+    "registry": "RegistryTotal",
+    "certified_validated": "RegistryCertifiedValidated",
+    "certified": "RegistryCertified",
+    "validated": "RegistryValidated",
+    "api_stable": "RegistryApiStable",
+    "experimental": "RegistryExperimental",
+    "unbacked_auto": "RegistryAutoUnbacked",
+}
+
+
+def _snapshot_counts(live: dict[str, int]) -> tuple[dict[str, int], str]:
+    claims = ROOT / "Paper-JSS" / "manuscript" / "generated_claims.tex"
+    if not claims.exists():
+        return live, "live registry"
+    macros = dict(
+        re.findall(
+            r"\\newcommand\{\\(\w+)\}\{(.*)\}\s*$",
+            claims.read_text(encoding="utf-8"),
+            flags=re.M,
+        )
+    )
+    counts = dict(live)
+    for key, macro in _SNAPSHOT_MACROS.items():
+        if macro in macros:
+            counts[key] = int(macros[macro].replace("{,}", ""))
+    # The evidence-file count is not a manuscript macro; the snapshot's
+    # committed full audit records it.
+    full_audit = ROOT / "Paper-JSS" / "replication" / "results" / "jss_full_audit.json"
+    if full_audit.exists():
+        unique = (
+            json.loads(full_audit.read_text(encoding="utf-8"))
+            .get("summary", {})
+            .get("stability_evidence_paths", {})
+            .get("unique")
+        )
+        if isinstance(unique, int):
+            counts["registry_evidence_unique"] = unique
+    return counts, "manuscript snapshot (generated_claims.tex, jss_full_audit.json)"
+
+
 def _dynamic_required_snippets(counts: dict[str, int]) -> dict[str, list[str]]:
     certified = counts["certified_validated"]
     unbacked_auto = counts["unbacked_auto"]
@@ -568,7 +617,7 @@ def _dynamic_required_snippets(counts: dict[str, int]) -> dict[str, list[str]]:
             "without expanding the compact PDF",
         ],
         "Paper-JSS/manuscript/sections/05-parity-compact.tex": [
-            "(together \\RegistryCertifiedValidated{})",
+            "are earned in exactly two ways",
             "the remaining \\RegistryAutoUnbacked{} stable auto-registered symbols are API-stable but not parity-backed",
         ],
         "Paper-JSS/manuscript/sections/09-discussion-compact.tex": [
@@ -724,7 +773,7 @@ def main() -> int:
     failures: list[str] = []
     checked: list[str] = []
     protected_joss_files: list[str] = []
-    counts = _claim_counts()
+    counts, count_source = _snapshot_counts(_claim_counts())
     rewrites: list[str] = []
     required_snippets = _merge_required_snippets(
         REQUIRED_SNIPPETS,
@@ -786,6 +835,7 @@ def main() -> int:
         "generated_at_unix": _generated_at_unix(),
         "status": status,
         "claim_counts": counts,
+        "claim_count_source": count_source,
         "checked_files": checked,
         "protected_joss_files": protected_joss_files,
         "historical_drift_files": drift_checked,
