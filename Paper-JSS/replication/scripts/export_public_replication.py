@@ -121,7 +121,7 @@ paper.
 | Path | What it is |
 | --- | --- |
 | `Paper-JSS/manuscript/` | LaTeX source and PDF of the manuscript |
-| `Paper-JSS/replication/reproduce.py` | single-script, three-tier replication driver |
+{preprint_row}| `Paper-JSS/replication/reproduce.py` | single-script, three-tier replication driver |
 | `Paper-JSS/replication/scripts/` | worked examples, figure/table generators, audits |
 | `Paper-JSS/replication/results/` | committed outputs, incl. the Tier-1 transcript |
 | `Paper-JSS/README.md` | full reviewer guide: every tier, audit, and artifact |
@@ -231,6 +231,31 @@ def _scrub(path: Path) -> int:
     return 1
 
 
+#: The public copy of the arXiv edition: the latest archived arXiv package
+#: under Paper-JSS/submissions/, verified against its SHA256SUMS.
+PREPRINT_REL = "preprint/statspai-arxiv.pdf"
+
+
+def _archived_preprint() -> Path | None:
+    candidates = sorted(PAPER_ROOT.glob("submissions/*-arxiv*/statspai-arxiv.pdf"))
+    if not candidates:
+        return None
+    pdf = candidates[-1]
+    sums = pdf.parent / "SHA256SUMS"
+    if not sums.is_file():
+        sys.exit(f"FAIL -- {pdf.parent} has no SHA256SUMS")
+    expected = next(
+        (line.split()[0] for line in sums.read_text(encoding="utf-8").splitlines()
+         if line.strip().endswith(pdf.name)),
+        None,
+    )
+    import hashlib  # noqa: PLC0415
+
+    if hashlib.sha256(pdf.read_bytes()).hexdigest() != expected:
+        sys.exit(f"FAIL -- {pdf} does not match its SHA256SUMS")
+    return pdf
+
+
 def export(out: Path, rebuild: bool) -> None:
     if rebuild or not ARCHIVE.is_file():
         subprocess.run([sys.executable,
@@ -251,7 +276,18 @@ def export(out: Path, rebuild: bool) -> None:
     scrubbed = sum(_scrub(p) for p in out.rglob("*") if p.is_file() and ".git" not in p.parts)
     version = release_version()
     prov = _provenance(version)
-    (out / "README.md").write_text(README.format(version=version, **prov), encoding="utf-8")
+    preprint = _archived_preprint()
+    preprint_row = ""
+    if preprint is not None:
+        (out / PREPRINT_REL).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(preprint, out / PREPRINT_REL)
+        preprint_row = (
+            f"| `{PREPRINT_REL}` | arXiv edition of the manuscript "
+            f"(archived as `Paper-JSS/{preprint.parent.relative_to(PAPER_ROOT).as_posix()}/`) |\n"
+        )
+    (out / "README.md").write_text(
+        README.format(version=version, preprint_row=preprint_row, **prov), encoding="utf-8"
+    )
     (out / ".gitignore").write_text(GITIGNORE, encoding="utf-8")
     (out / MARKER_REL).write_text(MARKER_TEXT, encoding="utf-8")
 
