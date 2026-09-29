@@ -190,7 +190,7 @@ Tier-1 transcript
 (every step passed; Tier 1 needs no R or Stata: it recomputes the examples,
 listings and census and re-tabulates the frozen parity, coverage and timing
 experiments; `RESULT: OK -- all required steps reproduced.`), and the citation verifier
-(`cited=120`, `missing=0`). The active PDF is 53 pages. The full audit reports 35 original-data parity rows, 89 Track A modules (85 with a Stata reference), Track B nominal coverage in the 0.934--1.000 range,
+(`cited=120`, `missing=0`). The active PDF is 54 pages. The full audit reports 35 original-data parity rows, 89 Track A modules (85 with a Stata reference), Track B nominal coverage in the 0.934--1.000 range,
 four Track C benchmark modules, the built tree at package metadata
 version 1.32.0 / source `__version__` 1.32.0, claim-lint PASS across 37
 submission-facing files plus 10 historical drift files, with the archived

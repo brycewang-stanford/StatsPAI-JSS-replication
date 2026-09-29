@@ -94,10 +94,10 @@ Archive evidence paths: 40/40 resolved
 
 ### archive_boundary
 - `jss_upload_blockers`: `0`
-- `archive_file_count`: `2961`
-- `archive_size_mib`: `27.07`
+- `archive_file_count`: `2964`
+- `archive_size_mib`: `27.13`
 - `data_provenance_status`: `PASS`
-- `data_provenance_scoped_data_files`: `876`
+- `data_provenance_scoped_data_files`: `877`
 - `data_provenance_csv_files`: `357`
 - `data_provenance_packaged_public_datasets`: `9`
 - `data_provenance_public_original_extracts`: `7`
@@ -117,31 +117,31 @@ Archive evidence paths: 40/40 resolved
 
 ### software_installability
 - `formal_checks`: `23`
-- `page_count`: `53`
-- `pdf_text_chars`: `156849`
+- `page_count`: `54`
+- `pdf_text_chars`: `160008`
 - `pdf_boundary_snippets`: `18`
 - `missing_pdf_boundary_snippets`: `[]`
 - `pdf_stale_prose_hits`: `[]`
 - `pdf_render_status`: `PASS`
 - `pdf_rendered_pages`: `4`
-- `pdf_render_sampled_pages`: `[1, 2, 27, 53]`
-- `pdf_full_document_rendered_pages`: `53`
+- `pdf_render_sampled_pages`: `[1, 2, 27, 54]`
+- `pdf_full_document_rendered_pages`: `54`
 - `pdf_full_document_failures`: `0`
 - `pdf_render_min_width`: `910`
 - `pdf_render_min_height`: `1287`
-- `pdf_render_min_ink_ratio`: `0.058779`
-- `pdf_render_max_dark_ratio`: `0.022155`
+- `pdf_render_min_ink_ratio`: `0.027374`
+- `pdf_render_max_dark_ratio`: `0.02218`
 - `pdf_render_failures`: `0`
 - `manual_visual_spot_check_required`: `True`
 - `manual_visual_spot_check_status`: `PENDING_MANUAL_REVIEW`
 - `machine_render_not_human_review`: `True`
 - `pdf_visual_protocol_status`: `PASS`
-- `pdf_visual_protocol_page_count`: `53`
+- `pdf_visual_protocol_page_count`: `54`
 - `pdf_visual_protocol_checklist_items`: `12`
-- `pdf_visual_protocol_page_inventory_count`: `53`
-- `pdf_visual_protocol_page_inventory_text_pages`: `53`
-- `pdf_visual_protocol_page_inventory_min_text_chars`: `2022`
-- `pdf_visual_protocol_page_inventory_float_markers`: `83`
+- `pdf_visual_protocol_page_inventory_count`: `54`
+- `pdf_visual_protocol_page_inventory_text_pages`: `54`
+- `pdf_visual_protocol_page_inventory_min_text_chars`: `795`
+- `pdf_visual_protocol_page_inventory_float_markers`: `75`
 - `pdf_visual_protocol_manual_status`: `PENDING_MANUAL_REVIEW`
 - `pdf_visual_protocol_claimed_manual_acceptance`: `False`
 - `pdf_visual_protocol_recorded_by_protocol`: `False`
@@ -161,13 +161,13 @@ Archive evidence paths: 40/40 resolved
 - `protocol_claimed_behavioural_result`: `False`
 
 ### limitations_crosswalk
-- `pdf_pages`: `53`
+- `pdf_pages`: `54`
 - `documented_nonblocking_risk_count`: `6`
 - `documented_nonblocking_risk_ids`: `['final_tagged_release_cut_pending', 'registry_breadth_denominator_disclosed', 'stata_tier3_requires_license', 'methodological_t4_row_disclosed', 'compact_text_may_feel_terse', 'agent_interface_value_boundary']`
 - `pdf_visual_protocol_status`: `PASS`
 - `pdf_visual_protocol_checklist_items`: `12`
-- `pdf_visual_protocol_page_inventory_count`: `53`
-- `pdf_visual_protocol_page_inventory_text_pages`: `53`
+- `pdf_visual_protocol_page_inventory_count`: `54`
+- `pdf_visual_protocol_page_inventory_text_pages`: `54`
 - `pdf_visual_protocol_manual_status`: `PENDING_MANUAL_REVIEW`
 - `symbols_with_limitations`: `21`
 - `certified_validated_symbols`: `558`
@@ -188,14 +188,14 @@ Archive evidence paths: 40/40 resolved
 - `final_tagged_cut_pending_items`: `2`
 - `final_tagged_cut_identity_ok`: `True`
 - `final_tagged_cut_check_ids`: `['clean_combined_worktree', 'paper_paths_finalized']`
-- `final_tagged_cut_breakdown`: `{'generated_status_counts': {'M': 30}, 'hand_edited_status_counts': {'M': 2}, 'package_code_paths': 0, 'package_docs_paths': 0, 'paper_manuscript_paths': 0, 'paper_other_paths': 0, 'paper_replication_paths': 2, 'validation_test_paths': 0}`
+- `final_tagged_cut_breakdown`: `{'generated_status_counts': {'M': 20}, 'hand_edited_status_counts': {'M': 5}, 'package_code_paths': 0, 'package_docs_paths': 0, 'paper_manuscript_paths': 0, 'paper_other_paths': 3, 'paper_replication_paths': 2, 'validation_test_paths': 0}`
 - `final_tagged_cut_runbook_step_count`: `5`
 - `strict_release_command`: `python Paper-JSS/replication/scripts/source_snapshot_manifest.py --strict-release`
 - `documented_nonblocking_risk_identity_ok`: `True`
 - `documented_nonblocking_risk_count`: `6`
 - `documented_nonblocking_risk_ids`: `['final_tagged_release_cut_pending', 'registry_breadth_denominator_disclosed', 'stata_tier3_requires_license', 'methodological_t4_row_disclosed', 'compact_text_may_feel_terse', 'agent_interface_value_boundary']`
 - `source_release_pending_paths`: `0`
-- `paper_release_pending_paths`: `2`
+- `paper_release_pending_paths`: `5`
 - `ready_for_final_publication`: `False`
 
 ## Final Tagged-Cut Runbook
@@ -214,11 +214,11 @@ Strict release guard: `python Paper-JSS/replication/scripts/source_snapshot_mani
 
 | Risk | Evidence | Next action |
 |---|---|---|
-| `final_tagged_release_cut_pending` | 2 final-release pending paths; source snapshot remains explicitly labelled | commit or intentionally exclude all hand-edited source and Paper-JSS paths; move accepted [Unreleased] changes into a dated CHANGELOG release entry; align pyproject.toml, src/statspai/__init__.py, and schema bundle versions; tag the exact package-source commit used by the JSS archive; re-run make submission-ready after the tag so manifests record a clean release snapshot |
+| `final_tagged_release_cut_pending` | 5 final-release pending paths; source snapshot remains explicitly labelled | commit or intentionally exclude all hand-edited source and Paper-JSS paths; move accepted [Unreleased] changes into a dated CHANGELOG release entry; align pyproject.toml, src/statspai/__init__.py, and schema bundle versions; tag the exact package-source commit used by the JSS archive; re-run make submission-ready after the tag so manifests record a clean release snapshot |
 | `registry_breadth_denominator_disclosed` | 558/1255 registry symbols are certified/validated; missing evidence paths=0 | Keep the validated-core framing and do not promote API-stable breadth without attached evidence notes. |
 | `stata_tier3_requires_license` | 85/85 frozen Stata modules audited without live Stata; licensed rerun protocol packaged | Keep Tier 3 optional and keep the Stata license boundary explicit; use stata_rerun_protocol.md for any licensed reviewer rerun and treat missing Stata as an optional-runtime skip, not a JSS upload blocker. |
 | `methodological_t4_row_disclosed` | 1/1 methodological/T4 rows classified; uncategorized=0 | Keep the T4 row as a disclosure unless a deterministic T2 bridge is added. |
-| `compact_text_may_feel_terse` | active PDF has 53 pages; PDF-visible evidence-map/checklist routing present; packaged PDF visual-check protocol present; page inventory covers 53/53 pages | Keep additional reviewer evidence in replication/results and reviewer_evidence_map rather than expanding main.pdf; perform the final full-document human visual spot-check using pdf_visual_check_protocol.md and the PDF render audit before JSS upload. |
+| `compact_text_may_feel_terse` | active PDF has 54 pages; PDF-visible evidence-map routing present; packaged PDF visual-check protocol present; page inventory covers 54/54 pages | Keep additional reviewer evidence in replication/results and reviewer_evidence_map rather than expanding main.pdf; perform the final full-document human visual spot-check using pdf_visual_check_protocol.md and the PDF render audit before JSS upload. |
 | `agent_interface_value_boundary` | 1255 schemas, 9697 documented parameters, and 579 trace tools audited without behavioural benchmark claims | Keep the agent section mechanical and contractual unless a behavioural benchmark is actually run and packaged; keep the deferred benchmark protocol labelled as protocol rather than a completed behavioural result. |
 
 Failures: none

@@ -17,32 +17,34 @@ data inspection) remain
 registered with explicit stability and validation
 metadata. Method families use dispatchers
 (\code{sp.synth(method=...)}, \code{sp.dml(model=...)}). Reference
-parity is attempted before a validated claim is broadened; assumption
-violations raise typed exceptions or warnings and record diagnostics;
-output-changing changes go through the changelog and
-\code{MIGRATION.md}; and every public function is discoverable through
-the registry that serves both help functions and agent schemas.
+parity is attempted before a validated claim is broadened. Assumption
+violations raise typed exceptions or warnings and record diagnostics.
+Changes that alter output go through the changelog and
+\code{MIGRATION.md}. Every public function is discoverable through the
+registry, which serves both the help functions and the agent schemas.
 
 \subsection{Why an integration package?}\label{sec:why-integration}
 
 A reasonable alternative is to compose \pkg{statsmodels},
 \pkg{linearmodels}, \pkg{DoubleML}, \pkg{EconML}, \pkg{DoWhy}, and
-method-specific \proglang{R} or \proglang{Stata} bridges directly,
-which is often right for a single specialized model. The friction
-appears when an applied project moves across identification designs:
-diagnostics, citations, validation status, error handling, export
-formats, and agent schemas no longer share one contract. \statspai{}
-therefore treats wrapping as insufficient unless a method enters the
-common registry, result-object surface, typed-error envelope, and
-evidence ledger. Specialized packages remain the reference
-implementations; the contribution here is to make cross-family handoffs
-auditable and reproducible. The package is organized by identification
-layer rather than by the historical boundaries of \proglang{R} and
-\proglang{Stata} packages -- each layer reports its own design
-diagnostics (balance and overlap, first-stage strength, cohort support
-and event-study paths, bandwidth and density checks, donor weights and
-placebos, cross-fit diagnostics) -- and the common point is not shared
-identification assumptions but a shared post-estimation contract.
+method-specific \proglang{R} or \proglang{Stata} bridges directly.
+For a single specialized model that is often the right choice. The
+friction appears when an applied project moves across identification
+designs, because diagnostics, citations, validation status, error
+handling, export formats, and agent schemas then stop sharing one
+contract. \statspai{} therefore does not count a wrapper as integrated
+until the method enters the common registry, result-object surface,
+typed-error envelope, and evidence ledger. Specialized packages remain the reference
+implementations. The contribution here is to make cross-family handoffs
+auditable and reproducible.
+
+The package is organized by identification layer, not by the historical
+boundaries of \proglang{R} and \proglang{Stata} packages. Each layer
+reports its own design diagnostics. These include balance and overlap,
+first-stage strength, cohort support and event-study paths, bandwidth
+and density checks, donor weights and placebos, and cross-fit
+diagnostics. What the layers share is a post-estimation contract. They
+do not share identification assumptions.
 
 \subsection{Registry and discovery layer}\label{sec:registry}
 
@@ -59,14 +61,14 @@ and typical sample-size guidance. The registry powers
 exported public callables are registered and that validated/certified
 entries expose their evidence status.
 
-The validation tier is therefore not a paper-only artifact: it is
-queryable from the running software for \emph{every} registered
-function. \code{sp.help()} prints a per-tier census and points the user
-to \code{sp.list\_functions(validation\_status="certified")} for the
-validated core, while \code{sp.describe\_function(name)} prints a
-\code{Stability}/\code{Validation} header with the attached evidence
-notes before the description, so a user or agent landing on an
-\code{api\_stable} or \code{experimental} helper sees its trust tier
+The validation tier is therefore not a paper-only artifact. It can be
+queried from the running software for \emph{every} registered function.
+\code{sp.help()} prints a per-tier census and points the user to
+\code{sp.list\_functions(validation\_status="certified")} for the
+validated core. \code{sp.describe\_function(name)} prints a
+\code{Stability}/\code{Validation} header, with the attached evidence
+notes, before the description. A user or agent who lands on an
+\code{api\_stable} or \code{experimental} helper thus sees its trust tier
 before relying on its output.
 
 \begin{lstlisting}[caption={The validation tier is visible through the
@@ -109,31 +111,31 @@ citation, and export calls do not change downstream.
 The same uniformity extends to inference. Across the regression family
 (\code{regress}, \code{feols}, \code{ivreg}, \code{panel},
 \code{hdfe\_ols}), one canonical keyword, \code{vce=}, spells the full
-standard-error menu: classical, heteroskedasticity-robust, one- and
-two-way clustering, bias-reduced CR2/CR3
+standard-error menu. The menu covers classical, heteroskedasticity-robust,
+one- and two-way clustering, bias-reduced CR2/CR3
 \citep{pustejovsky2018small}, the wild cluster bootstrap
 \citep{cameron2008bootstrap, roodman2019fast}, and Conley spatial HAC
-\citep{conley1999estimation}; fixed-effects Poisson and GLM
-additionally expose CR2/CR3 and the restricted score wild bootstrap.
-Each option is pinned to an external reference implementation ---
-\proglang{Stata}'s \code{reghdfe}, \code{boottest}, \code{acreg}, and
-\code{ppmlhdfe} \citep{correia2020fast}, and \proglang{R}'s
-\pkg{clubSandwich} and
-\pkg{sandwich} \citep{zeileis2020sandwich} --- and a coverage matrix in the package's continuous
-integration ratchets the count of natively wired, externally validated
-cells monotonically upward.
+\citep{conley1999estimation}. Fixed-effects Poisson and GLM additionally
+expose CR2/CR3 and the restricted score wild bootstrap. Each option is
+pinned to an external reference implementation. On the \proglang{Stata}
+side these are \code{reghdfe}, \code{boottest}, \code{acreg}, and
+\code{ppmlhdfe} \citep{correia2020fast}, and on the \proglang{R} side
+\pkg{clubSandwich} and \pkg{sandwich} \citep{zeileis2020sandwich}. A
+coverage matrix in the package's continuous integration counts the
+natively wired, externally validated cells, and that count is only
+allowed to go up.
 
 \subsection{Result-object hierarchy}\label{sec:results}
 
 Most estimators return either \code{EconometricResults} or
-\code{CausalResult}; specialized classes must implement the same public
+\code{CausalResult}. Specialized classes must implement the same public
 surface. The standard contract covers summaries, plotting, dictionary
 and JSON payloads, LaTeX/DOCX export, citations, audits, diagnostics,
 and degradation records. This is why a mixed OLS/IV/DML/forest
 table can be passed to \code{sp.regtable} (or its \proglang{R}-style
-alias \code{sp.modelsummary}), and
-why an MCP agent can keep only a result handle rather than copying
-coefficient and covariance arrays between tool calls.
+alias \code{sp.modelsummary}). It is also why an MCP agent can keep only
+a result handle, instead of copying coefficient and covariance arrays
+between tool calls.
 
 \subsection{Performance backbone}\label{sec:perfbackbone}
 
@@ -150,9 +152,9 @@ estimator or a hidden requirement.
 
 Publication output is unified through \code{sp.regtable} and the
 result-level exporters, which render mixed result classes as LaTeX,
-Markdown, HTML, Word, Excel, or JSON-safe agent payloads. The layers combine into a four-stage
-workflow---detect (\code{sp.detect\_design}, \code{sp.preflight}), fit
-(the dispatchers), inspect (\code{summary()}, \code{sp.audit()},
-sensitivity wrappers), and report (\code{sp.regtable}, \code{cite()},
-\code{sp.paper()})---with the same boundaries for human users and MCP
-agents.
+Markdown, HTML, Word, Excel, or JSON-safe agent payloads. The layers
+combine into a four-stage workflow, with the same boundaries for human
+users and MCP agents. The stages are detect (\code{sp.detect\_design},
+\code{sp.preflight}), fit (the dispatchers), inspect (\code{summary()},
+\code{sp.audit()}, sensitivity wrappers), and report
+(\code{sp.regtable}, \code{cite()}, \code{sp.paper()}).

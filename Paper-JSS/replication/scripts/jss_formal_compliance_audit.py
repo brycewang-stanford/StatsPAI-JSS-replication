@@ -41,7 +41,12 @@ RELEASE = _release_version()
 #: version must see, and the affiliation block moved to a 53rd page. The
 #: alternative, cutting half a page of body text, was ruled out by the v2
 #: review ("do not compress further").
-PAGE_CEILING = 53
+#: Raised to 54 on 2026-09-27: the prose pass that removed em-dash splices
+#: and split chained sentences (no claims or numbers changed) lengthened the
+#: body by about a third of a page, which moved the second affiliation
+#: block onto a 54th page. Trimming content to recover it would repeat the
+#: compression the v2 review ruled out.
+PAGE_CEILING = 54
 
 
 HERE = Path(__file__).resolve().parent
@@ -180,12 +185,12 @@ PDF_BOUNDARY_SNIPPETS = (
     "before any behavioural claim",
     "software-interface contribution",
     "named rows and modules",
-    "nine scoped limitation rows",
+    "limitations in their registry entries",
     "calibrated Basque replica",
     "no printed vignette anchor",
     "The unification itself has costs",
     "licence-free replication path",
-    "reviewer evidence map and editor screening checklist",
+    "an evidence map that routes each",
 )
 
 PDF_STALE_PROSE_SNIPPETS = (

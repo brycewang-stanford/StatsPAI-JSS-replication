@@ -6,11 +6,11 @@ fixed effects (\code{sp.fast.feols}), Callaway--Sant'Anna staggered
 DiD (\code{sp.callaway\_santanna}), classical synthetic control
 (\code{sp.synth(method="classic")}), and double machine learning
 (\code{sp.dml(model="plr")}). The goal is not to declare universal
-speed superiority over the reference implementations. It is to
-measure, on identical inputs and tasks, whether the unified
-\proglang{Python} stack imposes a cost on routine work, to identify
-where the reference remains faster, and to make the comparison
-reproducible from the source tree.
+speed superiority over the reference implementations. The study measures,
+on identical inputs and tasks, whether the unified \proglang{Python}
+stack imposes a cost on routine work. It also identifies where the
+reference remains faster, and it makes the comparison reproducible from
+the source tree.
 
 \subsection{Benchmark protocol}
 
@@ -18,20 +18,20 @@ A speed ratio compares two implementations only if both perform the same
 task on the same input, so the protocol fixes both before anything is
 timed. Every input is drawn once, in \proglang{Python}
 (\code{tests/perf/\_data.py}), written as CSV at round-trip precision, and
-read by \emph{both} sides; each side records the SHA-256 of the file it
-read, and the comparator refuses a row whose two sides read different
-bytes or come from different runs. (Seeding \pkg{NumPy} and \proglang{R}
-with the same integer does not give the same data, which is how an
-earlier version of this benchmark compared different samples.) Outside
+read by \emph{both} sides. Each side records the SHA-256 of the file it
+read. The comparator refuses a row whose two sides read different bytes
+or come from different runs. (Seeding \pkg{NumPy} and \proglang{R}
+with the same integer does not give the same data. A benchmark that
+relies on it compares different samples, and ours once did.) Outside
 the timed call each side records its target quantity, so the table can
 show that the two solved the same problem. Both sides run on one thread
 (\pkg{fixest}, \pkg{data.table}, BLAS, and \pkg{Numba} pinned), under one
 run identifier, on one machine (Apple Silicon arm64, 8 physical cores,
-24~GB, macOS~26), with \statspai{} \StatsPAIVersion{}; each result file
+24~GB, macOS~26), with \statspai{} \StatsPAIVersion{}. Each result file
 records the package versions, the source commit, and the 1-minute load
-average at the start. Each timed step starts only after five idle minutes,
-and is discarded and rerun if the load, sampled every 15 seconds, rises
-above 2.5 while it runs. Times are medians over repetitions after a warmup,
+average at the start. Each timed step starts only after five idle
+minutes. The load is sampled every 15 seconds, and a step is discarded
+and rerun if the load rises above 2.5 while it runs. Times are medians over repetitions after a warmup,
 reported with their interquartile range.
 
 % Keep the four task descriptions on one page.
@@ -67,11 +67,12 @@ overhead does not dominate a comparison of milliseconds.
 
 Table~\ref{tab:track-c-perf} reports the largest size of each benchmark
 and Figure~\ref{fig:track-c-loglog} all measured sizes. In every row the
-two sides agree on the target quantity: to \(2\times10^{-14}\) for the
-HDFE coefficient, \(4\times10^{-13}\) for the simple ATT, \(5\times10^{-5}\)
-for the SCM gap (two non-convex solvers landing on the same solution),
-and within a hundredth of a standard error for DML, whose folds are
-drawn independently on each side.
+two sides agree on the target quantity. They agree to \(2\times10^{-14}\)
+for the HDFE coefficient and to \(4\times10^{-13}\) for the simple ATT.
+For the SCM gap they agree to \(5\times10^{-5}\), with two non-convex
+solvers landing on the same solution. For DML, whose folds are drawn
+independently on each side, they agree within a hundredth of a standard
+error.
 
 \input{tables/track_c_perf.tex}
 
@@ -94,44 +95,46 @@ against 0.013), and \pkg{fixest} is \(1.6\times\) faster at \(10^6\)
 (0.074 against 0.120 seconds), with both on one thread.
 \item \textbf{Callaway--Sant'Anna.} \statspai{} is faster at every size,
 by \(6.1\times\) at 5{,}000 observations and \(15.8\times\) at
-125{,}000 (0.028 against 0.443 seconds); the gap widens with size,
-and we have not profiled the reference to say why. The output check caught an error in the previous version of this benchmark:
-its \proglang{R} leg stored the cohort as an integer column, into which
-\pkg{did} cannot write the \code{Inf} it uses for never-treated units,
-so \pkg{did} silently dropped them and used the last cohort as the
+125{,}000 (0.028 against 0.443 seconds). The gap widens with size, and
+we have not profiled the reference to say why. The output check once caught
+an error in this benchmark itself. Its \proglang{R} leg
+stored the cohort as an integer column, into which \pkg{did} cannot
+write the \code{Inf} it uses for never-treated units. \pkg{did}
+therefore silently dropped those units and used the last cohort as the
 comparison group. That leg timed a smaller, different problem.
 \item \textbf{Classical SCM.} On the common ADH task \pkg{Synth} is much
 faster: \(4.2\times\) at 20 donors and \(60.7\times\) at 100 (4.4 against
 264 seconds). The cost is in the nested \(V\) search as \statspai{}
-runs it: six starts (equal, regression-based, four random) of a
-Nelder--Mead outer search, each outer evaluation solving the inner
-weight problem by SLSQP because donors outnumber the 15 pre-treatment
-predictors; profiling at 50 donors attributes 99\% of the time to
-about 5{,}000 inner solves of 19 milliseconds. \pkg{Synth} runs one
+runs it. The outer Nelder--Mead search uses six starts (equal,
+regression-based, and four random). Because donors outnumber the 15
+pre-treatment predictors, each outer evaluation solves the inner weight
+problem by SLSQP. Profiling at 50 donors attributes 99\% of the time to
+about 5{,}000 inner solves of 19 milliseconds each. \pkg{Synth} runs one
 BFGS search from its regression-based start. The six starts are there
 to detect non-unique solutions (Section~\ref{sec:scm-identification}),
-so a single-start comparison would time a different procedure; a faster
+so a single-start comparison would time a different procedure. A faster
 exact inner solver for the rank-deficient case is the main engineering
 target this study exposes. The package \emph{default}
-\code{sp.synth(method="classic")}, which uses the outcome path with
-\(V=I\) and runs in-space placebos over every donor, takes 7.5 seconds
-at 100 donors, of which 0.06 seconds is the fit and the rest the 100
-placebo refits; it has no counterpart in the reference call and is not
-in the table.
-\item \textbf{DML PLR.} With linear learners the two \proglang{Python}
-implementations are within 10--20\% of each other at every size
-(\(1.10\times\) at \(N=10{,}000\): 0.0077 against 0.0085 seconds), and the interquartile
-ranges over 15 repetitions do not overlap, so \statspai{}'s wrapper adds
-no cost here; nothing is claimed about flexible learners, whose fitting
+\code{sp.synth(method="classic")} uses the outcome path with \(V=I\) and
+runs in-space placebos over every donor. It takes 7.5 seconds at 100
+donors, of which 0.06 seconds is the fit and the rest the 100 placebo
+refits. It has no counterpart in the reference call and is not in the
+table.
+\item \textbf{DML PLR.} With linear learners \statspai{} is
+slightly faster at \(N=10{,}000\) (0.0077 against 0.0085 seconds,
+\(1.10\times\)), and the interquartile ranges over 15 repetitions do not
+overlap. The table calls any ratio below \(1.5\times\) a tie. The point is
+only that \statspai{}'s wrapper around the same computation adds no
+cost. Nothing is claimed about flexible learners, whose fitting
 time dominates both.
 \end{itemize}
 
 \paragraph{Interpretation.}
-Two of four comparisons favour the reference at the largest size and
-one of them, classical SCM under the ADH specification, by a wide
-margin. The study supports a narrow claim: on the shared tasks measured
-here the unified interface adds no material overhead to HDFE,
+Two of four comparisons favour the reference at the largest size. One
+of them, classical SCM under the ADH specification, does so by a wide
+margin. The study supports a narrow claim. On the shared tasks measured
+here, the unified interface adds no material overhead to HDFE,
 Callaway--Sant'Anna, or DML, and the nested-\(V\) synthetic-control
-solver is the clear performance gap. It does not support a general
-``\proglang{Python} is faster'' claim, and the SCM row is kept in the
-table because it is negative evidence the package's users need.
+solver is the clear performance gap. The study does not support a general
+``\proglang{Python} is faster'' claim. The SCM row stays in the table
+because it is negative evidence the package's users need.

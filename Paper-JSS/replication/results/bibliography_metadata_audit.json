@@ -1,10 +1,11 @@
 {
   "active_archival_only_keys": [],
-  "active_cited_key_count": 72,
+  "active_cited_key_count": 73,
   "active_cited_keys": [
     "abadie2003economic",
     "abadie2010synthetic",
     "abadie2011synth",
+    "ahrens2025model",
     "andrews2023inference",
     "angrist2009mostly",
     "anthropic2024mcp",
@@ -131,17 +132,17 @@
       "requirement": "no-DOI entries have manual verification reasons"
     },
     {
-      "evidence": "bbl_present=True; bibitems=72; active_citations=72",
+      "evidence": "bbl_present=True; bibitems=73; active_citations=73",
       "ok": true,
       "requirement": "compiled bibliography count matches active citations when main.bbl exists"
     }
   ],
   "compiled_bibliography": {
-    "bibitem_count": 72,
+    "bibitem_count": 73,
     "present": true,
-    "thebibliography_count": 72
+    "thebibliography_count": 73
   },
-  "doi_entry_count": 60,
+  "doi_entry_count": 61,
   "duplicate_keys": [],
   "expected_reserved_entry_keys": [
     "brown2020language"
@@ -149,7 +150,7 @@
   "failures": [],
   "field_failures": [],
   "generated_at_unix": 1780185600,
-  "locator_entry_count": 71,
+  "locator_entry_count": 72,
   "missing_no_doi_reasons": [],
   "no_doi_entries": [
     {
@@ -264,6 +265,6 @@
   ],
   "stale_no_doi_reasons": [],
   "status": "PASS",
-  "submission_bib_entry_count": 73,
+  "submission_bib_entry_count": 74,
   "url_entry_count": 5
 }

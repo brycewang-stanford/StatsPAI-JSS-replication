@@ -35,6 +35,7 @@ if _SCRIPTS_DIR not in sys.path:  # _paths.py sits beside this script
     sys.path.insert(0, _SCRIPTS_DIR)
 
 from _paths import PAPER_ROOT, STATSPAI_ROOT
+from _track_a_grades import is_stochastic_screen
 
 SOURCE = STATSPAI_ROOT / "tests" / "r_parity" / "results" / "parity_table_3way.tex"
 OUTPUT = PAPER_ROOT / "manuscript" / "tables" / "appendix_b_parity.tex"
@@ -50,7 +51,10 @@ gaps are in the generated
 \code{tests/r\_parity/results/parity\_table\_3way.md}. Italic text in
 the \proglang{Stata} column is the measured reason no portable
 \proglang{Stata} artifact exists for that module, not an untested
-assumption of unavailability. All \RParityModuleCount{} modules are
+assumption of unavailability. \textbf{S} marks a stochastic screen: one
+draw per engine, reported but not graded (the T3 grade of that
+estimator rests on the seed study of Table~\ref{tab:forest-seed-mc}).
+All \RParityModuleCount{} modules are
 joined to a canonical \proglang{R} reference and
 \StataParityModuleCount{} additionally to a canonical or audited
 \proglang{Stata} bridge, every side reading the same CSV bytes.}"""
@@ -76,12 +80,29 @@ def _tidy_numbers(row: str) -> str:
     )
 
 
+#: compare.py's measured-reason prose sometimes quotes a command in
+#: Markdown backticks; TeX sets the opening one as a curly left quote.
+_BACKTICK = re.compile(r"`([^`]+)`")
+
+
+def _grade_row(row: str) -> str:
+    """Print the paper's grade where it is finer than compare.py's verdict.
+
+    A PASS on one draw per engine is a stochastic screen (S). Showing it
+    as PASS beside same-byte rows let a single draw read as parity.
+    """
+    row = _BACKTICK.sub(lambda m: rf"\code{{{m.group(1)}}}", row)
+    if is_stochastic_screen(row):
+        row = row.replace(r"\textbf{PASS}", r"\textbf{S}")
+    return row
+
+
 def _body_rows(text: str) -> list[str]:
     """The data rows of the generated longtable, without its own frame."""
     start = text.index(r"\endlastfoot")
     end = text.index(r"\end{longtable}")
     rows = [
-        _tidy_numbers(line)
+        _grade_row(_tidy_numbers(line))
         for line in text[start:end].splitlines()
         if line.startswith(r"\code{")
     ]

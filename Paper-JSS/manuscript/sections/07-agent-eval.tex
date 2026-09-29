@@ -1,32 +1,31 @@
 \section{Agent-facing interface checks}\label{sec:agentbench}
 
 This section reports only the \emph{mechanical} and \emph{contractual}
-evidence that the agent-facing surface is correctly wired up, which is
+evidence that the agent-facing surface is correctly wired up. This is
 not a behavioural claim. Whether the interface improves an LLM agent's
 empirical work is a question that schema coverage cannot answer
 (Section~\ref{sec:agentbench-behavioural}).
 
 \subsection{Mechanical evidence}\label{sec:agentbench-mechanical}
 
-The function-schema layer is statically inspectable. We report in
-Table~\ref{tab:schema-coverage} both the function-level coverage
-($\RegistryTotal$ of $\RegistryTotal$ public functions emit a non-empty
-OpenAI-style JSON Schema; \AgentCardCount{} currently expose curated or explicitly
-inherited agent metadata cards) and the
-parameter-level quality of those
-schemas (\(\SchemaParameterTotal\) documented parameters across the
-\(\RegistryTotal\) schemas, of which \(\SchemaParameterDefaultPct\) carry an
-explicit default value and \(\SchemaParameterEnumPct\) carry enumerated
-choices). Parameter quality
-matters because the headline ``$\RegistryTotal/\RegistryTotal$ emit a schema'' figure is
-high by construction -- the registry pipes \emph{any} typed signature
-into a JSON Schema -- whereas the
-stronger contract is that every parameter carries a
-non-empty description. Table~\ref{tab:schema-coverage} is an internal
-completeness audit, not a ranking: \pkg{statsmodels},
-\pkg{linearmodels}, and \pkg{scikit-learn} ship no package-distributed,
-package-wide OpenAI-style tool-schema catalogues because they target
-different interfaces, and they do not rule out external wrappers.
+The function-schema layer is statically inspectable.
+Table~\ref{tab:schema-coverage} reports coverage at two levels. At the
+function level, $\RegistryTotal$ of $\RegistryTotal$ public functions
+emit a non-empty OpenAI-style JSON Schema, and \AgentCardCount{}
+currently expose curated or explicitly inherited agent metadata cards.
+At the parameter level, the \(\RegistryTotal\) schemas document
+\(\SchemaParameterTotal\) parameters. Of these,
+\(\SchemaParameterDefaultPct\) carry an explicit default value and
+\(\SchemaParameterEnumPct\) carry enumerated choices. Parameter quality
+matters because the headline ``$\RegistryTotal/\RegistryTotal$ emit a
+schema'' figure is high by construction. The registry pipes \emph{any}
+typed signature into a JSON Schema. The stronger contract is that every
+parameter carries a non-empty description.
+Table~\ref{tab:schema-coverage} is an internal completeness audit, not a
+ranking. \pkg{statsmodels}, \pkg{linearmodels}, and \pkg{scikit-learn}
+ship no package-distributed, package-wide OpenAI-style tool-schema
+catalogues because they target different interfaces, and they do not
+rule out external wrappers.
 
 \begin{table}[t]
 \centering\small
@@ -60,48 +59,49 @@ from the live registry; this table makes no cross-package quality claim.}
 \end{table}
 
 A non-empty description is still only mechanical completeness; it does
-not make a parameter's meaning unambiguous to a machine. For the eleven
-registered entry points of the validation suite, 24 of 143 schema
-parameters declare an enumerated domain and 55 a default. Mutually
+not make a parameter's meaning unambiguous to a machine. Take the
+\SuiteSchemaEntries{} entry points of the validation suite that have a
+schema (\code{sp.fast.feols} sits in the \code{sp.fast} namespace and
+is not registered on its own). Of their \SuiteSchemaParameters{}
+parameters, \SuiteSchemaEnum{} declare an enumerated domain and
+\SuiteSchemaDefault{} a default. Mutually
 exclusive options (\code{robust=} and \code{vce=}), and conditions under
 which an option applies (a clustered covariance needs a cluster
 variable), are stated in the descriptions and enforced at call time by
-typed errors rather than expressed in the schema. Encoding them there,
+typed errors. They are not yet expressed in the schema. Encoding them there,
 for the core first, is the next step for this interface.
 
 The same registry is exported as a versioned offline schema bundle, so
 non-\proglang{Python} clients can discover the tool surface without
-importing \statspai{}, and a coverage ratchet fails continuous
-integration if any agent-card counter falls.
+importing \statspai{}. A coverage ratchet fails continuous integration if
+any agent-card counter falls.
 
 \subsection{Contractual trace evidence}\label{sec:agentbench-procedural}
 
 The MCP server (Section~\ref{sec:mcp}) negotiates protocol revisions
-2024-11-05, 2025-03-26, and 2025-06-18; the package's own tests (not an
+2024-11-05, 2025-03-26, and 2025-06-18. The package's own tests (not an
 external conformance certification) exercise the handshake,
-\code{tools/list} and \code{tools/call}, \code{isError} envelopes, and
-that MCP discovery sees the same registry as
+\code{tools/list}, \code{tools/call}, and \code{isError} envelopes, and
+check that MCP discovery sees the same registry as
 \code{sp.function\_schema()}.
 
-For this submission we also execute one deterministic end-to-end trace
+We also execute one deterministic end-to-end trace
 through the live MCP server. The script
-\code{replication/scripts/ex07\_agent\_trace.py} writes a temporary
-\texttt{mpdta.csv} (the calibrated replica of Section~\ref{sec:ex-csdid},
-so the traced estimate \(-0.0330\) is the replica value, not the
-original-data \(-0.03995\)), calls \code{tools/list}, fits
-\code{callaway\_santanna} with \code{as\_handle=true}, sends the
-returned handle to \code{audit\_result}, and then sends the same
-handle to \code{honest\_did\_from\_result}. It finally resolves the
-returned citation keys through the MCP \code{bibtex} tool against the
-curated \code{paper.bib}, so the trace exercises the citation
-anti-hallucination contract rather than merely reporting key strings.
-The same trace also sends a stale result-handle call to
-\code{audit\_result} and checks that the MCP response is a recoverable
-\code{isError} envelope with an actionable refit hint, so failure
-recovery is exercised rather than only described.
-Table~\ref{tab:agent-trace}
-summarizes the trace; the normalized transcript is included in the
-replication archive. The trace verifies the agent-specific claim that
+\code{replication/scripts/ex07\_agent\_trace.py} first writes a
+temporary \texttt{mpdta.csv}, the calibrated replica of
+Section~\ref{sec:ex-csdid} (so the traced estimate \(-0.0330\) is the
+replica value, not the original-data \(-0.03995\)). It then calls
+\code{tools/list} and fits \code{callaway\_santanna} with
+\code{as\_handle=true}. The returned handle goes to
+\code{audit\_result}, and the same handle then goes to
+\code{honest\_did\_from\_result}. Finally it resolves the returned citation keys through the MCP
+\code{bibtex} tool against the curated \code{paper.bib}, which exercises
+the citation anti-hallucination contract instead of only reporting key
+strings. It also sends a stale result-handle call to
+\code{audit\_result} and checks for a recoverable \code{isError}
+envelope with an actionable refit hint, so failure recovery is exercised
+as well. Table~\ref{tab:agent-trace} summarizes the trace, and the
+normalized transcript is in the replication archive. The trace verifies the agent-specific claim that
 the estimate \(\to\) audit \(\to\) sensitivity chain is executable
 without ferrying arrays or hand-copying citations through the model
 context.
@@ -122,18 +122,18 @@ replication archive
 Mechanical and contractual evidence does not answer whether an LLM agent
 using this interface produces \emph{better empirical analyses} than one
 using \pkg{statsmodels} or \proglang{R} packages through a Jupyter MCP
-shim. That question requires frozen model
-releases, fixed prompts, matched tool budgets, and a scoring rubric,
-and belongs in a separate behavioural study, with
-\citet{patil2023gorilla} and \citet{liang2023helm} as methodological
-precedents for tool-use and holistic-LLM benchmarks. To make that deferral auditable
-rather than vague, the archive includes
-\code{replication/\allowbreak results/\allowbreak agent\_benchmark\_protocol.md}, which records
-the matched arms, task families, scoring dimensions, leakage controls,
-and minimum report items required before any behavioural claim is made.
-The JSS contribution here is contractual: schemas, typed
+shim. That question requires frozen model releases, fixed prompts,
+matched tool budgets, and a scoring rubric. It belongs in a separate
+behavioural study, for which \citet{patil2023gorilla} and
+\citet{liang2023helm} are methodological precedents in tool-use and
+holistic-LLM benchmarks. To make that deferral auditable, the archive
+includes
+\code{replication/\allowbreak results/\allowbreak agent\_benchmark\_protocol.md}.
+It records the matched arms, task families, scoring dimensions, leakage
+controls, and minimum report items required before any behavioural claim
+is made. The contribution here is contractual. Schemas, typed
 errors, result handles, citations, and the deterministic trace are
-reproducible interfaces, regenerated from the same validation ledger
-that governs human-facing calls rather than from a separate
-prompt-engineering layer, and they keep later benchmark scores from
-being confounded with missing metadata or unverifiable citations.
+reproducible interfaces. They are regenerated from the same validation
+ledger that governs human-facing calls rather than from a separate
+prompt-engineering layer. They also keep later benchmark scores from being confounded with missing
+metadata or unverifiable citations.

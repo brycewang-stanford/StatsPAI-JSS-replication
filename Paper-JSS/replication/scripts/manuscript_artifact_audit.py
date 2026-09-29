@@ -310,7 +310,7 @@ EXPECTED_COMPACT_SECTION_COVERAGE = {
         "anchors": {
             "contribution": "The slice is a reading aid, not the evidence",
             "evidence": "tables/appendix_b_parity.tex",
-            "boundary": "Two things this table does not do",
+            "boundary": "Per-row detail is in the generated ledger",
         },
     },
 }

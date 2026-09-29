@@ -67,7 +67,7 @@ JSS upload-blocking gaps: 0
 ### final_tagged_release
 - `release_boundary_status`: `PASS`
 - `ready_for_final_publication`: `False`
-- `release_blocker_count`: `2`
+- `release_blocker_count`: `5`
 - `version_consistent`: `True`
 
 Failures: none

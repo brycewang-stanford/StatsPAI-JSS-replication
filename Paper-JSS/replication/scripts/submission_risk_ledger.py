@@ -445,8 +445,8 @@ def _nonblocking_risks(
         pdf_protocol = payloads.get("pdf_visual_check_protocol", {})
         protocol_summary = pdf_protocol.get("summary", {})
         pdf_routing_status = (
-            "PDF-visible evidence-map/checklist routing present"
-            if "reviewer evidence map and editor screening checklist"
+            "PDF-visible evidence-map routing present"
+            if "an evidence map that routes each"
             in set(formal.get("pdf_boundary_snippets") or [])
             and not missing_pdf_snippets
             else "PDF-visible evidence routing incomplete"

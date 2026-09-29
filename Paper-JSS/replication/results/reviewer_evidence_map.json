@@ -155,15 +155,15 @@
       "id": "archive_boundary",
       "metrics": {
         "active_external_present": 0,
-        "archive_file_count": 2961,
-        "archive_size_mib": 27.07,
+        "archive_file_count": 2964,
+        "archive_size_mib": 27.13,
         "data_provenance_csv_files": 357,
         "data_provenance_forbidden_raw_members": 0,
         "data_provenance_high_risk_path_hits": 0,
         "data_provenance_packaged_public_datasets": 9,
         "data_provenance_public_original_extracts": 7,
         "data_provenance_r_stata_fixture_csv": 91,
-        "data_provenance_scoped_data_files": 876,
+        "data_provenance_scoped_data_files": 877,
         "data_provenance_status": "PASS",
         "data_provenance_unknown_categories": 0,
         "jss_upload_blockers": 0,
@@ -212,34 +212,34 @@
         "manual_visual_spot_check_status": "PENDING_MANUAL_REVIEW",
         "missing_pdf_boundary_snippets": [],
         "official_sources_checked": "2026-08-09",
-        "page_count": 53,
+        "page_count": 54,
         "pdf_boundary_snippets": 18,
         "pdf_full_document_failures": 0,
-        "pdf_full_document_rendered_pages": 53,
+        "pdf_full_document_rendered_pages": 54,
         "pdf_render_failures": 0,
-        "pdf_render_max_dark_ratio": 0.022155,
+        "pdf_render_max_dark_ratio": 0.02218,
         "pdf_render_min_height": 1287,
-        "pdf_render_min_ink_ratio": 0.058779,
+        "pdf_render_min_ink_ratio": 0.027374,
         "pdf_render_min_width": 910,
         "pdf_render_sampled_pages": [
           1,
           2,
           27,
-          53
+          54
         ],
         "pdf_render_status": "PASS",
         "pdf_rendered_pages": 4,
         "pdf_stale_prose_hits": [],
-        "pdf_text_chars": 156849,
+        "pdf_text_chars": 160008,
         "pdf_visual_protocol_checklist_items": 12,
         "pdf_visual_protocol_claimed_manual_acceptance": false,
         "pdf_visual_protocol_jss_upload_blocking": false,
         "pdf_visual_protocol_manual_status": "PENDING_MANUAL_REVIEW",
-        "pdf_visual_protocol_page_count": 53,
-        "pdf_visual_protocol_page_inventory_count": 53,
-        "pdf_visual_protocol_page_inventory_float_markers": 83,
-        "pdf_visual_protocol_page_inventory_min_text_chars": 2022,
-        "pdf_visual_protocol_page_inventory_text_pages": 53,
+        "pdf_visual_protocol_page_count": 54,
+        "pdf_visual_protocol_page_inventory_count": 54,
+        "pdf_visual_protocol_page_inventory_float_markers": 75,
+        "pdf_visual_protocol_page_inventory_min_text_chars": 795,
+        "pdf_visual_protocol_page_inventory_text_pages": 54,
         "pdf_visual_protocol_recorded_by_protocol": false,
         "pdf_visual_protocol_status": "PASS"
       },
@@ -298,11 +298,11 @@
           "compact_text_may_feel_terse",
           "agent_interface_value_boundary"
         ],
-        "pdf_pages": 53,
+        "pdf_pages": 54,
         "pdf_visual_protocol_checklist_items": 12,
         "pdf_visual_protocol_manual_status": "PENDING_MANUAL_REVIEW",
-        "pdf_visual_protocol_page_inventory_count": 53,
-        "pdf_visual_protocol_page_inventory_text_pages": 53,
+        "pdf_visual_protocol_page_inventory_count": 54,
+        "pdf_visual_protocol_page_inventory_text_pages": 54,
         "pdf_visual_protocol_status": "PASS",
         "symbols_with_limitations": 21,
         "unbacked_auto_stable": 601
@@ -350,7 +350,7 @@
         "documented_nonblocking_risk_count": 6,
         "documented_nonblocking_risk_details": [
           {
-            "evidence": "2 final-release pending paths; source snapshot remains explicitly labelled",
+            "evidence": "5 final-release pending paths; source snapshot remains explicitly labelled",
             "next_action": "commit or intentionally exclude all hand-edited source and Paper-JSS paths; move accepted [Unreleased] changes into a dated CHANGELOG release entry; align pyproject.toml, src/statspai/__init__.py, and schema bundle versions; tag the exact package-source commit used by the JSS archive; re-run make submission-ready after the tag so manifests record a clean release snapshot",
             "risk": "final_tagged_release_cut_pending"
           },
@@ -370,7 +370,7 @@
             "risk": "methodological_t4_row_disclosed"
           },
           {
-            "evidence": "active PDF has 53 pages; PDF-visible evidence-map/checklist routing present; packaged PDF visual-check protocol present; page inventory covers 53/53 pages",
+            "evidence": "active PDF has 54 pages; PDF-visible evidence-map routing present; packaged PDF visual-check protocol present; page inventory covers 54/54 pages",
             "next_action": "Keep additional reviewer evidence in replication/results and reviewer_evidence_map rather than expanding main.pdf; perform the final full-document human visual spot-check using pdf_visual_check_protocol.md and the PDF render audit before JSS upload.",
             "risk": "compact_text_may_feel_terse"
           },
@@ -391,15 +391,15 @@
         ],
         "final_tagged_cut_breakdown": {
           "generated_status_counts": {
-            "M": 30
+            "M": 20
           },
           "hand_edited_status_counts": {
-            "M": 2
+            "M": 5
           },
           "package_code_paths": 0,
           "package_docs_paths": 0,
           "paper_manuscript_paths": 0,
-          "paper_other_paths": 0,
+          "paper_other_paths": 3,
           "paper_replication_paths": 2,
           "validation_test_paths": 0
         },
@@ -444,7 +444,7 @@
           "strict_release_command": "python Paper-JSS/replication/scripts/source_snapshot_manifest.py --strict-release"
         },
         "final_tagged_cut_runbook_step_count": 5,
-        "paper_release_pending_paths": 2,
+        "paper_release_pending_paths": 5,
         "ready_for_final_publication": false,
         "source_release_pending_paths": 0,
         "strict_release_command": "python Paper-JSS/replication/scripts/source_snapshot_manifest.py --strict-release"
@@ -577,7 +577,7 @@
     "archive_evidence_paths_missing": 0,
     "archive_evidence_paths_resolved": 40,
     "archive_evidence_present": true,
-    "archive_file_count": 2961,
+    "archive_file_count": 2964,
     "card_count": 13,
     "card_identity_ok": true,
     "card_ids": [
@@ -598,7 +598,7 @@
     "documented_nonblocking_risk_count": 6,
     "documented_nonblocking_risk_details": [
       {
-        "evidence": "2 final-release pending paths; source snapshot remains explicitly labelled",
+        "evidence": "5 final-release pending paths; source snapshot remains explicitly labelled",
         "next_action": "commit or intentionally exclude all hand-edited source and Paper-JSS paths; move accepted [Unreleased] changes into a dated CHANGELOG release entry; align pyproject.toml, src/statspai/__init__.py, and schema bundle versions; tag the exact package-source commit used by the JSS archive; re-run make submission-ready after the tag so manifests record a clean release snapshot",
         "risk": "final_tagged_release_cut_pending"
       },
@@ -618,7 +618,7 @@
         "risk": "methodological_t4_row_disclosed"
       },
       {
-        "evidence": "active PDF has 53 pages; PDF-visible evidence-map/checklist routing present; packaged PDF visual-check protocol present; page inventory covers 53/53 pages",
+        "evidence": "active PDF has 54 pages; PDF-visible evidence-map routing present; packaged PDF visual-check protocol present; page inventory covers 54/54 pages",
         "next_action": "Keep additional reviewer evidence in replication/results and reviewer_evidence_map rather than expanding main.pdf; perform the final full-document human visual spot-check using pdf_visual_check_protocol.md and the PDF render audit before JSS upload.",
         "risk": "compact_text_may_feel_terse"
       },
@@ -667,11 +667,11 @@
     "missing_pdf_boundary_snippets": 0,
     "pass_cards": 13,
     "pdf_full_document_failure_count": 0,
-    "pdf_full_document_rendered_page_count": 53,
-    "pdf_pages": 53,
+    "pdf_full_document_rendered_page_count": 54,
+    "pdf_pages": 54,
     "pdf_render_failure_count": 0,
     "pdf_render_status": "PASS",
-    "pdf_text_chars": 156849,
+    "pdf_text_chars": 160008,
     "pdf_visual_protocol_checklist_items": 12,
     "pdf_visual_protocol_manual_status": "PENDING_MANUAL_REVIEW",
     "pdf_visual_protocol_status": "PASS",

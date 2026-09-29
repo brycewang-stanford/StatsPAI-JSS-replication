@@ -21,22 +21,25 @@ portable \proglang{Stata} artifact exists.
 
 \input{tables/appendix_b_parity.tex}
 
-\noindent Of the \RParityModuleCount{} modules, all but one receive a
-pass-type verdict. A pass-type verdict covers ordinary strict passes,
-common-specification passes such as RD at a forced common bandwidth,
-seeded stochastic passes such as DML, and coefficient-level passes whose
-secondary diagnostic follows a documented small-sample convention. The
-single remaining \textit{GAP} is the classical-SCM donor-weight
-non-uniqueness disclosure of
-Section~\ref{sec:scm-identification}, kept visible rather than absorbed
-into a wider tolerance. Two things this table does not do: show per-row
-detail, or show that either side is re-derivable
-(Section~\ref{sec:reproducibility}).
+\noindent Of the \RParityModuleCount{} modules, \RParityStrictCount{} pass at
+T2. A pass covers ordinary strict passes, common-specification passes
+such as RD at a forced common bandwidth, seeded passes in which both
+sides share the folds or draws (such as DML), and coefficient-level
+passes whose secondary diagnostic follows a documented small-sample
+convention. The other two are graded differently. The causal-forest row
+is a single draw per engine and is printed as a stochastic screen
+(\textbf{S}). The classical-SCM row is the \textit{GAP} of donor-weight
+non-uniqueness (Section~\ref{sec:scm-identification}), kept visible
+rather than absorbed into a wider tolerance. The note of module 84
+calls its horizon standard errors an open gap. They are inside the
+module's budget and agree with both references to \(3\times10^{-8}\),
+short of the \(10^{-14}\) of its leads. Per-row detail is in the generated ledger,
+and Section~\ref{sec:reproducibility} shows how to re-derive either side.
 
 \section{Output-changing corrections}\label{app:corrections}
 
 Each fix in Table~\ref{tab:correctness-history} is pinned by a
-regression test; users on affected versions should re-estimate.
+regression test. Users on affected versions should re-estimate.
 Section~\ref{sec:parity-gaps} discusses 1.23.0 and 1.25.0. The 1.29.0
 count is the numbered items in \path{docs/dev/campaign_phase3/}, each
 counted once, excluding documentation-only corrections.
@@ -70,7 +73,7 @@ Version & Affected area & Output-changing fix \\
 1.25.0 & Forest average, continuous treatment & The binary AIPW score was applied to a continuous treatment ($-1266.6$, $p=0.0000$ on Card); guarded in 1.25.0, replaced by the Riesz-representer average in 1.29.0. Binary results unchanged. \\
 1.26.0 & Evidence grades & A false alias certification (\code{sp.wooldridge\_did} as \code{sp.etwfe}) withdrawn; grades, not estimates, changed. \\
 1.27.0 & ETWFE, \code{etregress}, RE logit/probit, FGLS, spatial LM & Cohort ATTs read from a saturated regression; clustered SEs account for absorbed effects; the \code{etregress} default is a true MLE with first-stage-aware two-step SEs; \code{lm\_tests} no longer reverses its model-selection conclusion. \\
-1.28.0 & SCM placebo \(p\)-values; MR; evidence grades & Permutation \(p\)-values now rank the treated unit with its placebos, \((1+\#\{\text{placebo}\ge\text{treated}\})/(J+1)\); MR estimators ported to their reference definitions; 31 functions graded T2 on closed-form tests that never ran \proglang{R} or \proglang{Stata} were regraded T1 (see text). \\
+1.28.0 & SCM placebo \(p\)-values; MR; evidence grades & Permutation \(p\)-values now rank the treated unit with its placebos, \((1+\#\{\text{placebo}\ge\text{treated}\})/(J+1)\); MR estimators ported to their reference definitions; 31 functions graded T2 on closed-form tests that never ran \proglang{R} or \proglang{Stata} were regraded T1. \\
 1.29.0 & Parity campaign; Track A closure & Fourteen families bisected against their reference on identical bytes; 174 output-changing defects fixed, none caught by a unit test; forest defaults follow \pkg{grf}; Gardner two-stage SE as \pkg{did2s}; PSM SE as \code{teffects psmatch}. \\
 1.30.0 & HonestDiD on a CS fit; forest ATT/ATC & The event-study covariance passed to \code{sp.honest\_did} dropped the cohort-share term off the diagonal (cross-cell entries up to 8\% off \pkg{did}), overstating robustness; now matches \pkg{did} to \(2.8\times10^{-13}\), and the bounds of Listing~\ref{lst:csdid-output} moved in the fourth decimal. ATT and ATC now raise for a continuous treatment, as in \pkg{grf}. \\
 1.31.0 & Entropy balancing; IV and HDFE covariances; CS event study; pre-trend tests; forest policy; audit; grades & \code{sp.ebalance} SE was twice the Monte Carlo SD; now the M-estimation sandwich (\pkg{WeightIt} to \(3\times10^{-9}\)). \code{sp.iv(vce=)} silently returned CR1 for CR2/CR3/wild requests; now bit-identical to \code{sp.ivreg} or refused. \code{sp.fast.feols} defaults to \pkg{fixest}'s small-sample factor (the old default over-covered, 0.979). The convenience event study of a Callaway--Sant'Anna fit omitted the cohort-share term of its SEs (up to 0.9\% on \texttt{mpdta}, 47\% on a castle-doctrine panel); it now equals \code{sp.aggte} to \(10^{-15}\), and the grid of Listing~\ref{lst:csdid-output} moved in the fourth decimal. \code{sp.pretrends\_test} on an event study used a diagonal pre-period covariance (\(p=0.603\) against \proglang{Stata}'s 0.293); it now uses the joint one. \code{sp.rate\_split} and \code{sp.forest\_policy\_tree} aggregate 21 sample splits instead of reporting one. Over-identification audit skipped on just-identified fits; native relative-magnitudes Honest-DiD; two parity rows that ran \proglang{R} itself rebuilt natively. \\

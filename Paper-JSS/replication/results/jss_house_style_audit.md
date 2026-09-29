@@ -7,7 +7,7 @@ Draft-marker hits: 0
 Marketing-claim hits: 0
 Overconfidence-claim hits: 0
 Defensive-tone hits: 0
-Macro counts: proglang=132, pkg=197, code=369
+Macro counts: proglang=130, pkg=199, code=375
 Anchor failures: 0
 
 ## Checks
@@ -19,7 +19,7 @@ Anchor failures: 0
 | active JSS files avoid marketing-style claims | PASS | hits=0 |
 | upload-facing prose avoids overconfident proof or guarantee wording | PASS | hits=0 |
 | upload-facing prose avoids defensive or casual reviewer-facing phrasing | PASS | hits=0 |
-| active manuscript keeps JSS macro density | PASS | macro_counts={'proglang': 132, 'pkg': 197, 'code': 369}; thresholds={'proglang': 50, 'pkg': 80, 'code': 150}; failures=[] |
+| active manuscript keeps JSS macro density | PASS | macro_counts={'proglang': 130, 'pkg': 199, 'code': 375}; thresholds={'proglang': 50, 'pkg': 80, 'code': 150}; failures=[] |
 | upload-facing prose retains contribution, boundary, and disclosure anchors | PASS | anchor_failures=[] |
 
 Failures: none

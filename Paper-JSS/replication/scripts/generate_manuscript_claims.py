@@ -12,6 +12,7 @@ if _SCRIPTS_DIR not in sys.path:  # _paths.py sits beside this script; importlib
     sys.path.insert(0, _SCRIPTS_DIR)
 
 from _paths import PAPER_ROOT, statspai_root
+from _track_a_grades import is_stochastic_screen
 
 REPO_ROOT = statspai_root()
 OUTPUT = PAPER_ROOT / "manuscript" / "generated_claims.tex"
@@ -94,7 +95,66 @@ def _claims() -> dict[str, int | str]:
         **_track_a_verdict_claims(),
         **_cross_not_certified_claims(),
         **_agent_card_strata_claims(),
+        **_scoped_limitation_claims(),
+        **_suite_schema_claims(),
     }
+
+
+#: Entry points of the twelve-estimator suite (Table 5 of the manuscript).
+SUITE_ENTRY_POINTS = (
+    "regress", "iv", "fast.feols", "callaway_santanna", "sun_abraham",
+    "rdrobust", "rddensity", "synth", "sdid", "dml", "causal_forest", "psm",
+)
+
+
+def _suite_schema_claims() -> dict[str, int]:
+    """Parameter-level schema quality for the validation suite.
+
+    Section 7 quotes how many suite parameters declare an enum or a
+    default. The figures were typed by hand and went stale; they are now
+    computed from the same schemas the MCP server serves. A suite member
+    without a registry entry (``sp.fast.feols`` lives in a sub-namespace)
+    has no schema and is counted separately.
+    """
+    import statspai as sp
+
+    registered = set(sp.list_functions())
+    entries = [name for name in SUITE_ENTRY_POINTS if name in registered]
+    params = enums = defaults = 0
+    for name in entries:
+        schema = sp.function_schema(name)
+        props = (
+            schema.get("parameters")
+            or schema.get("function", {}).get("parameters", {})
+        ).get("properties", {})
+        params += len(props)
+        enums += sum("enum" in spec for spec in props.values())
+        defaults += sum("default" in spec for spec in props.values())
+    return {
+        "SuiteSchemaEntries": len(entries),
+        "SuiteSchemaUnregistered": len(SUITE_ENTRY_POINTS) - len(entries),
+        "SuiteSchemaParameters": params,
+        "SuiteSchemaEnum": enums,
+        "SuiteSchemaDefault": defaults,
+    }
+
+
+def _scoped_limitation_claims() -> dict[str, int]:
+    """Certified or validated symbols whose spec lists a limitation.
+
+    Discussion cites this count; it was typed by hand ("nine") and had
+    drifted to less than half the live figure. Same rule as the
+    "Symbols With Scoped Limitations" table of validation_evidence_audit.
+    """
+    from statspai import registry as _registry
+
+    count = sum(
+        1
+        for spec in _registry._REGISTRY.values()
+        if getattr(spec, "validation_status", None) in {"certified", "validated"}
+        and list(getattr(spec, "limitations", []) or [])
+    )
+    return {"ScopedLimitationCount": count}
 
 
 def _agent_card_strata_claims() -> dict[str, int]:
@@ -169,6 +229,13 @@ def _track_a_verdict_claims() -> dict[str, int]:
     spec.loader.exec_module(module)
     verdicts = [meta["verdict"] for meta in module.HEADLINE.values()]
     passes = sum("PASS" in verdict for verdict in verdicts)
+    # A PASS on a single draw per engine is a stochastic screen (S), not a
+    # T2 parity fact; the appendix prints it as S and the abstract counts
+    # only the strict rows. Same predicate as gen_appendix_parity.py.
+    screens = sum(
+        "PASS" in meta["verdict"] and is_stochastic_screen(meta.get("gap_note", ""))
+        for meta in module.HEADLINE.values()
+    )
     # What the StatsPAI side of each module executes (native algorithm,
     # official port, third-party Python library, or the reference itself).
     # Verified against a call trace by test_parity_implementation_provenance.
@@ -176,6 +243,8 @@ def _track_a_verdict_claims() -> dict[str, int]:
     return {
         "RParityPassCount": passes,
         "RParityNonPassCount": len(verdicts) - passes,
+        "RParityStrictCount": passes - screens,
+        "RParityScreenCount": screens,
         "ParityNativeModuleCount": census["native"],
         "ParityPortModuleCount": census["official_python_port"],
         "ParityThirdPartyModuleCount": census["third_party_python"],

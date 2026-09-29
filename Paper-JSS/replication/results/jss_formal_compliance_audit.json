@@ -2,7 +2,7 @@
   "archive_present": true,
   "checks": [
     {
-      "evidence": "main.pdf pages=53; class=article jss; missing_front_matter=[]",
+      "evidence": "main.pdf pages=54; class=article jss; missing_front_matter=[]",
       "ok": true,
       "requirement": "PDF manuscript in JSS LaTeX article style"
     },
@@ -22,12 +22,12 @@
       "requirement": "PDF text is synchronized with polished manuscript prose"
     },
     {
-      "evidence": "pdf_render_audit renders representative pages and rejects blank, overwhelmingly dark, or implausibly small rasters, then scans every PDF page with the same machine thresholds; status=PASS; sampled=[1, 2, 27, 53]; rendered=4; full_scan=53/53; full_failures=0; min_width=910; min_height=1287; min_ink_ratio=0.058779; max_dark_ratio=0.022155; failures=0.",
+      "evidence": "pdf_render_audit renders representative pages and rejects blank, overwhelmingly dark, or implausibly small rasters, then scans every PDF page with the same machine thresholds; status=PASS; sampled=[1, 2, 27, 54]; rendered=4; full_scan=54/54; full_failures=0; min_width=910; min_height=1287; min_ink_ratio=0.027374; max_dark_ratio=0.02218; failures=0.",
       "ok": true,
       "requirement": "rendered PDF page-sample sanity check passes"
     },
     {
-      "evidence": "active manuscript markup counts={'proglang': 158, 'pkg': 221, 'code': 551}; caption_label_failures=[].",
+      "evidence": "active manuscript markup counts={'proglang': 156, 'pkg': 223, 'code': 564}; caption_label_failures=[].",
       "ok": true,
       "requirement": "JSS markup macros and labelled floats are used"
     },
@@ -87,12 +87,12 @@
       "requirement": "platform dependencies and RNG seeds are disclosed"
     },
     {
-      "evidence": "cover-letter expected snippets=['53 pages', '31/31', '89-module R-parity', '85-module Stata bridge', '1,255 registered public functions', '1,255 public functions', '9,697 schema parameters', 'tagged 1.32.0 release', '13 PASS evidence cards', '5 suggested review routes', 'editor triage', 'statistical validation', 'quick reproduction', 'agent-interface review', 'limitations/release-boundary review', '2,961 files']; missing=[]; cover-letter archive-size disclosures=[(27.07, 28.39)]; expected=27.07 MiB (28.39 MB decimal); exact fixed-point match required.",
+      "evidence": "cover-letter expected snippets=['54 pages', '31/31', '89-module R-parity', '85-module Stata bridge', '1,255 registered public functions', '1,255 public functions', '9,697 schema parameters', 'tagged 1.32.0 release', '13 PASS evidence cards', '5 suggested review routes', 'editor triage', 'statistical validation', 'quick reproduction', 'agent-interface review', 'limitations/release-boundary review', '2,964 files']; missing=[]; cover-letter archive-size disclosures=[(27.13, 28.44)]; expected=27.13 MiB (28.44 MB decimal); exact fixed-point match required.",
       "ok": true,
       "requirement": "cover letter numeric summary is synchronized with generated audit artifacts"
     },
     {
-      "evidence": "cover-letter PDF/manual-review snippets=['pdf_render_audit.{json,md}', 'representative PDF pages and an all-page machine scan', 'final full-document visual spot-check remains an upload-time manual action', '53-row page inventory', 'rather than a machine-verified PASS']; missing=[].",
+      "evidence": "cover-letter PDF/manual-review snippets=['pdf_render_audit.{json,md}', 'representative PDF pages and an all-page machine scan', 'final full-document visual spot-check remains an upload-time manual action', '54-row page inventory', 'rather than a machine-verified PASS']; missing=[].",
       "ok": true,
       "requirement": "cover letter PDF visual-check boundary is explicit"
     },
@@ -107,7 +107,7 @@
       "requirement": "active manuscript tables and figures map to generators and prose"
     },
     {
-      "evidence": "archive=27.07 MiB (28.39 MB decimal); files=2961; evidence_files=541",
+      "evidence": "archive=27.13 MiB (28.44 MB decimal); files=2964; evidence_files=541",
       "ok": true,
       "requirement": "JSS attachment size and archive source set are bounded"
     },
@@ -157,8 +157,8 @@
     }
   ],
   "official_sources_checked": "2026-08-09",
-  "page_ceiling": 53,
-  "page_count": 53,
+  "page_ceiling": 54,
+  "page_count": 54,
   "pdf_boundary_snippets": [
     "evidence tier that a user",
     "or an agent can query at call time",
@@ -172,34 +172,34 @@
     "before any behavioural claim",
     "software-interface contribution",
     "named rows and modules",
-    "nine scoped limitation rows",
+    "limitations in their registry entries",
     "calibrated Basque replica",
     "no printed vignette anchor",
     "The unification itself has costs",
     "licence-free replication path",
-    "reviewer evidence map and editor screening checklist"
+    "an evidence map that routes each"
   ],
   "pdf_render": {
     "failure_count": 0,
     "full_document_failure_count": 0,
-    "full_document_max_dark_ratio": 0.022155,
-    "full_document_max_white_ratio": 0.950649,
+    "full_document_max_dark_ratio": 0.02218,
+    "full_document_max_white_ratio": 0.972626,
     "full_document_min_height": 1287,
-    "full_document_min_ink_ratio": 0.049351,
+    "full_document_min_ink_ratio": 0.027374,
     "full_document_min_width": 910,
-    "full_document_rendered_page_count": 53,
-    "max_dark_ratio": 0.022155,
-    "max_white_ratio": 0.941221,
+    "full_document_rendered_page_count": 54,
+    "max_dark_ratio": 0.02218,
+    "max_white_ratio": 0.972626,
     "min_height": 1287,
-    "min_ink_ratio": 0.058779,
+    "min_ink_ratio": 0.027374,
     "min_width": 910,
-    "page_count": 53,
+    "page_count": 54,
     "rendered_page_count": 4,
     "sampled_pages": [
       1,
       2,
       27,
-      53
+      54
     ],
     "status": "PASS"
   },
@@ -214,7 +214,7 @@
     "pretending it is a strict R/Synth parity pass",
     "harshest reviewer"
   ],
-  "pdf_text_chars": 156849,
+  "pdf_text_chars": 160008,
   "status": "PASS",
   "tier1_transcript": {
     "complete": true,

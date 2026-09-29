@@ -6,16 +6,16 @@ Prospective JSS archive data/result members, using the same include/exclude rule
 
 ## Summary
 
-- Prospective archive files: `2956`
-- Scoped data/result files: `876`
+- Prospective archive files: `2959`
+- Scoped data/result files: `877`
 - CSV files: `357`
-- JSON files: `518`
+- JSON files: `519`
 - Lockfiles: `1`
 - Packaged public dataset CSVs: `9`
 - Public original-data extract CSVs: `7`
 - Same-byte R/Stata fixture CSVs: `91`
 - Reference fixture CSVs: `250`
-- Generated result JSON files: `335`
+- Generated result JSON files: `336`
 - Forbidden raw-data members: `0`
 - High-risk private/credential path hits: `0`
 - CSV parse failures: `0`
@@ -35,7 +35,7 @@ Prospective JSS archive data/result members, using the same include/exclude rule
 | `environment_or_fixture_lock` | 2 |
 | `generated_monte_carlo_result_json` | 3 |
 | `generated_original_parity_result_json` | 26 |
-| `generated_paper_audit_or_example_json` | 33 |
+| `generated_paper_audit_or_example_json` | 34 |
 | `generated_performance_result_json` | 9 |
 | `generated_r_parity_result_json` | 179 |
 | `generated_stata_result_json` | 85 |

@@ -26,7 +26,7 @@ Documented nonblocking risk identity: confirmed
 | `jss_formal_compliance_pass` | PASS | replication/results/jss_formal_compliance_audit.json status=PASS |
 | `archive_present` | PASS | build/statspai-jss-submission.zip |
 | `archive_manifest_present` | PASS | build/statspai-jss-submission-manifest.json |
-| `archive_within_50mb` | PASS | 27.07 MiB / 28.39 MB decimal |
+| `archive_within_50mb` | PASS | 27.13 MiB / 28.44 MB decimal |
 | `active_manuscript_sections_only` | PASS | archive manifest lists the ten active manuscript inputs |
 | `active_joss_artifacts_excluded` | PASS | active external-review artifacts are declared excluded from the JSS archive |
 | `archive_forbidden_members_absent` | PASS | no JOSS artifacts, local notes, main.md, or dormant full sections in archive |
@@ -39,21 +39,21 @@ Documented nonblocking risk identity: confirmed
 
 | Check | Detail |
 |---|---|
-| `clean_combined_worktree` | 2 hand-edited final-publication gate paths; 30 generated dirty paths |
-| `paper_paths_finalized` | 2 Paper-JSS paths still dirty |
+| `clean_combined_worktree` | 5 hand-edited final-publication gate paths; 20 generated dirty paths |
+| `paper_paths_finalized` | 5 Paper-JSS paths still dirty |
 
 ## Final Tagged-Cut Breakdown
 
 | Bucket | Count/detail |
 |---|---|
-| Hand-edited status counts | `{'M': 2}` |
-| Generated status counts | `{'M': 30}` |
+| Hand-edited status counts | `{'M': 5}` |
+| Generated status counts | `{'M': 20}` |
 | Package code/script paths | `0` |
 | Package docs paths | `0` |
 | Validation test/data paths | `0` |
 | Paper manuscript paths | `0` |
 | Paper replication paths | `2` |
-| Paper other paths | `0` |
+| Paper other paths | `3` |
 
 ## Final Tagged-Cut Runbook
 
@@ -71,17 +71,17 @@ Strict release guard: `python Paper-JSS/replication/scripts/source_snapshot_mani
 
 | Risk | Evidence | Next action |
 |---|---|---|
-| `final_tagged_release_cut_pending` | 2 final-release pending paths; source snapshot remains explicitly labelled | commit or intentionally exclude all hand-edited source and Paper-JSS paths; move accepted [Unreleased] changes into a dated CHANGELOG release entry; align pyproject.toml, src/statspai/__init__.py, and schema bundle versions; tag the exact package-source commit used by the JSS archive; re-run make submission-ready after the tag so manifests record a clean release snapshot |
+| `final_tagged_release_cut_pending` | 5 final-release pending paths; source snapshot remains explicitly labelled | commit or intentionally exclude all hand-edited source and Paper-JSS paths; move accepted [Unreleased] changes into a dated CHANGELOG release entry; align pyproject.toml, src/statspai/__init__.py, and schema bundle versions; tag the exact package-source commit used by the JSS archive; re-run make submission-ready after the tag so manifests record a clean release snapshot |
 | `registry_breadth_denominator_disclosed` | 558/1255 registry symbols are certified/validated; missing evidence paths=0 | Keep the validated-core framing and do not promote API-stable breadth without attached evidence notes. |
 | `stata_tier3_requires_license` | 85/85 frozen Stata modules audited without live Stata; licensed rerun protocol packaged | Keep Tier 3 optional and keep the Stata license boundary explicit; use stata_rerun_protocol.md for any licensed reviewer rerun and treat missing Stata as an optional-runtime skip, not a JSS upload blocker. |
 | `methodological_t4_row_disclosed` | 1/1 methodological/T4 rows classified; uncategorized=0 | Keep the T4 row as a disclosure unless a deterministic T2 bridge is added. |
-| `compact_text_may_feel_terse` | active PDF has 53 pages; PDF-visible evidence-map/checklist routing present; packaged PDF visual-check protocol present; page inventory covers 53/53 pages | Keep additional reviewer evidence in replication/results and reviewer_evidence_map rather than expanding main.pdf; perform the final full-document human visual spot-check using pdf_visual_check_protocol.md and the PDF render audit before JSS upload. |
+| `compact_text_may_feel_terse` | active PDF has 54 pages; PDF-visible evidence-map routing present; packaged PDF visual-check protocol present; page inventory covers 54/54 pages | Keep additional reviewer evidence in replication/results and reviewer_evidence_map rather than expanding main.pdf; perform the final full-document human visual spot-check using pdf_visual_check_protocol.md and the PDF render audit before JSS upload. |
 | `agent_interface_value_boundary` | 1255 schemas, 9697 documented parameters, and 579 trace tools audited without behavioural benchmark claims | Keep the agent section mechanical and contractual unless a behavioural benchmark is actually run and packaged; keep the deferred benchmark protocol labelled as protocol rather than a completed behavioural result. |
 
 ## Archive Summary
 
-- Size: 27.07 MiB (28.39 MB decimal)
-- Files: 2961
+- Size: 27.13 MiB (28.44 MB decimal)
+- Files: 2964
 - Registry evidence files: 541
 - Active external-review artifacts present: []
 - Legacy manuscript sources present: []
@@ -90,7 +90,7 @@ Strict release guard: `python Paper-JSS/replication/scripts/source_snapshot_mani
 
 - Package/source/schema versions: 1.32.0 / 1.32.0 / 1.32.0
 - Package commit: 23da3621
-- Paper commit: dc4bef2
+- Paper commit: a7088b0
 - Ready for final publication release: False
 - Strict release command: `python Paper-JSS/replication/scripts/source_snapshot_manifest.py --strict-release`
 

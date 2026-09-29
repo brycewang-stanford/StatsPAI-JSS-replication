@@ -7,7 +7,7 @@
     "is_clean": false,
     "short_commit": "23da3621",
     "status_counts": {
-      "M": 32
+      "M": 25
     },
     "tags_at_head": [
       "v1.32.0"
@@ -17,10 +17,6 @@
     "contains_unreleased_source_changes": true,
     "display_path_redaction_note": "Active external-review filenames are omitted from the JSS source-snapshot gate, and retired external-review filenames are displayed under retired-external aliases.",
     "displayed_generated_dirty_paths": [
-      "M Paper-JSS/replication/results/agent_benchmark_protocol.json",
-      "M Paper-JSS/replication/results/agent_interface_audit.json",
-      "M Paper-JSS/replication/results/bibliography_metadata_audit.json",
-      "M Paper-JSS/replication/results/claim_lint.json",
       "M Paper-JSS/replication/results/data_provenance_audit.json",
       "M Paper-JSS/replication/results/editor_screening_checklist.json",
       "M Paper-JSS/replication/results/editor_screening_checklist.md",
@@ -31,28 +27,21 @@
       "M Paper-JSS/replication/results/jss_full_audit.json",
       "M Paper-JSS/replication/results/jss_full_audit.md",
       "M Paper-JSS/replication/results/jss_house_style_audit.json",
-      "M Paper-JSS/replication/results/listings_execute_audit.json",
-      "M Paper-JSS/replication/results/listings_execute_audit.md",
-      "M Paper-JSS/replication/results/manuscript_artifact_audit.json",
       "M Paper-JSS/replication/results/pdf_render_audit.json",
       "M Paper-JSS/replication/results/pdf_visual_check_protocol.json",
       "M Paper-JSS/replication/results/release_boundary_audit.json",
       "M Paper-JSS/replication/results/release_boundary_audit.md",
-      "M Paper-JSS/replication/results/reproduce_tier1_output.txt",
       "M Paper-JSS/replication/results/reviewer_evidence_map.json",
       "M Paper-JSS/replication/results/reviewer_evidence_map.md",
       "M Paper-JSS/replication/results/source_snapshot_manifest.json",
       "M Paper-JSS/replication/results/source_snapshot_manifest.md",
-      "M Paper-JSS/replication/results/stata_bridge_audit.json",
-      "M Paper-JSS/replication/results/stata_rerun_protocol.json",
       "M Paper-JSS/replication/results/submission_risk_ledger.json",
       "M Paper-JSS/replication/results/submission_risk_ledger.md"
     ],
     "displayed_watched_dirty_paths": [
-      "M Paper-JSS/replication/results/agent_benchmark_protocol.json",
-      "M Paper-JSS/replication/results/agent_interface_audit.json",
-      "M Paper-JSS/replication/results/bibliography_metadata_audit.json",
-      "M Paper-JSS/replication/results/claim_lint.json",
+      "M Paper-JSS/README.md",
+      "M Paper-JSS/REVIEWER-HARDENING-AUDIT.md",
+      "M Paper-JSS/cover-letter.md",
       "M Paper-JSS/replication/results/data_provenance_audit.json",
       "M Paper-JSS/replication/results/editor_screening_checklist.json",
       "M Paper-JSS/replication/results/editor_screening_checklist.md",
@@ -63,30 +52,20 @@
       "M Paper-JSS/replication/results/jss_full_audit.json",
       "M Paper-JSS/replication/results/jss_full_audit.md",
       "M Paper-JSS/replication/results/jss_house_style_audit.json",
-      "M Paper-JSS/replication/results/listings_execute_audit.json",
-      "M Paper-JSS/replication/results/listings_execute_audit.md",
-      "M Paper-JSS/replication/results/manuscript_artifact_audit.json",
       "M Paper-JSS/replication/results/pdf_render_audit.json",
       "M Paper-JSS/replication/results/pdf_visual_check_protocol.json",
       "M Paper-JSS/replication/results/release_boundary_audit.json",
       "M Paper-JSS/replication/results/release_boundary_audit.md",
-      "M Paper-JSS/replication/results/reproduce_tier1_output.txt",
       "M Paper-JSS/replication/results/reviewer_evidence_map.json",
       "M Paper-JSS/replication/results/reviewer_evidence_map.md",
       "M Paper-JSS/replication/results/source_snapshot_manifest.json",
       "M Paper-JSS/replication/results/source_snapshot_manifest.md",
-      "M Paper-JSS/replication/results/stata_bridge_audit.json",
-      "M Paper-JSS/replication/results/stata_rerun_protocol.json",
       "M Paper-JSS/replication/results/submission_risk_ledger.json",
       "M Paper-JSS/replication/results/submission_risk_ledger.md",
-      "M Paper-JSS/replication/scripts/render_cover_letter.py",
-      "M Paper-JSS/replication/scripts/validate_claims.py"
+      "M Paper-JSS/replication/scripts/export_public_replication.py",
+      "M Paper-JSS/replication/scripts/verify_submission_package.py"
     ],
     "generated_dirty_paths": [
-      "M Paper-JSS/replication/results/agent_benchmark_protocol.json",
-      "M Paper-JSS/replication/results/agent_interface_audit.json",
-      "M Paper-JSS/replication/results/bibliography_metadata_audit.json",
-      "M Paper-JSS/replication/results/claim_lint.json",
       "M Paper-JSS/replication/results/data_provenance_audit.json",
       "M Paper-JSS/replication/results/editor_screening_checklist.json",
       "M Paper-JSS/replication/results/editor_screening_checklist.md",
@@ -97,35 +76,31 @@
       "M Paper-JSS/replication/results/jss_full_audit.json",
       "M Paper-JSS/replication/results/jss_full_audit.md",
       "M Paper-JSS/replication/results/jss_house_style_audit.json",
-      "M Paper-JSS/replication/results/listings_execute_audit.json",
-      "M Paper-JSS/replication/results/listings_execute_audit.md",
-      "M Paper-JSS/replication/results/manuscript_artifact_audit.json",
       "M Paper-JSS/replication/results/pdf_render_audit.json",
       "M Paper-JSS/replication/results/pdf_visual_check_protocol.json",
       "M Paper-JSS/replication/results/release_boundary_audit.json",
       "M Paper-JSS/replication/results/release_boundary_audit.md",
-      "M Paper-JSS/replication/results/reproduce_tier1_output.txt",
       "M Paper-JSS/replication/results/reviewer_evidence_map.json",
       "M Paper-JSS/replication/results/reviewer_evidence_map.md",
       "M Paper-JSS/replication/results/source_snapshot_manifest.json",
       "M Paper-JSS/replication/results/source_snapshot_manifest.md",
-      "M Paper-JSS/replication/results/stata_bridge_audit.json",
-      "M Paper-JSS/replication/results/stata_rerun_protocol.json",
       "M Paper-JSS/replication/results/submission_risk_ledger.json",
       "M Paper-JSS/replication/results/submission_risk_ledger.md"
     ],
     "hand_edited_dirty_paths": [
-      "M Paper-JSS/replication/scripts/render_cover_letter.py",
-      "M Paper-JSS/replication/scripts/validate_claims.py"
+      "M Paper-JSS/README.md",
+      "M Paper-JSS/REVIEWER-HARDENING-AUDIT.md",
+      "M Paper-JSS/cover-letter.md",
+      "M Paper-JSS/replication/scripts/export_public_replication.py",
+      "M Paper-JSS/replication/scripts/verify_submission_package.py"
     ],
     "interpretation": "Source snapshot evidence; synchronize with a tagged release before final publication or keep these rows explicitly labelled as source-snapshot evidence.",
     "is_tagged_release_snapshot": false,
     "submission_archive_status": "Audited source-snapshot submission archive; the failing final-publication release gate is a tag/changelog synchronization gate, not a JSS upload reproducibility failure.",
     "watched_dirty_paths": [
-      "M Paper-JSS/replication/results/agent_benchmark_protocol.json",
-      "M Paper-JSS/replication/results/agent_interface_audit.json",
-      "M Paper-JSS/replication/results/bibliography_metadata_audit.json",
-      "M Paper-JSS/replication/results/claim_lint.json",
+      "M Paper-JSS/README.md",
+      "M Paper-JSS/REVIEWER-HARDENING-AUDIT.md",
+      "M Paper-JSS/cover-letter.md",
       "M Paper-JSS/replication/results/data_provenance_audit.json",
       "M Paper-JSS/replication/results/editor_screening_checklist.json",
       "M Paper-JSS/replication/results/editor_screening_checklist.md",
@@ -136,24 +111,18 @@
       "M Paper-JSS/replication/results/jss_full_audit.json",
       "M Paper-JSS/replication/results/jss_full_audit.md",
       "M Paper-JSS/replication/results/jss_house_style_audit.json",
-      "M Paper-JSS/replication/results/listings_execute_audit.json",
-      "M Paper-JSS/replication/results/listings_execute_audit.md",
-      "M Paper-JSS/replication/results/manuscript_artifact_audit.json",
       "M Paper-JSS/replication/results/pdf_render_audit.json",
       "M Paper-JSS/replication/results/pdf_visual_check_protocol.json",
       "M Paper-JSS/replication/results/release_boundary_audit.json",
       "M Paper-JSS/replication/results/release_boundary_audit.md",
-      "M Paper-JSS/replication/results/reproduce_tier1_output.txt",
       "M Paper-JSS/replication/results/reviewer_evidence_map.json",
       "M Paper-JSS/replication/results/reviewer_evidence_map.md",
       "M Paper-JSS/replication/results/source_snapshot_manifest.json",
       "M Paper-JSS/replication/results/source_snapshot_manifest.md",
-      "M Paper-JSS/replication/results/stata_bridge_audit.json",
-      "M Paper-JSS/replication/results/stata_rerun_protocol.json",
       "M Paper-JSS/replication/results/submission_risk_ledger.json",
       "M Paper-JSS/replication/results/submission_risk_ledger.md",
-      "M Paper-JSS/replication/scripts/render_cover_letter.py",
-      "M Paper-JSS/replication/scripts/validate_claims.py"
+      "M Paper-JSS/replication/scripts/export_public_replication.py",
+      "M Paper-JSS/replication/scripts/verify_submission_package.py"
     ]
   },
   "package_git": {
@@ -168,12 +137,12 @@
   },
   "package_metadata_version": "1.32.0",
   "paper_git": {
-    "branch": "wt/jss-final",
-    "commit": "dc4bef28d75ae2d746bcd51138c663be27684358",
+    "branch": "wt/arxiv-review",
+    "commit": "a7088b006c0715276c9809db2ae203f1386cd064",
     "is_clean": false,
-    "short_commit": "dc4bef2",
+    "short_commit": "a7088b0",
     "status_counts": {
-      "M": 32
+      "M": 25
     },
     "tags_at_head": []
   },
@@ -186,30 +155,30 @@
       "tag the exact package-source commit used by the JSS archive",
       "re-run make submission-ready after the tag so manifests record a clean release snapshot"
     ],
-    "generated_dirty_count": 30,
+    "generated_dirty_count": 20,
     "has_package_tag_at_head": true,
     "is_clean_combined_worktree": false,
-    "paper_release_blocker_count": 2,
+    "paper_release_blocker_count": 5,
     "ready_for_final_publication": false,
     "release_blocker_breakdown": {
       "generated_status_counts": {
-        "M": 30
+        "M": 20
       },
       "hand_edited_status_counts": {
-        "M": 2
+        "M": 5
       },
       "package_code_paths": 0,
       "package_docs_paths": 0,
       "paper_manuscript_paths": 0,
-      "paper_other_paths": 0,
+      "paper_other_paths": 3,
       "paper_replication_paths": 2,
       "validation_test_paths": 0
     },
-    "release_blocker_count": 2,
+    "release_blocker_count": 5,
     "release_gate_checks": [
       {
         "check": "clean_combined_worktree",
-        "detail": "2 hand-edited final-publication gate paths; 30 generated dirty paths",
+        "detail": "5 hand-edited final-publication gate paths; 20 generated dirty paths",
         "ok": false
       },
       {
@@ -234,7 +203,7 @@
       },
       {
         "check": "paper_paths_finalized",
-        "detail": "2 Paper-JSS paths still dirty",
+        "detail": "5 Paper-JSS paths still dirty",
         "ok": false
       }
     ],

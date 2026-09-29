@@ -238,8 +238,6 @@ EXCLUDED_FILES = {
     PAPER_DIR / "JSS-research-plan.md",
     PAPER_DIR / "JSS-1.30-SUBMISSION-PLAN.md",
     PAPER_DIR / "NEXT-STEPS.md",
-    PAPER_DIR / "REVIEW-IMPROVEMENTS.md",
-    PAPER_DIR / "REVIEW-ROUND2-HARSH-OPUS.md",
     PAPER_DIR / "_convert_to_pdf.py",
     PAPER_DIR / "_table_style.tex",
     PAPER_DIR / "build_zh.sh",
@@ -361,6 +359,8 @@ def _excluded(path: Path) -> bool:
     # are working documents, not submission material. They were kept out
     # only because nothing listed them, until an uncommitted edit to one put
     # it among the source snapshot's dirty paths, which the archive carries.
+    # They now live in notes/reviews/ (excluded via EXCLUDED_PARTS); this rule
+    # stays as a backstop for new ones dropped at the Paper-JSS root.
     if path.parent == PAPER_DIR and path.name.startswith("\u5ba1\u7a3f\u610f\u89c1"):
         return True
     if path.name in EXCLUDED_NAMES:
@@ -577,8 +577,6 @@ def main() -> int:
             "Paper-JSS/JSS-1.30-SUBMISSION-PLAN.md",
             "Paper-JSS/JSS-research-plan.md",
             "Paper-JSS/NEXT-STEPS.md",
-            "Paper-JSS/REVIEW-IMPROVEMENTS.md",
-            "Paper-JSS/REVIEW-ROUND2-HARSH-OPUS.md",
             "Paper-JSS/_convert_to_pdf.py",
             "Paper-JSS/_table_style.tex",
             "Paper-JSS/build_zh.sh",

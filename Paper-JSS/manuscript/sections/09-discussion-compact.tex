@@ -1,44 +1,50 @@
 \section{Discussion}\label{sec:discussion}
 
 The article's claim is about what a validation label in a broad
-statistical package can be made to mean: attached to the implementation
-that ran, to the entry point that was tested, to the configuration and
-the output that were compared, and to checks that apply to the fit, with
-each attachment verified rather than asserted. The same design would
-serve any package that publishes evidence tiers.
+statistical package can be made to mean. A label can be attached to the
+implementation that ran, to the entry point that was tested, to the
+configuration and the output that were compared, and to the checks that
+apply to the fit, and each attachment can be verified. The same design would serve any package that publishes
+evidence tiers.
 
 The main limitations are as follows. First, \RegistryAutoUnbacked{} stable auto-registered symbols remain API-stable but not parity-backed
-(\RegistryAutoUnbackedClasslike{} class-like, \RegistryAutoUnbackedFunctionlike{} function-like), and the other \RegistryOtherApiEvidence{} symbols of the
+(\RegistryAutoUnbackedClasslike{} class-like, \RegistryAutoUnbackedFunctionlike{} function-like). The other \RegistryOtherApiEvidence{} symbols of the
 \RegistryApiStable-symbol \code{api\_stable} tier carry API, unit-contract,
 convention, or supplemental evidence only. The validated claim is
-limited to certified/validated entries and to the named rows and modules in the validation-suite evidence; the validation-evidence
-audit lists nine scoped limitation rows, each tied to a named function, evidence grade, and unsupported variant.
-Second, only one Track~A row remains a methodological/T4 disclosure:
-classical SCM on the calibrated Basque replica, where reference
-implementations choose measurably different local optima; on the
+limited to certified/validated entries and to the named rows and modules
+in the validation-suite evidence. Within that claim,
+\ScopedLimitationCount{} certified or validated functions list scoped
+limitations in their registry entries, each naming an unsupported variant
+or a convention, and the validation-evidence audit in the archive
+tabulates them with the function and its evidence grade.
+Second, only one Track~A row remains a methodological/T4 disclosure. It
+is classical SCM on the calibrated Basque replica, where reference
+implementations choose measurably different local optima. On the
 original \code{Synth::basque} bytes the same specification brings all
 three implementations within \(4\times10^{-4}\)
-(Section~\ref{sec:scm-identification}), so the disclosure is about
-data-dependent non-uniqueness, not a standing numerical defect. The
-causal-forest row is T3: the two forest engines are equivalent to
-within a tenth of a sampling standard error, with seed-to-seed spreads
-of the same order, which is an equivalence claim, not parity. The
+(Section~\ref{sec:scm-identification}). The disclosure is therefore
+about data-dependent non-uniqueness, not a standing numerical defect.
+The causal forest is graded T3 by its seed study, and its single-draw
+Track~A row is a stochastic screen. The two forest engines are
+equivalent to within a tenth of a sampling standard error, with seed-to-seed spreads
+of the same order. That is an equivalence claim, not parity. The
 \ParityThirdPartyModuleCount{} Track~A rows served by third-party
 \proglang{Python} libraries validate \statspai{}'s wrappers of those
 libraries, not native algorithms. The configuration map behind
 \code{sp.validation\_scope} covers the twelve suite estimators, and
-within them only the dimensions a fitted object records; for the rest
-of the registry the evidence notes name the artifact but not its
-configuration or the outputs it compared. Third,
-the \pkg{fect} and \pkg{interflex} cross-validation selectors for the
-factor number, penalty, and kernel bandwidth are ported in
-1.29.0, but their folds are random, so the three-ecosystem parity of
-Section~\ref{sec:ex-fect} is established at user-specified tuning
-values, and the selectors carry only given-fold score equality and a
-stochastic screen of the selection, not an equivalence test. Fourth, Stata reproduction requires a
-separate licence, so Stata rows are migration bridges rather than the
-licence-free core of the archive; \NoStataModuleCount{} of the \RParityModuleCount{} modules carry no Stata
-reference, each with a measured reason. Fifth, Bayesian, causal-discovery,
+within them only the dimensions a fitted object records. For the rest of
+the registry, the evidence notes name the artifact but not its
+configuration or the outputs it compared.
+Third, the \pkg{fect} and \pkg{interflex} cross-validation selectors for
+the factor number, penalty, and kernel bandwidth were ported in 1.29.0,
+but their folds are random. The three-ecosystem parity of
+Section~\ref{sec:ex-fect} is therefore established at user-specified
+tuning values. The selectors carry only given-fold score equality and a
+stochastic screen of the selection, not an equivalence test. Fourth,
+Stata reproduction requires a separate licence, so Stata rows are
+migration bridges and not part of the licence-free core of the archive.
+\NoStataModuleCount{} of the \RParityModuleCount{} modules carry no
+Stata reference, each with a measured reason. Fifth, Bayesian, causal-discovery,
 and behavioural-agent evaluations require different loss functions and
 are outside this software-validation article. Sixth, within DiD, \statspai{} implements the apparatus of the
 \citet{baker2026difference} practitioner's guide but not the efficient
@@ -46,48 +52,49 @@ combination of comparison groups and baseline periods
 \citep{chen2025efficient} or selection-based pre-trend diagnostics
 \citep{ghanem2026selection}.
 
-The unification itself has costs worth stating plainly, because they
-are the price of the design rather than defects of it. A unified API
-necessarily lags its upstream references: when \pkg{did} or
+The unification itself has costs. They are the price of the design, not
+defects in it. A unified API
+necessarily lags its upstream references. When \pkg{did} or
 \pkg{fixest} ships a new option, \statspai{} users wait for the ported,
-parity-tested version, and the validation regime that makes the port
-trustworthy is exactly what makes it slower to ship. The registry's
-own census quantifies a second cost: \RegistryAutoUnbacked{} of the
-registered symbols carry API-contract evidence only, so a user who
-strays from the validated core onto a long-tail helper is relying on
-software-engineering guarantees, not statistical validation -- which is
-why the tier is printed at call time rather than in an appendix.
-Third, the evidence regime itself has a maintenance bill: every
-correctness fix in Table~\ref{tab:correctness-history} exists because a
-parity or coverage artifact flagged it, and keeping \RParityModuleCount{}
+parity-tested version. The validation regime that makes the port
+trustworthy is exactly what makes it slower to ship. The registry's own
+census quantifies a second cost. \RegistryAutoUnbacked{} of the
+registered symbols carry API-contract evidence only. A user who strays
+from the validated core onto a long-tail helper is relying on
+software-engineering guarantees, not on statistical validation, which is
+why the tier is printed at call time.
+Third, the evidence regime has its own maintenance bill. Most
+correctness fixes in Table~\ref{tab:correctness-history} were found by a
+parity or coverage artifact, and the rest by audits of how evidence
+attaches to functions and options, or by a worked example. Keeping \RParityModuleCount{}
 modules pinned against two external ecosystems is ongoing work that a
 single-method package does not carry.
+A fourth cost is a limit of the regime, not of the package. A parity
+ledger validates the paths it exercises and is silent about the rest.
+The 1.25.0 entry of Table~\ref{tab:correctness-history} concerns a
+continuous-treatment forest path that no Track~A or Track~B row
+reaches, and it surfaced only in a worked example. Hence the registry
+records \emph{which} artifact backs a label, \code{sp.validation\_scope}
+reports the configuration an artifact exercised, and the worked examples
+are executed end-to-end.
 
-A fourth cost is a limit of the regime rather than of the package. A
-parity ledger validates the paths it exercises and is silent about the
-rest: the 1.25.0 entry of Table~\ref{tab:correctness-history}, a
-continuous-treatment forest path no Track~A or Track~B row reaches,
-surfaced only in a worked example. That is why the registry records
-\emph{which} artifact backs a label, why \code{sp.validation\_scope}
-reports the configuration an artifact exercised, and why the worked
-examples are executed end-to-end.
-
-The roadmap is to resolve or further bound the remaining
-classical-SCM reference-disagreement disclosure, extend
-\(B=1{,}000\) coverage beyond the headline rows, replace the inner
-solver of the nested synthetic-control search that dominates the
-performance gap of Section~\ref{sec:performance}, and move the agent
-interface from mechanical conformance to scored behavioural
-benchmarking.
+Next, we aim to resolve or further bound the remaining
+classical-SCM reference-disagreement disclosure, and to extend
+\(B=1{,}000\) coverage beyond the headline rows. Whether the DML default
+learner should change is a question for more designs than the one
+Track~B uses, and we will decide it on that evidence. We also plan to replace
+the inner solver that dominates the synthetic-control gap of
+Section~\ref{sec:performance}, and to move the agent interface to scored
+behavioural benchmarks.
 
 A final limitation is institutional: a large surface is maintained by a
-small team with one principal author. The risk is bounded by
-properties verifiable from the archive: the package is MIT-licensed with
-no relicensing clause, so the validated core can be forked; every
-output-changing fix is pinned by a regression test; and the
-cross-language parity harness is fully scripted and environment-pinned (\code{renv.lock}, recorded
-Stata versions, per-row JSON provenance), so any third party with the
-reference runtimes can re-execute it.
+small team with one principal author. Properties verifiable from the
+archive bound this risk. The package is MIT-licensed
+with no relicensing clause, so the validated core can be forked. Every
+output-changing fix is pinned by a regression test. The cross-language
+parity harness is fully scripted and environment-pinned
+(\code{renv.lock}, recorded Stata versions, per-row JSON provenance), so
+any third party with the reference runtimes can re-execute it.
 
 \section*{Author contributions}
 
@@ -118,5 +125,5 @@ Portions of code documentation and manuscript text were prepared with
 large-language-model assistance. The authors selected the claims,
 reviewed the text, and remain responsible for all statistical decisions.
 Numerical claims are tied to tests, replication scripts, frozen JSON
-artifacts, and cited references; citations are checked by the verifier
+artifacts, and cited references. Citations are checked by the verifier
 in Section~\ref{sec:cite}.

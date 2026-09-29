@@ -14,14 +14,14 @@
       "Paper-JSS/manuscript/sections/09-discussion-compact.tex",
       "Paper-JSS/manuscript/sections/appendix.tex"
     ],
-    "file_count": 2961,
+    "file_count": 2964,
     "forbidden_members": [],
     "legacy_manuscript_sources_present": [],
     "manifest_present": true,
     "present": true,
     "registry_evidence_file_count": 541,
-    "size_mb_decimal": 28.39,
-    "size_mib": 27.07,
+    "size_mb_decimal": 28.44,
+    "size_mib": 27.13,
     "within_jss_attachment_limit": true
   },
   "checks": [
@@ -92,7 +92,7 @@
     },
     {
       "check": "archive_within_50mb",
-      "detail": "27.07 MiB / 28.39 MB decimal",
+      "detail": "27.13 MiB / 28.44 MB decimal",
       "ok": true
     },
     {
@@ -142,7 +142,7 @@
   ],
   "documented_nonblocking_risks": [
     {
-      "evidence": "2 final-release pending paths; source snapshot remains explicitly labelled",
+      "evidence": "5 final-release pending paths; source snapshot remains explicitly labelled",
       "next_action": "commit or intentionally exclude all hand-edited source and Paper-JSS paths; move accepted [Unreleased] changes into a dated CHANGELOG release entry; align pyproject.toml, src/statspai/__init__.py, and schema bundle versions; tag the exact package-source commit used by the JSS archive; re-run make submission-ready after the tag so manifests record a clean release snapshot",
       "risk": "final_tagged_release_cut_pending"
     },
@@ -162,7 +162,7 @@
       "risk": "methodological_t4_row_disclosed"
     },
     {
-      "evidence": "active PDF has 53 pages; PDF-visible evidence-map/checklist routing present; packaged PDF visual-check protocol present; page inventory covers 53/53 pages",
+      "evidence": "active PDF has 54 pages; PDF-visible evidence-map routing present; packaged PDF visual-check protocol present; page inventory covers 54/54 pages",
       "next_action": "Keep additional reviewer evidence in replication/results and reviewer_evidence_map rather than expanding main.pdf; perform the final full-document human visual spot-check using pdf_visual_check_protocol.md and the PDF render audit before JSS upload.",
       "risk": "compact_text_may_feel_terse"
     },
@@ -230,11 +230,11 @@
   "final_tagged_release_blockers": [
     {
       "check": "clean_combined_worktree",
-      "detail": "2 hand-edited final-publication gate paths; 30 generated dirty paths"
+      "detail": "5 hand-edited final-publication gate paths; 20 generated dirty paths"
     },
     {
       "check": "paper_paths_finalized",
-      "detail": "2 Paper-JSS paths still dirty"
+      "detail": "5 Paper-JSS paths still dirty"
     }
   ],
   "generated_at_unix": 1780185600,
@@ -261,27 +261,27 @@
       "clean_combined_worktree",
       "paper_paths_finalized"
     ],
-    "generated_dirty_count": 30,
+    "generated_dirty_count": 20,
     "package_commit": "23da3621",
     "package_metadata_version": "1.32.0",
-    "paper_commit": "dc4bef2",
-    "paper_release_blocker_count": 2,
+    "paper_commit": "a7088b0",
+    "paper_release_blocker_count": 5,
     "ready_for_final_publication": false,
     "release_blocker_breakdown": {
       "generated_status_counts": {
-        "M": 30
+        "M": 20
       },
       "hand_edited_status_counts": {
-        "M": 2
+        "M": 5
       },
       "package_code_paths": 0,
       "package_docs_paths": 0,
       "paper_manuscript_paths": 0,
-      "paper_other_paths": 0,
+      "paper_other_paths": 3,
       "paper_replication_paths": 2,
       "validation_test_paths": 0
     },
-    "release_blocker_count": 2,
+    "release_blocker_count": 5,
     "schema_bundle_version": "1.32.0",
     "source_init_version": "1.32.0",
     "source_release_blocker_count": 0,

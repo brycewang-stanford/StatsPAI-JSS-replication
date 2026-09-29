@@ -156,7 +156,7 @@
       "jss_upload_blocking": false,
       "metrics": {
         "ready_for_final_publication": false,
-        "release_blocker_count": 2,
+        "release_blocker_count": 5,
         "release_boundary_status": "PASS",
         "version_consistent": true
       },

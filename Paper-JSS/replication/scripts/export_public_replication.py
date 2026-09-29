@@ -98,8 +98,7 @@ README = """\
 Replication materials for
 
 > Biaoyue Wang and Scott Rozelle. *StatsPAI: Validation-Tiered Python
-> Workflows for Causal Inference.* Preprint, submitted to the *Journal of
-> Statistical Software*.
+> Workflows for Causal Inference.* Preprint.
 
 This repository is a frozen snapshot of the replication package that
 accompanies the manuscript. The package itself is developed at

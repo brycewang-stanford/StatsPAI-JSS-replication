@@ -1,19 +1,19 @@
 \section{Worked examples}\label{sec:examples}
 
 The paper uses seven worked examples as an end-to-end smoke test of the
-validated core rather than as seven miniature empirical papers. Each has
-an executable script under \code{Paper-JSS/replication/} that writes the
-JSON, table fragments, and figures the build reads. Together they cover
-selection on observables, IV, staggered DiD, RD, synthetic control,
-machine-learning effect estimation, matching, causal time-series
-counterfactuals, and---across all three ecosystems---panel counterfactual
-and interaction-effect estimators run on the same bytes in
-\proglang{Python}, \proglang{R}, and \proglang{Stata}. The staggered-DiD
-example is the main case study; it carries one fitted object from
-estimation through aggregation, sensitivity, and export. The examples
-also enforce the paper's central boundary: original-data rows are claimed
+validated core. They are not meant as seven miniature empirical papers.
+Each has an executable script under \code{Paper-JSS/replication/} that
+writes the JSON, table fragments, and figures the build reads. Together
+they cover selection on observables, IV, staggered DiD, RD, synthetic
+control, machine-learning effect estimation, matching, and causal
+time-series counterfactuals. The last example runs panel counterfactual
+and interaction-effect estimators on the same bytes in all three
+ecosystems, \proglang{Python}, \proglang{R}, and \proglang{Stata}. The
+staggered-DiD example is the main case study. It carries one fitted
+object from estimation through aggregation, sensitivity, and export. The
+examples also enforce the paper's central boundary: original-data rows are claimed
 only where the public extract can be redistributed or regenerated from a
-reference package, and calibrated replicas are described as structural
+reference package. Calibrated replicas are described only as structural
 guards on sign, scale, and workflow shape.
 Table~\ref{tab:worked-example-map} maps those examples to their scripts
 and headline validation facts.
@@ -64,7 +64,7 @@ OLS, 2SLS, DML, and a causal forest through the same
 \code{(y, X, data)} contract, and exports the resulting table with
 \code{sp.regtable}. \code{sp.datasets.card\_1995()} returns the public
 \code{wooldridge::card} extract itself, so the session of
-Listing~\ref{lst:motivating} runs on the original bytes;
+Listing~\ref{lst:motivating} runs on the original bytes.
 Listing~\ref{lst:card-output} continues that session at a prompt and
 prints what it produces.
 
@@ -110,29 +110,30 @@ n/a checks do not exist for this fit and are not counted.
 \end{lstlisting}
 
 The three linear-in-\code{educ} summaries land where the literature
-puts them: \(\hat\beta_{\mathrm{OLS}} = 0.07401\) against Card's
+puts them. \(\hat\beta_{\mathrm{OLS}} = 0.07401\) compares with Card's
 published 0.075, and
-\(\hat\beta_{\mathrm{IV}}^{\mathrm{nearc4}} = 0.1323\) against his
-0.132, reproducing the IV-above-OLS pattern that motivates the design;
+\(\hat\beta_{\mathrm{IV}}^{\mathrm{nearc4}} = 0.1323\) with his 0.132.
+This reproduces the IV-above-OLS pattern that motivates the design, and
 cross-fit DML agrees with OLS to the third decimal. \proglang{R}'s
 \code{lm}+\pkg{sandwich} and \pkg{AER}\code{::ivreg} return the same
 two coefficients on the same CSV bytes at relative errors
 \(7.9\times 10^{-15}\) and \(1.6\times 10^{-11}\)
-(Table~\ref{tab:headline-parity}). The \code{sp.audit} block is the
-audit-hook claim made concrete, and it distinguishes three states that a
-flat checklist conflates. The first-stage \(F\) of 16.72 clears the
-\(F>10\) rule of thumb \citep{staiger1997instrumental,stock2005testing};
-``passed'' means only that this screen was met --- it is neither a test
-of instrument validity nor a guarantee against weak-instrument
-distortion, which is why weak-instrument-robust Anderson--Rubin inference
-is still listed as missing. The over-identification test is reported as
-not applicable rather than missing: with one endogenous regressor and one
-excluded instrument the model is just-identified, the Sargan/Hansen
-statistic has zero degrees of freedom, and there is no restriction to
-test. The audit reads the instrument and endogenous-regressor counts from
-the fitted object to decide this; when an over-identified fit already
-carries a \(J\) statistic it is read and graded, and the text, JSON, and
-MCP outputs carry the same \code{not\_applicable} status and reason.
+(Table~\ref{tab:headline-parity}).
+The \code{sp.audit} block makes the audit-hook claim concrete. It
+separates three states that a flat checklist would merge. The
+first-stage \(F\) of 16.72 clears the \(F>10\) rule of thumb
+\citep{staiger1997instrumental,stock2005testing}. Here ``passed'' means
+only that this screen was met. It is neither a test of instrument
+validity nor a guarantee against weak-instrument distortion, which is why
+weak-instrument-robust Anderson--Rubin inference is still listed as
+missing. The over-identification test is reported as not applicable, not
+as missing. With one endogenous regressor and one excluded instrument the
+model is just-identified, so the Sargan/Hansen statistic has zero degrees
+of freedom and there is no restriction to test. The audit reads the
+instrument and endogenous-regressor counts from the fitted object to
+decide this. When an over-identified fit already carries a \(J\)
+statistic, the audit reads and grades it. The text, JSON, and MCP
+outputs carry the same \code{not\_applicable} status and reason.
 
 The four estimators do not share one identification argument, and the
 table should not be read as four estimates of one parameter. The 2SLS
@@ -140,13 +141,13 @@ coefficient uses \code{nearc4} as an excluded instrument and, with
 heterogeneous returns, identifies a local average effect for
 instrument-compliers under relevance, exclusion, independence, and
 monotonicity. The DML and forest calls in Listing~\ref{lst:motivating}
-use no instrument: they adjust for the listed covariates and are causal
-only under conditional exogeneity of schooling, the assumption the IV
-design exists to avoid. On these data they therefore estimate an
+use no instrument. They adjust for the listed covariates and are causal
+only under conditional exogeneity of schooling, which is the assumption
+the IV design exists to avoid. On these data they therefore estimate an
 adjusted partial association, and the forest's heterogeneity is
 heterogeneity in that association. The listing shows that the four fits
-share one result contract; it does not identify heterogeneous returns to
-schooling, which would require an IV-based heterogeneity estimator and
+share one result contract. It does not identify heterogeneous returns to
+schooling. That would require an IV-based heterogeneity estimator, with
 its own validation. With that caveat, Listing~\ref{lst:card-cate}
 summarises the fitted forest's conditional effects.
 
@@ -158,10 +159,8 @@ of the fitted conditional effects, not the forest's doubly-robust
 average. With \pkg{grf}'s honest, 2{,}000-tree
 defaults the interquartile range spans roughly 6.3\% to 8.6\% per year
 around a mean of 7.7\%, as \proglang{R} \pkg{grf} finds on the same
-bytes (6.3\% to 8.7\% around 7.6\%): the estimated dispersion is
-modest, about a fifth of the 0.081 standard deviation the pre-1.29.0
-forest engine reported for the same call on the same
-data.},label={lst:card-cate},captionpos=b]
+bytes (6.3\% to 8.7\% around 7.6\%). The estimated dispersion is
+modest.},label={lst:card-cate},captionpos=b]
 >>> print(sp.cate_summary(cf).loc[["Mean", "Std. Dev.",
 ...                                "Q25", "Q75"]].round(4))
              CATE
@@ -177,30 +176,31 @@ extract above, which is why its Card rows
 (Table~\ref{tab:track-a-cross-language-snapshot}) differ from the
 original-data rows of Table~\ref{tab:headline-parity}. Because schooling
 is continuous, the forest's scalar aggregate is the average partial
-effect from the continuous-treatment debiased score, not the binary
-AIPW aggregate that Track~B validates: \code{cf.average\_treatment\_effect()}
-returns \(0.0787\) (SE \(0.0049\)), as does \pkg{grf}~2.6.1 on the same
-bytes---one draw from each engine, a stochastic screen rather than a
-grade---and both packages refuse the ATT and ATC targets here.
+effect from the continuous-treatment debiased score. It is not the binary
+AIPW aggregate that Track~B validates.
+\code{cf.average\_treatment\_effect()} returns \(0.0787\) (SE
+\(0.0049\)), and so does \pkg{grf}~2.6.1 on the same bytes. That is one
+draw per engine, a stochastic screen and not a grade. Both packages refuse the ATT and ATC targets here.
 
 \subsection{Abadie--Gardeazabal (2003): the Basque country}\label{sec:ex-basque}
 
 The Basque example \citep{abadie2003economic} exercises the
 synthetic-control dispatcher and its sensitivity hooks, and it shows why
 a synthetic-control number must always travel with its specification
-and its data. Four combinations appear in this article;
+and its data. Four combinations appear in this article.
 Table~\ref{tab:basque-specs} lists them once, and the rest of the paper
-refers to them by row. Under the specification of
-\citet{abadie2010synthetic} that \code{Synth::synth} implements---one
-special predictor per pre-treatment year and a nested search over the
-predictor weights \(V\)---the three implementations nearly coincide on
-the original bytes (row~1) and split on the calibrated replica (row~2),
-which is the paper's one T4 disclosure
+refers to them by row. \code{Synth::synth} implements the specification
+of \citet{abadie2010synthetic}, with one special predictor per
+pre-treatment year and a nested search over the predictor weights \(V\).
+Under that specification the three implementations nearly coincide on
+the original bytes (row~1). They split on the calibrated replica
+(row~2), which is the paper's one T4 disclosure
 (Section~\ref{sec:scm-identification}). The solver itself is certified
 where the answer is unique (row~4). The package default (row~3) uses the
-pre-treatment outcome path as the predictors, where \(V\) is not
-identified and is set to the identity; it is a documented convention
-with no reference row, and Figure~\ref{fig:basque-gap} draws it.
+pre-treatment outcome path as the predictors. There \(V\) is not
+identified and is set to the identity. This default is a documented
+convention with no reference row, and Figure~\ref{fig:basque-gap} draws
+it.
 
 \begin{table}[!ht]
 \centering\scriptsize
@@ -235,7 +235,7 @@ written by \code{replication/scripts/ex02\_basque.py}.}
 
 \subsection[Callaway-Sant'Anna staggered DiD: mpdta]{Callaway--Sant'Anna staggered DiD: \texttt{mpdta}}\label{sec:ex-csdid}
 
-The \code{mpdta} example is the main panel-workflow demonstration;
+The \code{mpdta} example is the main panel-workflow demonstration.
 Listing~\ref{lst:csdid} shows the full fit-to-sensitivity chain from one
 fitted object.
 
@@ -263,10 +263,10 @@ bd  = sp.bacon_decomposition(mpdta, y="lemp", treat="treat",
 post-estimator, and \code{sp.bacon\_decomposition} gives the TWFE
 weight diagnostic \citep{goodmanbacon2021difference}.
 Listing~\ref{lst:csdid-output} prints the two objects a reader of this
-literature would want to see---the aggregated effect, and how much
-parallel-trends violation the effect in the first treated period
-survives. They are different estimands, and the transcript labels them
-as such.
+literature would want to see. One is the aggregated effect. The other is
+how much parallel-trends violation the effect in the first treated
+period survives. They are different estimands, and the transcript labels
+them as such.
 
 \begin{lstlisting}[float=tb,caption={Two estimands from the fit of
 Listing~\ref{lst:csdid}: the simple aggregate over all post-treatment
@@ -298,13 +298,13 @@ of \citet{rambachan2023more} is
   (\delta_t-\delta_{t-1})\bigr| \le M \ \text{for all } t\bigr\},
 \end{equation}
 so \(M\) bounds how much the slope of the differential trend may change
-from one year to the next, in log points per year per year; \(M=0\)
+from one year to the next, in log points per year per year. \(M=0\)
 allows only a linear continuation of the pre-treatment trend. On the
 printed grid the first-period effect still excludes zero at
-\(M = 0.0075\) and no longer at \(M = 0.0112\); a continuous search
+\(M = 0.0075\) but not at \(M = 0.0112\). A continuous search
 (\code{sp.breakdown\_m}) puts the breakdown value at \(0.0080\). That
-value, not the pre-trend test's \(p\)-value, is the quantity a referee
-should be given, and it comes off the same fitted object as the point
+value is the quantity a referee should be given, more than the pre-trend
+test's \(p\)-value, and it comes off the same fitted object as the point
 estimate.
 
 That last clause is the case for the shared contract, and it can be
@@ -313,32 +313,36 @@ of the event-study coefficients, the relative times, and the position of
 the reference period. Composed by hand, the workflow extracts these from
 one package's aggregation object and re-enters them into another's
 sensitivity function. A careful user of \pkg{did} and \pkg{HonestDiD}
-passes the joint covariance, and nothing here says they would not; the
-point is that the hand-off offers a shortcut that runs without complaint,
-rebuilding the covariance from the reported standard errors. On \texttt{mpdta} the pre- and
-post-period coefficients are correlated up to 0.61, and the shortcut is
-not innocuous: with \(\operatorname{diag}(\mathrm{SE}^2)\) in place of the
-joint covariance the breakdown value rises from 0.0080 to 0.0101, so the
-estimate would be reported as surviving trend deviations 26\% larger
-than the data support, and the \(M=0\) interval shifts from
-\([-0.0546,-0.0214]\) to \([-0.0477,-0.0156]\). In \statspai{},
-\code{sp.honest\_did} reads the joint covariance, the relative times, and
-the aggregation weights from the fitted object through one extractor,
-\code{sp.event\_study\_vcov}, shared by nine event-study estimators; when
-a fit cannot supply a joint covariance it says so and falls back to a
-labelled approximation rather than fabricating one from standard errors.
-The single entry point also means a correctness fix applies once: the
-1.30.0 repair of the cohort-share term in that covariance
+passes the joint covariance, and nothing here suggests otherwise. The
+problem is that the hand-off also offers a shortcut that runs without
+complaint, which is to rebuild the covariance from the reported standard
+errors. On \texttt{mpdta} the pre- and post-period coefficients are
+correlated up to 0.61, so the shortcut matters. With
+\(\operatorname{diag}(\mathrm{SE}^2)\) in place of the joint covariance,
+the breakdown value rises from 0.0080 to 0.0101. The estimate would then
+be reported as surviving trend deviations 26\% larger than the data
+support, and the \(M=0\) interval would shift from
+\([-0.0546,-0.0214]\) to \([-0.0477,-0.0156]\).
+
+In \statspai{}, \code{sp.honest\_did} reads the joint covariance, the
+relative times, and the aggregation weights from the fitted object
+through one extractor, \code{sp.event\_study\_vcov}, which nine
+event-study estimators share. When a fit cannot supply a joint
+covariance, the function says so and falls back to a labelled
+approximation. It does not fabricate one from standard errors. A single
+entry point also means a correctness fix applies once. The 1.30.0 repair
+of the cohort-share term in that covariance
 (Table~\ref{tab:correctness-history}) reached every estimator's
-sensitivity analysis at the same time. The saving is not lines of code;
-it is that the covariance, the reference period, and the estimand
-travel with the estimate instead of being re-typed. The \code{random\_state=0} in
-Listing~\ref{lst:csdid} is not decoration: \code{sp.aggte} follows
-\pkg{did} in defaulting to a 1{,}000-draw multiplier bootstrap, so the
-aggregated standard error is a random quantity and a printed
-transcript of it is only reproducible once the draw is pinned. The
-parity
-evidence sits on two data sets, and the paper keeps them apart. On the
+sensitivity analysis at the same time. The saving is not in lines of
+code. It is that the covariance, the reference period, and the estimand
+travel with the estimate and are never re-typed. The
+\code{random\_state=0} in Listing~\ref{lst:csdid} matters too.
+\code{sp.aggte} follows \pkg{did} in defaulting to a 1{,}000-draw
+multiplier bootstrap. The aggregated standard error is therefore a
+random quantity, and a printed transcript of it is reproducible only
+once the draw is pinned.
+
+The parity evidence sits on two data sets, and the paper keeps them apart. On the
 calibrated \texttt{mpdta} replica of Track~A module 04,
 \statspai{}, \pkg{did}, and \code{csdid} all return the simple ATT
 \(-0.0329765\) in the R-joined harness and agree within the registered
@@ -368,27 +372,28 @@ written by \code{replication/scripts/ex03\_csdid.py}.}
 \subsection[RD incumbency advantage (Lee-style sharp design)]{Regression discontinuity: the incumbency advantage (Lee-style sharp design)}\label{sec:ex-rd}
 
 The RD example deliberately separates the local-polynomial estimator
-from the bandwidth selector, and it keeps two data objects distinct to
+from the bandwidth selector. It also keeps two data objects distinct, to
 avoid over-claiming. The \emph{exact} cross-language parity anchor is
-the public \code{rdrobust::RDsenate} extract --- the U.S.\ Senate
-margin-of-victory sample distributed with \pkg{rdrobust}, a Lee-style
-sharp RD but \emph{not} \citet{lee2008randomized}'s original House
-data, which we do not redistribute. The calibrated
-\code{lee\_2008\_senate()} replica is a redistribution-safe
-drift-guard, not a parity target: on it \code{sp.rdrobust} returns a
-robust jump of \(0.0763\), and the external test only asserts that the
-estimate stays in the \([0.05,0.12]\) structural neighbourhood.
-On the RDsenate extract the native \code{sp.rdrobust} default, which
-implements the \citet{calonico2014robust} CCT bandwidth cascade and
-robust bias-corrected inference in \statspai{} itself
-\citep[software article:][]{calonico2015rdrobust}, returns the same
-MSE-optimal bandwidth (17.7544) and conventional and robust estimates as
-\proglang{R}'s default \pkg{rdrobust} at relative error below
-\(3\times10^{-13}\) (Section~\ref{sec:track-a}). Users who prefer the
-authors' own code can call \code{sp.rdrobust(..., bwselect="cct")},
-which delegates to the official \pkg{rdrobust} \proglang{Python} port;
-the two agree to \(2\times10^{-13}\), and that agreement is recorded as
-a convergence check rather than counted as parity. The previous
+the public \code{rdrobust::RDsenate} extract. This is the U.S.\ Senate
+margin-of-victory sample distributed with \pkg{rdrobust}. It is a
+Lee-style sharp RD, but it is \emph{not} \citet{lee2008randomized}'s
+original House data, which we do not redistribute. The calibrated
+\code{lee\_2008\_senate()} replica is a redistribution-safe drift-guard
+and not a parity target. On it \code{sp.rdrobust} returns a robust jump
+of \(0.0763\), and the external test only asserts that the estimate
+stays in the \([0.05,0.12]\) structural neighbourhood.
+The native \code{sp.rdrobust} default implements the
+\citet{calonico2014robust} CCT bandwidth cascade and robust
+bias-corrected inference in \statspai{} itself
+\citep[software article:][]{calonico2015rdrobust}. On the RDsenate
+extract it returns the same MSE-optimal bandwidth (17.7544) and the same
+conventional and robust estimates as \proglang{R}'s default
+\pkg{rdrobust}, at relative error below \(3\times10^{-13}\)
+(Section~\ref{sec:track-a}). Users who prefer the authors' own code can
+call \code{sp.rdrobust(..., bwselect="cct")}, which delegates to the
+official \pkg{rdrobust} \proglang{Python} port. The two agree to
+\(2\times10^{-13}\). That agreement is recorded as a convergence check
+and is not counted as parity. The previous
 density-test selector gap is closed by the native \code{sp.rddensity}
 port (Section~\ref{sec:track-a}).
 
@@ -399,13 +404,13 @@ The LaLonde \citep{lalonde1986evaluating} / Dehejia--Wahba
 under an experimental benchmark and an observational comparison. On
 \code{causalsens::lalonde.psid} \citep{blackwell2014selection}, the naive OLS ATT is
 \(-\$15{,}200\) in both \statspai{} and \proglang{R}, and the
-covariate-adjusted OLS ATT is \(\$751.9\) on both sides; on
+covariate-adjusted OLS ATT is \(\$751.9\) on both sides. On
 \code{MatchIt::lalonde}, 1:1 nearest-neighbour PSM agrees with
 \pkg{MatchIt} up to the registered caliper/default convention. The
-replication script also emits balance and overlap diagnostics: the
-point is not that matching fixes the benchmark, but that the platform
-keeps the experimental anchor, observational bias, and preprocessing
-diagnostics in one auditable pipeline.
+replication script also emits balance and overlap diagnostics. Matching
+does not fix the benchmark here. What the example shows is that the
+platform keeps the experimental anchor, the observational bias, and the
+preprocessing diagnostics in one auditable pipeline.
 
 \subsection{Causal time series: advertising lift}\label{sec:ex-causal-impact}
 
@@ -416,21 +421,22 @@ The known post-intervention lift is \(4.2\) sales units per day;
 \code{sp.causal\_impact} estimates \(4.306\) with SE \(0.140\), a 95\%
 interval \([4.032,4.579]\), cumulative effect \(129.2\) against true
 \(126.0\), and pre-period RMSE \(0.562\). These numbers are not
-cross-language parity claims; they are known-truth guards that the
-time-series counterfactual machinery, the result object, and the
-publication export path are wired correctly.
+cross-language parity claims. They are known-truth guards, which check
+that the time-series counterfactual machinery, the result object, and
+the publication export path are wired correctly.
 
 \subsection{Three ecosystems, one number: panel counterfactuals and interaction effects}\label{sec:ex-fect}
 
 The last example shows the same estimator returning the same number in
 all three languages. It uses two method families whose authors ship
-both \proglang{R} and \proglang{Stata} implementations: the
-counterfactual estimators for time-series cross-sectional data of
-\citet{liu2024practical} (\pkg{fect}: two-way fixed effects, interactive
-fixed effects, and matrix completion, fitted on the untreated cells) and
-the interaction-effect diagnostics of \citet{hainmueller2019much}
-(\pkg{interflex}: linear, binning, and kernel estimators of a conditional
-marginal effect). \statspai{} ports both natively, down to \pkg{fect}'s
+both \proglang{R} and \proglang{Stata} implementations. The first is the
+set of counterfactual estimators for time-series cross-sectional data of
+\citet{liu2024practical}. In \pkg{fect} these are two-way fixed effects,
+interactive fixed effects, and matrix completion, fitted on the
+untreated cells. The second is the interaction-effect diagnostics of
+\citet{hainmueller2019much}. In \pkg{interflex} these are linear,
+binning, and kernel estimators of a conditional marginal effect.
+\statspai{} ports both natively, down to \pkg{fect}'s
 EM map and the linear-binning-plus-FFT density grid behind
 \pkg{interflex}'s adaptive kernel bandwidth. Listing~\ref{lst:fect} runs
 them on the panels of parity modules 86--87, after a \pkg{panelView}-style
@@ -460,11 +466,11 @@ kern = sp.interflex(sample, y="Y", d="D", x="X", z=["Z1"],
                     estimator="kernel", bw=1.0)
 \end{lstlisting}
 
-One scope boundary must be stated before the numbers: the \proglang{R}
-\pkg{fect} and \pkg{interflex} packages select the factor number
-\(r\), the matrix-completion penalty \(\lambda\), and the kernel
-bandwidth by cross-validation by default, and cross-validation draws
-random folds. The three-way parity claim below is therefore
+One scope boundary must be stated before the numbers. By default the
+\proglang{R} \pkg{fect} and \pkg{interflex} packages select the factor
+number \(r\), the matrix-completion penalty \(\lambda\), and the kernel
+bandwidth by cross-validation, and cross-validation draws random folds.
+The three-way parity claim below is therefore
 established at \emph{user-specified} tuning values (the listing's
 \code{r=2}, \code{lam=0.002}, and \code{bw=1.0} are the values fixed
 by parity modules 86--87 so that all three implementations solve the
@@ -476,9 +482,9 @@ per-fold scores equal \pkg{fect}'s to \(5.9\times10^{-8}\) and
 \pkg{interflex}'s to \(2.8\times10^{-13}\). Across fold seeds (twenty in
 \proglang{R}, five in \statspai{}) the \pkg{fect} selections coincide:
 \(r=2\) and the same \(\lambda\) in every run on both sides. For the
-\pkg{interflex} bandwidth \proglang{R}'s own seeds do not agree---its
-twenty picks spread over six neighbouring grid points with no
-majority---so the check is only that every \statspai{} pick lies on
+\pkg{interflex} bandwidth, \proglang{R}'s own seeds do not agree. Its
+twenty picks spread over six neighbouring grid points with no majority.
+The check is therefore only that every \statspai{} pick lies on
 \proglang{R}'s flat stretch of the loss curve, which it does. The mean CV
 curves differ by less than four two-sample Monte Carlo standard errors
 at every grid point
@@ -487,13 +493,13 @@ The fit at a CV-selected value equals the fit at that value supplied
 by hand, so the T2 rows above are unchanged by the port.
 
 Table~\ref{tab:ex08-three-way} sets the \statspai{} numbers next to
-the \proglang{R} and \proglang{Stata} goldens; on the same CSV bytes the
+the \proglang{R} and \proglang{Stata} goldens. On the same CSV bytes the
 interactive-fixed-effects ATT agrees to \(4\times10^{-16}\) with
-\proglang{R} and \(3\times10^{-10}\) with \proglang{Stata}. The rows that
-are deliberately not three-way are as informative as the rest: the
-\proglang{Stata} \code{interflex} command uses a fixed Gaussian kernel
-and tests the linear restriction without the covariate-by-bin terms and
-against an \(F\) reference, and \code{sp.interflex} exposes both
+\proglang{R} and to \(3\times10^{-10}\) with \proglang{Stata}. The rows
+that are deliberately not three-way are as informative as the rest. The
+\proglang{Stata} \code{interflex} command uses a fixed Gaussian kernel.
+It also tests the linear restriction without the covariate-by-bin terms
+and against an \(F\) reference. \code{sp.interflex} exposes both
 conventions (\code{adaptive=}, \code{wald\_full\_moderate=},
 \code{wald\_test=}) and reproduces each reference to machine precision.
 The complete row set (105 rows for \pkg{fect}, 25 for \pkg{interflex})

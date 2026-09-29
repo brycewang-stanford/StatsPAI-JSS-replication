@@ -58,7 +58,7 @@ cd Paper-JSS
 make submission-ready PYTHON=../.venv/bin/python
 ```
 
-This audited packaging target runs `reproduce-jss-full` and then rebuilds `build/statspai-jss-submission.zip`, so the archive contains the latest audit, reproduction, source-snapshot, evidence-map, PDF-review, and Tier-1 transcript artifacts. It excludes repository metadata, caches, prior build products, local notes, active external-review artifacts, and historical or inactive manuscript drafts, leaving one authoritative English manuscript and reviewer package. The current package is 27.07 MiB (28.39 MB decimal) with 2,961 files, including 541 registry evidence files referenced by validation notes. Use `make submission-package` only when the audit artifacts are already current and you need a quick zip refresh.
+This audited packaging target runs `reproduce-jss-full` and then rebuilds `build/statspai-jss-submission.zip`, so the archive contains the latest audit, reproduction, source-snapshot, evidence-map, PDF-review, and Tier-1 transcript artifacts. It excludes repository metadata, caches, prior build products, local notes, active external-review artifacts, and historical or inactive manuscript drafts, leaving one authoritative English manuscript and reviewer package. The current package is 27.13 MiB (28.44 MB decimal) with 2,964 files, including 541 registry evidence files referenced by validation notes. Use `make submission-package` only when the audit artifacts are already current and you need a quick zip refresh.
 
 The generated root `README.md` inside the zip is a JSS-only release
 entry point. It routes reviewers to `Paper-JSS/README.md`, the manuscript
@@ -77,7 +77,7 @@ It also verifies the reproduction environment advertised in the cover letter: `r
 
 ## Data Provenance Audit
 
-The data provenance audit classifies prospective JSS archive data/result members with the same include/exclude rules as `jss_submission_package.py` and excludes `data_provenance_audit.json` from its own data counts. The current report covers 876 scoped data/result files and 357 CSV files: 9 packaged public dataset CSVs, 7 public original-data extract CSVs, 91 same-byte R/Stata fixture CSVs, and 250 reference fixture CSVs. It reports zero forbidden raw-data members, zero high-risk private/credential path hits, zero CSV parse failures, and zero unknown categories. This keeps original-data claims limited to public package extracts and documented public-data rows, keeps calibrated/synthetic fixtures separate from original-data extracts, and rejects raw binary/statistical data formats such as Stata, RDS, SAS, Excel, parquet, and feather files in the prospective archive.
+The data provenance audit classifies prospective JSS archive data/result members with the same include/exclude rules as `jss_submission_package.py` and excludes `data_provenance_audit.json` from its own data counts. The current report covers 877 scoped data/result files and 357 CSV files: 9 packaged public dataset CSVs, 7 public original-data extract CSVs, 91 same-byte R/Stata fixture CSVs, and 250 reference fixture CSVs. It reports zero forbidden raw-data members, zero high-risk private/credential path hits, zero CSV parse failures, and zero unknown categories. This keeps original-data claims limited to public package extracts and documented public-data rows, keeps calibrated/synthetic fixtures separate from original-data extracts, and rejects raw binary/statistical data formats such as Stata, RDS, SAS, Excel, parquet, and feather files in the prospective archive.
 
 ```bash
 cd Paper-JSS
@@ -226,11 +226,11 @@ make manuscript-artifact-audit PYTHON=../.venv/bin/python
 
 ## PDF Render Audit
 
-The formal audit extracts text from `manuscript/main.pdf` (the active PDF is 53 pages); the render audit adds a visual sanity guard. It renders the first, second, middle,
-and last pages with Poppler `pdftoppm`, then scans all 53 PDF pages with
+The formal audit extracts text from `manuscript/main.pdf` (the active PDF is 54 pages); the render audit adds a visual sanity guard. It renders the first, second, middle,
+and last pages with Poppler `pdftoppm`, then scans all 54 PDF pages with
 the same raster dimension and blank/dark-page thresholds. The generated
 `replication/results/pdf_render_audit.{json,md}` records both the
-sampled-page metrics and the full-document machine scan (`53/53` pages,
+sampled-page metrics and the full-document machine scan (`54/54` pages,
 `0` failures). It also records that the final full-document human visual
 spot-check is still an upload-time manual action and is not certified by
 the machine render audit. The final package verifier rejects an archive
@@ -397,7 +397,7 @@ make jss-style PYTHON=../.venv/bin/python
 
 ## Manuscript Length
 
-`manuscript/main.tex` now compiles compact submission-facing versions of the introduction, architecture, agent API, worked-example, validation, computational-detail, and discussion sections. The longer source notes remain in `manuscript/sections/` for auditability, but they are not printed in the active 53-page PDF. The one printed appendix is the complete 89-module Track A ledger (Appendix A, generated by `replication/scripts/gen_appendix_parity.py`); the remaining detailed tables are generated and shipped as supplemental artifacts rather than printed in the main manuscript.
+`manuscript/main.tex` now compiles compact submission-facing versions of the introduction, architecture, agent API, worked-example, validation, computational-detail, and discussion sections. The longer source notes remain in `manuscript/sections/` for auditability, but they are not printed in the active 54-page PDF. The one printed appendix is the complete 89-module Track A ledger (Appendix A, generated by `replication/scripts/gen_appendix_parity.py`); the remaining detailed tables are generated and shipped as supplemental artifacts rather than printed in the main manuscript.
 
 ## What "Validated" Means Here
 

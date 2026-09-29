@@ -3,8 +3,7 @@
 Replication materials for
 
 > Biaoyue Wang and Scott Rozelle. *StatsPAI: Validation-Tiered Python
-> Workflows for Causal Inference.* Preprint, submitted to the *Journal of
-> Statistical Software*.
+> Workflows for Causal Inference.* Preprint.
 
 This repository is a frozen snapshot of the replication package that
 accompanies the manuscript. The package itself is developed at
@@ -15,7 +14,7 @@ accompanies the manuscript. The package itself is developed at
 | StatsPAI version string | 1.32.0 |
 | StatsPAI source commit | [`23da3621cc`](https://github.com/brycewang-stanford/StatsPAI/commit/23da3621cc07d206e7e0ad7ae384b221dd327cc3) |
 | Relation to release tag | `src/` is identical to release tag `v1.32.0` (PyPI 1.32.0) |
-| Manuscript sources commit | `6d14e91881` (private manuscript repository) |
+| Manuscript sources commit | `c25eb34373` (private manuscript repository) |
 
 `src/statspai/` here is the source at that commit, and `pip install -e .`
 installs exactly it; use it rather than the PyPI wheel to reproduce the
@@ -26,7 +25,7 @@ paper.
 | Path | What it is |
 | --- | --- |
 | `Paper-JSS/manuscript/` | LaTeX source and PDF of the manuscript |
-| `preprint/statspai-arxiv.pdf` | arXiv edition of the manuscript (archived as `Paper-JSS/submissions/2026-09-27-arxiv/`) |
+| `preprint/statspai-arxiv.pdf` | arXiv edition of the manuscript (archived as `Paper-JSS/submissions/2026-09-29-arxiv-review2/`) |
 | `Paper-JSS/replication/reproduce.py` | single-script, three-tier replication driver |
 | `Paper-JSS/replication/scripts/` | worked examples, figure/table generators, audits |
 | `Paper-JSS/replication/results/` | committed outputs, incl. the Tier-1 transcript |

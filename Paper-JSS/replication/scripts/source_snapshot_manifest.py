@@ -85,7 +85,6 @@ SNAPSHOT_DISPLAY_IGNORES = (
     "Paper-JSS/NEXT-STEPS.md",
     "Paper-JSS/JSS-research-plan.md",
     "Paper-JSS/JOSS-JSS-OVERLAP.md",
-    "Paper-JSS/REVIEW-IMPROVEMENTS.md",
     "Paper-JSS/_convert_to_pdf.py",
     "Paper-JSS/_table_style.tex",
     "Paper-JSS/build_zh.sh",

@@ -170,12 +170,12 @@ PDF_BOUNDARY_SNIPPETS = (
     "before any behavioural claim",
     "software-interface contribution",
     "named rows and modules",
-    "nine scoped limitation rows",
+    "limitations in their registry entries",
     "calibrated Basque replica",
     "no printed vignette anchor",
     "The unification itself has costs",
     "licence-free replication path",
-    "reviewer evidence map and editor screening checklist",
+    "an evidence map that routes each",
 )
 PDF_STALE_PROSE_SNIPPETS = (
     "unflattering denominator",
@@ -4112,10 +4112,12 @@ def main() -> int:
             zf,
             "Paper-JSS/manuscript/sections/08-computational-details-compact.tex",
         )
-        if "JSS one-hour threshold" not in comp_details:
+        # The manuscript also serves as the arXiv preprint, so it frames the
+        # Tier-1 time against an hour without naming the journal's rule.
+        if "well inside an hour" not in comp_details:
             return _fail(
                 "computational details do not frame Tier-1 timing against "
-                "the JSS one-hour threshold"
+                "the one-hour reproduction budget"
             )
         if not _has_snippet(
             comp_details,
@@ -4289,12 +4291,14 @@ def main() -> int:
         ):
             if snippet.lower() in cover_letter.lower():
                 return _fail(f"cover letter still contains stale text: {snippet}")
-        if not re.search(
+        # The submission system timestamps the upload; a dated letter goes
+        # stale whenever the submission slips, so the letter carries no date.
+        if re.search(
             r"(?m)^(?:January|February|March|April|May|June|July|August|"
-            r"September|October|November|December) [0-9]{1,2}, 2026$",
+            r"September|October|November|December) [0-9]{1,2}, 20[0-9]{2}$",
             cover_letter,
         ):
-            return _fail("cover letter lacks a complete 2026 submission date")
+            return _fail("cover letter carries a submission date; leave it undated")
         if "MIT licence, which is GPL-compatible" not in cover_letter:
             return _fail("cover letter lacks GPL-compatible license disclosure")
         if (

@@ -14,8 +14,8 @@ Source snapshot:
 - Schema-bundle version: 1.32.0
 - Version-consistent: True
 - Ready for final publication release: False
-- Final-publication gate blocker paths: 2
-- Generated dirty paths: 30
+- Final-publication gate blocker paths: 5
+- Generated dirty paths: 20
 - Unreleased CHANGELOG nonempty: False
 - Structured release gate checks: 6
 - JSS submission archive status: Audited source-snapshot submission archive; the failing final-publication release gate is a tag/changelog synchronization gate, not a JSS upload reproducibility failure.

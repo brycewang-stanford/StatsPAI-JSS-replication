@@ -19,7 +19,7 @@
       "record": "viewer, archive filename, and archive timestamp"
     },
     {
-      "action": "Confirm that the viewer reports 53 pages and that the count matches pdf_render_audit and jss_full_audit.",
+      "action": "Confirm that the viewer reports 54 pages and that the count matches pdf_render_audit and jss_full_audit.",
       "id": "page_count_matches_audits",
       "record": "observed page count"
     },
@@ -34,7 +34,7 @@
       "record": "pages checked from inventory plus any mismatch"
     },
     {
-      "action": "Inspect pages 1 through 53 for blank pages, missing content, or unexpected dark/empty pages.",
+      "action": "Inspect pages 1 through 54 for blank pages, missing content, or unexpected dark/empty pages.",
       "id": "all_pages_nonblank",
       "record": "first failing page if any"
     },
@@ -84,14 +84,14 @@
       ],
       "float_markers": [],
       "heading_candidates": [
-        "1. Introduction Applied causal work now spans a large and fragmented software stack"
+        "1. Introduction Applied causal work now runs on a large and fragmented software stack"
       ],
       "page": 1,
       "section_markers": [
         "front_matter",
         "introduction"
       ],
-      "text_chars": 2289
+      "text_chars": 2221
     },
     {
       "boundary_markers": [],
@@ -103,7 +103,7 @@
       ],
       "page": 2,
       "section_markers": [],
-      "text_chars": 4154
+      "text_chars": 4094
     },
     {
       "boundary_markers": [],
@@ -115,36 +115,35 @@
       ],
       "page": 3,
       "section_markers": [],
-      "text_chars": 3460
+      "text_chars": 3210
     },
     {
       "boundary_markers": [],
       "float_markers": [
         "Figure 4",
-        "Listing 1",
         "Table 1"
       ],
-      "heading_candidates": [
-        "2. Software architecture StatsPAIis implemented inPython on top ofNumPy (Harris et al"
-      ],
+      "heading_candidates": [],
       "page": 4,
+      "section_markers": [],
+      "text_chars": 3627
+    },
+    {
+      "boundary_markers": [
+        "validation_tier"
+      ],
+      "float_markers": [],
+      "heading_candidates": [
+        "2. Software architecture StatsPAIis implemented inPython on top ofNumPy (Harris et al",
+        "2.1. Design principles A single flat namespace exposes routine calls throughsp",
+        "2.2. Why an integration package? Areasonablealternativeistocompose statsmodels, linearmodels, Do",
+        "2.3. Registry and discovery layer The central data structure is a registry ofFunctionSpecrecords"
+      ],
+      "page": 5,
       "section_markers": [
         "software_architecture"
       ],
-      "text_chars": 3308
-    },
-    {
-      "boundary_markers": [],
-      "float_markers": [
-        "Table 1"
-      ],
-      "heading_candidates": [
-        "2.1. Design principles A single flat namespace exposes routine calls throughsp",
-        "2.2. Why an integration package? Areasonablealternativeistocompose statsmodels, linearmodels, Do"
-      ],
-      "page": 5,
-      "section_markers": [],
-      "text_chars": 3334
+      "text_chars": 3222
     },
     {
       "boundary_markers": [
@@ -154,113 +153,100 @@
         "Listing 2"
       ],
       "heading_candidates": [
-        "2.3. Registry and discovery layer The central data structure is a registry ofFunctionSpecrecords",
-        "2.4. Family dispatchers Family dispatchers reduce method sprawl without hiding assumptions"
+        "2.4. Family dispatchers Family dispatchers reduce method sprawl without hiding assumptions",
+        "2.5. Result-object hierarchy"
       ],
       "page": 6,
       "section_markers": [],
-      "text_chars": 2882
+      "text_chars": 2991
     },
     {
       "boundary_markers": [],
       "float_markers": [],
       "heading_candidates": [
-        "2.5. Result-object hierarchy Most estimators return either EconometricResults or CausalResult",
         "2.6. Performance backbone The performance-critical path is high-dimensional fixed-effect absorpt",
         "2.7. Output pipeline and workflow Publication output is unified throughsp",
-        "3. The agent-facing registry API StatsPAI exposes the surface a human Python user calls to LLM"
+        "3. The agent-facing registry API StatsPAIexposes the surface a humanPython user calls to LLM a",
+        "3.1. Schemas and agent cards Docstrings, R help pages, andStata help files are prose interfaces"
       ],
       "page": 7,
       "section_markers": [
         "agent_registry_api"
       ],
-      "text_chars": 3042
+      "text_chars": 2997
     },
     {
       "boundary_markers": [],
       "float_markers": [],
       "heading_candidates": [
-        "3.1. Schemas and agent cards Docstrings, R help pages, andStata help files are prose interfaces",
         "3.2. Typed errors and the MCP server Estimator failures inherit from StatsPAIError and carry str",
         "3.3. The estimand-first DSL and robustness audit sp",
-        "3.4. The bibliography verifier Every public-facing citation emitted by the package must come fro"
+        "3.4. The bibliography verifier Every public-facing citation emitted by the package must come fro",
+        "3.5. Comparison with existing platforms and prior art Generating a JSON schema from a typed sign"
       ],
       "page": 8,
       "section_markers": [],
-      "text_chars": 3308
+      "text_chars": 3234
     },
     {
       "boundary_markers": [],
       "float_markers": [
-        "Listing 1",
-        "Listing 3",
         "Table 2"
       ],
       "heading_candidates": [
-        "3.5. Comparison with existing platforms and prior art Generating a JSON schema from a typed sign",
-        "4. Worked examples The paper uses seven worked examples as an end-to-end smoke test of the val",
-        "4.1. Card (1995)"
+        "4. Worked examples The paper uses seven worked examples as an end-to-end smoke test of the val"
       ],
       "page": 9,
       "section_markers": [
         "worked_examples"
       ],
-      "text_chars": 2282
-    },
-    {
-      "boundary_markers": [],
-      "float_markers": [
-        "Table 2"
-      ],
-      "heading_candidates": [],
-      "page": 10,
-      "section_markers": [],
-      "text_chars": 2505
+      "text_chars": 3151
     },
     {
       "boundary_markers": [],
       "float_markers": [
         "Listing 1",
         "Listing 3",
-        "Listing 4",
         "Table 9"
       ],
-      "heading_candidates": [],
-      "page": 11,
+      "heading_candidates": [
+        "4.1. Card (1995)"
+      ],
+      "page": 10,
       "section_markers": [],
-      "text_chars": 3292
+      "text_chars": 2457
     },
     {
       "boundary_markers": [],
       "float_markers": [
-        "Figure 1",
         "Listing 1",
         "Listing 4",
-        "Listing 5",
         "Table 3",
         "Table 8",
         "Table 9"
       ],
       "heading_candidates": [
         "9. Because schooling is continuous, the forest\u2019s scalar aggregate is the average partial effec",
-        "4.2. Abadie\u2013Gardeazabal (2003)",
-        "4.3. Callaway\u2013Sant\u2019Anna staggered DiD"
+        "4.2. Abadie\u2013Gardeazabal (2003)"
       ],
-      "page": 12,
+      "page": 11,
       "section_markers": [],
-      "text_chars": 2999
+      "text_chars": 3406
     },
     {
       "boundary_markers": [],
       "float_markers": [
         "Figure 1",
+        "Listing 5",
         "Table 3",
         "Table 9"
       ],
-      "heading_candidates": [],
-      "page": 13,
+      "heading_candidates": [
+        "4.3. Callaway\u2013Sant\u2019Anna staggered DiD"
+      ],
+      "page": 12,
       "section_markers": [],
-      "text_chars": 2036
+      "text_chars": 2040
     },
     {
       "boundary_markers": [],
@@ -269,9 +255,9 @@
         "Listing 6"
       ],
       "heading_candidates": [],
-      "page": 14,
+      "page": 13,
       "section_markers": [],
-      "text_chars": 2957
+      "text_chars": 2741
     },
     {
       "boundary_markers": [],
@@ -284,9 +270,22 @@
       "heading_candidates": [
         "4.4. Regression discontinuity"
       ],
+      "page": 14,
+      "section_markers": [],
+      "text_chars": 3790
+    },
+    {
+      "boundary_markers": [],
+      "float_markers": [
+        "Figure 2"
+      ],
+      "heading_candidates": [
+        "4.5. LaLonde (1986) / Dehejia\u2013Wahba (1999)",
+        "4.6. Causal time series"
+      ],
       "page": 15,
       "section_markers": [],
-      "text_chars": 2306
+      "text_chars": 2051
     },
     {
       "boundary_markers": [],
@@ -294,70 +293,62 @@
         "Listing 7"
       ],
       "heading_candidates": [
-        "4.5. LaLonde (1986) / Dehejia\u2013Wahba (1999)",
-        "4.6. Causal time series",
         "4.7. Three ecosystems, one number"
       ],
       "page": 16,
       "section_markers": [],
-      "text_chars": 3370
+      "text_chars": 3266
     },
     {
       "boundary_markers": [],
       "float_markers": [
-        "Listing 7",
         "Table 4"
       ],
       "heading_candidates": [
-        "5. Numerical parity and statistical validity"
+        "5. Numerical parity and statistical validity The empirical claim of this paper is narrower tha"
       ],
       "page": 17,
       "section_markers": [
         "validation_evidence"
       ],
-      "text_chars": 3180
+      "text_chars": 3362
     },
     {
       "boundary_markers": [],
       "float_markers": [
-        "Figure 3",
-        "Table 4"
+        "Figure 3"
       ],
-      "heading_candidates": [
-        "9. A label is only as good as the chain that attaches it to the evidence"
-      ],
+      "heading_candidates": [],
       "page": 18,
       "section_markers": [],
-      "text_chars": 3679
+      "text_chars": 3395
     },
     {
       "boundary_markers": [],
       "float_markers": [
-        "Figure 3",
         "Table 5",
         "Table 6"
       ],
       "heading_candidates": [
-        "5.1. Twelve-estimator validation suite The reference implementations of Table 6 are cited once h"
+        "5.1. Twelve-estimator validation suite The reference implementations of Table 6 are cited once h",
+        "5.2. Estimands, identification, and inference contracts Numerical agreement does not establish i"
       ],
       "page": 19,
       "section_markers": [],
-      "text_chars": 3085
+      "text_chars": 3117
     },
     {
       "boundary_markers": [],
       "float_markers": [
-        "Table 5",
         "Table 6",
         "Table 9"
       ],
       "heading_candidates": [
-        "9. Every coverage row runs through the member\u2019s own entry point or one asserted bit-identical ",
-        "5.2. Estimands, identification, and inference contracts Numerical agreement does not establish i"
+        "9. Every coverage row runs through the member\u2019s own entry point or one asserted bit-identical "
       ],
       "page": 20,
       "section_markers": [],
-      "text_chars": 2798
+      "text_chars": 2886
     },
     {
       "boundary_markers": [],
@@ -371,18 +362,7 @@
       ],
       "page": 21,
       "section_markers": [],
-      "text_chars": 3447
-    },
-    {
-      "boundary_markers": [],
-      "float_markers": [
-        "Table 7",
-        "Table 9"
-      ],
-      "heading_candidates": [],
-      "page": 22,
-      "section_markers": [],
-      "text_chars": 3106
+      "text_chars": 2883
     },
     {
       "boundary_markers": [],
@@ -390,13 +370,10 @@
         "Table 8",
         "Table 9"
       ],
-      "heading_candidates": [
-        "9. R to 3",
-        "6. The native relative-magnitudes set, a port of the Andrews\u2013Roth\u2013Pakes conditional test (Andr"
-      ],
-      "page": 23,
+      "heading_candidates": [],
+      "page": 22,
       "section_markers": [],
-      "text_chars": 3173
+      "text_chars": 3052
     },
     {
       "boundary_markers": [],
@@ -404,23 +381,35 @@
         "Table 9"
       ],
       "heading_candidates": [
-        "5.4. Evidence tiers and hard cases Evidence is attached to configurations and outputs"
+        "6. The native relative-magnitudes set is a port of the Andrews\u2013Roth\u2013Pakes conditional test (An",
+        "5.4. Evidence tiers and hard cases"
       ],
+      "page": 23,
+      "section_markers": [],
+      "text_chars": 3604
+    },
+    {
+      "boundary_markers": [],
+      "float_markers": [
+        "Listing 8",
+        "Table 9"
+      ],
+      "heading_candidates": [],
       "page": 24,
       "section_markers": [],
-      "text_chars": 3358
+      "text_chars": 3419
     },
     {
       "boundary_markers": [],
       "float_markers": [
         "Listing 3",
-        "Listing 8",
+        "Table 10",
         "Table 5"
       ],
       "heading_candidates": [],
       "page": 25,
       "section_markers": [],
-      "text_chars": 3549
+      "text_chars": 3836
     },
     {
       "boundary_markers": [],
@@ -428,23 +417,23 @@
         "Table 10",
         "Table 3"
       ],
-      "heading_candidates": [],
+      "heading_candidates": [
+        "2. A ledger that pooled the two facts into one tolerance would hide exactly the sensitivity a ",
+        "5.5. Track B"
+      ],
       "page": 26,
       "section_markers": [],
-      "text_chars": 3611
+      "text_chars": 3245
     },
     {
       "boundary_markers": [],
       "float_markers": [
         "Table 11"
       ],
-      "heading_candidates": [
-        "2. A ledger that pooled the two facts into one tolerance would hide exactly the sensitivity a ",
-        "5.5. Track B"
-      ],
+      "heading_candidates": [],
       "page": 27,
       "section_markers": [],
-      "text_chars": 3759
+      "text_chars": 4125
     },
     {
       "boundary_markers": [],
@@ -458,7 +447,7 @@
       ],
       "page": 28,
       "section_markers": [],
-      "text_chars": 3749
+      "text_chars": 3709
     },
     {
       "boundary_markers": [],
@@ -468,7 +457,7 @@
       "heading_candidates": [],
       "page": 29,
       "section_markers": [],
-      "text_chars": 3154
+      "text_chars": 3174
     },
     {
       "boundary_markers": [],
@@ -477,12 +466,11 @@
         "Table 18"
       ],
       "heading_candidates": [
-        "5.8. Auditing the attachment, not only the number A parity harness checks that two implementatio",
-        "5.9. Correctness history and residual risk Every output-changing fix is pinned by a regression t"
+        "5.8. Auditing the attachment, not only the number A parity harness checks that two implementatio"
       ],
       "page": 30,
       "section_markers": [],
-      "text_chars": 3122
+      "text_chars": 3402
     },
     {
       "boundary_markers": [
@@ -493,6 +481,7 @@
         "Table 6"
       ],
       "heading_candidates": [
+        "5.9. Correctness history and residual risk Every output-changing fix is pinned by a regression t",
         "6. Computational performance This section reports the measured Track C benchmark for the four ",
         "6.1. Benchmark protocol A speed ratio compares two implementations only if both perform the same"
       ],
@@ -500,7 +489,7 @@
       "section_markers": [
         "performance"
       ],
-      "text_chars": 3258
+      "text_chars": 3402
     },
     {
       "boundary_markers": [],
@@ -513,22 +502,23 @@
       ],
       "page": 32,
       "section_markers": [],
-      "text_chars": 2897
+      "text_chars": 3246
     },
     {
       "boundary_markers": [],
       "float_markers": [
-        "Figure 4",
         "Table 13"
       ],
       "heading_candidates": [],
       "page": 33,
       "section_markers": [],
-      "text_chars": 2022
+      "text_chars": 3093
     },
     {
       "boundary_markers": [],
       "float_markers": [
+        "Figure 4",
+        "Table 13",
         "Table 14"
       ],
       "heading_candidates": [
@@ -539,37 +529,36 @@
       "section_markers": [
         "agent_interface_checks"
       ],
-      "text_chars": 3474
+      "text_chars": 1930
+    },
+    {
+      "boundary_markers": [],
+      "float_markers": [
+        "Table 14"
+      ],
+      "heading_candidates": [
+        "7.2. Contractual trace evidence The MCP server (Section 3"
+      ],
+      "page": 35,
+      "section_markers": [],
+      "text_chars": 3096
     },
     {
       "boundary_markers": [
         "agent_claim_boundary"
       ],
       "float_markers": [
-        "Table 14",
         "Table 15"
       ],
       "heading_candidates": [
-        "7.2. Contractual trace evidence The MCP server (Section 3",
-        "7.3. No behavioural benchmark claim Mechanical and contractual evidence does not answer whether "
-      ],
-      "page": 35,
-      "section_markers": [],
-      "text_chars": 2973
-    },
-    {
-      "boundary_markers": [],
-      "float_markers": [
-        "Table 15"
-      ],
-      "heading_candidates": [
-        "8. Computational details StatsPAIinstalls from PyPI without compiled extensions of its own"
+        "7.3. No behavioural benchmark claim Mechanical and contractual evidence does not answer whether ",
+        "8. Computational details StatsPAI installs from PyPI without compiled extensions of its own"
       ],
       "page": 36,
       "section_markers": [
         "computational_details"
       ],
-      "text_chars": 3221
+      "text_chars": 3003
     },
     {
       "boundary_markers": [],
@@ -577,12 +566,15 @@
         "Table 16"
       ],
       "heading_candidates": [
+        "5.2. The packages behind the twelve-estimator suite arefixest 0",
+        "7.2. The three-ecosystem worked example addsfect 2",
+        "4.0. The lockfile and the per-row JSON provenance record, with exact versions and GitHub SHAs, t",
         "8.1. Distribution and installation The package is distributed through PyPI (pip install statspai",
-        "8.2. Reproducibility of this paper The evidence is rebuilt by one standalone script,Paper-JSS/re"
+        "4.4. Because that port is GPL-3 licensed, it is an opt-in extra that the user installs, not a bu"
       ],
       "page": 37,
       "section_markers": [],
-      "text_chars": 3659
+      "text_chars": 3592
     },
     {
       "boundary_markers": [],
@@ -596,22 +588,22 @@
       "section_markers": [
         "discussion"
       ],
-      "text_chars": 3241
+      "text_chars": 3039
     },
     {
-      "boundary_markers": [
-        "agent_claim_boundary"
-      ],
+      "boundary_markers": [],
       "float_markers": [
         "Table 18"
       ],
       "heading_candidates": [],
       "page": 39,
       "section_markers": [],
-      "text_chars": 3842
+      "text_chars": 4207
     },
     {
-      "boundary_markers": [],
+      "boundary_markers": [
+        "agent_claim_boundary"
+      ],
       "float_markers": [],
       "heading_candidates": [
         "3.4. References Abadie A, Diamond A, Hainmueller J (2010)"
@@ -620,7 +612,7 @@
       "section_markers": [
         "references"
       ],
-      "text_chars": 2311
+      "text_chars": 2423
     },
     {
       "boundary_markers": [],
@@ -630,7 +622,7 @@
       ],
       "page": 41,
       "section_markers": [],
-      "text_chars": 2799
+      "text_chars": 2754
     },
     {
       "boundary_markers": [],
@@ -638,7 +630,7 @@
       "heading_candidates": [],
       "page": 42,
       "section_markers": [],
-      "text_chars": 2853
+      "text_chars": 2662
     },
     {
       "boundary_markers": [],
@@ -650,7 +642,7 @@
       ],
       "page": 43,
       "section_markers": [],
-      "text_chars": 2775
+      "text_chars": 2682
     },
     {
       "boundary_markers": [],
@@ -658,7 +650,17 @@
       "heading_candidates": [],
       "page": 44,
       "section_markers": [],
-      "text_chars": 2799
+      "text_chars": 2894
+    },
+    {
+      "boundary_markers": [],
+      "float_markers": [],
+      "heading_candidates": [
+        "2. Wager S, Athey S (2018)"
+      ],
+      "page": 45,
+      "section_markers": [],
+      "text_chars": 2672
     },
     {
       "boundary_markers": [],
@@ -667,20 +669,11 @@
         "Table 8"
       ],
       "heading_candidates": [
-        "2. Wager S, Athey S (2018)",
         "2. Zeileis A, K\u00f6ll S, Graham N (2020)"
       ],
-      "page": 45,
-      "section_markers": [],
-      "text_chars": 2812
-    },
-    {
-      "boundary_markers": [],
-      "float_markers": [],
-      "heading_candidates": [],
       "page": 46,
       "section_markers": [],
-      "text_chars": 2239
+      "text_chars": 2551
     },
     {
       "boundary_markers": [],
@@ -690,7 +683,7 @@
       "heading_candidates": [],
       "page": 47,
       "section_markers": [],
-      "text_chars": 2118
+      "text_chars": 2021
     },
     {
       "boundary_markers": [],
@@ -700,7 +693,7 @@
       "heading_candidates": [],
       "page": 48,
       "section_markers": [],
-      "text_chars": 2400
+      "text_chars": 2308
     },
     {
       "boundary_markers": [],
@@ -710,7 +703,7 @@
       "heading_candidates": [],
       "page": 49,
       "section_markers": [],
-      "text_chars": 2054
+      "text_chars": 2275
     },
     {
       "boundary_markers": [],
@@ -720,38 +713,48 @@
       "heading_candidates": [],
       "page": 50,
       "section_markers": [],
-      "text_chars": 2484
+      "text_chars": 2111
     },
     {
       "boundary_markers": [],
       "float_markers": [
-        "Table 17",
-        "Table 18"
+        "Table 17"
       ],
       "heading_candidates": [],
       "page": 51,
       "section_markers": [],
-      "text_chars": 2691
+      "text_chars": 2195
     },
     {
       "boundary_markers": [],
       "float_markers": [
-        "Listing 6"
+        "Table 10",
+        "Table 17",
+        "Table 18"
       ],
       "heading_candidates": [],
       "page": 52,
       "section_markers": [],
-      "text_chars": 3507
+      "text_chars": 3251
     },
     {
       "boundary_markers": [],
       "float_markers": [
+        "Listing 6",
         "Table 18"
       ],
       "heading_candidates": [],
       "page": 53,
       "section_markers": [],
-      "text_chars": 2301
+      "text_chars": 4326
+    },
+    {
+      "boundary_markers": [],
+      "float_markers": [],
+      "heading_candidates": [],
+      "page": 54,
+      "section_markers": [],
+      "text_chars": 795
     }
   ],
   "pdf_render_audit": "replication/results/pdf_render_audit.json",
@@ -768,17 +771,17 @@
     "claimed_manual_acceptance": false,
     "full_document_machine_scan_failures": 0,
     "full_document_machine_scan_not_human_review": true,
-    "full_document_machine_scan_pages": 53,
+    "full_document_machine_scan_pages": 54,
     "jss_upload_blocking": false,
     "machine_render_not_human_review": true,
     "manual_action_required_before_upload": true,
     "manual_visual_check_required": true,
     "manual_visual_check_status": "PENDING_MANUAL_REVIEW",
     "packaged_pdf_member": "Paper-JSS/manuscript/main.pdf",
-    "page_count": 53,
-    "page_inventory_count": 53,
-    "page_inventory_float_marker_count": 83,
-    "page_inventory_min_text_chars": 2022,
+    "page_count": 54,
+    "page_inventory_count": 54,
+    "page_inventory_float_marker_count": 75,
+    "page_inventory_min_text_chars": 795,
     "page_inventory_section_markers": [
       "agent_interface_checks",
       "agent_registry_api",
@@ -792,7 +795,7 @@
       "validation_evidence",
       "worked_examples"
     ],
-    "page_inventory_text_pages": 53,
+    "page_inventory_text_pages": 54,
     "pdf_render_failure_count": 0,
     "pdf_render_status": "PASS",
     "recorded_by_this_protocol": false,
@@ -800,7 +803,7 @@
       1,
       2,
       27,
-      53
+      54
     ],
     "scope": "Protocol for the final full-document human visual spot-check before JSS upload; not a completed acceptance record."
   }

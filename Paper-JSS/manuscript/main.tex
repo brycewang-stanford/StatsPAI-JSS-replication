@@ -125,30 +125,29 @@
 
 \Abstract{
 \statspai{} is a \proglang{Python} package for applied causal inference
-and econometrics in which every registered function carries an evidence
-tier that a user or an agent can query at call time. This article asks what
-such a label certifies and describes a design that makes the answer
-checkable. A label reaches the user through four mechanically verified
-links: the implementation a parity row exercised, established by a call
-trace bound to the source files on that path; the entry point the
-evidence is credited to; the configuration and output it compared, so a
-user can ask whether the variant and inference option just fitted were
-tested, and whether the standard error was, not only the point estimate;
-and the applicability of each automated check to the fit. Stochastic
-estimators are graded by seed-replicated equivalence against an explicit
-margin. The evidence covers a twelve-estimator core: same-byte parity with
-canonical \proglang{R} implementations (\RParityModuleCount{} modules) and
-\proglang{Stata} bridges (\StataParityModuleCount{}), known-truth
-recovery, Monte Carlo coverage reported with bias and standard-error
-calibration, and timings on shared inputs that keep unfavourable
-comparisons. Applying the design to the package found defects that
-numerical agreement alone had not, including parity rows that compared
-\proglang{R} with itself, an IV entry point that silently ignored a
-requested cluster-robust covariance, and a fixed-effects default whose
-clustered standard errors over-covered. Seven worked examples, executed verbatim, and
-a licence-free replication path complete the article. The evidence for
-the agent-facing interface is mechanical and contractual, not a claim of
-behavioural agent superiority.
+and econometrics. Every registered function carries an evidence tier that
+a user or an agent can query at call time. This article asks what such a
+label certifies, and describes a design that makes the answer checkable.
+Four links connect a label to the user, and each is verified
+mechanically. They are the implementation a parity row exercised, traced
+to the source files on its path; the entry point the evidence is
+credited to; the configuration and output the row compared, including
+whether a standard error was tested as well as the point estimate; and
+whether each automated check applies to the fit. Stochastic estimators
+are graded by seed-replicated equivalence against an explicit margin.
+The evidence covers a twelve-estimator core. It includes a
+\RParityModuleCount{}-module harness against canonical \proglang{R}
+implementations on identical data bytes, \RParityStrictCount{} of them
+at strict parity, with \proglang{Stata} references for
+\StataParityModuleCount{}, plus known-truth recovery, calibrated Monte
+Carlo coverage, and timings that keep unfavourable comparisons. Applying
+the design found defects that numerical agreement alone had missed,
+among them parity rows that compared \proglang{R} with itself and an IV
+entry point that silently ignored a requested cluster-robust covariance.
+Seven worked examples, executed as printed, and a licence-free
+replication path close the article. For the agent-facing interface the
+evidence is mechanical and contractual, not a claim of behavioural agent
+superiority.
 }
 
 \Keywords{causal inference, applied econometrics, validation tiers, \proglang{Python},

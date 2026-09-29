@@ -2,13 +2,13 @@
 
 \statspai{} exposes the surface a human \proglang{Python} user calls to
 LLM agents through typed schemas and an MCP server. The agent layer is a
-software-interface contribution: it turns four otherwise opaque
-handoffs---tool discovery, failure recovery, result reuse, and citation
-resolution---into artifacts a reviewer can inspect, makes
-machine-orchestrated calls subject to the same validation ledger as human
-ones, and is validated by schema/MCP/citation reproducibility rather than a
-model-quality score. Section~\ref{sec:agentbench}
-reports the mechanical evidence for it and what it does not show.
+software-interface contribution. Four handoffs are usually opaque to a
+reviewer: tool discovery, failure recovery, result reuse, and citation
+resolution. The agent layer turns each of them into an artifact that
+can be inspected, and it puts machine-orchestrated calls under the same
+validation ledger as human ones. It is validated by schema/MCP/citation reproducibility,
+not by a model-quality score.
+Section~\ref{sec:agentbench} reports the mechanical evidence for it and what it does not show.
 
 \subsection{Schemas and agent cards}\label{sec:why-schema}\label{sec:fn-schema}
 
@@ -16,13 +16,13 @@ Docstrings, \proglang{R} help pages, and \proglang{Stata} help files are
 prose interfaces. A tool-using agent needs a typed object containing
 parameter names, types, defaults, required fields, enumerated choices,
 and a short description including stability and limitations when
-relevant. The schema call returns the executable OpenAI-style object;
-the description and agent-card calls return richer planning metadata
+relevant. The schema call returns the executable OpenAI-style object.
+The description and agent-card calls return richer planning metadata,
 such as assumptions, preconditions, failure modes, alternatives, typical
 sample size, references, and examples. These discovery functions are
 themselves registered, so an agent can inspect the estimator catalogue
-before selecting a method, and design-detection and preflight calls
-expose cheap planning diagnostics before an estimator is run.
+before it selects a method. Design-detection and preflight calls add
+cheap planning diagnostics before any estimator is run.
 
 \subsection{Typed errors and the MCP server}\label{sec:exception-envelope}\label{sec:mcp}
 
@@ -40,9 +40,9 @@ tools. Tool inputs are generated from the registry schemas, outputs are
 JSON-safe result payloads plus \code{result\_id} handles, and typed
 errors use the exception envelope above. Chained tools cover auditing,
 Honest-DiD sensitivity, generic sensitivity analysis, CS aggregation,
-Bacon decomposition, paper generation, and citation, and they accept
-result handles instead of requiring an agent to marshal coefficient,
-covariance, or cross-fit arrays through model context. The
+Bacon decomposition, paper generation, and citation. They accept result
+handles, so an agent does not have to marshal coefficient, covariance,
+or cross-fit arrays through model context. The
 deterministic trace in Section~\ref{sec:agentbench} exercises this
 contract.
 
@@ -57,11 +57,11 @@ the design-detection provenance, optional sensitivity output, and an
 produces the same missing-evidence checklist for any fitted result and
 points to follow-up functions such as RD density tests, Honest-DiD
 sensitivity, or unobserved-confounding bounds. Each check carries one of
-four statuses --- passed, failed, missing, or not applicable --- and the
-last is decided from the fit's own metadata by an explicit
-applicability rule (an over-identification test is not applicable to a
-just-identified IV model, and says why), so an agent is never sent after
-a test that does not exist. The companion \code{sp.validation\_scope}
+four statuses (passed, failed, missing, or not applicable). The last
+status is decided from the fit's own metadata by an explicit
+applicability rule. For example, an over-identification test is not
+applicable to a just-identified IV model, and the audit says why. An
+agent is therefore never sent after a test that does not exist. The companion \code{sp.validation\_scope}
 answers the neighbouring question of which validation artifacts cover
 the fitted configuration and which of its outputs they compared
 (Section~\ref{sec:validation-tiers}).
@@ -78,11 +78,11 @@ mode: hallucinated references.
 
 \subsection{Comparison with existing platforms and prior art}\label{sec:agent-compare}
 
-Generating a JSON schema from a typed signature is solved by
-\pkg{Pydantic}, \pkg{FastAPI}, and the LLM-vendor tool adapters; what
-is package-specific here is that the
-schema is the statistical registry itself, tied to validation status
-and typed statistical errors, with result handles for
-estimate-to-audit-to-sensitivity chains -- a validation-tiered tool
-catalogue with a citation verifier, which statistical help systems do
-not expose.
+Generating a JSON schema from a typed signature is a solved problem.
+\pkg{Pydantic}, \pkg{FastAPI}, and the LLM-vendor tool adapters all do
+it. What is specific to this package is that the schema is the
+statistical registry itself. It is tied to validation status and to
+typed statistical errors, and it offers result handles for
+estimate-to-audit-to-sensitivity chains. The result is a
+validation-tiered tool catalogue with a citation verifier, which
+statistical help systems do not expose.

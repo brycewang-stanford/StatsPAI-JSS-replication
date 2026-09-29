@@ -1,8 +1,8 @@
 \section{Introduction}\label{sec:intro}
 
-Applied causal work now spans a large and fragmented software stack:
-\proglang{Stata} commands, methodological-reference \proglang{R}
-packages, and an expanding but incomplete \proglang{Python} ecosystem.
+Applied causal work now runs on a large and fragmented software stack. It
+combines \proglang{Stata} commands, methodological-reference \proglang{R}
+packages, and a growing but incomplete \proglang{Python} ecosystem.
 A single project can require OLS and IV, staggered
 difference-in-differences, regression discontinuity, synthetic control,
 matching, double machine learning, sensitivity analysis, and publication
@@ -10,11 +10,11 @@ tables. The statistical literature has converged toward more explicit
 design checks and estimator-specific inference
 \citep{imbens2009recent,angrist2009mostly,callaway2021difference,
 roth2023whats,wing2024designing,baker2026difference,rambachan2023more,abadie2010synthetic,
-chernozhukov2018double}; the software interface has not converged with
-it. Users still cross package boundaries, result classes, naming
-conventions, and diagnostic vocabularies. Large-language-model agents
-add a further constraint: they need typed schemas and structured errors,
-not prose-only help pages.
+chernozhukov2018double}. The software interface has not followed. Users
+still cross package boundaries, result classes, naming conventions, and
+diagnostic vocabularies. Large-language-model agents add a further
+constraint, because they need typed schemas and structured errors, not
+prose-only help pages.
 
 This paper introduces \statspai{}, a \proglang{Python} platform for
 applied econometrics and causal inference. The package provides
@@ -23,10 +23,11 @@ designs, (ii) shared reporting conventions for mature estimator results,
 diagnostics, citations, and export methods, (iii) a machine-readable registry that can be exposed through a
 Model Context Protocol (MCP) server~\citep{anthropic2024mcp}, and (iv) an explicit validation
 discipline against analytical targets, canonical \proglang{R}
-implementations, and selected \proglang{Stata} migration bridges. This article describes \statspai{} \StatsPAIVersion{}, distributed on PyPI
-(\code{pip install statspai==\StatsPAIVersion{}}) under the MIT licence;
-the source is tag \code{v\StatsPAIVersion{}} of
-\url{https://github.com/brycewang-stanford/StatsPAI}, and every \statspai{}
+implementations, and selected \proglang{Stata} migration bridges. This
+article describes \statspai{} \StatsPAIVersion{}, distributed on PyPI
+(\code{pip install statspai==\StatsPAIVersion{}}) under the MIT licence.
+The source is tag \code{v\StatsPAIVersion{}} of
+\url{https://github.com/brycewang-stanford/StatsPAI}. Every \statspai{}
 number in the article was produced by that release, against the pinned
 reference environments of Section~\ref{sec:compdetails}.
 
@@ -37,91 +38,78 @@ objects, and the existence of a same-byte cross-language parity harness
 and of a 1{,}000-replication coverage run for OLS, DiD, and IV. This
 article does not re-establish those facts. Its question is the one a
 parity harness raises but cannot answer by itself: \emph{what exactly
-does a validation label certify?} A green parity row can be earned by
-the wrong code (a \proglang{Python} wrapper that calls the \proglang{R}
-reference it is compared against), vouch for the wrong function (an
-alias credited with evidence that ran another entry point), rest on the
-wrong statistical comparison (a stochastic estimator judged against its
-sampling standard error rather than its own Monte Carlo error), or
-describe a configuration or an output the user is not relying on (a
-parity row for a coefficient cited as evidence for its standard error).
+does a validation label certify?} A green parity row can mislead in four
+ways. It can be earned by the wrong code, such as a \proglang{Python}
+wrapper that calls the \proglang{R} reference it is compared against. It
+can vouch for the wrong function, as when an alias is credited with
+evidence that ran another entry point. It can rest on the wrong
+statistical comparison, judging a stochastic estimator against its
+sampling standard error instead of its own Monte Carlo error. Or it can
+describe a configuration or an output the user is not relying on, as
+when a parity row for a coefficient is cited as evidence for its
+standard error.
+
 The contribution is a design that makes these failure modes checkable,
 applied to the package's own validated core. A label reaches a user
-through four links, and each is verified rather than asserted
-(Figure~\ref{fig:evidence-chain}): the \emph{implementation} a parity row
-exercised, established by a call trace bound to the source files on that
-path (Section~\ref{sec:track-a}); the \emph{entry point}, since an
-inherited label must name a test that ran the inheriting function
-(Section~\ref{sec:attachment-audit}); the \emph{configuration and output},
-since \code{sp.validation\_scope} reports, for a fitted object of the
-twelve-estimator core, which artifacts ran its variant, inference option,
-and code path and which outputs---point estimate, standard error, interval
-coverage, diagnostic---they compared (Section~\ref{sec:validation-tiers});
-and \emph{applicability}, since automated diagnostics report a check that
-does not exist for a fit as not applicable rather than missing
+through four links, and each one is verified, not merely asserted
+(Figure~\ref{fig:evidence-chain}). The first is the \emph{implementation}
+a parity row exercised, established by a call trace bound to the source
+files on that path (Section~\ref{sec:track-a}). The second is the
+\emph{entry point}, because an inherited label must name a test that ran
+the inheriting function (Section~\ref{sec:attachment-audit}). The third is
+the \emph{configuration and output}. For a fitted object of the
+twelve-estimator core, \code{sp.validation\_scope} reports which artifacts
+ran its variant, inference option, and code path, and which outputs they
+compared (point estimate, standard error, interval coverage, or
+diagnostic; Section~\ref{sec:validation-tiers}). The fourth is
+\emph{applicability}. Automated diagnostics report a check that does not
+exist for a fit as not applicable, not as missing
 (Section~\ref{sec:ex-card}).
 
-The software and the validation design are one contribution, not two.
-The design is not proposed in the abstract and tried on an example: it is
-implemented inside \statspai{}, its labels are returned by the same calls
-that fit the models, and each link above is held by a test in the
-package's own suite. Conversely, the package's usefulness for applied
-work rests on those labels, because a broad interface is only as
-trustworthy as a user's ability to tell its validated core from its long
-tail at the moment of use. The design itself carries over to any
-package that publishes evidence tiers.
+The design is not a proposal tried on an example. It is implemented
+inside \statspai{}, its labels are returned by the same calls that fit
+the models, and each link above is held by a test in the package's own
+suite. It carries over to any package that publishes evidence tiers.
 
-Around these links the article fixes an
-adjudication procedure for disagreements (Section~\ref{sec:adjudication}),
-reserves the stochastic grade T3 for seed-replicated equivalence against a
-stated margin, and reports evidence the JOSS paper does not contain:
-estimand and identification contracts for the core, coverage diagnostics
-that explain a rate rather than grade it (bias, Monte Carlo SD,
-standard-error calibration, interval length), a timing study on shared
-inputs that keeps the unfavourable comparisons, and seven executed worked
-examples. Applying the design to its own package found defects that
-numerical parity alone had not: two Honest-DiD rows that compared
-\proglang{R} with itself; a coverage row whose entry point reported a
-separate AIPW estimator rather than the forest's; an entropy-balancing
-standard error twice the estimator's Monte Carlo SD; an audit that asked
-for an over-identification test on a just-identified model; an IV entry
-point that silently ignored a requested small-sample cluster covariance;
-and a fixed-effects default whose clustered standard errors no parity row
-had exercised and which over-covered (0.979 at nominal 0.95).
+Around these links, the article fixes an adjudication procedure for
+disagreements (Section~\ref{sec:adjudication}) and reserves the
+stochastic grade T3 for seed-replicated equivalence against a stated
+margin. Applying the design to the package found defects that numerical
+parity alone had missed. Two Honest-DiD rows compared \proglang{R} with
+itself, an IV entry point silently ignored a requested small-sample
+cluster covariance, and the clustered standard errors of a fixed-effects
+default over-covered (0.979 at nominal 0.95). Section~\ref{sec:parity}
+reports these and the others.
 
 The registry distinguishes \code{certified}, \code{validated},
-\code{api\_stable}, and \code{experimental} symbols -- queryable at
-call time -- so numerical validation is an
-evidence tier rather than a blanket claim over the whole API surface;
-the full census opens Section~\ref{sec:parity}.
+\code{api\_stable}, and \code{experimental} symbols, and the tier is
+queryable at call time. Numerical validation is therefore an evidence
+tier rather than a blanket claim over the whole API surface, and the full census
+opens Section~\ref{sec:parity}.
 
-Listing~\ref{lst:motivating} fixes ideas. The classical
-\citet{card1995using} returns-to-schooling design is estimated four
-ways --- OLS, instrumental variables, double machine learning
+Listing~\ref{lst:motivating} fixes ideas. It estimates the classical
+\citet{card1995using} returns-to-schooling design four ways from a single
+import: OLS, instrumental variables, double machine learning
 \citep{chernozhukov2018double}, and a causal forest
-\citep{wager2018estimation} --- from a single import, and three of the
-four fitted objects, which belong to three different result classes,
-are rendered into one publication table by a single call.
-Three design properties recur throughout the paper: the
-estimator surface is \emph{flat} (classical and modern methods are
-siblings under \code{sp.}); the result objects are \emph{interoperable}
-(mixed estimators feed directly into one \code{sp.regtable} call); and
-the platform exposes \emph{audit hooks} (\code{sp.audit}) that list
-the diagnostic evidence a design demands but the user has not yet
-supplied. Section~\ref{sec:ex-card} runs the same session at a prompt
-and prints what each of these calls returns, and
+\citep{wager2018estimation}. Three of the four fitted objects belong to
+three different result classes, and one call renders them into a single
+publication table. Three design properties recur throughout the paper.
+The estimator surface is \emph{flat}, with classical and modern methods
+as siblings under \code{sp.}. The result objects are
+\emph{interoperable}, so mixed estimators feed directly into one
+\code{sp.regtable} call. And the platform exposes \emph{audit hooks}
+(\code{sp.audit}) that list the diagnostic evidence a design demands but
+the user has not yet supplied. Section~\ref{sec:ex-card} runs the same
+session at a prompt and prints what each of these calls returns.
 Section~\ref{sec:ex-csdid} measures what the shared result contract buys
-on a harder case: rebuilding an event-study covariance from reported
-standard errors, the natural shortcut when a sensitivity analysis is
-composed by hand, overstates a Honest-DiD breakdown value by 26\%.
+on a harder case. There, the natural hand-composed shortcut of
+rebuilding an event-study covariance from reported standard errors
+overstates a Honest-DiD breakdown value by 26\%.
 
 Every listing in this paper is executed verbatim by the replication
-archive's listing audit, and for the transcripts the audit goes
-further: it replays each one statement by statement through a real
-interpreter loop and compares the output printed here, line for line,
-with the output the code actually produces
-(Section~\ref{sec:reproducibility}). A printed transcript is quoted as
-evidence and read as evidence, so it is checked like evidence.
+archive's listing audit. Each printed transcript is also replayed
+statement by statement and compared line for line with the output the
+code produces (Section~\ref{sec:reproducibility}).
 
 \begin{lstlisting}[caption={\statspai{} reproduces and extends Card
 (1995) from a single import; classical and modern estimators are
@@ -146,34 +134,34 @@ table = sp.regtable(ols, iv, dml, keep=["educ", "theta"], stars=True,
 table.to_docx("returns_to_schooling.docx")
 \end{lstlisting}
 
-The package surface is deliberately broad, spanning classical
-regression and panel models, the modern DiD, RD, and synthetic-control
-literatures, ML-based treatment-effect estimation, matching and
-weighting, sensitivity analysis, and publication output. Breadth is not
-the paper's evidentiary claim. In this paper, \emph{validation evidence}
-means that a specific artifact exists: known-truth recovery,
+The package surface is deliberately broad. It spans classical regression
+and panel models, the modern DiD, RD, and synthetic-control literatures,
+ML-based treatment-effect estimation, matching and weighting,
+sensitivity analysis, and publication output. Breadth is not the paper's
+evidentiary claim. In this paper, \emph{validation evidence} means that a
+specific artifact exists. That artifact is known-truth recovery,
 cross-language parity on identical data bytes, Monte Carlo coverage, or
 an explicit convention disclosure. Only the first two earn the
 \code{validated} and \code{certified} registry labels
-(Section~\ref{sec:parity}); coverage rows and disclosures are recorded
+(Section~\ref{sec:parity}). Coverage rows and disclosures are recorded
 but earn nothing on their own. Unit and regression tests are
-API-contract evidence, and an \code{api\_stable} helper has a stable
-call signature; neither acquires statistical credibility by proximity to
+API-contract evidence, and an \code{api\_stable} helper has a stable call
+signature. Neither acquires statistical credibility by sitting next to
 validated estimators. The validated claim is limited to the
 twelve-estimator core of Section~\ref{sec:decathlon} and to the named
 rows of the parity ledger.
 
 The closest implementations cover important parts of this terrain, but
-with different centers of gravity; Table~\ref{tab:related-software}
-states the comparison directly. Empirical comparisons appear later in
+with different centers of gravity. Table~\ref{tab:related-software}
+states the comparison directly. Empirical comparisons appear later, in
 the same-byte parity rows
 (Tables~\ref{tab:track-a-cross-language-snapshot}
 and \ref{tab:headline-parity}) and in the timing study
-(Figure~\ref{fig:track-c-loglog}); per-entry-point detail is generated
-into \path{Paper-JSS/parity/replacement-table.md}. The contribution is therefore an
-integration-and-validation layer around reference software, not a claim
-that \statspai{} supersedes specialized packages or reference
-implementations in their home domains, such as
+(Figure~\ref{fig:track-c-loglog}). Per-entry-point detail is generated
+into \path{Paper-JSS/parity/replacement-table.md}. The contribution is
+therefore an integration-and-validation layer around reference software.
+It is not a claim that \statspai{} supersedes specialized packages or
+reference implementations in their home domains, such as
 \pkg{fixest}, \pkg{did}, \pkg{rdrobust}, \pkg{Synth},
 \pkg{synthdid}, \pkg{DoubleML}, or \pkg{grf}. Representative software
 citations include \pkg{Synth}, \pkg{MatchIt}, \pkg{DoubleML},
@@ -219,13 +207,13 @@ surveyed in May 2026 and spot-checked in September 2026.}
 \end{table}
 
 The replication archive carries the executable ledgers that decide
-whether a label is justified, together with a reviewer evidence map and
-editor screening checklist that route validation-scope, reproduction,
-and release-boundary questions to those artifacts.
+whether a label is justified, and an evidence map that routes each
+validation-scope, reproduction, and release-boundary question to the
+artifact that answers it.
 
 Section~\ref{sec:architecture} describes the architecture the evidence
-attaches to and Section~\ref{sec:agent} the agent-facing interface;
+attaches to, and Section~\ref{sec:agent} the agent-facing interface.
 Section~\ref{sec:examples} runs seven worked examples, with staggered
-DiD as the main case study; Sections~\ref{sec:parity}--\ref{sec:agentbench}
+DiD as the main case study. Sections~\ref{sec:parity}--\ref{sec:agentbench}
 report the validation, performance, and interface evidence, and
-Section~\ref{sec:compdetails} the reproduction path.
+Section~\ref{sec:compdetails} gives the reproduction path.

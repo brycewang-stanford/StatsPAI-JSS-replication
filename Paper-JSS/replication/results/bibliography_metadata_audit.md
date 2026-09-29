@@ -2,15 +2,15 @@
 
 Status: PASS
 Active TeX inputs: 20
-Active cited keys: 72
-Submission bibliography entries: 73
+Active cited keys: 73
+Submission bibliography entries: 74
 Reserved entries: 1 (brown2020language)
 Archival bibliography entries: 59
-Entries with DOI: 60
+Entries with DOI: 61
 Entries with URL field: 5
-Entries with DOI/URL/ISBN/eprint/howpublished locator: 71
+Entries with DOI/URL/ISBN/eprint/howpublished locator: 72
 No-DOI entries with manual reasons: 13/13
-Compiled main.bbl bibitems: 72 (thebibliography=72)
+Compiled main.bbl bibitems: 73 (thebibliography=73)
 
 ## Checks
 
@@ -22,7 +22,7 @@ Compiled main.bbl bibitems: 72 (thebibliography=72)
 | active citations are not archival-only | PASS | active_archival_only=[] |
 | submission bibliography entries keep required fields | PASS | field_failures=[] |
 | no-DOI entries have manual verification reasons | PASS | missing_reasons=[]; stale_reasons=[] |
-| compiled bibliography count matches active citations when main.bbl exists | PASS | bbl_present=True; bibitems=72; active_citations=72 |
+| compiled bibliography count matches active citations when main.bbl exists | PASS | bbl_present=True; bibitems=73; active_citations=73 |
 
 ## No-DOI Entries
 

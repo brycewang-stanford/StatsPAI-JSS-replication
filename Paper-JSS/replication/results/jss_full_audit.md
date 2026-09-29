@@ -8,9 +8,9 @@ Track C modules: 4
 Stability audit: 558 registry certified/validated symbols; 0 hand-written stable symbols still unbacked; 601 stable auto-registered symbols still unbacked
 API-stable denominator: 317 class-like / 284 function-like auto-unbacked symbols; top categories=agent:17, assimilation:1, bartik:3, bayes:9, bridge:1, causal:226
 Evidence paths: 541 unique registry evidence paths; missing=0
-Submission package: 27.07 MiB (28.39 MB decimal), 2961 files, within 50 MB=True; registry evidence files=541; ASCII-normalized source files=999; ASCII data suffixes=.csv,.json,.lock
-Data provenance audit: PASS (scoped_files=876; csv=357; public_datasets=9; original_extracts=7; r_stata_csv=91; forbidden_raw=0; private_path_hits=0; unknown=0)
-Source snapshot: version=1.32.0, package_commit=23da3621, paper_commit=dc4bef2, clean=False, unreleased_changes=True, version_consistent=True, final_publication_gate_ready=False, gate_blocker_paths=2
+Submission package: 27.13 MiB (28.44 MB decimal), 2964 files, within 50 MB=True; registry evidence files=541; ASCII-normalized source files=999; ASCII data suffixes=.csv,.json,.lock
+Data provenance audit: PASS (scoped_files=877; csv=357; public_datasets=9; original_extracts=7; r_stata_csv=91; forbidden_raw=0; private_path_hits=0; unknown=0)
+Source snapshot: version=1.32.0, package_commit=23da3621, paper_commit=a7088b0, clean=False, unreleased_changes=True, version_consistent=True, final_publication_gate_ready=False, gate_blocker_paths=5
 Claim linter: PASS (37 files checked; historical_drift_files=10)
 Schema bundle check: PASS
 Validation evidence audit: PASS (558 certified/validated, missing_notes=0, certified_without_grade=0, validated_without_grade=0, supplemental_only=0)
@@ -20,17 +20,17 @@ Stata rerun protocol: PASS (modules=85; r_joined=85; repro_report=85; non_reprod
 Agent interface audit: PASS (1255 schemas; 9697 params; trace_tools=579; trace_citations=callaway2021difference,rambachan2023more; trace_bibtex=2 from paper.bib; trace_stale_handle_error=True; trace_stale_handle_hint=True)
 Agent benchmark protocol: PASS (arms=3; task_families=5; scoring_dimensions=6; validity_controls=6; jss_upload_blocking=False; claimed_behavioural_result=False)
 Experiment triage: PASS (items=8; pass=8; failed=0; upload_blocking=0; classes={'deferred_to_separate_benchmark': 1, 'external_runtime_documented': 1, 'implemented': 3, 'implemented_with_boundary': 1, 'not_a_jss_claim': 1, 'post_upload_release_work': 1})
-Release boundary audit: PASS (version=1.32.0, final_publication_gate_ready=False, gate_blocker_paths=2, checked_files=9)
+Release boundary audit: PASS (version=1.32.0, final_publication_gate_ready=False, gate_blocker_paths=5, checked_files=9)
 JSS house-style audit: PASS (checks=7; active_sections=9; draft_markers=0; marketing_hits=0; overconfidence_hits=0; defensive_tone_hits=0; anchor_failures=0)
-Bibliography metadata audit: PASS (active_cites=72; bib_entries=73; reserved=1; doi_entries=60; no_doi_manual=13/13; missing=0; duplicates=0; field_failures=0)
+Bibliography metadata audit: PASS (active_cites=73; bib_entries=74; reserved=1; doi_entries=61; no_doi_manual=13/13; missing=0; duplicates=0; field_failures=0)
 Submission risk ledger: PASS (upload_blockers=0; final_tagged_cut_pending_items=2; final_tagged_cut_identity=confirmed; nonblocking_risks=6; nonblocking_risk_identity=confirmed; active_external_present=0; legacy_sections_present=0)
-Reviewer evidence map: PASS (cards=13; routes=5; pass_cards=13; failed_cards=0; failed_routes=0; upload_blockers=0; archive_files=2961)
-Editor screening checklist: PASS (items=11; pass_items=11; failed_items=0; upload_blockers=0; archive_files=2961)
+Reviewer evidence map: PASS (cards=13; routes=5; pass_cards=13; failed_cards=0; failed_routes=0; upload_blockers=0; archive_files=2964)
+Editor screening checklist: PASS (items=11; pass_items=11; failed_items=0; upload_blockers=0; archive_files=2964)
 Reproduction environment audit: PASS (docker=python:3.10.20-slim-bookworm; requirements=23; requirements_version=True; make_targets=68; paper_readme_commands=26; manuscript_readme_commands=7; tier1_no_r_stata=True; tier1_live_external=0; renv=True; stata_env=True; seeded_rng=15; unseeded_rng=0)
-PDF render audit: PASS (renderer=pdftoppm; pages=4/53; full_scan=53/53; full_failures=0; sampled=1,2,27,53; min_width=910; min_height=1287; min_ink_ratio=0.058779; max_dark_ratio=0.022155; failures=0)
-PDF visual check protocol: PASS (pages=53; checklist_items=12; page_inventory=53/53; manual_visual_check_status=PENDING_MANUAL_REVIEW; claimed_manual_acceptance=False; jss_upload_blocking=False)
+PDF render audit: PASS (renderer=pdftoppm; pages=4/54; full_scan=54/54; full_failures=0; sampled=1,2,27,54; min_width=910; min_height=1287; min_ink_ratio=0.027374; max_dark_ratio=0.02218; failures=0)
+PDF visual check protocol: PASS (pages=54; checklist_items=12; page_inventory=54/54; manual_visual_check_status=PENDING_MANUAL_REVIEW; claimed_manual_acceptance=False; jss_upload_blocking=False)
 Manuscript artifact audit: PASS (sections=10; table_inputs=9; figures=3; artifacts=12; hash_mismatches=0; float_labels=22; narrative_refs=22; missing_refs=0; dangling_refs=0; worked_example_scripts=7; worked_example_mentions=7; worked_example_labels=7; compact_sections=10; compact_coverage=10; compact_missing_anchors=0)
-JSS formal compliance audit: PASS (checks=23; passed=23; pending=0; archive=True; pages=53; official_sources_checked=2026-08-09)
+JSS formal compliance audit: PASS (checks=23; passed=23; pending=0; archive=True; pages=54; official_sources_checked=2026-08-09)
 
 ## Step Results
 
@@ -75,8 +75,8 @@ JSS formal compliance audit: PASS (checks=23; passed=23; pending=0; archive=True
 ## Working-Tree Size Hotspots Checked by Packager
 
 - .git: 0.0 MiB
-- manuscript: 9.04 MiB
+- manuscript: 9.05 MiB
 - references: 22.3 MiB
-- replication: 2.59 MiB
+- replication: 2.76 MiB
 
 Machine-readable detail: `replication/results/jss_full_audit.json`

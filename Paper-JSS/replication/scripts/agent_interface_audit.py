@@ -78,7 +78,7 @@ BOUNDARY_SNIPPETS = {
         "they do not rule out external wrappers",
         "does not answer whether an LLM agent",
         "before any behavioural claim is made",
-        "The JSS contribution here is contractual",
+        "The contribution here is contractual",
     ],
     "Paper-JSS/manuscript/sections/09-discussion-compact.tex": [
         "behavioural-agent evaluations require different loss functions",
