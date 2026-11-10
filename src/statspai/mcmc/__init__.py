@@ -1,0 +1,99 @@
+"""
+Bayesian econometrics by MCMC (``statspai.mcmc``).
+
+NumPy-only samplers for the standard regression models, convergence
+diagnostics for any chain, and marginal likelihoods. The PyMC-backed
+estimators for causal designs live in :mod:`statspai.bayes`.
+"""
+
+from __future__ import annotations
+
+from .arima import bayes_arima
+from .bma import BMAResult, bma
+from .bootstrap import bayes_bootstrap
+from .causal_bart import BayesCausalResult, bart_causal
+from .checks import BayesR2Result, PPCResult, bayes_r2, loo_r2, mad_sd, ppc
+from .compare import BayesFactorResult, bayes_factor, savage_dickey
+from .crossval import (
+    LOOResult,
+    PSISResult,
+    kfold,
+    kfold_split,
+    loo,
+    loo_compare,
+    loo_predict,
+    psis,
+    waic,
+)
+from .diagnostics import (
+    MCMCDiagnostic,
+    gelman_rubin,
+    geweke_diag,
+    heidel_diag,
+    hpd_interval,
+    mcmc_ess,
+    mcmc_summary,
+    raftery_diag,
+)
+from .gp import GPResult, gp_regress
+from .iv import bayes_ivreg
+from .mixed import BayesMixedResult, bayes_mixed
+from .mixture import bayes_mixture
+from .mprobit import bayes_mnprobit, bayes_mvprobit
+from .regress import BayesRegressResult, bayes_regress
+from .shrinkage import bayes_shrink
+from .simulation import abc
+from .sur import bayes_sur
+from .sv import stochvol
+from .trees import BARTResult, bart
+
+__all__ = [
+    "MCMCDiagnostic",
+    "LOOResult",
+    "PSISResult",
+    "PPCResult",
+    "BayesR2Result",
+    "loo",
+    "waic",
+    "kfold",
+    "kfold_split",
+    "loo_compare",
+    "loo_predict",
+    "psis",
+    "ppc",
+    "bayes_r2",
+    "loo_r2",
+    "mad_sd",
+    "BayesRegressResult",
+    "BayesFactorResult",
+    "BayesMixedResult",
+    "BMAResult",
+    "bayes_bootstrap",
+    "bayes_factor",
+    "bayes_ivreg",
+    "bayes_mixed",
+    "bayes_regress",
+    "bayes_shrink",
+    "bayes_sur",
+    "BARTResult",
+    "BayesCausalResult",
+    "bart_causal",
+    "GPResult",
+    "bart",
+    "abc",
+    "gp_regress",
+    "bayes_mixture",
+    "bayes_mnprobit",
+    "bayes_mvprobit",
+    "bayes_arima",
+    "stochvol",
+    "bma",
+    "savage_dickey",
+    "gelman_rubin",
+    "geweke_diag",
+    "heidel_diag",
+    "hpd_interval",
+    "mcmc_ess",
+    "mcmc_summary",
+    "raftery_diag",
+]

@@ -7,12 +7,19 @@ Provides robust inference methods for supported estimator results:
 """
 
 from .aipw import aipw
+from .basic_tests import ci, prtest, sktest, swilk
+from .bitest import BiTestResult, bitest
 from .bootstrap import BootstrapResult, bootstrap
 from .conley import conley
+from .difference_in_means import difference_in_means
+from .effect_size import cor_test, esize
 from .front_door import front_door
 from .g_computation import g_computation
 from .ipw import ipw
+from .iv_wild import iv_wild_bootstrap
 from .jackknife import cr2_se, jackknife_se, wild_cluster_boot
+from .lm_lin import lm_lin
+from .loneway import loneway
 from .meta_analysis import MetaAnalysisResult, meta_analysis
 from .multiway_cluster import (
     cluster_robust_se,
@@ -22,14 +29,33 @@ from .multiway_cluster import (
 from .pate import PATEEstimator, pate
 from .ppi import ppi_mean, ppi_ols
 from .randomization import FisherResult, fisher_exact, ri_test
+from .rank_tests import (
+    ClassicTestResult,
+    ksmirnov,
+    ktau,
+    kwallis,
+    median_test,
+    oneway,
+    ranksum,
+    robvar,
+    signrank,
+    spearman,
+)
+from .sdtest import SDTestResult, sdtest, ztest
+from .suest import SuestResult, suest
+from .ttest import TTestResult, ttest
 from .twoway_cluster import twoway_cluster
+from .vcov_refit import vcov, vcov_compare
 from .wild_bootstrap import wild_cluster_bootstrap
 from .wild_subcluster import subcluster_wild_bootstrap, wild_cluster_ci_inv
 
 __all__ = [
     "wild_cluster_bootstrap",
+    "iv_wild_bootstrap",
     "aipw",
     "ri_test",
+    "suest",
+    "SuestResult",
     "fisher_exact",
     "FisherResult",
     "ipw",
@@ -38,6 +64,8 @@ __all__ = [
     "bootstrap",
     "BootstrapResult",
     "twoway_cluster",
+    "vcov",
+    "vcov_compare",
     "conley",
     "pate",
     "PATEEstimator",
@@ -53,4 +81,30 @@ __all__ = [
     "MetaAnalysisResult",
     "ppi_mean",
     "ppi_ols",
+    "ttest",
+    "sdtest",
+    "ztest",
+    "prtest",
+    "ClassicTestResult",
+    "ranksum",
+    "signrank",
+    "kwallis",
+    "spearman",
+    "cor_test",
+    "esize",
+    "ktau",
+    "ksmirnov",
+    "median_test",
+    "robvar",
+    "oneway",
+    "loneway",
+    "sktest",
+    "swilk",
+    "ci",
+    "SDTestResult",
+    "TTestResult",
+    "bitest",
+    "BiTestResult",
+    "difference_in_means",
+    "lm_lin",
 ]

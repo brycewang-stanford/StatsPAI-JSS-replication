@@ -28,11 +28,13 @@ from scipy import stats
 from scipy.optimize import minimize
 
 from .._aliases import accepts_aliases
+from ..core._call_record import records_call
 from ..core._vcov_spec import markout_clusters
 from ..core.results import EconometricResults
 from ._optim_helpers import robust_convergence
 
 
+@records_call("fracreg")
 @accepts_aliases(vce="robust")
 @markout_clusters
 def fracreg(
@@ -148,10 +150,12 @@ def fracreg(
         z = xb + (y_data - mu) / dmu
 
         # WLS
-        W = np.diag(w)
+        # weights applied column-wise: an n x n diagonal matrix is 320 GB
+        # at n = 200,000
+        XtW = np.ascontiguousarray(X_data.T * w)
         try:
-            XtWX = X_data.T @ W @ X_data
-            XtWz = X_data.T @ W @ z
+            XtWX = XtW @ X_data
+            XtWz = XtW @ z
             beta_new = np.linalg.solve(XtWX, XtWz)
         except np.linalg.LinAlgError:
             break
@@ -233,6 +237,7 @@ def fracreg(
     )
 
 
+@records_call("betareg")
 @accepts_aliases(vce="robust")
 @markout_clusters
 def betareg(

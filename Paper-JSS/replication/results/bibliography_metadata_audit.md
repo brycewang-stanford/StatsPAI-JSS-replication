@@ -1,16 +1,16 @@
 # JSS Bibliography Metadata Audit
 
 Status: PASS
-Active TeX inputs: 20
-Active cited keys: 73
-Submission bibliography entries: 74
+Active TeX inputs: 23
+Active cited keys: 101
+Submission bibliography entries: 102
 Reserved entries: 1 (brown2020language)
-Archival bibliography entries: 59
-Entries with DOI: 61
-Entries with URL field: 5
-Entries with DOI/URL/ISBN/eprint/howpublished locator: 72
-No-DOI entries with manual reasons: 13/13
-Compiled main.bbl bibitems: 73 (thebibliography=73)
+Archival bibliography entries: 60
+Entries with DOI: 86
+Entries with URL field: 16
+Entries with DOI/URL/ISBN/eprint/howpublished locator: 100
+No-DOI entries with manual reasons: 16/16
+Compiled main.bbl bibitems: 101 (thebibliography=101)
 
 ## Checks
 
@@ -22,25 +22,28 @@ Compiled main.bbl bibitems: 73 (thebibliography=73)
 | active citations are not archival-only | PASS | active_archival_only=[] |
 | submission bibliography entries keep required fields | PASS | field_failures=[] |
 | no-DOI entries have manual verification reasons | PASS | missing_reasons=[]; stale_reasons=[] |
-| compiled bibliography count matches active citations when main.bbl exists | PASS | bbl_present=True; bibitems=73; active_citations=73 |
+| compiled bibliography count matches active citations when main.bbl exists | PASS | bbl_present=True; bibitems=101; active_citations=101 |
 
 ## No-DOI Entries
 
 | Key | Scope | Locator | Manual verification reason |
 |---|---|---:|---|
-| `anthropic2024mcp` | active | yes | Software/web specification citation; URL and access date are rendered from howpublished/note fields. |
 | `bach2022doubleml` | active | yes | JMLR software paper; URL to the official JMLR article page is present, and no DOI is recorded in the submission bibliography. |
-| `berge2018efficient` | active | no | CREA discussion paper for the fixest implementation lineage; URL to the institution-hosted PDF is present, and no DOI is recorded. |
+| `berge2018efficient` | active | yes | CREA discussion paper for the fixest implementation lineage; URL to the institution-hosted PDF is present, and no DOI is recorded. |
 | `brown2020language` | reserved | yes | NeurIPS 2020 proceedings paper; the proceedings carry no DOI, so the entry records the official proceedings URL plus the arXiv eprint (2005.14165) rather than attaching the preprint's DOI to the venue record. |
 | `card1995using` | active | yes | Book-chapter citation; booktitle, editors, publisher, pages, and year are present, and no DOI is expected. |
-| `chen2025efficient` | active | yes | arXiv preprint (2506.17729) with no journal publication as of verification; the eprint field is the identifier and the note says so. |
+| `correia2017linear` | active | no | Author-hosted working paper behind the reghdfe command; URL to the author's PDF is present, and no DOI is registered. |
 | `econml` | active | yes | Software repository citation; URL is rendered from the howpublished field rather than a DOI. |
-| `ghanem2026selection` | active | yes | arXiv preprint (2203.09001, v15 dated 2026-07-24) with no journal publication as of verification; the eprint field is the identifier. |
 | `lalonde1986evaluating` | active | no | American Economic Review 1986 article from the pre-routine-DOI era; journal, volume, issue, pages, and year are present, and no DOI is fabricated. |
-| `liang2023helm` | active | yes | Transactions on Machine Learning Research article; TMLR issues no DOI, so the entry carries the arXiv eprint (2211.09110) whose journal_ref names the TMLR publication. |
-| `patil2023gorilla` | active | yes | arXiv preprint (2305.15334) cited as such; the eprint field is the identifier and no DOI is fabricated. |
+| `mcp2026specification` | active | yes | Web specification, revision 2026-07-28; URL and access date are rendered, verified 2026-11-02 against the specification site. |
+| `nicholls2020riskbased` | active | yes | R Validation Hub white paper with no DOI, verified 2026-11-02 against the dated PDF and the project's white-paper page. |
 | `pedregosa2011scikit` | active | yes | JMLR article; JMLR registers no DOIs, so the entry carries the official JMLR article URL, verified 2026-09-05 against the JMLR page and the arXiv record 1201.0490 (title, authors, journal_ref). |
+| `pyfixest2025pyfixest` | active | yes | Python package citation in the form its own CITATION.cff requests; the repository URL is present, and the package registers no DOI. |
+| `pymclabs2026causalpy` | active | yes | Software with no DOI yet (its README says one is planned), verified 2026-11-02 against the README and the 0.9.0 wheel metadata. |
+| `rcoreteam2025r` | active | yes | The citation R itself prints from citation(); organization, address, version, and project URL are present, and R registers no DOI. |
 | `rios2022csdid` | active | yes | Reserved software documentation citation; URL and access date are rendered from howpublished/note fields. |
+| `statacorp2023stata` | active | yes | Software citation in the form StataCorp's citing FAQ prescribes; publisher, address, and URL are present, and no DOI exists. |
+| `vanrossum2009python` | active | yes | Printed reference manual; publisher, address, year, and ISBN are present. ACM lists it under its non-resolving 10.5555 prefix, so no DOI is attached. |
 
 Failures: none
 

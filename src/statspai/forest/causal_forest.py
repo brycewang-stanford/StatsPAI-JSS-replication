@@ -37,9 +37,11 @@ from sklearn.tree import DecisionTreeRegressor
 
 # Import our core classes
 from .._aliases import accepts_aliases
+from .._input_validation import missing_named_columns
 from ..core.base import BaseModel
 from ..exceptions import (
     AssumptionWarning,
+    ColumnNotFound,
     DataInsufficient,
     MethodIncompatibility,
     NumericalInstability,
@@ -123,8 +125,14 @@ class CausalForest(BaseModel):
     random_state : int, optional
         Seed.  Results are reproducible for a given seed and ``n_jobs``-
         independent.
-    n_jobs : int, default=1
-        Threads used to grow trees (-1 = all cores).
+    n_jobs : int, default=-1
+        Threads used to grow trees (-1 = all cores). Results do not depend
+        on it: every tree draws from its own seed and the trees are
+        combined in a fixed order.
+
+        .. versionchanged:: 1.40.0
+           The default was ``1``. Estimates are byte-identical for any
+           value (``tests/test_treatment_effects_oct19_fixes.py``).
     verbose : int, default=0
         Verbosity level
     split_rule : {"grf", "cffe", "legacy"}, default="grf"
@@ -197,11 +205,15 @@ class CausalForest(BaseModel):
     >>>
     >>> # Fit Causal Forest
     >>> cf = CausalForest(n_estimators=50, random_state=42)
-    >>> cf.fit('Y ~ T | X1 + X2 + X3', data=data)
+    >>> cf = cf.fit('Y ~ T | X1 + X2 + X3', data=data)  # returns self
+    >>> cf
+    CausalForest(fitted=True, n_estimators=50)
     >>>
     >>> # Estimate treatment effects
     >>> cate = cf.effect(data[['X1', 'X2', 'X3']])
-    >>> print(f"Average treatment effect: {cate.mean():.3f}")
+    >>> cate.shape
+    (1000,)
+    >>> ate = float(cate.mean())  # average treatment effect
     """
 
     def __init__(
@@ -216,7 +228,7 @@ class CausalForest(BaseModel):
         honest: bool = True,
         bootstrap: Optional[bool] = None,
         random_state: Optional[int] = None,
-        n_jobs: int = 1,
+        n_jobs: int = -1,
         verbose: int = 0,
         split_rule: str = "grf",
         mtry: Optional[int] = None,
@@ -466,6 +478,8 @@ class CausalForest(BaseModel):
         self._X_original = X.copy()
         self._T_original = T.copy()
         self._Y_original = Y.copy()
+        # Kept so that sample-splitting diagnostics can refit the same forest.
+        self._W_original = None if W is None else W.copy()
 
         # Validate treatment
         if self.discrete_treatment:
@@ -976,13 +990,22 @@ class CausalForest(BaseModel):
             w_names = [name.strip() for name in w_part.split("+")]
 
         # Extract data
-        try:
-            Y = data[y_name].values
-            T = data[t_name].values
-            X = data[x_names].values
-            W = data[w_names].values if w_names else None
-        except KeyError as e:
-            raise ValueError(f"Variable {e} not found in data")
+        missing = [c for c in [y_name, t_name, *w_names] if c not in data.columns]
+        if missing:
+            raise ColumnNotFound.from_missing(
+                list(dict.fromkeys(missing)),
+                data.columns,
+                context="CausalForest.fit()",
+                extra_diagnostics={"formula": formula},
+            )
+        Y = data[y_name].values
+        T = data[t_name].values
+        W = data[w_names].values if w_names else None
+        # Effect modifiers may be categorical: one 0/1 column per level.
+        from ._grf_family import one_hot_covariates
+
+        x_block, x_names = one_hot_covariates(data, x_names, "CausalForest.fit()")
+        X = x_block.values
 
         # Store feature names for later use
         self._feature_names = x_names
@@ -1056,15 +1079,25 @@ class CausalForest(BaseModel):
 
         if isinstance(data, pd.DataFrame):
             if feature_names:
+                # A forest fitted on a categorical column carries one
+                # feature per level, ``col[level]``; rebuild those from
+                # ``data[col]`` (an unseen level is an error).
+                from ._grf_family import one_hot_newdata
+
+                data = one_hot_newdata(data, feature_names)
                 missing = [name for name in feature_names if name not in data.columns]
                 if missing:
-                    raise MethodIncompatibility(
-                        f"{context}: missing effect-modifier column(s) {missing}.",
-                        recovery_hint=(
+                    raise ColumnNotFound.from_missing(
+                        missing,
+                        data.columns,
+                        message=(
+                            f"{context}: missing effect-modifier column(s) "
+                            f"{missing}."
+                        ),
+                        extra_hint=(
                             "Pass a DataFrame containing the same effect "
                             "modifier columns used at fit time."
                         ),
-                        diagnostics={"missing_columns": missing},
                     )
                 selected = data[feature_names]
             else:
@@ -1574,6 +1607,7 @@ class CausalForest(BaseModel):
         clip: float = 0.01,
         variance: str = "forest",
         covariates: Any = "none",
+        subset: Any = None,
     ) -> Dict[str, float]:
         """GRF-style ATE/ATT/ATC/ATO aggregation of CATE predictions.
 
@@ -1604,6 +1638,7 @@ class CausalForest(BaseModel):
             clip=clip,
             variance=variance,
             covariates=covariates,
+            subset=subset,
         )
 
     @accepts_aliases(_strict=True, controls="covariates")
@@ -1671,7 +1706,10 @@ class CausalForest(BaseModel):
             "Causal Forest Results",
             "=" * 60,
             "Method:                   Causal Forest",
-            f"Number of trees:          {self.n_estimators}",
+            # The trees actually grown (the engine rounds the request to a
+            # multiple of ci_group_size).
+            "Number of trees:          "
+            f"{self.diagnostics.get('n_estimators', self.n_estimators)}",
             f"Min samples per leaf:     {self.min_samples_leaf}",
             f"Max depth:                {self.max_depth or 'None'}",
             f"Max samples per tree:     {self.max_samples}",
@@ -1719,20 +1757,32 @@ class CausalForest(BaseModel):
 
         Parameters
         ----------
-        method : {"split", "permutation"}, optional
+        method : {"split", "permutation"}, default "split"
             ``"split"`` is ``grf::variable_importance``: the depth-weighted
             share of splits on each covariate (see
             :func:`statspai.variable_importance`).  ``"permutation"`` is the
             earlier StatsPAI measure: shuffle one covariate and record the
             mean squared change of ``effect(X)`` on the training rows (which
             uses in-bag trees, so it reflects the fitted function, not
-            out-of-sample relevance).  Omitting ``method`` keeps
-            ``"permutation"`` for now and warns: the default becomes
-            ``"split"`` in 1.33.
+            out-of-sample relevance).
+
+            A forest grown with ``split_rule="legacy"`` records no split
+            depths; for it the default is ``"permutation"``.
+
+            .. versionchanged:: 1.39.0
+               The default is ``"split"``. It was ``"permutation"``, with a
+               ``FutureWarning`` announcing the change since 1.31.
         decay_exponent, max_depth
             Options of the ``"split"`` measure.
 
-        Returns a normalised importance (sums to 1).
+        Returns
+        -------
+        pandas.Series
+            Normalised importance, indexed by covariate. The permutation
+            measure sums to 1; the split measure sums to 1 when every
+            counted depth has at least one split, and to less otherwise (a
+            depth without splits contributes zero while its weight stays in
+            the normaliser, grf's convention).
         """
         if not self.fitted_:
             raise MethodIncompatibility(
@@ -1740,15 +1790,9 @@ class CausalForest(BaseModel):
                 recovery_hint="Call fit() before computing variable importance.",
             )
         if method is None:
-            warnings.warn(
-                "CausalForest.variable_importance(): the default measure "
-                "changes from 'permutation' to grf's 'split' importance in "
-                "1.33. Pass method='split' (grf) or method='permutation' "
-                "(current default) to silence this warning.",
-                FutureWarning,
-                stacklevel=_external_stacklevel(),
-            )
-            method = "permutation"
+            from . import _grf_inference as _gi
+
+            method = "split" if _gi.is_grf_forest(self) else "permutation"
         if method == "split":
             from .forest_tools import variable_importance as _vi
 
@@ -2178,7 +2222,16 @@ class CausalForest(BaseModel):
 # ML4CI agent-surface audit found it the one documented keyword the callable
 # rejected.  ``unit`` is the pre-house-style spelling of the panel id.  Passing
 # both spellings of either is a TypeError, as for any duplicate argument.
-@accepts_aliases(_strict=True, _warn=False, n_trees="n_estimators", unit="id")
+# ``treat`` / ``covariates`` are the house-style names of ``d`` / ``x``.
+@accepts_aliases(
+    _strict=True,
+    _warn=False,
+    n_trees="n_estimators",
+    unit="id",
+    treat="d",
+    covariates="x",
+    seed="random_state",
+)
 def causal_forest(
     formula: Optional[str] = None,
     data: Optional[pd.DataFrame] = None,
@@ -2204,6 +2257,7 @@ def causal_forest(
     time: Optional[Any] = None,
     Y_hat: Optional[Any] = None,
     W_hat: Optional[Any] = None,
+    n_jobs: int = -1,
     **kwargs: Any,
 ) -> CausalForest:
     """
@@ -2262,6 +2316,12 @@ def causal_forest(
         arrays).  ``unit=`` is accepted as an alias of ``id``.
     Y_hat, W_hat : array-like, optional
         Precomputed out-of-sample nuisance predictions.
+    n_jobs : int, default=-1
+        Threads used to grow the trees (grf ``num.threads``); ``-1`` uses
+        every core. The estimates do not depend on it.
+
+        .. versionchanged:: 1.40.0
+           The default was ``1``; outputs are byte-identical.
     **kwargs
         Additional arguments passed to :class:`CausalForest`
         (``split_rule``, ``mtry``, ``ci_group_size``, ``alpha``, ...).
@@ -2290,17 +2350,29 @@ def causal_forest(
     >>> # Fit using formula interface
     >>> cf = causal_forest('outcome ~ treatment | X1 + X2', data=data,
     ...                   n_estimators=50, random_state=42)
-    >>> print(cf.summary())
+    >>> print(cf.summary().splitlines()[1])
+    Causal Forest Results
     >>>
     >>> # Estimate effects
     >>> effects = cf.effect(data[['X1', 'X2']])
-    >>> print(f"Mean effect: {effects.mean():.3f}")
+    >>> effects.shape
+    (500,)
+    >>> mean_effect = float(effects.mean())
     """
     frame = data
 
     def _column_or_array(value: Any, label: str) -> Any:
         if isinstance(value, str):
-            if frame is None or value not in frame.columns:
+            if frame is not None and value not in frame.columns:
+                raise ColumnNotFound.from_missing(
+                    {label: value},
+                    frame.columns,
+                    message=(
+                        f"causal_forest(): {label}={value!r} is not a column of data."
+                    ),
+                    extra_hint=f"Or pass {label} as an array.",
+                )
+            if frame is None:
                 raise MethodIncompatibility(
                     f"causal_forest(): {label}={value!r} is not a column of data.",
                     recovery_hint=f"Pass {label} as a column name in data or an array.",
@@ -2337,15 +2409,33 @@ def causal_forest(
             )
         x_cols = [x] if isinstance(x, str) else list(x)
         w_cols = [] if w is None else ([w] if isinstance(w, str) else list(w))
-        missing = [c for c in [y, d, *x_cols, *w_cols] if c not in data.columns]
-        if missing:
-            raise MethodIncompatibility(
-                f"causal_forest(): column(s) not in data: {missing}.",
-                recovery_hint="Check the column names against data.columns.",
+        from ..core._covariates import _factor_column
+
+        # An effect modifier may be written C(col), as in a formula: the
+        # column that has to exist is col.
+        named = missing_named_columns({"y": y, "d": d, "w": w_cols}, data.columns)
+        named.update(
+            {
+                f"x[{i}]": c
+                for i, c in enumerate(x_cols)
+                if c not in data.columns and _factor_column(c) not in data.columns
+            }
+        )
+        if named:
+            missing = list(named.values())
+            raise ColumnNotFound.from_missing(
+                named,
+                data.columns,
+                message=f"causal_forest(): column(s) not in data: {missing}.",
             )
         Y = data[y].to_numpy()
         T = data[d].to_numpy()
-        X = data[x_cols].to_numpy()
+        # Effect modifiers may be categorical: one 0/1 column per level,
+        # as in the formula interface.
+        from ._grf_family import one_hot_covariates
+
+        x_block, x_cols = one_hot_covariates(data, x_cols, "causal_forest()")
+        X = x_block.to_numpy()
         W = data[w_cols].to_numpy() if w_cols else None
         data = None  # arrays fully specify the fit below
     else:
@@ -2360,6 +2450,7 @@ def causal_forest(
         model_t=model_t,
         discrete_treatment=discrete_treatment,
         random_state=random_state,
+        n_jobs=n_jobs,
         **kwargs,
     )
 

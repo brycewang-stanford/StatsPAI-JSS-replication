@@ -240,8 +240,8 @@ def collect() -> dict[str, Any]:
 
     return {
         "generated_at_unix": _generated_at_unix(),
-        "root": str(ROOT),
-        "paper_dir": str(PAPER_DIR),
+        "root": ".",
+        "paper_dir": PAPER_DIR.relative_to(ROOT).as_posix(),
         "status": "PASS" if not failures else "FAIL",
         "failures": failures,
         "summary": {

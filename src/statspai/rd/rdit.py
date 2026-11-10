@@ -13,12 +13,16 @@ Hausman, C. and Rapson, D.S. (2018).
 Applications." Annual Review of Resource Economics, 10, 533-552. [@hausman2018regression]
 """
 
+import warnings
 from typing import Any, Optional
 
 import numpy as np
 import pandas as pd
 from scipy import stats as sp_stats
 
+from .._input_validation import check_columns
+from ..core._call_record import records_call
+from ..core._vcov_spec import accepts_vce
 from ..core.results import CausalResult
 from ._core import _kernel_fn
 
@@ -36,8 +40,9 @@ def _newey_west_se(
 ) -> np.ndarray:
     """Compute HAC (Newey-West) covariance matrix and return SEs."""
     n, k = X.shape
-    W = np.diag(weights)
-    XtWX = X.T @ W @ X
+    # X'W without the n x n diagonal; row-major, as X.T @ diag(w) returns it,
+    # so the products below round the same way
+    XtWX = np.ascontiguousarray(X.T * weights) @ X
     try:
         XtWX_inv = np.linalg.inv(XtWX)
     except np.linalg.LinAlgError:  # pragma: no cover
@@ -132,6 +137,8 @@ def _deseasonalise(y: np.ndarray, time_vals: pd.Series, method: str) -> np.ndarr
 # ======================================================================
 
 
+@records_call("rdit")
+@accepts_vce(default="hac")
 def rdit(
     data: pd.DataFrame,
     y: str,
@@ -218,14 +225,20 @@ def rdit(
       manipulation concern, but also no density test.
     - Autocorrelation in the outcome requires HAC standard errors.
     - Seasonality can confound the estimate and should be removed.
+
+    The Newey-West variance is biased downward in short windows: the
+    regression scores sum to zero, so the truncated autocovariances are
+    negative on average, and the kernel puts most of the weight on the few
+    observations next to the cutoff. In simulations with a correctly
+    specified trend, the nominal 95% interval covered about 83% with 30
+    effective observations, 89% with 60 and 94% with 100 under independent
+    errors, and about 5 points less under AR(1) errors with coefficient
+    0.5. A warning is issued below 100 effective observations.
     """
     # ------------------------------------------------------------------
     # 1. Validate inputs
     # ------------------------------------------------------------------
-    if y not in data.columns:
-        raise ValueError(f"Column '{y}' not found in data.")
-    if time not in data.columns:
-        raise ValueError(f"Column '{time}' not found in data.")
+    check_columns(data, {"y": y, "time": time, "cluster": cluster}, function="sp.rdit")
     if kernel not in _SUPPORTED_KERNELS:
         raise ValueError(
             f"Unknown kernel '{kernel}'. " f"Choose from {list(_SUPPORTED_KERNELS)}."
@@ -233,8 +246,6 @@ def rdit(
 
     df = data[[time, y]].dropna().copy()
     if cluster is not None:
-        if cluster not in data.columns:
-            raise ValueError(f"Cluster column '{cluster}' not found.")
         df[cluster] = data.loc[df.index, cluster]
 
     # ------------------------------------------------------------------
@@ -354,6 +365,19 @@ def rdit(
 
     se_all = _newey_west_se(X_sorted, resid_sorted, w_sorted, max_lag)
     se_tau = float(se_all[tau_idx])
+    if n_eff < 100:
+        from ..exceptions import AssumptionWarning
+
+        warnings.warn(
+            f"rdit: {n_eff} observations inside the bandwidth. The "
+            "Newey-West standard error is biased downward in a window this "
+            "short (nominal 95% intervals cover roughly 83% at 30 effective "
+            "observations and 89% at 60); read the interval as too narrow, "
+            "or widen `h` if the trend is plausibly linear over a longer "
+            "span.",
+            AssumptionWarning,
+            stacklevel=2,
+        )
 
     # ------------------------------------------------------------------
     # 9. Inference

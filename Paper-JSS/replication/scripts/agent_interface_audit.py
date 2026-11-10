@@ -59,31 +59,21 @@ TRACE_TEX = TABLES_DIR / "ex07_agent_trace.tex"
 BOUNDARY_SNIPPETS = {
     "Paper-JSS/manuscript/main.tex": [
         "mechanical and contractual",
-        "not a claim of behavioural",
     ],
     # Section 3 states the scope once and defers the evidence and its
     # limits to Section 7 (the JSS v2 review asked for the repeated
     # disclaimers to be merged).
     "Paper-JSS/manuscript/sections/03-agent-facing-compact.tex": [
-        "The agent layer is a\nsoftware-interface contribution",
-        "tool discovery, failure recovery, result reuse, and citation",
-        "same validation ledger as human ones",
-        "reports the mechanical evidence for it and what it does not show",
     ],
     "Paper-JSS/manuscript/sections/07-agent-eval.tex": [
-        "reports only the \\emph{mechanical} and \\emph{contractual} evidence",
         "Contractual trace evidence",
-        "stale result-handle call",
-        "package-distributed, package-wide OpenAI-style tool-schema catalogues",
-        "they do not rule out external wrappers",
         "does not answer whether an LLM agent",
         "before any behavioural claim is made",
-        "The contribution here is contractual",
     ],
     "Paper-JSS/manuscript/sections/09-discussion-compact.tex": [
         "behavioural-agent evaluations require different loss functions",
     ],
-    "Paper-JSS/REVIEWER-HARDENING-AUDIT.md": [
+    "Paper-JSS/RELEASE-CHECKLIST.md": [
         "Agent behavior is deferred",
         "schema/interface contribution",
     ],
@@ -192,10 +182,20 @@ def _trace_summary(failures: list[str]) -> dict[str, Any]:
     ]
     if missing_tools:
         failures.append("agent trace missing required tools: " + ", ".join(missing_tools))
-    if summary.get("tool_count", 0) < 400:
+    unchecked = [t for t in ("search_functions", "describe_function", "call_function")
+                 if t not in required_present]
+    if unchecked:
+        failures.append("agent trace does not check the discovery meta-tools: " + ", ".join(unchecked))
+    # tools/list serves the curated profile by default (StatsPAI 1.33.0): the
+    # hand-written tools plus search/describe/call meta-tools, which the
+    # required-tools check above holds. The full manifest (--profile full) is
+    # ~2 MB, more than a client context window. 20 is a floor, not a target.
+    if summary.get("tool_count", 0) < 20:
         failures.append("agent trace tool_count is unexpectedly small")
     required_args = set(summary.get("schema_required", []))
-    if not {"data_path", "g", "i", "t", "y"} <= required_args:
+    # Since 1.40 the data source is one of data_path / data_id / data_records,
+    # so no single one of them is required; the design arguments still are.
+    if not {"g", "i", "t", "y"} <= required_args:
         failures.append("callaway_santanna schema required arguments drifted")
     enum = set(summary.get("schema_control_group_enum", []))
     if enum != {"nevertreated", "notyettreated"}:
@@ -233,7 +233,9 @@ def _trace_summary(failures: list[str]) -> dict[str, Any]:
     if summary.get("audit_checks", 0) < 3:
         failures.append("agent trace audit_result returned too few checks")
     missing_suggestions = set(summary.get("missing_suggested_functions", []))
-    if not {"sp.sensitivity_rr", "sp.bacon_decomposition"} <= missing_suggestions:
+    # The two gaps of the curated DiD pool on the mpdta fit. Through 1.39 the
+    # Honest-DiD gap was routed to sp.sensitivity_rr; 1.40 names sp.honest_did.
+    if not {"sp.honest_did", "sp.bacon_decomposition"} <= missing_suggestions:
         failures.append("agent trace audit suggestions drifted")
     if summary.get("honest_max_rejecting_M", 0) <= 0:
         failures.append("agent trace Honest-DiD follow-up returned no positive M")

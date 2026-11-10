@@ -4,7 +4,7 @@
 \setlength{\LTleft}{0pt}
 \setlength{\LTright}{0pt}
 \begin{longtable}{p{0.24\textwidth}p{0.14\textwidth}p{0.54\textwidth}}
-\caption{Full public function inventory at \statspai{} 1.32.0.}\label{tab:function-inventory-full}\\
+\caption{Full public function inventory at \statspai{} 1.40.2.}\label{tab:function-inventory-full}\\
 \toprule
 Function & Category & Description \\
 \midrule
@@ -24,6 +24,7 @@ Function & Category & Description \\
     \texttt{agent\_\allowbreak{}cards} & agent & Bulk export of agent cards, optionally filtered. \\
     \texttt{agent\_\allowbreak{}schema} & agent & Return the agent-facing tool schema for a function. \\
     \texttt{all\_\allowbreak{}schemas} & agent & Export all function schemas at once (for bulk agent tool registration). \\
+    \texttt{decision\_\allowbreak{}guide} & agent & Machine-readable decision table for an estimator family: the questions to answer (with allowed answers) and every rou... \\
     \texttt{describe\_\allowbreak{}function} & agent & Return the full specification for a function as a dictionary. \\
     \texttt{from\_\allowbreak{}r} & agent & Translate one R / fixest / felm call to a StatsPAI tool-call payload. \\
     \texttt{from\_\allowbreak{}stata} & agent & Translate a Stata command line to a StatsPAI tool-call payload. \\
@@ -32,7 +33,8 @@ Function & Category & Description \\
     \texttt{list\_\allowbreak{}functions} & agent & List all registered StatsPAI functions, optionally filtered. \\
     \texttt{render\_\allowbreak{}agent\_\allowbreak{}block} & agent & Render the ``\#\# For Agents`` markdown block for one function. \\
     \texttt{render\_\allowbreak{}agent\_\allowbreak{}blocks} & agent & Render the combined ``\#\# For Agents`` section for several functions. \\
-    \texttt{search\_\allowbreak{}functions} & agent & Keyword search across function names, descriptions, and tags. \\
+    \texttt{route} & agent & Route a research question to estimator calls. Answer a family's decision questions (see sp.decision\_guide) and get th... \\
+    \texttt{search\_\allowbreak{}functions} & agent & Search the registry by keywords, task phrase, or Stata / R command name. \\
     \texttt{stata} & agent & Execute Stata estimation / post-estimation commands on a DataFrame. \\
     \texttt{support\_\allowbreak{}tier} & agent & Maintenance tier derived from ``stability`` and ``validation\_status``. \\
     \texttt{translation\_\allowbreak{}coverage} & agent & Coverage matrix for the ``sp.from\_stata`` / ``sp.from\_r`` translators. \\
@@ -47,41 +49,91 @@ Function & Category & Description \\
     \texttt{shift\_\allowbreak{}share\_\allowbreak{}political\_\allowbreak{}panel} & bartik & Multi-period panel shift-share IV: pooled 2SLS with unit/time/two-way FEs over a time-varying Bartik instrument. Repo... \\
     \texttt{shift\_\allowbreak{}share\_\allowbreak{}se} & bartik & Replace the SE of a shift-share regression with the AKM (2019) SE. \\
     \texttt{ssaggregate} & bartik & Shift-share IV with AKM (2019) inference and the BHJ shock-level view. \\
+    \texttt{BARTResult} & bayes & Result of :func:`bart`. \\
+    \texttt{BMAResult} & bayes & Result of :func:`bma`. \\
+    \texttt{BayesCausalResult} & bayes & Posterior of a Bayesian tree causal model (:func:`sp.bart\_causal`). \\
+    \texttt{BayesFactorResult} & bayes & Result of :func:`bayes\_factor`. \\
+    \texttt{BayesMixedResult} & bayes & Posterior of a hierarchical model fitted by :func:`bayes\_mixed`. \\
+    \texttt{BayesR2Result} & bayes & Result of :func:`bayes\_r2` and :func:`loo\_r2`. \\
+    \texttt{BayesRegressResult} & bayes & Posterior of a model fitted by :func:`bayes\_regress`. \\
     \texttt{BayesianCausalResult} & bayes & Summary of a Bayesian causal fit. \\
     \texttt{BayesianDIDResult} & bayes & Bayesian DID result with optional per-cohort ATT posteriors. \\
     \texttt{BayesianDMLResult} & bayes & Bayesian DML posterior summary. \\
     \texttt{BayesianHTEIVResult} & bayes & Extension of :class:`BayesianCausalResult` for heterogeneous-effect IV. \\
     \texttt{BayesianIVResult} & bayes & Bayesian IV result with optional per-instrument LATE posteriors. \\
     \texttt{BayesianMTEResult} & bayes & Bayesian Marginal Treatment Effect result. \\
+    \texttt{GPResult} & bayes & Result of :func:`gp\_regress`. \\
+    \texttt{LOOResult} & bayes & Expected log predictive density of a model, with its pieces. \\
+    \texttt{MCMCDiagnostic} & bayes & A convergence diagnostic for each parameter of a chain. \\
+    \texttt{PPCResult} & bayes & Result of :func:`ppc`. \\
+    \texttt{PSISResult} & bayes & Result of :func:`psis`. \\
+    \texttt{abc} & bayes & Simulation-based Bayesian inference for models without a tractable likelihood: rejection ABC with optional local line... \\
+    \texttt{bart} & bayes & Bayesian additive regression trees: a sum of many small trees sampled by Bayesian backfitting. Finds nonlinearities a... \\
+    \texttt{bayes\_\allowbreak{}arima} & bayes & Bayesian ARIMA(p, d, q) with the exact Gaussian likelihood (Kalman filter) and a proper uniform prior over the statio... \\
+    \texttt{bayes\_\allowbreak{}bootstrap} & bayes & Bayesian bootstrap (Rubin 1981): posterior draws of least squares coefficients, or of any weighted statistic, under f... \\
     \texttt{bayes\_\allowbreak{}did} & bayes & Bayesian Difference-in-Differences with staggered adoption -- hierarchical ATT(g,t) posterior with optional cohort /... \\
     \texttt{bayes\_\allowbreak{}dml} & bayes & Bayesian Double Machine Learning (DiTraglia \& Liu 2025): Normal-Normal conjugate update on a DML point estimate, with... \\
+    \texttt{bayes\_\allowbreak{}factor} & bayes & Bayes factors and posterior model probabilities from the marginal likelihoods of two or more fitted Bayesian models (... \\
     \texttt{bayes\_\allowbreak{}fuzzy\_\allowbreak{}rd} & bayes & Bayesian fuzzy RD: joint model of first-stage jump in treatment probability and outcome jump, yielding posterior over... \\
     \texttt{bayes\_\allowbreak{}hte\_\allowbreak{}iv} & bayes & Bayesian IV with linear CATE-by-covariate heterogeneity. \\
     \texttt{bayes\_\allowbreak{}its} & bayes & Bayesian interrupted time series (segmented regression). \\
     \texttt{bayes\_\allowbreak{}iv} & bayes & Bayesian instrumental variables with full posterior over structural parameters. Handles weak instruments via shrinkag... \\
+    \texttt{bayes\_\allowbreak{}ivreg} & bayes & Bayesian linear instrumental variables by Gibbs sampling, NumPy only: the joint normal model of the first stage and t... \\
+    \texttt{bayes\_\allowbreak{}mixed} & bayes & Bayesian hierarchical (random-effects) model for longitudinal / panel data: random intercepts and slopes with an inve... \\
+    \texttt{bayes\_\allowbreak{}mixture} & bayes & Bayesian mixture of normal regressions with a fixed number of components or a Dirichlet process. 'y \textasciitilde{} 1' gives densit... \\
+    \texttt{bayes\_\allowbreak{}mnprobit} & bayes & Bayesian multinomial probit by Gibbs sampling: an unordered outcome with correlated normal utility errors, so indepen... \\
     \texttt{bayes\_\allowbreak{}mte} & bayes & Bayesian Marginal Treatment Effect (Heckman-Vytlacil 2005). Full posterior over the MTE curve under essential heterog... \\
+    \texttt{bayes\_\allowbreak{}mvprobit} & bayes & Bayesian multivariate probit by Gibbs sampling: several binary outcomes with errors correlated across equations. Repo... \\
+    \texttt{bayes\_\allowbreak{}r2} & bayes & Bayesian R-squared (Gelman, Goodrich, Gabry, Vehtari 2019): variance of the fit over variance of the fit plus residua... \\
     \texttt{bayes\_\allowbreak{}rd} & bayes & Bayesian sharp Regression Discontinuity -- full posterior over the RD jump via local polynomial with prior regularisa... \\
+    \texttt{bayes\_\allowbreak{}regress} & bayes & Bayesian regression by MCMC with a normal prior on the coefficients: Gaussian linear (independent or conjugate prior)... \\
+    \texttt{bayes\_\allowbreak{}shrink} & bayes & Linear regression with a shrinkage or variable-selection prior: the Bayesian lasso (Park and Casella 2008), stochasti... \\
+    \texttt{bayes\_\allowbreak{}sur} & bayes & Bayesian seemingly unrelated regressions by Gibbs sampling: several linear equations with errors correlated across eq... \\
     \texttt{bayes\_\allowbreak{}synth} & bayes & Bayesian synthetic control. \\
+    \texttt{bma} & bayes & Bayesian model averaging over which regressors enter a linear model or GLM: posterior inclusion probabilities and mod... \\
+    \texttt{gelman\_\allowbreak{}rubin} & bayes & Gelman-Rubin potential scale reduction factor over several chains (point estimate, upper limit and the multivariate f... \\
+    \texttt{geweke\_\allowbreak{}diag} & bayes & Geweke (1992) convergence diagnostic: z-score for equal means in an early and a late window of the chain, with spectr... \\
+    \texttt{gp\_\allowbreak{}regress} & bayes & Gaussian process regression: nonparametric regression with closed-form posterior bands. RBF or Matern kernel, one len... \\
+    \texttt{heidel\_\allowbreak{}diag} & bayes & Heidelberger-Welch (1983) diagnostic: Cramer-von Mises stationarity test with progressive discarding of the start of... \\
+    \texttt{hpd\_\allowbreak{}interval} & bayes & Highest posterior density interval of each parameter: the shortest interval holding the requested share of the draws... \\
+    \texttt{kfold} & bayes & K-fold cross-validation of a Bayesian model by refitting: each held-out observation is scored by its log predictive d... \\
+    \texttt{kfold\_\allowbreak{}split} & bayes & Assign ``n`` observations to ``k`` folds of near-equal size. \\
+    \texttt{loo} & bayes & Leave-one-out cross-validation by Pareto smoothed importance sampling: expected log predictive density (elpd) for new... \\
+    \texttt{loo\_\allowbreak{}compare} & bayes & Compare models on expected log predictive density: difference from the best model and its standard error from the pai... \\
+    \texttt{loo\_\allowbreak{}predict} & bayes & Leave-one-out prediction of each observation from the other ones. \\
+    \texttt{loo\_\allowbreak{}r2} & bayes & Leave-one-out R-squared: 1 - Var(y - yhat\_loo) / Var(y) with each observation predicted from a posterior that did not... \\
+    \texttt{mad\_\allowbreak{}sd} & bayes & Median absolute deviation scaled to a standard deviation. \\
+    \texttt{mcmc\_\allowbreak{}ess} & bayes & Effective sample size of each parameter of an MCMC chain, from the spectral density at zero of an AR fit (coda::effec... \\
+    \texttt{mcmc\_\allowbreak{}summary} & bayes & Posterior summary of MCMC draws: mean, sd, naive and time-series standard error, effective sample size, quantiles and... \\
     \texttt{policy\_\allowbreak{}weight\_\allowbreak{}ate} & bayes & Uniform weight = 1 on every grid point. \\
     \texttt{policy\_\allowbreak{}weight\_\allowbreak{}marginal} & bayes & Marginal PRTE at a specific propensity level ``u\_star``. \\
     \texttt{policy\_\allowbreak{}weight\_\allowbreak{}observed\_\allowbreak{}prte} & bayes & True **CHV-2011 PRTE** weights from the observed propensity \\
     \texttt{policy\_\allowbreak{}weight\_\allowbreak{}prte} & bayes & **Stylised** PRTE weights -- convenience builder, NOT the \\
     \texttt{policy\_\allowbreak{}weight\_\allowbreak{}subsidy} & bayes & Weight = 1 on ``[u\_lo, u\_hi]``; 0 elsewhere. \\
+    \texttt{ppc} & bayes & Posterior predictive check: simulate replicated data sets from a fitted Bayesian regression and compare a statistic o... \\
+    \texttt{psis} & bayes & Pareto smoothed importance sampling: stabilises importance weights by replacing the largest with order statistics of... \\
+    \texttt{raftery\_\allowbreak{}diag} & bayes & Raftery-Lewis (1992) run-length diagnostic: thinning, burn-in and total length needed to estimate a posterior quantil... \\
+    \texttt{savage\_\allowbreak{}dickey} & bayes & Savage-Dickey density ratio: the Bayes factor of a point restriction on one coefficient (default zero) against the fi... \\
+    \texttt{stochvol} & bayes & Stochastic volatility model for returns by MCMC: the log variance follows a stationary AR(1) with its own shock. Retu... \\
+    \texttt{waic} & bayes & Widely applicable information criterion: within-sample log predictive density minus the posterior variance of each po... \\
     \texttt{BridgeResult} & bridge & Result of a bridging-theorem comparison. \\
     \texttt{ALearningResult} & causal & Result of :func:`statspai.a\_learning`. \\
     \texttt{AutoCATEResult} & causal & Leaderboard + winner from ``sp.auto\_cate``. \\
     \texttt{BCFFactorExposureResult} & causal & Output of :func:`bcf\_factor\_exposure`. \\
     \texttt{BCFLongResult} & causal & Longitudinal BCF output container. \\
     \texttt{BCFOrdinalResult} & causal & Output of :func:`bcf\_ordinal`. \\
+    \texttt{BalTabResult} & causal & Balance table returned by :func:`sp.bal\_tab`. \\
     \texttt{BalanceDiagnosticsResult} & causal & Container for raw/weighted matching balance diagnostics. \\
+    \texttt{BalanceRandomizationResult} & causal & Result of :func:`balance\_vs\_randomization`. \\
     \texttt{BalkePearlResult} & causal & Result of :func:`statspai.balke\_pearl`. \\
     \texttt{BanditBenchmarkResult} & causal & Output from a causal-RL benchmark run. \\
     \texttt{BayesRDHTEResult} & causal & Bayesian RDD with HTE posterior summaries. \\
-    \texttt{BayesianCausalForest} & causal & Bayesian Causal Forest estimator. \\
+    \texttt{BayesianCausalForest} & causal & BCF-style CATE approximation (random forest + boosting; not BART). \\
     \texttt{BeyondAverageResult} & causal & Distributional LATE on compliers. \\
     \texttt{BoundsResult} & causal & Result container for partial identification / bounds estimation. \\
     \texttt{BunchingEstimator} & causal & Bunching estimator for kink/notch designs. \\
     \texttt{CATEEvalResult} & causal & Output of :func:`cate\_eval`. \\
+    \texttt{CATEGainCurveResult} & causal & Output of :func:`cate\_gain\_curve`. \\
     \texttt{CFPolicyResult} & causal & Result of :func:`statspai.counterfactual\_policy\_optimization`. \\
     \texttt{CSReport} & causal & Structured output of :func:`cs\_report`. \\
     \texttt{CardinalityMatchResult} & causal & Result of :func:`cardinality\_match` (Zubizarreta cardinality matching). \\
@@ -105,7 +157,7 @@ Function & Category & Description \\
     \texttt{DYNOTEARSResult} & causal & Output of :func:`dynotears`. \\
     \texttt{DeepIV} & causal & Deep Instrumental Variables estimator (Hartford et al. 2017). \\
     \texttt{DistIVResult} & causal & Distributional IV: complier LATE per quantile. \\
-    \texttt{DistRDResult} & causal & RDD effect on each quantile. \\
+    \texttt{DistRDResult} & causal & RDD effect on the distribution of the outcome at the cutoff. \\
     \texttt{DoseResponse} & causal & Generalized Propensity Score dose-response estimator. \\
     \texttt{DoubleML} & causal & Legacy facade. Prefer the per-model classes directly for new code: \\
     \texttt{DoubleMLIIVM} & causal & Interactive IV DML -- binary D, binary Z, LATE via Wald. \\
@@ -114,6 +166,7 @@ Function & Category & Description \\
     \texttt{DoubleMLPLR} & causal & Partially linear regression DML (continuous or binary D, no IV). \\
     \texttt{DynamicDMLResult} & causal & Output of :func:`dynamic\_dml`. \\
     \texttt{FCIResult} & causal & Partial Ancestral Graph (PAG) learned by :func:`fci`. \\
+    \texttt{FullMatchResult} & causal & Result of :func:`full\_match`. \\
     \texttt{FunctionalCATEResult} & causal & Output of FOCaL functional CATE estimator. \\
     \texttt{GESResult} & causal & Result of :func:`ges` -- a CPDAG (Markov equivalence class). \\
     \texttt{GEstimation} & causal & G-estimation for dynamic treatment regimes via SNMM. \\
@@ -124,6 +177,7 @@ Function & Category & Description \\
     \texttt{HDPanelQTEResult} & causal & Panel QTE at multiple quantiles with high-dimensional control selection. \\
     \texttt{HarvestDIDResult} & causal & Full diagnostic output of :func:`harvest\_did`. \\
     \texttt{ICPResult} & causal & Result of an Invariant Causal Prediction run (:func:`icp`). \\
+    \texttt{IDAResult} & causal & Possible effects of ``x`` on ``y`` across a Markov equivalence class. \\
     \texttt{IVDiagResult} & causal & Container for :func:`iv\_diag` output. \\
     \texttt{IVForestResult} & causal & A fitted instrumental forest. \\
     \texttt{KernelIVResult} & causal & Output of kernel IV regression. \\
@@ -133,6 +187,7 @@ Function & Category & Description \\
     \texttt{LLMDAGProposal} & causal & Result of an LLM (or heuristic) DAG proposal. \\
     \texttt{LMForestResult} & causal & A fitted linear-model forest. \\
     \texttt{LPCMCIResult} & causal & Output of :func:`lpcmci`. \\
+    \texttt{LTMLEMSMResult} & causal & Working marginal structural model fitted by :func:`ltmle\_msm`. \\
     \texttt{LTMLEResult} & causal & Structured output of :func:`ltmle`. \\
     \texttt{LTMLESurvivalResult} & causal & Counterfactual survival curves and contrasts. \\
     \texttt{LiNGAMResult} & causal & Result of a :func:`lingam` (DirectLiNGAM) fit. \\
@@ -152,6 +207,7 @@ Function & Category & Description \\
     \texttt{PCMCIResult} & causal & PCMCI output -- lag-specific adjacency + discovered links. \\
     \texttt{PSBalanceResult} & causal & Container for propensity score balance diagnostics. \\
     \texttt{PSMatch2Result} & causal & Container for a ``sp.psmatch2`` run. \\
+    \texttt{PScoreResult} & causal & What :func:`pscore` returns. \\
     \texttt{ParallelTrendsRobustnessResult} & causal & Bundled pre-trends power + honest-DiD sensitivity for one DiD result. \\
     \texttt{PolicyTree} & causal & Optimal depth-limited policy tree. \\
     \texttt{PolicyTreeResult} & causal & Result of :func:`policy\_tree`. \\
@@ -184,8 +240,10 @@ Function & Category & Description \\
     \texttt{TLearner} & causal & T-Learner: separate models for each treatment arm. \\
     \texttt{TMLE} & causal & Targeted Maximum Likelihood Estimation. \\
     \texttt{TextTreatmentResult} & causal & ATE result for text-as-treatment estimation. \\
+    \texttt{TwoCriteriaMatchResult} & causal & Result of :func:`two\_criteria\_match` and :func:`tighten\_blocks`. \\
     \texttt{UnobservedConfounderProposal} & causal & List of plausible unobserved confounders + suggested E-values. \\
     \texttt{VCNetResult} & causal & Dose-response curve returned by :func:`vcnet` / :func:`scigan`. \\
+    \texttt{WeightItResult} & causal & Balancing weights returned by :func:`sp.weightit`. \\
     \texttt{XLearner} & causal & X-Learner (Kunzel et al. 2019). \\
     \texttt{ZeroFirstStageResult} & causal & Output of :func:`zero\_first\_stage`. \\
     \texttt{a\_\allowbreak{}learning} & causal & G-estimation / A-learning for a K-stage binary-action DTR. \\
@@ -199,12 +257,15 @@ Function & Category & Description \\
     \texttt{average\_\allowbreak{}treatment\_\allowbreak{}effect} & causal & Aggregate CATE predictions into ATE/ATT/ATC/ATO targets. \\
     \texttt{bacon\_\allowbreak{}decomposition} & causal & Goodman-Bacon (2021) decomposition of the TWFE DiD coefficient into a weighted sum of underlying 2x2 DID comparisons:... \\
     \texttt{bacon\_\allowbreak{}plot} & causal & Scatter plot of Goodman-Bacon decomposition. \\
+    \texttt{bal\_\allowbreak{}tab} & causal & Covariate balance before and after weighting for binary, multi-category and continuous treatments (R cobalt bal.tab):... \\
     \texttt{balance\_\allowbreak{}diagnostics} & causal & Unified balance diagnostics for matching and weighting estimators. \\
+    \texttt{balance\_\allowbreak{}vs\_\allowbreak{}randomization} & causal & Judge the covariate balance of a matched sample against the balance complete randomization would produce: two-sample... \\
     \texttt{balanceplot} & causal & Love plot: covariate balance visualization (SMD dot plot). \\
     \texttt{balke\_\allowbreak{}pearl} & causal & Compute Balke-Pearl bounds on the ATE. \\
+    \texttt{bart\_\allowbreak{}causal} & causal & Bayesian tree models for a binary treatment, sampled by MCMC on the sp.bart engine: the Bayesian causal forest (metho... \\
     \texttt{bartik} & causal & Bartik / shift-share IV estimator (Adao-Kolesar-Morales 2019; Borusyak-Hull-Jaravel 2022). Uses pre-period industry /... \\
     \texttt{basque\_\allowbreak{}terrorism} & causal & Basque Country terrorism dataset (simulated). \\
-    \texttt{bcf} & causal & Estimate heterogeneous treatment effects using Bayesian Causal Forest. \\
+    \texttt{bcf} & causal & BCF-style CATE approximation (random forest + boosting), not BART/MCMC. \\
     \texttt{bcf\_\allowbreak{}factor\_\allowbreak{}exposure} & causal & BCF on PCA-factor scores of a high-dimensional exposure vector (arXiv:2601.16595, 2026). Compresses exposures via SVD... \\
     \texttt{bcf\_\allowbreak{}longitudinal} & causal & Hierarchical Bayesian Causal Forest for longitudinal data (BCFLong) -- allows mu\_t(X), tau\_t(X) to evolve across time... \\
     \texttt{bcf\_\allowbreak{}ordinal} & causal & Bayesian Causal Forest for ordered / dose-level treatment (Zorzetto et al. 2026). Estimates cumulative dose-response... \\
@@ -222,12 +283,13 @@ Function & Category & Description \\
     \texttt{bunching} & causal & Estimate bunching at a policy threshold. \\
     \texttt{calibrate\_\allowbreak{}cate} & causal & Rescale CATE predictions by their best-linear-predictor calibration. \\
     \texttt{calibration\_\allowbreak{}test} & causal & Best-linear-predictor calibration test of CATEs [@chernozhukov2025generic]. \\
-    \texttt{california\_\allowbreak{}prop99} & causal & California Proposition 99 tobacco control dataset. \\
+    \texttt{california\_\allowbreak{}prop99} & causal & Simulated panel with the shape of the California Proposition 99 data. \\
     \texttt{california\_\allowbreak{}tobacco} & causal & California Proposition 99 tobacco dataset (simulated, extended). \\
     \texttt{callaway\_\allowbreak{}santanna} & causal & Callaway-Sant'Anna (2021) staggered DID with group-time ATTs. Robust to heterogeneous treatment effects and staggered... \\
     \texttt{cardinality\_\allowbreak{}match} & causal & Cardinality matching -- maximise the number of matched pairs subject \\
     \texttt{cate\_\allowbreak{}by\_\allowbreak{}group} & causal & Group-level average treatment effects. \\
     \texttt{cate\_\allowbreak{}eval} & causal & Evaluate any CATE estimator via RATE / AUTOC / Qini (Yadlowsky 2025). \\
+    \texttt{cate\_\allowbreak{}gain\_\allowbreak{}curve} & causal & Cumulative gain curve of a CATE ranking on randomized data. \\
     \texttt{cate\_\allowbreak{}group\_\allowbreak{}plot} & causal & Plot group-level CATEs with confidence intervals. \\
     \texttt{cate\_\allowbreak{}plot} & causal & Plot the CATE distribution. \\
     \texttt{cate\_\allowbreak{}pretrend\_\allowbreak{}test} & causal & Pre-trend test by predicted-effect group for causal forests with fixed effects: units sorted by their out-of-bag CATE... \\
@@ -238,6 +300,7 @@ Function & Category & Description \\
     \texttt{causal\_\allowbreak{}rl\_\allowbreak{}benchmark} & causal & Generate a synthetic causal-RL benchmark dataset. \\
     \texttt{causal\_\allowbreak{}survival\_\allowbreak{}forest} & causal & Causal survival forest (Cui et al. 2023; grf::causal\_survival\_forest): heterogeneous effects on right-censored outcom... \\
     \texttt{cbps} & causal & Covariate-Balancing Propensity Score estimator (Imai-Ratkovic 2014). \\
+    \texttt{cdlz\_\allowbreak{}bunching} & causal & Bunching summaries of a bin-by-event-time minimum-wage event study (Cengiz, Dube, Lindner \& Zipperer 2019): missing j... \\
     \texttt{cgs\_\allowbreak{}continuous\_\allowbreak{}did} & causal & Callaway, Goodman-Bacon \& Sant'Anna (2024) DiD with a CONTINUOUS treatment. A dose has no single ATT: the TWFE coeffi... \\
     \texttt{check\_\allowbreak{}absorbing} & causal & Detect non-absorbing (reverting) treatment in a panel. Cohort-based DiD estimators (callaway\_santanna, sun\_abraham, d... \\
     \texttt{cic} & causal & Changes-in-Changes (Athey \& Imbens 2006). Nonparametric quantile DiD that identifies the full counterfactual outcome... \\
@@ -256,6 +319,7 @@ Function & Category & Description \\
     \texttt{continuous\_\allowbreak{}iv\_\allowbreak{}late} & causal & LATE with a continuous instrument (Xie et al. 2025). Estimates the LATE on the maximal complier class via quantile-bi... \\
     \texttt{cs\_\allowbreak{}jackknife} & causal & Delete-one-cluster jackknife (CV3) standard error for a Callaway-Sant'Anna aggregate: drop each cluster, re-estimate... \\
     \texttt{cs\_\allowbreak{}report} & causal & One-call staggered-DID workflow following Baker et al. (2026). \\
+    \texttt{ctmle} & causal & Collaborative TMLE (greedy C-TMLE of van der Laan and Gruber): the propensity model is built covariate by covariate f... \\
     \texttt{dag} & causal & Declare a causal DAG and perform identification analysis: backdoor/frontdoor adjustment sets, d-separation, path enum... \\
     \texttt{dag\_\allowbreak{}example} & causal & Load a classic textbook DAG: confounding, collider, mediation, discrimination, movie\_star, police, frontdoor, bad\_con... \\
     \texttt{ddd} & causal & Triple Differences (DDD). Extends 2x2 DID with a within-unit subgroup comparison to eliminate additional confounders.... \\
@@ -287,6 +351,7 @@ Function & Category & Description \\
     \texttt{did\_\allowbreak{}summary\_\allowbreak{}to\_\allowbreak{}latex} & causal & Render a :func:`did\_summary` result as a LaTeX \\
     \texttt{did\_\allowbreak{}summary\_\allowbreak{}to\_\allowbreak{}markdown} & causal & Render a :func:`did\_summary` result as a GitHub-Flavoured Markdown table. \\
     \texttt{did\_\allowbreak{}timevarying\_\allowbreak{}covariates} & causal & DiD with time-varying covariates frozen at baseline (Caetano, Callaway, Payne \& Sant'Anna 2026, arXiv:2608.03881). Av... \\
+    \texttt{didregress} & causal & Two-way fixed-effects difference-in-differences as Stata didregress (group effects counted as regressors) and, with i... \\
     \texttt{direct\_\allowbreak{}method} & causal & Direct outcome regression (plug-in Q-model) OPE. \\
     \texttt{discos} & causal & Distributional Synthetic Controls (Gunsilius 2023). \\
     \texttt{discos\_\allowbreak{}plot} & causal & Visualise distributional synthetic control results. \\
@@ -297,6 +362,7 @@ Function & Category & Description \\
     \texttt{dl\_\allowbreak{}propensity\_\allowbreak{}score} & causal & Neural-net propensity score estimator (arXiv:2404.04794, 2024). \\
     \texttt{dml} & causal & Double/Debiased Machine Learning supports PLR, binary-D IRM, PLIV, and binary-D/binary-Z IIVM. Python-only external O... \\
     \texttt{dml\_\allowbreak{}diagnostics} & causal & Build a :class:`DMLDiagnostics` report from a DML CausalResult. \\
+    \texttt{dml\_\allowbreak{}did} & causal & Double machine learning difference-in-differences (two periods). \\
     \texttt{dml\_\allowbreak{}model\_\allowbreak{}averaging} & causal & Model-averaging DML (PLR) per Ahrens et al. (2025, JAE). Fits DML-PLR under multiple candidate nuisance learners and... \\
     \texttt{dml\_\allowbreak{}panel} & causal & Long-panel Double/Debiased ML for static panel models with fixed effects (Clarke \& Polselli 2025, simplified). Absorb... \\
     \texttt{dml\_\allowbreak{}sensitivity} & causal & Compute DML-OVB sensitivity for a fitted DML CausalResult. \\
@@ -306,7 +372,9 @@ Function & Category & Description \\
     \texttt{drdid} & causal & Doubly-robust DiD (Sant'Anna \& Zhao 2020). Combines outcome regression with IPW; consistent if either model is correc... \\
     \texttt{dynamic\_\allowbreak{}dml} & causal & Dynamic Double/Debiased ML for a treatment assigned repeatedly over time (Lewis \& Syrgkanis 2021). Use it when the tr... \\
     \texttt{ebalance} & causal & Entropy Balancing treatment effect estimator. \\
+    \texttt{energy\_\allowbreak{}distance} & causal & Energy distance between the (weighted) covariate distributions of two exposure groups, on standardised covariates. Ze... \\
     \texttt{enhanced\_\allowbreak{}event\_\allowbreak{}study\_\allowbreak{}plot} & causal & Enhanced event study plot with pre/post shading and significance coloring. \\
+    \texttt{ess} & causal & Effective sample size of a set of weights, (sum w)\textasciicircum{}2 / sum(w\textasciicircum{}2): the number of equally weighted observations with the... \\
     \texttt{etwfe} & causal & Extended Two-Way Fixed Effects (Wooldridge 2021). Explicit API mirroring the R etwfe package. The headline reports th... \\
     \texttt{etwfe\_\allowbreak{}emfx} & causal & R ``etwfe::emfx``-style aggregated marginal effects for an ETWFE fit. \\
     \texttt{evalue\_\allowbreak{}rr} & causal & E-value computed directly from a risk ratio and its CI bounds. \\
@@ -323,6 +391,7 @@ Function & Category & Description \\
     \texttt{fortified\_\allowbreak{}pci} & causal & Fortified proximal causal inference (Yu, Shi \& Tchetgen Tchetgen 2025). Adds a bridge-function stability constraint t... \\
     \texttt{front\_\allowbreak{}door} & causal & Pearl's front-door adjustment: identifies ATE with unmeasured confounding when a mediator fully transmits the effect... \\
     \texttt{frontdoor} & causal & Front-door adjustment -- article-friendly alias for \\
+    \texttt{full\_\allowbreak{}match} & causal & Optimal full matching. \\
     \texttt{functional\_\allowbreak{}form\_\allowbreak{}test} & causal & Roth \& Sant'Anna (2023) test of whether parallel trends can hold for EVERY strictly monotonic transformation of the o... \\
     \texttt{g\_\allowbreak{}computation} & causal & Parametric g-formula (standardization) estimator. ATE/ATT for binary D, or dose-response curve for continuous D. Cons... \\
     \texttt{g\_\allowbreak{}estimation} & causal & G-estimation for a multi-stage dynamic treatment regime. \\
@@ -335,46 +404,58 @@ Function & Category & Description \\
     \texttt{ges} & causal & Greedy Equivalence Search. \\
     \texttt{get\_\allowbreak{}scores} & causal & Doubly-robust scores behind a forest's average effect (grf::get\_scores): AIPW for causal and multi-arm forests, compl... \\
     \texttt{ggdid} & causal & Plot an ``aggte()`` result, mirroring R :func:`did::ggdid`. \\
+    \texttt{grf\_\allowbreak{}calibration} & causal & Calibration test (grf::test\_calibration) of CATE predictions made anywhere: a forest fitted on other folds, a meta-le... \\
     \texttt{group\_\allowbreak{}time\_\allowbreak{}plot} & causal & Plot group-time ATT estimates from Callaway-Sant'Anna. \\
     \texttt{gsynth} & causal & Generalized Synthetic Control via interactive fixed effects. \\
     \texttt{hal\_\allowbreak{}tmle} & causal & TMLE with Highly Adaptive Lasso (HAL) nuisance learners (Qian \& van der Laan 2025). The stable 'delta' variant plugs... \\
     \texttt{harvest\_\allowbreak{}did} & causal & Harvest every valid 2x2 DID comparison from a staggered panel and aggregate them via precision-weighted / simple / co... \\
     \texttt{honest\_\allowbreak{}did} & causal & Rambachan \& Roth (2023) sensitivity analysis for parallel trends. \\
+    \texttt{honest\_\allowbreak{}did\_\allowbreak{}from\_\allowbreak{}moments} & causal & Rambachan-Roth sensitivity from a coefficient vector and its covariance. \\
+    \texttt{honest\_\allowbreak{}did\_\allowbreak{}from\_\allowbreak{}result} & causal & :func:`honest\_did` under the name of the MCP tool. \\
     \texttt{honest\_\allowbreak{}variance} & causal & Half-sample spread of the mean CATE prediction (deprecated). \\
     \texttt{horowitz\_\allowbreak{}manski} & causal & Horowitz-Manski (2000) bounds conditioning on covariates. \\
+    \texttt{ida} & causal & Possible causal effects of ``x`` on ``y`` under a CPDAG (IDA). \\
     \texttt{impactplot} & causal & Causal Impact visualization (Google-style 3-panel plot). \\
+    \texttt{implied\_\allowbreak{}weights} & causal & Weights that a linear regression adjustment implicitly puts on each row: the coefficient on a binary treatment in y \textasciitilde{}... \\
     \texttt{influence\_\allowbreak{}functions} & causal & Export the per-unit influence functions of a Callaway-Sant'Anna fit as a tidy, self-contained DataFrame (optionally w... \\
     \texttt{instrumental\_\allowbreak{}forest} & causal & Instrumental forest: heterogeneous local average treatment effects. \\
     \texttt{interference} & causal & Unified interference / spillover dispatcher. design= selects the estimator: 'partial' (Hudgens-Halloran cluster) / 'n... \\
+    \texttt{interference\_\allowbreak{}test} & causal & Randomization test on a network: of no treatment effect at all, or of no spillovers (outcomes depend only on a unit's... \\
     \texttt{ips} & causal & Inverse propensity score OPE. \\
-    \texttt{ipw} & causal & Inverse Probability Weighting for ATE/ATT/ATC with propensity score trimming. \\
+    \texttt{ipw} & causal & Inverse Probability Weighting for ATE/ATT/ATC with propensity score trimming. Reports each arm's effective sample siz... \\
     \texttt{iv\_\allowbreak{}bounds} & causal & Nevo-Rosen (2012) bounds for LATE under imperfect instruments. \\
     \texttt{iv\_\allowbreak{}compare} & causal & Run several k-class / JIVE estimators on the same IV specification and return a one-row-per-method comparison DataFra... \\
     \texttt{iv\_\allowbreak{}diag} & causal & Modern IV reporting bundle (R `ivDiag` analogue). Combines 2SLS point estimate, analytic + pairs/wild bootstrap SEs,... \\
     \texttt{iv\_\allowbreak{}forest} & causal & Instrumental forest (grf::instrumental\_forest): heterogeneous local average treatment effects tau(x) = Cov[Y,Z|x]/Cov... \\
+    \texttt{jwdid} & causal & Wooldridge ETWFE with Stata ``jwdid``'s option names. \\
     \texttt{kan\_\allowbreak{}dlate} & causal & Deprecated alias for :func:`dist\_iv`. \\
     \texttt{kernel\_\allowbreak{}iv} & causal & Kernel IV regression with uniform confidence bands (Lob et al. 2025). Estimates the structural function h*(d) = E[Y |... \\
     \texttt{kink\_\allowbreak{}unified} & causal & Run RDD + RKD + Bunching on the same data. \\
+    \texttt{l1\_\allowbreak{}imbalance} & causal & Multivariate L1 imbalance of Iacus, King and Porro (2011). \\
     \texttt{lee\_\allowbreak{}bounds} & causal & Compute Lee (2009) bounds for ATE under sample selection. \\
     \texttt{lingam} & causal & Fit DirectLiNGAM (Shimizu 2011). \\
     \texttt{llm\_\allowbreak{}dag\_\allowbreak{}propose} & causal & Propose a candidate DAG from variable names + domain description. \\
     \texttt{llm\_\allowbreak{}sensitivity\_\allowbreak{}priors} & causal & Propose sensitivity-analysis priors for the substantive setting. \\
     \texttt{llm\_\allowbreak{}unobserved\_\allowbreak{}confounders} & causal & Enumerate plausible unobserved confounders for a study. \\
     \texttt{lm\_\allowbreak{}forest} & causal & Linear-model forest (grf::lm\_forest): covariate-varying coefficients h\_k(x) in Y = c(x) + sum\_k h\_k(x) W\_k, by forest... \\
+    \texttt{lmtp} & causal & Mean outcome under a modified treatment policy (sequential TMLE / SDR). \\
     \texttt{love\_\allowbreak{}plot} & causal & Love plot: dot plot of standardized mean differences before/after. \\
     \texttt{lp\_\allowbreak{}did} & causal & Local-Projections DiD (Dube-Girardi-Jorda-Taylor 2023). At each event-time horizon h in \{-P, ..., H\}, runs a separate... \\
     \texttt{ltmle} & causal & Longitudinal TMLE for static regime contrasts. \\
+    \texttt{ltmle\_\allowbreak{}msm} & causal & Longitudinal TMLE of a working marginal structural model (R ``ltmleMSM``). \\
     \texttt{ltmle\_\allowbreak{}survival} & causal & LTMLE for a discrete-time survival outcome under dynamic regimes. \\
     \texttt{manski\_\allowbreak{}bounds} & causal & Compute Manski (1990) worst-case bounds on ATE. \\
+    \texttt{marginal\_\allowbreak{}policy\_\allowbreak{}effect} & causal & Effect of removing a small share of the treatments that occur in a dynamic system, on the long-run average outcome. I... \\
     \texttt{match} & causal & Propensity score and covariate matching for treatment effect estimation. \\
     \texttt{matrix\_\allowbreak{}completion} & causal & Matrix-completion causal panel estimator (Athey et al., 2021). \\
     \texttt{mc\_\allowbreak{}panel} & causal & Estimate treatment effects using matrix completion. \\
     \texttt{mc\_\allowbreak{}synth} & causal & Matrix Completion Synthetic Control Method. \\
+    \texttt{mdp\_\allowbreak{}policy\_\allowbreak{}value} & causal & Long-run average outcome under a policy in a Markov decision process, from one long trajectory: doubly robust in the... \\
     \texttt{mediate} & causal & Mediation analysis (Imai-Keele-Tingley 2010). Decomposes the total effect into natural direct effect (NDE) and natura... \\
     \texttt{mediate\_\allowbreak{}interventional} & causal & Interventional (in)direct effects (VanderWeele, Vansteelandt, Robins 2014). Identifies mediation effects in the prese... \\
     \texttt{mediation} & causal & Causal-mediation analysis -- article-facing alias for \\
     \texttt{metalearner} & causal & Meta-learner framework for CATE: S-, T-, X-, R-, DR-Learner. \\
-    \texttt{ml\_\allowbreak{}bounds} & causal & ML-enhanced partial-identification bounds on the ATE. \\
+    \texttt{ml\_\allowbreak{}bounds} & causal & Worst-case (Manski) bounds on the ATE, estimated with cross-fitted ML. \\
     \texttt{model\_\allowbreak{}averaging\_\allowbreak{}dml} & causal & Model-averaging / stacking DML-PLR estimator. \\
     \texttt{mr} & causal & Unified Mendelian Randomization dispatcher. method= selects the estimator: 'ivw' / 'egger' / 'median' / 'penalized\_me... \\
     \texttt{msm} & causal & Marginal Structural Models for time-varying treatments with time-varying confounders. Uses stabilized IPTW and cluste... \\
@@ -386,7 +467,7 @@ Function & Category & Description \\
     \texttt{multi\_\allowbreak{}treatment} & causal & Effects of multi-valued (3+ level) treatments via AIPW. Returns pairwise contrasts versus a reference level. \\
     \texttt{negative\_\allowbreak{}control\_\allowbreak{}exposure} & causal & Regress outcome on a *negative-control exposure*. \\
     \texttt{negative\_\allowbreak{}control\_\allowbreak{}outcome} & causal & Lipsitch-style NCO calibration. \\
-    \texttt{network\_\allowbreak{}exposure} & causal & Aronow-Samii Horvitz-Thompson estimator for arbitrary interference via a user-supplied exposure mapping. Handles Bern... \\
+    \texttt{network\_\allowbreak{}exposure} & causal & Direct and spillover effects on a known network through an exposure mapping: inverse-probability weighted means of th... \\
     \texttt{nonlinear\_\allowbreak{}icp} & causal & Alias for ``icp(..., method='nonlinear')`` -- Heinze-Deml et al. 2018. \\
     \texttt{notch} & causal & Bunching at Notches estimator (Kleven \& Waseem 2013). \\
     \texttt{notears} & causal & Learn a DAG from data using NOTEARS (Zheng et al. 2018). \\
@@ -396,6 +477,7 @@ Function & Category & Description \\
     \texttt{overlap\_\allowbreak{}plot} & causal & Mirrored density plot of propensity scores by treatment group. \\
     \texttt{overlap\_\allowbreak{}weighted\_\allowbreak{}did} & causal & Overlap-weighted 2x2 DiD. Weights observations by e(X)(1-e(X)), where e(X) is the estimated propensity score, placing... \\
     \texttt{overlap\_\allowbreak{}weights} & causal & Overlap-weight (ATO) treatment effect estimator. \\
+    \texttt{panel\_\allowbreak{}match} & causal & Matching on treatment history for panel data with a binary treatment that switches on and off (R PanelMatch; Imai, Ki... \\
     \texttt{panel\_\allowbreak{}qtet} & causal & Callaway \& Li (2019) quantile treatment effect on the treated for panel data. Recovers the counterfactual DISTRIBUTIO... \\
     \texttt{panel\_\allowbreak{}view} & causal & panelView-style display of a panel's treatment status and outcomes. \\
     \texttt{parallel\_\allowbreak{}trends\_\allowbreak{}plot} & causal & Plot raw outcome means over time for treatment and control groups. \\
@@ -420,6 +502,8 @@ Function & Category & Description \\
     \texttt{proximal} & causal & Proximal Causal Inference via linear 2SLS on the outcome bridge. Identifies ATE with unmeasured confounding using two... \\
     \texttt{proximal\_\allowbreak{}regression} & causal & Doubly-robust regression-based PCI estimator for the ATE. \\
     \texttt{ps\_\allowbreak{}balance} & causal & Compute comprehensive propensity score balance table. \\
+    \texttt{ps\_\allowbreak{}weights} & causal & Propensity-score weights for a named target population: ATE, ATT, ATC (also ATU), the overlap population (ATO) or the... \\
+    \texttt{pscore} & causal & Propensity score with blocks and a balancing test (Becker and Ichino; Stata pscore): fits the logit or probit treatme... \\
     \texttt{psm} & causal & Propensity-score matching -- article alias for :func:`match` \\
     \texttt{psmatch2} & causal & Stata psmatch2-faithful supported propensity-score matching paths (nearest-neighbour, kernel, radius, local linear re... \\
     \texttt{psplot} & causal & Propensity score distribution plot (common support diagnostic). \\
@@ -432,6 +516,7 @@ Function & Category & Description \\
     \texttt{quasi\_\allowbreak{}untreated\_\allowbreak{}test} & causal & Test that quasi-untreateded groups exist (dCDH et al., Section 3.3). \\
     \texttt{rate} & causal & Rank-weighted average treatment effect (RATE) [@yadlowsky2025evaluating]. \\
     \texttt{rate\_\allowbreak{}split} & causal & Rank-weighted average treatment effect (AUTOC / QINI) of a causal forest's targeting rule, fitted and evaluated on di... \\
+    \texttt{rd} & causal & Unified regression-discontinuity dispatcher. method= selects the estimator: 'rdrobust' (default; CCT bias-corrected l... \\
     \texttt{rd2d} & causal & Boundary discontinuity design: pointwise effects along a 2-D boundary. \\
     \texttt{rd2d\_\allowbreak{}bw} & causal & Bandwidth selection for boundary discontinuity designs. \\
     \texttt{rd2d\_\allowbreak{}plot} & causal & 2D boundary RD visualization. \\
@@ -440,7 +525,8 @@ Function & Category & Description \\
     \texttt{rd\_\allowbreak{}boost} & causal & Gradient Boosting for RD -- flexible CATE estimation. \\
     \texttt{rd\_\allowbreak{}cate\_\allowbreak{}summary} & causal & Run multiple ML-RD methods and compare CATE estimates. \\
     \texttt{rd\_\allowbreak{}compare} & causal & Compare multiple RD estimators on the same data. \\
-    \texttt{rd\_\allowbreak{}dashboard} & causal & Four-panel RD diagnostic dashboard. \\
+    \texttt{rd\_\allowbreak{}dashboard} & causal & Plot a four-panel RD diagnostic dashboard. \\
+    \texttt{rd\_\allowbreak{}diff\_\allowbreak{}in\_\allowbreak{}disc} & causal & Difference-in-discontinuities estimate with a pooled local polynomial. \\
     \texttt{rd\_\allowbreak{}discrete} & causal & Honest CI for RD when the running variable takes only a moderate number of distinct values (Kolesar-Rothe 2018 AER).... \\
     \texttt{rd\_\allowbreak{}distribution} & causal & Distribution-valued sharp RDD. \\
     \texttt{rd\_\allowbreak{}distributional\_\allowbreak{}design} & causal & Joint RDD + RKD on the conditional distribution of Y. \\
@@ -453,17 +539,19 @@ Function & Category & Description \\
     \texttt{rd\_\allowbreak{}lasso} & causal & LASSO-assisted RD via post-double-selection. \\
     \texttt{rd\_\allowbreak{}multi\_\allowbreak{}extrapolate} & causal & Multi-cutoff RD extrapolation (Cattaneo, Keele, Titiunik, Vazquez-Bare 2021). \\
     \texttt{rd\_\allowbreak{}multi\_\allowbreak{}score} & causal & Multi-score RDD: treatment if all running variables exceed cutoffs. \\
+    \texttt{rd\_\allowbreak{}optimized} & causal & Sharp regression discontinuity with minimax-optimal linear weights under a bound M on the second derivative of E[Y|X]... \\
     \texttt{rd\_\allowbreak{}robustness\_\allowbreak{}table} & causal & Sweep over (kernel, bwselect, polynomial, donut) and return a \\
     \texttt{rdbalance} & causal & Covariate balance test at the RD cutoff. \\
-    \texttt{rdbwhte} & causal & Bandwidth selection for :func:`rdhte`, as R ``rdhte::rdbwhte``. \\
+    \texttt{rdbwhte} & causal & Bandwidth selection for :func:`rdhte`. \\
     \texttt{rdbwselect} & causal & Bandwidth selection for local polynomial RD estimation. \\
     \texttt{rdbwsensitivity} & causal & Bandwidth sensitivity analysis for RD estimates. \\
     \texttt{rdd} & causal & Sharp / fuzzy RD -- article-friendly alias for :func:`rdrobust`. \\
     \texttt{rdhte} & causal & Conditional average treatment effects (CATE) in sharp RD designs. \\
-    \texttt{rdhte\_\allowbreak{}lincom} & causal & Linear combinations of :func:`rdhte` effects, as R ``rdhte\_lincom``. \\
+    \texttt{rdhte\_\allowbreak{}lincom} & causal & Linear combinations of :func:`rdhte` effects. \\
     \texttt{rdit} & causal & Regression Discontinuity in Time (Hausman \& Rapson, 2018). \\
     \texttt{rdmc} & causal & Multi-cutoff RD design. \\
-    \texttt{rdms} & causal & Multi-score / Geographic RD design at a single boundary point. \\
+    \texttt{rdmcplot} & causal & RD plot with one binned scatter and polynomial fit per cutoff. \\
+    \texttt{rdms} & causal & Multi-score / Geographic RD design at one or several boundary points. \\
     \texttt{rdplacebo} & causal & Placebo cutoff test for RD validity. \\
     \texttt{rdplot} & causal & RD plot: binned scatter with polynomial fit on each side of the cutoff. \\
     \texttt{rdplotdensity} & causal & Density of the running variable on each side of the cutoff. \\
@@ -476,6 +564,7 @@ Function & Category & Description \\
     \texttt{rdsummary} & causal & One-stop RD diagnostic battery. \\
     \texttt{rdwinselect} & causal & Data-driven window selection for local randomization RD. \\
     \texttt{regression\_\allowbreak{}forest} & causal & Honest regression forest for ``E[Y | X]`` (``grf::regression\_forest``). \\
+    \texttt{residual\_\allowbreak{}balance} & causal & Approximate residual balancing: average treatment effects with many covariates, combining a regularised linear outcom... \\
     \texttt{rkd} & causal & Regression Kink Design estimator (Card et al., 2015). \\
     \texttt{rlasso} & causal & Rigorous Lasso / post-Lasso -- a faithful port of ``hdm::rlasso``. \\
     \texttt{rlasso\_\allowbreak{}effect} & causal & Effect of ``d`` on ``y`` after Lasso-selecting controls ``x``. \\
@@ -485,21 +574,22 @@ Function & Category & Description \\
     \texttt{rlassologit\_\allowbreak{}effect} & causal & Effect of ``d`` on a binary ``y`` after Lasso-selecting controls ``x``. \\
     \texttt{rlassologit\_\allowbreak{}effects} & causal & Logistic high-dimensional effect of each targeted column of ``X``. \\
     \texttt{robust\_\allowbreak{}synth} & causal & Robust / unconstrained Synthetic Control. \\
+    \texttt{rotemberg\_\allowbreak{}summary} & causal & Goldsmith-Pinkham, Sorkin \& Swift's Rotemberg-weight summary of a Bartik instrument: weights and just-identified esti... \\
     \texttt{sbw} & causal & Stable Balancing Weights (Zubizarreta 2015) with optional ATT/ATE \\
     \texttt{sc\_\allowbreak{}estimate} & causal & R-style alias: ``synthdid::sc\_estimate``. \\
     \texttt{scdata} & causal & Prepare data matrices for synthetic control estimation. \\
-    \texttt{scest} & causal & Estimate synthetic control weights (R ``scpi::scest``). \\
+    \texttt{scest} & causal & Estimate synthetic control weights. \\
     \texttt{scigan} & causal & Adversarial dose-response estimator (Bica et al. 2020). \\
-    \texttt{scpi} & causal & Prediction intervals for synthetic control methods (R ``scpi::scpi``). \\
+    \texttt{scpi} & causal & Prediction intervals for synthetic control methods. \\
     \texttt{sdid} & causal & Synthetic Difference-in-Differences estimator (and SC / DID variants). \\
     \texttt{select\_\allowbreak{}pci\_\allowbreak{}proxies} & causal & Score and rank candidate proxies for PCI. \\
     \texttt{selection\_\allowbreak{}bounds} & causal & Lee (2009) bounds for ATE under sample selection, optionally \\
     \texttt{sensitivity\_\allowbreak{}plot} & causal & Plot Rambachan \& Roth (2023) sensitivity analysis. \\
-    \texttt{sensitivity\_\allowbreak{}rr} & causal & Rambachan-Roth (2023) honest-DiD sensitivity analysis: computes the largest violation of parallel trends (parametrise... \\
+    \texttt{sensitivity\_\allowbreak{}rr} & causal & Quick linear-extrapolation sensitivity band for DiD in the spirit of Rambachan-Roth (2023): the post-period violation... \\
     \texttt{sequential\_\allowbreak{}sdid} & causal & Cohort-by-cohort synthetic DID for staggered-adoption panels: runs sp.sdid on each adoption cohort's sub-panel with n... \\
     \texttt{snips} & causal & Self-normalised IPS (bias-reduction for large IS weights). \\
     \texttt{snmm} & causal & G-estimation of a linear structural nested mean model. \\
-    \texttt{spillover} & causal & Direct + spillover treatment effect estimation under partial interference (within-cluster). Uses the Hudgens-Halloran... \\
+    \texttt{spillover} & causal & Direct, spillover and total contrasts by peer exposure under partial interference: differences in means between own-t... \\
     \texttt{spillover\_\allowbreak{}did} & causal & Butts spillover-ring DiD. The usual fix -- a spatial lag of treatment in a TWFE regression -- measures the direct eff... \\
     \texttt{stabilized\_\allowbreak{}weights} & causal & Compute stabilized IPTW weights for time-varying treatments. \\
     \texttt{stacked\_\allowbreak{}did} & causal & Stacked DiD (Cengiz, Dube, Lindner, Zipperer 2019). For each treatment cohort, constructs a sub-experiment with only... \\
@@ -530,28 +620,40 @@ Function & Category & Description \\
     \texttt{synth\_\allowbreak{}to\_\allowbreak{}excel} & causal & Multi-sheet Excel workbook for synthetic-control results. \\
     \texttt{synth\_\allowbreak{}to\_\allowbreak{}latex} & causal & Formatted LaTeX table for synthetic-control results. \\
     \texttt{synth\_\allowbreak{}to\_\allowbreak{}markdown} & causal & GitHub-flavoured Markdown table for synthetic-control results. \\
+    \texttt{synth\_\allowbreak{}ttest} & causal & Debiased synthetic control ATT with a t-test (Chernozhukov, Wuthrich \& Zhu). \\
     \texttt{synthdid\_\allowbreak{}estimate} & causal & R-style alias: ``synthdid::synthdid\_estimate``. \\
-    \texttt{synthdid\_\allowbreak{}placebo} & causal & Run placebo estimates assigning treatment to each control unit. \\
+    \texttt{synthdid\_\allowbreak{}placebo} & causal & Placebo estimates for a synthetic difference-in-differences fit. \\
     \texttt{synthdid\_\allowbreak{}plot} & causal & Plot observed vs synthetic trajectory. \\
     \texttt{synthdid\_\allowbreak{}rmse\_\allowbreak{}plot} & causal & Pre-treatment RMSE of treated vs synthetic trajectory. \\
     \texttt{synthdid\_\allowbreak{}units\_\allowbreak{}plot} & causal & Horizontal bar chart of unit weight contributions. \\
     \texttt{synthplot} & causal & Unified plot function for all Synthetic Control variants. \\
     \texttt{tF\_\allowbreak{}adjustment} & causal & tF adjusted critical value (Lee, McCrary, Moreira \& Porter 2022, AER). \\
     \texttt{test\_\allowbreak{}calibration} & causal & Best-linear-predictor calibration test of CATEs [@chernozhukov2025generic]. \\
-    \texttt{tmle} & causal & Targeted Maximum Likelihood Estimation for ATE/ATT with double-robustness. \\
+    \texttt{tighten\_\allowbreak{}blocks} & causal & Tighten an existing block design (one treated individual and several controls per block) into smaller or fewer blocks... \\
+    \texttt{tmle} & causal & Targeted Maximum Likelihood Estimation with Super Learner: ATE, ATT / ATC, treatment-specific means, and the marginal... \\
     \texttt{treatment\_\allowbreak{}rollout\_\allowbreak{}plot} & causal & Visualise staggered treatment adoption timing. \\
     \texttt{trimming} & causal & Trim sample to optimal overlap region. \\
     \texttt{twfe\_\allowbreak{}decomposition} & causal & TWFE decomposition: Goodman-Bacon (2021) + de Chaisemartin-D'Haultfoeuille weights. \\
+    \texttt{two\_\allowbreak{}criteria\_\allowbreak{}match} & causal & Optimal matching by minimum-cost flow with two distances: one decides who is paired with whom, the other only which c... \\
+    \texttt{two\_\allowbreak{}stage\_\allowbreak{}interference} & causal & Hudgens-Halloran two-stage randomized (saturation) design under partial interference: direct, indirect (spillover), t... \\
+    \texttt{twowayfeweights} & causal & Weights a two-way fixed effects regression puts on treatment effects. \\
     \texttt{uniform\_\allowbreak{}bands} & causal & Sup-t simultaneous confidence band for an event study from any DiD estimator: critical value = 1-alpha quantile of ma... \\
     \texttt{variable\_\allowbreak{}importance} & causal & Split-frequency variable importance of any GRF-engine forest (grf::variable\_importance): depth-weighted shares of spl... \\
     \texttt{vcnet} & causal & Varying-coefficient dose-response estimator. \\
+    \texttt{weightit} & causal & Balancing weights for a binary, multi-category or continuous treatment in one call (R WeightIt): inverse generalized... \\
     \texttt{wooldridge\_\allowbreak{}did} & causal & Wooldridge (2021) extended TWFE (ETWFE). Saturated TWFE regression with cohort x post interactions; recovers cohort-s... \\
     \texttt{xlearner} & causal & X-Learner CATE -- article alias for :func:`metalearner(learner='x')`. \\
+    \texttt{xtevent} & causal & Panel event study of a policy that may be continuous and change several times per unit (Stata xtevent, Freyaldenhoven... \\
+    \texttt{xtevent\_\allowbreak{}smpath} & causal & Smoothest ('least wiggly') polynomial confound path through the Wald region of an sp.xtevent event study (Stata xteve... \\
     \texttt{yatchew\_\allowbreak{}linearity\_\allowbreak{}test} & causal & Yatchew differencing test that E[y | x] is a polynomial of ``order``. \\
     \texttt{zero\_\allowbreak{}first\_\allowbreak{}stage} & causal & Zero-first-stage (ZFS) test of the exclusion restriction, plus van Kippersluis-Rietveld (2018) pleiotropy-robust corr... \\
+    \texttt{bootstrap\_\allowbreak{}edges} & causal\_discovery & Stability of a learned graph: refit a structure-learning algorithm (pc, hill\_climb, ges, fci, lingam, notears or a ca... \\
     \texttt{dynotears} & causal\_discovery & DYNOTEARS: continuous-optimisation structure learning for structural VARs. Returns contemporaneous (W) and lagged (A)... \\
+    \texttt{hill\_\allowbreak{}climb} & causal\_discovery & Score-based structure learning: greedy hill climbing over DAGs (add, delete or reverse one arc at a time) on the BIC,... \\
     \texttt{icp} & causal\_discovery & Invariant Causal Prediction: infer direct parents of Y by testing invariance of P(Y | X\_S) across environments. \\
     \texttt{lpcmci} & causal\_discovery & Latent-PCMCI: time-series causal discovery allowing hidden common causes. Outputs a lag-specific adjacency tensor wit... \\
+    \texttt{mmhc} & causal\_discovery & Hybrid structure learning: max-min hill climbing. Tests first find the pairs of variables no conditioning set separat... \\
+    \texttt{mmpc} & causal\_discovery & Local structure learning: the parents and children of every variable, by max-min parents and children (MMPC) or semi-... \\
     \texttt{anthropic\_\allowbreak{}client} & causal\_llm & Construct an Anthropic-compatible LLM client for use with sp.causal\_llm.causal\_mas. Requires the optional anthropic>=... \\
     \texttt{causal\_\allowbreak{}mas} & causal\_llm & Multi-agent LLM causal discovery (arXiv:2509.00987, 2025). Runs proposer / critic / domain-expert / synthesiser agent... \\
     \texttt{echo\_\allowbreak{}client} & causal\_llm & Deterministic scripted-response LLM client for testing sp.causal\_llm.causal\_mas without network access. \\
@@ -597,6 +699,9 @@ Function & Category & Description \\
     \texttt{StatsPAIError} & core & Base class for all StatsPAI exceptions. \\
     \texttt{StatsPAIWarning} & core & Base warning class for soft (non-raising) StatsPAI diagnostics. \\
     \texttt{effect\_\allowbreak{}summary} & core & Build a decision-ready summary for a fitted causal result. \\
+    \texttt{ssc} & core & Small-sample correction for ``sp.feols(..., ssc=...)`` by Stata command. \\
+    \texttt{BayesNet} & dag & A fitted or hand-specified discrete causal Bayesian network. \\
+    \texttt{CounterfactualIdentification} & dag & Outcome of :func:`identify\_counterfactual`. \\
     \texttt{DAG} & dag & A directed acyclic graph for causal reasoning. \\
     \texttt{IdentificationResult} & dag & Outcome of an identification query. \\
     \texttt{LLMCausalAssessResult} & dag & Output of :func:`llm\_causal\_assess`. \\
@@ -605,6 +710,7 @@ Function & Category & Description \\
     \texttt{RuleCheck} & dag & Result of checking one do-calculus rule on a DAG. \\
     \texttt{SCM} & dag & Structural Causal Model. \\
     \texttt{SWIGGraph} & dag & Single World Intervention Graph for a DAG under ``do(X=x)``. \\
+    \texttt{bayes\_\allowbreak{}net} & dag & Discrete causal Bayesian network on a DAG: conditional probability tables estimated from categorical data or written... \\
     \texttt{dag\_\allowbreak{}example\_\allowbreak{}positions} & dag & Return hand-tuned node positions for a named example DAG. \\
     \texttt{dag\_\allowbreak{}examples} & dag & List available classic DAG examples. \\
     \texttt{dag\_\allowbreak{}recommend\_\allowbreak{}estimator} & dag & Inspect a declared DAG and recommend a StatsPAI estimator for (exposure, outcome) with a plain-English identification... \\
@@ -614,6 +720,7 @@ Function & Category & Description \\
     \texttt{do\_\allowbreak{}rule2} & dag & Check Rule 2: can do(Z) be swapped for observing Z? \\
     \texttt{do\_\allowbreak{}rule3} & dag & Check Rule 3: can we delete do(Z)? \\
     \texttt{identify} & dag & Shpitser-Pearl ID algorithm: decide if P(Y | do(X)) is non-parametrically identifiable on a semi-Markovian DAG, retur... \\
+    \texttt{identify\_\allowbreak{}counterfactual} & dag & ID* and IDC* (Shpitser and Pearl): decide whether a counterfactual probability such as P(Y[X=0] = y | X = 1), the eff... \\
     \texttt{llm\_\allowbreak{}causal\_\allowbreak{}assess} & dag & Level-1 (knowledge) and Level-2 (deductive reasoning) evaluation of an LLM's causal-reasoning ability. \\
     \texttt{llm\_\allowbreak{}dag} & dag & Merge an LLM-proposed DAG with a data-driven CI-test skeleton. \\
     \texttt{llm\_\allowbreak{}dag\_\allowbreak{}constrained} & dag & Closed-loop LLM-assisted DAG discovery: iterate LLM-propose -> constrained PC -> CI-test validate -> demote, until ed... \\
@@ -623,6 +730,8 @@ Function & Category & Description \\
     \texttt{from\_\allowbreak{}fred} & datasets & Normalise FRED series observations (one or many series) into a tidy time series with parsed dates and NaN for '.' mis... \\
     \texttt{from\_\allowbreak{}sdmx} & datasets & Expand an SDMX-JSON payload (OECD / Eurostat / IMF) into a long frame with one column per dimension plus a value colu... \\
     \texttt{from\_\allowbreak{}worldbank} & datasets & Normalise a World Bank Indicators payload (already fetched via a data MCP / REST) into a tidy long or wide panel read... \\
+    \texttt{list\_\allowbreak{}datasets} & datasets & Return a DataFrame describing all available datasets. \\
+    \texttt{load\_\allowbreak{}dataset} & datasets & Load a bundled example dataset by name. \\
     \texttt{GelbachResult} & decomposition & Result container for Gelbach (2016) decomposition. \\
     \texttt{OaxacaResult} & decomposition & Result container for Oaxaca-Blinder decomposition. \\
     \texttt{YuElwertResult} & decomposition & Yu-Elwert (2025) causal decomposition of a group disparity. \\
@@ -655,11 +764,22 @@ Function & Category & Description \\
     \texttt{subgroup\_\allowbreak{}decompose} & decomposition & Subgroup decomposition (between / within) of an inequality index. \\
     \texttt{yu\_\allowbreak{}elwert\_\allowbreak{}decompose} & decomposition & Nonparametric causal decomposition of a group disparity. \\
     \texttt{yun\_\allowbreak{}nonlinear} & decomposition & Bauer-Sinning (2008) nonlinear Oaxaca-Blinder decomposition with \\
+    \texttt{EvidenceFactorsResult} & diagnostics & Result of :func:`evidence\_factors`. \\
     \texttt{KitagawaResult} & diagnostics & Result of the Kitagawa (2015) LATE validity test. \\
     \texttt{RosenbaumResult} & diagnostics & Result container for :func:`rosenbaum\_bounds`. \\
+    \texttt{SensitivityTestResult} & diagnostics & Result of :func:`rosenbaum\_stratified` and :func:`noether\_test`. \\
     \texttt{WeakRobustResult} & diagnostics & Container holding the unified weak-IV-robust panel. \\
+    \texttt{WeightedRankPowerResult} & diagnostics & Result of :func:`weighted\_rank\_power`. \\
+    \texttt{WeightedRankResult} & diagnostics & Result of :func:`weighted\_rank`. \\
+    \texttt{amplify} & diagnostics & Amplification of a sensitivity analysis: express the sensitivity parameter Gamma of a matched-pair analysis as pairs... \\
     \texttt{anderson\_\allowbreak{}rubin\_\allowbreak{}test} & diagnostics & Anderson-Rubin (1949) test -- size-correct under weak instruments. \\
     \texttt{bias\_\allowbreak{}factor} & diagnostics & Confounding bias factor ``B`` (Ding \& VanderWeele 2016). \\
+    \texttt{binned\_\allowbreak{}residuals} & diagnostics & Average residuals within equal-count bins of the fitted value or of a regressor, with a +/- 2 se band: the residual p... \\
+    \texttt{binned\_\allowbreak{}residuals\_\allowbreak{}plot} & diagnostics & Plot of :func:`binned\_residuals` with its ``+/- 2 se`` band. \\
+    \texttt{causal\_\allowbreak{}gap} & diagnostics & Critical causal gap: the smallest difference between the statistical estimand and the causal one at which the confide... \\
+    \texttt{cmtest} & diagnostics & Conditional moment tests (normality, heteroskedasticity, skewness, kurtosis) of a probit or tobit fit. \\
+    \texttt{confounder\_\allowbreak{}adjust} & diagnostics & Adjust an observed effect for a specified unmeasured confounder: what the estimate would have been had a confounder w... \\
+    \texttt{confounder\_\allowbreak{}tip} & diagnostics & Tipping-point analysis: the unmeasured confounder that would move an effect (or a confidence limit) to the null. Leav... \\
     \texttt{diagnose} & diagnostics & Comprehensive regression diagnostics in one call. \\
     \texttt{diagnose\_\allowbreak{}result} & diagnostics & Method-aware diagnostic battery: auto-selects tests by model type (OLS/DID/RDD/IV/SCM). \\
     \texttt{effective\_\allowbreak{}f\_\allowbreak{}test} & diagnostics & Olea-Pflueger (2013) robust effective F statistic for weak instruments. \\
@@ -667,24 +787,35 @@ Function & Category & Description \\
     \texttt{evalue} & diagnostics & Compute the E-value for sensitivity to unmeasured confounding. \\
     \texttt{evalue\_\allowbreak{}from\_\allowbreak{}result} & diagnostics & Compute an E-value from a StatsPAI CausalResult object. \\
     \texttt{evalue\_\allowbreak{}rd} & diagnostics & Exact E-value for a risk difference from a 2x2 table. \\
+    \texttt{evidence\_\allowbreak{}factors} & diagnostics & Two evidence factors from blocks with one treated individual and one control from each of two control groups: treated... \\
+    \texttt{hausman} & diagnostics & Hausman specification test between two fitted models: one consistent under both hypotheses (IV, fixed effects), one e... \\
     \texttt{hausman\_\allowbreak{}test} & diagnostics & Hausman test for FE vs RE in panel data. \\
     \texttt{het\_\allowbreak{}test} & diagnostics & Breusch-Pagan test for heteroskedasticity. \\
+    \texttt{influence\_\allowbreak{}measures} & diagnostics & Influence statistics of every observation of a linear regression: leverage, standardized and studentized residuals, C... \\
     \texttt{kitagawa\_\allowbreak{}test} & diagnostics & Kitagawa (2015) specification test for the validity of LATE. \\
+    \texttt{logit\_\allowbreak{}gof} & diagnostics & Goodness of fit of a binary-outcome model (Stata estat gof): Pearson's chi-squared over covariate patterns, or with g... \\
+    \texttt{logit\_\allowbreak{}influence} & diagnostics & Pregibon's diagnostics after a logistic regression, by covariate pattern: Pearson and deviance residuals, leverage, t... \\
     \texttt{mccrary\_\allowbreak{}test} & diagnostics & McCrary (2008) density test for manipulation of the running variable at the cutoff in regression-discontinuity design... \\
+    \texttt{ndcg} & diagnostics & Normalised discounted cumulative gain at k for a binary outcome: how many true cases a score puts at the very top of... \\
+    \texttt{noether\_\allowbreak{}test} & diagnostics & Sign test restricted to the matched pairs with the largest absolute differences, with its exact bound under hidden bi... \\
     \texttt{oster\_\allowbreak{}bounds} & diagnostics & Oster (2019) sensitivity to selection on unobservables -- computes the bounding coefficient under the assumption that... \\
     \texttt{rddensity} & diagnostics & CJM (2020) density discontinuity test for RD manipulation. \\
     \texttt{reset\_\allowbreak{}test} & diagnostics & Ramsey RESET test for functional form misspecification. \\
     \texttt{rosenbaum\_\allowbreak{}bounds} & diagnostics & Compute Rosenbaum bounds on a paired observational study. \\
     \texttt{rosenbaum\_\allowbreak{}gamma} & diagnostics & Compute Rosenbaum bounds on a paired observational study. \\
+    \texttt{rosenbaum\_\allowbreak{}stratified} & diagnostics & Rosenbaum bounds for a treated-versus-control comparison within strata of any size and composition, or in one stratum... \\
     \texttt{sensemakr} & diagnostics & Sensitivity analysis for omitted variable bias (Cinelli \& Hazlett 2020). \\
     \texttt{tF\_\allowbreak{}critical\_\allowbreak{}value} & diagnostics & Lee-McCrary-Moreira-Porter (2022, AER) tF adjusted critical value. \\
     \texttt{vif} & diagnostics & Variance Inflation Factors for multicollinearity detection. \\
+    \texttt{vuong} & diagnostics & Vuong test between two non-nested maximum likelihood fits on the same observations, with AIC and BIC corrections. \\
     \texttt{weakrobust} & diagnostics & Stata-style unified weak-instrument-robust diagnostic panel. \\
+    \texttt{weighted\_\allowbreak{}rank} & diagnostics & Sensitivity analysis for an observational block design (matched sets with one or more treated individuals) using a we... \\
+    \texttt{weighted\_\allowbreak{}rank\_\allowbreak{}power} & diagnostics & Jackknife estimate, from pilot blocks, of the power of a weighted rank sensitivity analysis at each Gamma, for a stud... \\
     \texttt{DiagnosticTestResult} & epi & Container for binary diagnostic-test performance metrics. \\
     \texttt{KappaResult} & epi & Container for Cohen's kappa inter-rater agreement. \\
     \texttt{ROCResult} & epi & Container for ROC-curve coordinates and AUC inference. \\
     \texttt{attributable\_\allowbreak{}risk} & epi & Attributable fractions in the exposed (AF) and in the population (Levin PAF) with delta-method CI. \\
-    \texttt{auc} & epi & Shortcut: just return the AUC. \\
+    \texttt{auc} & epi & Shortcut: just return the AUC (weighted when ``weights`` is given). \\
     \texttt{bradford\_\allowbreak{}hill} & epi & Structured 9-viewpoint Bradford-Hill causal-assessment rubric with prerequisite check (temporality required) and narr... \\
     \texttt{breslow\_\allowbreak{}day\_\allowbreak{}test} & epi & Breslow-Day test for homogeneity of the odds ratio across strata, with Tarone correction. \\
     \texttt{cohen\_\allowbreak{}kappa} & epi & Cohen's kappa for inter-rater agreement on nominal or ordinal scales. Supports linear / quadratic weighting. \\
@@ -700,15 +831,53 @@ Function & Category & Description \\
     \texttt{risk\_\allowbreak{}difference} & epi & Risk difference (absolute risk reduction) with Wald or Newcombe hybrid-score CI. \\
     \texttt{roc\_\allowbreak{}curve} & epi & ROC curve with AUC (trapezoidal) and Hanley-McNeil (1982) standard error. \\
     \texttt{sensitivity\_\allowbreak{}specificity} & epi & Sensitivity, specificity, PPV, NPV, LR+ / LR- with Wilson score CIs. Accepts either raw binary labels or pre-computed... \\
+    \texttt{AdaptiveInferenceResult} & experimental & Result of :func:`adaptive\_inference`. \\
     \texttt{AttritionResult} & experimental & Results from attrition analysis. \\
     \texttt{BalanceResult} & experimental & Results from balance check. \\
+    \texttt{BanditExperimentResult} & experimental & Result of :func:`bandit\_experiment`. \\
+    \texttt{DataSplitResult} & experimental & A split of a data set into two parts with the same distribution. \\
+    \texttt{DesignResult} & experimental & An experimental design: the runs, how it was built and how good it is. \\
+    \texttt{FactorImportanceResult} & experimental & Model-free importance of the columns of a data set. \\
+    \texttt{FactorialDesignResult} & experimental & A factorial design and its alias structure. \\
+    \texttt{FactorialEffectsResult} & experimental & Effects of a two-level factorial experiment. \\
+    \texttt{GroupSequentialResult} & experimental & Result of :func:`group\_sequential`. \\
+    \texttt{MSPRTResult} & experimental & Result of :func:`msprt`. \\
+    \texttt{ModelDesignResult} & experimental & An optimal design for a model. \\
+    \texttt{MorrisResult} & experimental & Elementary-effects screening. \\
     \texttt{OptimalDesignResult} & experimental & Results from optimal design calculation. \\
     \texttt{RandomizationResult} & experimental & Results from randomization. \\
+    \texttt{SequentialDesignResult} & experimental & Runs chosen one at a time with a Gaussian process. \\
+    \texttt{SobolResult} & experimental & Variance-based sensitivity indices. \\
+    \texttt{SupportPointsResult} & experimental & Points that represent a distribution. \\
+    \texttt{adaptive\_\allowbreak{}inference} & experimental & Confidence intervals for arm means and contrasts after an adaptive (bandit) experiment, using weights that restore as... \\
     \texttt{attrition\_\allowbreak{}bounds} & experimental & Compute bounds on treatment effects under attrition. \\
     \texttt{attrition\_\allowbreak{}test} & experimental & Test for differential attrition in an RCT. \\
     \texttt{balance\_\allowbreak{}check} & experimental & Check covariate balance between treatment and control. \\
+    \texttt{bandit\_\allowbreak{}allocate} & experimental & Assignment probabilities for the next subject of an adaptive experiment from the data so far: Thompson sampling, uppe... \\
+    \texttt{bandit\_\allowbreak{}experiment} & experimental & Run a sequential multi-armed bandit experiment (Thompson sampling, UCB, epsilon-greedy) on a reward sampler or a tabl... \\
+    \texttt{contextual\_\allowbreak{}bandit} & experimental & Run a sequential experiment whose assignment depends on covariates: linear Thompson sampling, LinUCB or epsilon-greed... \\
+    \texttt{cuped} & experimental & Average treatment effect of an A/B test with CUPED variance reduction: difference in means of the outcome minus its p... \\
+    \texttt{design\_\allowbreak{}aberration} & experimental & Generalized word length pattern, resolution and strength of any factorial design, regular or not, with factors at any... \\
+    \texttt{design\_\allowbreak{}augment} & experimental & Add runs to an existing design so that the whole stays space-filling: a second batch, validation runs, or a design on... \\
+    \texttt{design\_\allowbreak{}criteria} & experimental & Space-filling measures of a design: maximin distance, reciprocal distance, MaxPro criterion, wrap-around and centered... \\
+    \texttt{doe\_\allowbreak{}optimal} & experimental & D-, A- or I-optimal design for a given model: where to put the runs so that the model is estimated most precisely. Li... \\
+    \texttt{factor\_\allowbreak{}importance} & experimental & Model-free ranking and selection of regressors by total Sobol' index, straight from data (FIRST): nearest-neighbour e... \\
+    \texttt{factorial\_\allowbreak{}design} & experimental & Full factorial design for factors with any number of levels, or a fraction: two-level 2\textasciicircum{}(k-m) from generators or by m... \\
+    \texttt{factorial\_\allowbreak{}effects} & experimental & Main effects and interactions of a two-level factorial experiment, with Lenth's pseudo standard error, margins of err... \\
+    \texttt{group\_\allowbreak{}sequential} & experimental & Stopping boundaries and maximum-information inflation of a group sequential trial (Stata gsbounds / gsdesign): classi... \\
+    \texttt{mixture\_\allowbreak{}design} & experimental & Design for factors that are shares summing to one (blends, budgets, portfolios, time use): simplex-lattice, simplex-c... \\
+    \texttt{morris\_\allowbreak{}screening} & experimental & Morris elementary-effects screening of a model's inputs with one-factor-at-a-time trajectories: mu, mu* and sigma per... \\
+    \texttt{msprt} & experimental & Always-valid p-values and confidence sequences for a two-arm A/B test monitored continuously (mixture SPRT with a nor... \\
+    \texttt{msprt\_\allowbreak{}lambda} & experimental & Mixture likelihood ratio of the normal-mixture SPRT for an estimate with known variance; 1 / running max is the alway... \\
     \texttt{optimal\_\allowbreak{}design} & experimental & Compute optimal sample size and design parameters. \\
     \texttt{randomize} & experimental & Randomize units to treatment and control. \\
+    \texttt{sequential\_\allowbreak{}design} & experimental & Choose the runs of an expensive function one at a time with a Gaussian process: Bayesian optimisation by expected imp... \\
+    \texttt{sobol\_\allowbreak{}indices} & experimental & Variance-based global sensitivity analysis of a model: first-order and total Sobol' indices of each input with bootst... \\
+    \texttt{space\_\allowbreak{}filling} & experimental & Space-filling design: n runs spread evenly over a box of factors. Maximum projection (default), maximin or uniform La... \\
+    \texttt{split\_\allowbreak{}data} & experimental & Split data into training and test sets that both resemble the whole data set in joint distribution, outcome included:... \\
+    \texttt{support\_\allowbreak{}points} & experimental & Support points: the n points that best represent a sample or a distribution in energy distance. To propagate input un... \\
+    \texttt{switchback} & experimental & Design-based analysis of a switchback experiment. \\
+    \texttt{switchback\_\allowbreak{}design} & experimental & Randomization points and an assignment path for a switchback experiment. \\
     \texttt{EvidenceWithoutInjusticeResult} & fairness & Extended fairness result with bootstrap CI and per-alt statistics. \\
     \texttt{FairnessAudit} & fairness & One-shot dashboard of fairness diagnostics. \\
     \texttt{FairnessResult} & fairness & Single fairness diagnostic. \\
@@ -718,6 +887,7 @@ Function & Category & Description \\
     \texttt{evidence\_\allowbreak{}without\_\allowbreak{}injustice} & fairness & Kwak-Pleasants (2025) evidence-without-injustice counterfactual fairness test. Freezes admissible-evidence features a... \\
     \texttt{fairness\_\allowbreak{}audit} & fairness & One-shot dashboard combining demographic parity, equalized odds, and (optionally) counterfactual fairness. \\
     \texttt{orthogonal\_\allowbreak{}to\_\allowbreak{}bias} & fairness & Residualize features against the protected attribute as a pre-processing step toward counterfactual fairness. \\
+    \texttt{tune\_\allowbreak{}causal\_\allowbreak{}forest} & forest & Choose causal-forest settings (minimum leaf size, sample fraction, mtry, honesty options) by random search on the out... \\
     \texttt{FrontierResult} & frontier & Result object returned by :func:`frontier` and :func:`xtfrontier`. \\
     \texttt{MalmquistResult} & frontier & Container for Malmquist productivity index decomposition. \\
     \texttt{MetafrontierResult} & frontier & Container for a metafrontier fit. \\
@@ -734,39 +904,75 @@ Function & Category & Description \\
     \texttt{MCGFormulaResult} & gformula & Result of one or two Monte-Carlo g-formula arms. \\
     \texttt{gformula\_\allowbreak{}ice\_\allowbreak{}fn} & gformula & Parametric g-formula via Iterative Conditional Expectation (ICE) -- sequential regression of the outcome on treatment... \\
     \texttt{gformula\_\allowbreak{}mc} & gformula & Monte-Carlo parametric g-formula estimate of :math:`E[Y(g)]`. \\
+    \texttt{BiTestResult} & inference & Outcome of :func:`bitest`. \\
     \texttt{BootstrapResult} & inference & Container for bootstrap inference results. \\
+    \texttt{ClassicTestResult} & inference & Result of one of the tests of this module. \\
     \texttt{FisherResult} & inference & Result container for Fisher's exact permutation test. \\
+    \texttt{JackknifeResult} & inference & Outcome of :func:`jackknife` for a scalar statistic. \\
     \texttt{MetaAnalysisResult} & inference & Result of a summary-data meta-analysis. \\
     \texttt{PATEEstimator} & inference & Population Average Treatment Effect estimator. \\
     \texttt{RomanoWolfResult} & inference & Container for Romano-Wolf multiple hypothesis testing results. \\
+    \texttt{SDTestResult} & inference & Outcome of :func:`sdtest`. \\
+    \texttt{SuestResult} & inference & Joint estimates of several OLS equations. \\
+    \texttt{TTestResult} & inference & Outcome of :func:`ttest`. \\
     \texttt{adjust\_\allowbreak{}pvalues} & inference & Adjust p-values for multiple comparisons. \\
     \texttt{benjamini\_\allowbreak{}hochberg} & inference & Benjamini-Hochberg (1995) FDR correction. \\
+    \texttt{bitest} & inference & Exact binomial test that a share equals p (Stata bitest / bitesti, R binom.test). The two-sided p-value sums the prob... \\
     \texttt{bonferroni} & inference & Bonferroni correction: ``p\_adj = min(p * S, 1)``. \\
     \texttt{bootstrap} & inference & General bootstrap inference: nonparametric, cluster, block. Percentile/BCa/normal CIs. \\
+    \texttt{ci} & inference & Confidence intervals for means (t), variances or standard deviations (chi-squared) and proportions (exact Clopper-Pea... \\
     \texttt{cluster\_\allowbreak{}robust\_\allowbreak{}se} & inference & Return cluster-robust standard errors (diagonal sqrt of vcov). \\
     \texttt{conley} & inference & Compute Conley (1999) spatial -- and optionally spatio-temporal -- HAC \\
+    \texttt{cor\_\allowbreak{}test} & inference & Pearson's correlation, or the partial correlation given covariates, with its t test and Fisher-z confidence interval... \\
     \texttt{cr2\_\allowbreak{}se} & inference & CR2 bias-corrected cluster-robust standard errors (Bell \& McCaffrey 2002). \\
     \texttt{cr3\_\allowbreak{}jackknife\_\allowbreak{}vcov} & inference & CR3 cluster-jackknife variance (delete-one-cluster). \\
+    \texttt{difference\_\allowbreak{}in\_\allowbreak{}means} & inference & Design-based difference in means for a randomized experiment (Neyman; R estimatr::difference\_in\_means). The variance... \\
+    \texttt{esize} & inference & Standardised effect sizes of a difference between two group means: Cohen's d, Hedges's g (exact small-sample correcti... \\
     \texttt{fisher\_\allowbreak{}exact} & inference & Fisher's exact randomization test with enhanced features. \\
     \texttt{holm} & inference & Holm (1979) step-down correction. \\
+    \texttt{iv\_\allowbreak{}wild\_\allowbreak{}bootstrap} & inference & WRE wild cluster bootstrap for a single (endogenous) 2SLS coefficient. \\
+    \texttt{jackknife} & inference & Delete-one (or delete-one-cluster) jackknife standard errors for any statistic: a function of a DataFrame that return... \\
     \texttt{jackknife\_\allowbreak{}se} & inference & Leave-one-cluster-out jackknife standard errors. \\
+    \texttt{ksmirnov} & inference & Two-sample Kolmogorov-Smirnov test of equal distribution functions (Stata ksmirnov). Returns the largest differences... \\
+    \texttt{ktau} & inference & Kendall's rank correlations tau-a and tau-b with the score test of independence (Stata ktau). The variance of the sco... \\
+    \texttt{kwallis} & inference & Kruskal-Wallis rank test that several groups have the same distribution (Stata kwallis, R kruskal.test). Reports the... \\
+    \texttt{lm\_\allowbreak{}lin} & inference & Average treatment effect of a randomized experiment by regression on treatment, centred covariates and their interact... \\
+    \texttt{loneway} & inference & One-way analysis of variance read as a random-effects model (Stata loneway): the intraclass correlation with its asym... \\
+    \texttt{median\_\allowbreak{}test} & inference & Median test (Stata median): classifies every observation as above the pooled median or not and tests independence of... \\
     \texttt{meta\_\allowbreak{}analysis} & inference & Summary-data meta-analysis with fixed- and random-effects pooling. \\
     \texttt{multiway\_\allowbreak{}cluster\_\allowbreak{}vcov} & inference & Compute N-way cluster-robust variance of an OLS coefficient vector. \\
+    \texttt{oneway} & inference & One-way analysis of variance (Stata oneway, R aov): the F test of equal group means, Bartlett's test of equal varianc... \\
     \texttt{pate} & inference & Estimate the Population Average Treatment Effect (PATE). \\
     \texttt{ppi\_\allowbreak{}mean} & inference & Prediction-powered estimate of a population mean. \\
     \texttt{ppi\_\allowbreak{}ols} & inference & Prediction-powered OLS with a labeled audit sample. \\
+    \texttt{prtest} & inference & Large-sample z test that a proportion equals a value, or that two proportions are equal (Stata prtest / prtesti). Tak... \\
+    \texttt{ranksum} & inference & Wilcoxon rank-sum (Mann-Whitney) test that two groups have the same distribution (Stata ranksum, R wilcox.test with c... \\
     \texttt{ri\_\allowbreak{}test} & inference & Randomization inference p-value. \\
+    \texttt{robvar} & inference & Robust tests of equal variances across groups (Stata robvar): Levene's W0 on absolute deviations from the group means... \\
     \texttt{romano\_\allowbreak{}wolf} & inference & Romano-Wolf stepdown adjusted p-values for multiple outcomes. \\
+    \texttt{sdtest} & inference & Test on the variance of a normal population (Stata sdtest / sdtesti, R var.test). One sample: (n-1)s\textasciicircum{}2/sd0\textasciicircum{}2 against... \\
+    \texttt{signrank} & inference & Wilcoxon matched-pairs signed-rank test (Stata signrank). Ranks the absolute differences y - other (or y - value), ze... \\
+    \texttt{sktest} & inference & Skewness and kurtosis tests for normality with their joint chi-squared(2) test (Stata sktest): D'Agostino's skewness... \\
+    \texttt{spearman} & inference & Spearman's rank correlation and the t test that it is zero (Stata spearman, R cor.test with method='spearman', exact=... \\
     \texttt{subcluster\_\allowbreak{}wild\_\allowbreak{}bootstrap} & inference & Subcluster wild cluster bootstrap for few-treated-clusters. \\
+    \texttt{suest} & inference & Joint (seemingly unrelated) inference across separately fitted OLS equations. \\
+    \texttt{swilk} & inference & Shapiro-Wilk W test for normality (Stata swilk, R shapiro.test), with Royston's (1992) normal approximation for the p... \\
+    \texttt{truncated\_\allowbreak{}product} & inference & Combine independent p-values by the truncated product: the product of those at most trunc, referred to its exact null... \\
+    \texttt{ttest} & inference & t test on a mean, a paired difference, or a difference of two means (Stata ttest, R t.test). Two independent samples... \\
     \texttt{twoway\_\allowbreak{}cluster} & inference & Compute two-way cluster-robust standard errors. \\
-    \texttt{wild\_\allowbreak{}cluster\_\allowbreak{}boot} & inference & Wild cluster bootstrap t-test for a single coefficient. \\
+    \texttt{vcov} & inference & Re-report a fitted result under another standard-error choice (vce=) without rebuilding the call: re-runs the recorde... \\
+    \texttt{vcov\_\allowbreak{}compare} & inference & Standard errors of one fit under several vce= choices, side by side (one row per request and term, with the ratio to... \\
+    \texttt{westfall\_\allowbreak{}young} & inference & Westfall-Young permutation stepdown p-values across outcomes. \\
+    \texttt{wild\_\allowbreak{}cluster\_\allowbreak{}boot} & inference & Wild cluster bootstrap test of one coefficient, or of several jointly. \\
     \texttt{wild\_\allowbreak{}cluster\_\allowbreak{}bootstrap} & inference & Cameron-Gelbach-Miller (2008) wild cluster bootstrap -- the canonical fix for cluster-robust inference with few clust... \\
     \texttt{wild\_\allowbreak{}cluster\_\allowbreak{}ci\_\allowbreak{}inv} & inference & Confidence interval via bootstrap p-value inversion. \\
+    \texttt{ztest} & inference & z test on a mean or on a difference of two means when the population standard deviation is known (Stata ztest / ztest... \\
     \texttt{CrossClusterRCTResult} & interference & Output of cross-cluster RCT with interference correction. \\
     \texttt{DNCGNNDiDResult} & interference & Output of DNC + GNN + DiD. \\
+    \texttt{InterferenceTestResult} & interference & Result of :func:`interference\_test`. \\
     \texttt{InwardOutwardResult} & interference & Output of :func:`inward\_outward\_spillover`. \\
     \texttt{MatchedPairResult} & interference & Output of matched-pair cluster RCT estimation. \\
-    \texttt{NetworkExposureResult} & interference & Container for :func:`network\_exposure` Horvitz-Thompson estimates. \\
+    \texttt{NetworkExposureResult} & interference & Container for :func:`network\_exposure` estimates. \\
     \texttt{NetworkHTEResult} & interference & Output of :func:`network\_hte`. \\
     \texttt{PeerEffectsResult} & interference & Container for :func:`peer\_effects` linear-in-means estimates. \\
     \texttt{SpilloverEstimator} & interference & Spillover / interference effects estimator. \\
@@ -788,6 +994,7 @@ Function & Category & Description \\
     \texttt{FourWayResult} & mediation & Result container for :func:`four\_way\_decomposition`. \\
     \texttt{MediationAnalysis} & mediation & Causal Mediation Analysis estimator. \\
     \texttt{four\_\allowbreak{}way\_\allowbreak{}decomposition} & mediation & Parametric four-way decomposition of TE = CDE + INT\_ref + INT\_med + PIE. \\
+    \texttt{mediate\_\allowbreak{}paths} & mediation & Path-specific effects of a binary treatment through ordered mediators. \\
     \texttt{mediate\_\allowbreak{}sensitivity} & mediation & Sensitivity analysis for causal mediation (linear models). \\
     \texttt{FStatisticResult} & mendelian & Result container returned by :func:`mr\_f\_statistic`. \\
     \texttt{GrappleResult} & mendelian & Output of :func:`grapple`. \\
@@ -806,7 +1013,7 @@ Function & Category & Description \\
     \texttt{PleiotropyResult} & mendelian & Container for the MR-Egger intercept (directional-pleiotropy) test. \\
     \texttt{RadialResult} & mendelian & Container for radial-MR diagnostics. \\
     \texttt{SteigerResult} & mendelian & Container for the Steiger directionality test. \\
-    \texttt{grapple} & mendelian & GRAPPLE: profile-likelihood MR with joint weak-instrument and balanced-pleiotropy robustness (Wang et al. 2021). Mode... \\
+    \texttt{grapple} & mendelian & GRAPPLE: profile-score MR with joint weak-instrument and balanced-pleiotropy robustness (Wang et al. 2021). Model: be... \\
     \texttt{mendelian\_\allowbreak{}randomization} & mendelian & Mendelian Randomization analysis using summary statistics. \\
     \texttt{mr\_\allowbreak{}available\_\allowbreak{}methods} & mendelian & Return the full list of registered MR method names (incl. aliases). \\
     \texttt{mr\_\allowbreak{}bma} & mendelian & MR Bayesian model averaging over exposure subsets (Zuber et al. 2020). Outputs marginal inclusion probabilities and t... \\
@@ -826,13 +1033,15 @@ Function & Category & Description \\
     \texttt{mr\_\allowbreak{}pleiotropy\_\allowbreak{}egger} & mendelian & Formal MR-Egger intercept test for directional (unbalanced) horizontal pleiotropy. \\
     \texttt{mr\_\allowbreak{}presso} & mendelian & MR-PRESSO global test + per-SNP outlier detection + outlier-corrected IVW estimate + distortion test. \\
     \texttt{mr\_\allowbreak{}radial} & mendelian & Radial IVW MR (Bowden 2018) with per-SNP Bonferroni-thresholded outlier flagging. \\
-    \texttt{mr\_\allowbreak{}raps} & mendelian & MR-RAPS: Robust Adjusted Profile Score for two-sample summary-data MR (Zhao et al. 2020, Annals of Statistics). A por... \\
+    \texttt{mr\_\allowbreak{}raps} & mendelian & MR-RAPS: Robust Adjusted Profile Score for two-sample summary-data MR (Zhao et al. 2020, Annals of Statistics). Clean... \\
     \texttt{mr\_\allowbreak{}scatter\_\allowbreak{}plot} & mendelian & Classic MR scatter plot with IVW and MR-Egger lines. \\
     \texttt{mr\_\allowbreak{}steiger} & mendelian & Steiger directionality test -- verifies that the SNPs explain more variance in the exposure than the outcome, support... \\
     \texttt{MICEResult} & missing & Results from MICE imputation. \\
     \texttt{mi\_\allowbreak{}estimate} & missing & Run an estimator on each imputed dataset and combine using Rubin's rules. \\
     \texttt{mi\_\allowbreak{}test} & missing & Joint Wald test of pooled multiple-imputation coefficients. \\
     \texttt{mice} & missing & Multiple Imputation by Chained Equations (MICE). \\
+    \texttt{factor} & multivariate & Exploratory factor analysis of the correlation matrix: principal factors (default), iterated principal factors, princ... \\
+    \texttt{pca} & multivariate & Principal component analysis of the correlation (default) or covariance matrix: eigenvalues with shares of variance,... \\
     \texttt{CentralityResult} & network & Per-node centrality table (the ``sp.centrality`` output). \\
     \texttt{CommunityResult} & network & Community-detection partition (the ``sp.community\_detection`` output). \\
     \texttt{ComponentsResult} & network & Connected-component decomposition of a graph. \\
@@ -884,19 +1093,30 @@ Function & Category & Description \\
     \texttt{neural\_\allowbreak{}summary\_\allowbreak{}frame} & neural\_causal & Return a one-row summary table for a neural causal result. \\
     \texttt{neural\_\allowbreak{}training\_\allowbreak{}frame} & neural\_causal & Return per-epoch training diagnostics if recorded. \\
     \texttt{tarnet} & neural\_causal & Treatment-Agnostic Representation Network for neural CATE/ATE estimation. Stores CATE, potential-outcome predictions,... \\
+    \texttt{CTreeResult} & nonparametric & Result of :func:`ctree`. \\
     \texttt{KDensityResult} & nonparametric & Results from kernel density estimation. \\
     \texttt{LPolyResult} & nonparametric & Results from local polynomial regression. \\
     \texttt{LProbustPoint} & nonparametric & One evaluation point of :func:`lprobust\_at\_point`. \\
+    \texttt{ctree} & nonparametric & Conditional inference tree (Hothorn, Hornik and Zeileis 2006). \\
     \texttt{kdensity} & nonparametric & Kernel density estimation. \\
+    \texttt{lpbwselect\_\allowbreak{}ce\_\allowbreak{}rot} & nonparametric & Coverage-error-optimal rule of thumb, as ``bwselect('ce-rot')``. \\
+    \texttt{lpbwselect\_\allowbreak{}imse\_\allowbreak{}dpi} & nonparametric & IMSE-optimal direct-plug-in bandwidths, as ``bwselect('imse-dpi')``. \\
+    \texttt{lpbwselect\_\allowbreak{}imse\_\allowbreak{}rot} & nonparametric & IMSE-optimal rule-of-thumb bandwidth, as ``bwselect('imse-rot')``. \\
     \texttt{lpbwselect\_\allowbreak{}mse\_\allowbreak{}dpi} & nonparametric & MSE-optimal direct-plug-in bandwidths, as ``bwselect('mse-dpi')``. \\
+    \texttt{lpbwselect\_\allowbreak{}mse\_\allowbreak{}rot} & nonparametric & MSE-optimal rule-of-thumb bandwidth, as ``bwselect('mse-rot')``. \\
     \texttt{lpoly} & nonparametric & Local polynomial regression. \\
     \texttt{lprobust\_\allowbreak{}at\_\allowbreak{}point} & nonparametric & Local polynomial fit at ``eval\_point`` with robust bias correction. \\
+    \texttt{series} & nonparametric & Series (sieve) regression of y on a flexible function of one variable, a polynomial or a spline, with other regressor... \\
     \texttt{CausalPolicyForestResult} & ope & Output of :func:`causal\_policy\_forest`. \\
+    \texttt{MDPPolicyValueResult} & ope & Result of :func:`mdp\_policy\_value`. \\
+    \texttt{MarginalPolicyEffectResult} & ope & Result of :func:`marginal\_policy\_effect`. \\
     \texttt{OPEResult} & ope & Container returned by sp.ope.* estimators (IPS, SNIPS, DR, Switch-DR, DM). Reports value, SE, CI, importance-ratio di... \\
     \texttt{SharpOPEResult} & ope & Output of :func:`sharp\_ope\_unobserved`. \\
     \texttt{causal\_\allowbreak{}policy\_\allowbreak{}forest} & ope & Forest of doubly-robust policy trees: ensembles depth-limited trees over AIPW-scored actions to reduce variance and g... \\
     \texttt{sharp\_\allowbreak{}ope\_\allowbreak{}unobserved} & ope & Sharp bounds on off-policy value under unobserved confounding via the marginal-sensitivity Gamma-model (Kallus, Mao,... \\
     \texttt{CrossValidationResult} & other & Outcome of cross-validating one estimand across several engines. \\
+    \texttt{FactorResult} & other & Outcome of :func:`factor`. \\
+    \texttt{PCAResult} & other & Outcome of :func:`pca`. \\
     \texttt{ParityStatus} & other & Dict-compatible parity record with a human-readable rendering. \\
     \texttt{ResultCard} & other & Structured, JSON-safe card for one fitted result (a ``dict``). \\
     \texttt{ancova} & other & Covariate-adjusted comparison of group means (ANCOVA). \\
@@ -906,6 +1126,7 @@ Function & Category & Description \\
     \texttt{parity\_\allowbreak{}status} & other & Return the cross-language parity record for one function. \\
     \texttt{parity\_\allowbreak{}summary} & other & Headline counts of the parity matrix -- the honest coverage snapshot. \\
     \texttt{result\_\allowbreak{}card} & other & Auditable summary of a fitted result, shared by Python and MCP. \\
+    \texttt{version\_\allowbreak{}info} & other & Identify the StatsPAI code in use: version, git revision, install. \\
     \texttt{Collection} & output & A named, ordered bundle of tables and prose for a single document. \\
     \texttt{CollectionItem} & output & One entry in a :class:`Collection`. \\
     \texttt{MeanComparisonResult} & output & Rich result object for balance / mean comparison tables. \\
@@ -963,9 +1184,10 @@ Function & Category & Description \\
     \texttt{causal\_\allowbreak{}impact} & panel & Causal impact of an intervention on a time series: pre-period OLS on the covariate series with an AR(1) latent state... \\
     \texttt{demean} & panel & Return the within-transformed ``x`` and the singleton keep mask. \\
     \texttt{etable} & panel & Display a pyfixest-style regression table for StatsPAI results. \\
-    \texttt{feglm} & panel & Estimate GLM (logit, probit, Gaussian) with high-dimensional fixed effects. \\
-    \texttt{feols} & panel & Estimate OLS / IV with high-dimensional fixed effects via pyfixest. \\
-    \texttt{fepois} & panel & Estimate Poisson regression with high-dimensional fixed effects via pyfixest. \\
+    \texttt{fama\_\allowbreak{}macbeth} & panel & Fama-MacBeth two-step regression: one cross-sectional OLS per period, coefficients averaged over periods, standard er... \\
+    \texttt{feglm} & panel & Estimate GLM (logit, probit, negative binomial, Gaussian) with \\
+    \texttt{feols} & panel & Estimate OLS / IV with high-dimensional fixed effects. \\
+    \texttt{fepois} & panel & Estimate Poisson regression with high-dimensional fixed effects. \\
     \texttt{gmm} & panel & General GMM estimator for arbitrary moment conditions. \\
     \texttt{hdfe\_\allowbreak{}ols} & panel & reghdfe-style OLS with high-dimensional fixed effects. \\
     \texttt{icc} & panel & Intra-class correlation for a fitted random-intercept model. \\
@@ -978,6 +1200,7 @@ Function & Category & Description \\
     \texttt{meologit} & panel & Random-effects ordinal logit (Stata ``meologit``, R ``ordinal::clmm``). \\
     \texttt{mepoisson} & panel & Random-effects Poisson regression (Stata ``mepoisson``). \\
     \texttt{mixed} & panel & Fit a linear mixed-effects model. \\
+    \texttt{mmqreg} & panel & Quantile regression via moments (Machado-Santos Silva MMQR) with one or more absorbed fixed effects (Stata xtqreg / m... \\
     \texttt{panel} & panel & Unified panel regression: FE, RE, between, FD, pooled OLS, two-way FE, Mundlak/Chamberlain CRE, Arellano-Bond, Blunde... \\
     \texttt{panel\_\allowbreak{}compare} & panel & Estimate the same model with multiple panel methods and return a side-by-side comparison table. \\
     \texttt{panel\_\allowbreak{}fgls} & panel & Panel FGLS (Feasible Generalized Least Squares). \\
@@ -986,29 +1209,48 @@ Function & Category & Description \\
     \texttt{panel\_\allowbreak{}unitroot} & panel & Panel unit root test. \\
     \texttt{xtabond} & panel & Arellano-Bond / Blundell-Bond GMM for dynamic panels (standalone). \\
     \texttt{xtdpdsys} & panel & Blundell-Bond system GMM for dynamic panels (alias for xtabond with method='system'). \\
+    \texttt{xthtaylor} & panel & Hausman-Taylor estimator for panels with time-invariant regressors, some of which (and some time-varying ones) may be... \\
+    \texttt{xtintreg} & panel & Random-effects interval regression by ML (Stata xtintreg): exact, left-, right- and interval-censored outcomes with a... \\
+    \texttt{xtivreg} & panel & Instrumental variables for panel data (Stata xtivreg): random-effects G2SLS / EC2SLS, within (fixed-effects) 2SLS, be... \\
     \texttt{xtlsdvc} & panel & Bias-corrected LSDV (LSDVC) estimator for dynamic panels. \\
     \texttt{xtnbreg} & panel & Panel negative-binomial regression (Stata xtnbreg): model='fe' is the Hausman-Hall-Griliches conditional fixed-effect... \\
+    \texttt{xtoverid} & panel & Cluster-robust test of random effects against fixed effects (Stata xtoverid after xtreg, re): the random-effects equa... \\
+    \texttt{xtpcse} & panel & Linear regression with panel-corrected standard errors (Stata xtpcse; Beck-Katz): OLS or Prais-Winsten with AR(1), di... \\
+    \texttt{xtregar} & panel & Fixed- or random-effects linear regression with an AR(1) disturbance on unbalanced, unequally spaced panels (Stata xt... \\
+    \texttt{xtserial} & panel & Wooldridge test for first-order serial correlation in the errors of a linear panel model (Stata xtserial): the model... \\
+    \texttt{xtsum} & panel & Overall, between and within summary statistics of panel variables (Stata xtsum): the standard deviation of the panel... \\
+    \texttt{xttobit} & panel & Random-effects tobit by ML (Stata xttobit): censoring at ll / ul with a normal panel effect; adaptive Gauss-Hermite q... \\
     \texttt{binscatter} & plots & Binned scatter plot with optional residualization. \\
     \texttt{counterfactual\_\allowbreak{}data} & plots & Normalise a fitted result into a tidy counterfactual frame. \\
     \texttt{counterfactual\_\allowbreak{}plot} & plots & Plot observed vs counterfactual with an uncertainty band. \\
     \texttt{get\_\allowbreak{}code} & plots & Get reproducible code for all interactive edits made to a figure. \\
-    \texttt{interactive} & plots & Open an interactive editor for a matplotlib figure. \\
+    \texttt{interactive} & plots & Open an editor for a matplotlib figure. \\
     \texttt{list\_\allowbreak{}themes} & plots & List all available themes grouped by source. \\
+    \texttt{refresh\_\allowbreak{}legend} & plots & Redraw an axes' legend entries from the current style of their artists. \\
     \texttt{set\_\allowbreak{}theme} & plots & Set global matplotlib theme for publication-quality plots. \\
     \texttt{use\_\allowbreak{}chinese} & plots & One-line fix for Chinese text rendering in matplotlib. \\
+    \texttt{avg\_\allowbreak{}comparisons} & postestimation & Average contrasts (marginaleffects::avg\_comparisons): for a binary treatment on the response scale, the model-implied... \\
+    \texttt{avg\_\allowbreak{}predictions} & postestimation & Average prediction, overall or by group (marginaleffects::avg\_predictions); unweighted and normal-reference by defaul... \\
+    \texttt{avg\_\allowbreak{}slopes} & postestimation & Average marginal effects (marginaleffects::avg\_slopes); with wts=True and df='model' equal to Stata margins, dydx() a... \\
+    \texttt{comparisons} & postestimation & Unit-level contrasts of predictions (marginaleffects::comparisons): factor levels against the first, 0/1 variables 1... \\
     \texttt{contrast} & postestimation & Compute contrasts of predictive margins across levels of a variable. \\
     \texttt{event\_\allowbreak{}study\_\allowbreak{}table} & postestimation & Adapter that turns an event-study fit into a regtable input. \\
+    \texttt{hypotheses} & postestimation & Delta-method test of a function of estimates (marginaleffects::hypotheses): on a fit, of its coefficients; on a table... \\
     \texttt{lincom} & postestimation & Estimate a linear combination of coefficients with inference. \\
     \texttt{margins} & postestimation & Compute marginal effects from a fitted model. \\
     \texttt{margins\_\allowbreak{}at} & postestimation & Compute predictive margins at specific covariate values. \\
     \texttt{margins\_\allowbreak{}at\_\allowbreak{}plot} & postestimation & Plot predictive margins from ``margins\_at()`` with confidence bands. \\
     \texttt{margins\_\allowbreak{}table} & postestimation & Marginal-effects result that pipes straight into ``sp.regtable``. \\
     \texttt{marginsplot} & postestimation & Plot marginal effects with confidence intervals. \\
+    \texttt{nlcom} & postestimation & Nonlinear combination of coefficients with a delta-method standard error (Stata nlcom, R car::deltaMethod): ratios, l... \\
     \texttt{postestimation\_\allowbreak{}contract} & postestimation & Return the post-estimation actions supported by *result*. \\
     \texttt{postestimation\_\allowbreak{}report} & postestimation & Return the post-estimation actions supported by *result*. \\
+    \texttt{predictions} & postestimation & Unit-level predictions with delta-method standard errors, in the vocabulary of R marginaleffects::predictions; with b... \\
     \texttt{pwcompare} & postestimation & Pairwise comparisons of predictive margins across all levels. \\
+    \texttt{slopes} & postestimation & Unit-level partial derivatives of the prediction (marginaleffects::slopes), analytic through interactions and formula... \\
     \texttt{test} & postestimation & Wald test for linear restrictions on coefficients. \\
     \texttt{PowerResult} & power & Container for power analysis results. \\
+    \texttt{RetrodesignResult} & power & Result of :func:`retrodesign`. \\
     \texttt{mde} & power & Compute the Minimum Detectable Effect (MDE) for a given design. \\
     \texttt{power} & power & Compute statistical power (or solve for sample size) for a causal \\
     \texttt{power\_\allowbreak{}case\_\allowbreak{}control} & power & Power (or number of cases) for an unmatched case-control study. \\
@@ -1019,26 +1261,49 @@ Function & Category & Description \\
     \texttt{power\_\allowbreak{}ols} & power & Power for OLS regression (single coefficient of interest). \\
     \texttt{power\_\allowbreak{}rct} & power & Power for a two-arm Randomised Controlled Trial. \\
     \texttt{power\_\allowbreak{}rd} & power & Power for Regression Discontinuity designs. \\
+    \texttt{power\_\allowbreak{}ttest} & power & Power, sample size or detectable difference of a one-sample, two-sample or paired t test, from the noncentral t distr... \\
     \texttt{power\_\allowbreak{}two\_\allowbreak{}proportions} & power & Power (or sample size) to detect a difference between two proportions. \\
+    \texttt{retrodesign} & power & Design analysis (Gelman and Carlin 2014): for a hypothesised true effect and a standard error, the power, the probabi... \\
+    \texttt{BoxCoxResult} & regression & Result of :func:`boxcox`. \\
+    \texttt{GAMResult} & regression & Result of :func:`gam`. \\
     \texttt{GLMEstimator} & regression & Generalized Linear Model estimator using IRLS \\
     \texttt{GLMRegression} & regression & Generalized Linear Model with IRLS estimation. \\
+    \texttt{GlmnetResult} & regression & Result of :func:`glmnet`. \\
     \texttt{IVRegression} & regression & Instrumental Variables regression model. \\
+    \texttt{ModelAverageResult} & regression & Outcome of :func:`model\_average`. \\
+    \texttt{RidgeResult} & regression & Result of :func:`ridge`. \\
     \texttt{SURResult} & regression & Results from SUR estimation. \\
     \texttt{SelectionResult} & regression & Result container for variable selection procedures. \\
+    \texttt{ShrinkageResult} & regression & Fit returned by :func:`statspai.shrinkage`. \\
+    \texttt{best\_\allowbreak{}subset} & regression & Exact best-subset selection for OLS by branch and bound: for every model size the subset with the smallest RSS, and t... \\
     \texttt{betareg} & regression & Beta regression (Ferrari \& Cribari-Neto 2004). \\
     \texttt{biprobit} & regression & Bivariate probit model. \\
+    \texttt{boxcox} & regression & Box-Cox power transformation of a positive outcome: the maximum likelihood lambda for (y\textasciicircum{}lambda - 1)/lambda = x'b + e... \\
     \texttt{clogit} & regression & McFadden's conditional (fixed-effect) logit for choice data. \\
     \texttt{cloglog} & regression & Complementary log-log regression via maximum likelihood. \\
+    \texttt{cnsreg} & regression & Linear regression under linear equality constraints on the coefficients (constant returns to scale, equal slopes, a c... \\
+    \texttt{conformal\_\allowbreak{}regression} & regression & Distribution-free prediction intervals for a least-squares regression: split conformal, jackknife+ or exact full conf... \\
+    \texttt{etpoisson} & regression & Poisson regression with an endogenous binary treatment by maximum likelihood, as Stata's etpoisson; reports the ATE o... \\
     \texttt{etregress} & regression & Endogenous treatment effects model. \\
     \texttt{fracreg} & regression & Fractional response model (Papke \& Wooldridge 1996). \\
+    \texttt{gam} & regression & Generalized additive model: g(E[y]) = linear terms + smooth functions of numeric columns: P-spline or thin plate curv... \\
+    \texttt{gee} & regression & Generalized estimating equations (Liang-Zeger) for clustered or longitudinal data: a population-averaged GLM with a w... \\
     \texttt{glm} & regression & Fit a Generalized Linear Model. \\
+    \texttt{glmnet} & regression & Lasso, ridge and elastic net with the conventions of R ``glmnet``. \\
+    \texttt{gologit} & regression & Generalized ordered logit / probit with partial proportional odds (the model of Stata's gologit2): Pr(Y > c\_j) = F(a\_... \\
     \texttt{heckman} & regression & Heckman two-step selection model correcting for sample selection bias. \\
+    \texttt{heckprobit} & regression & Probit with sample selection by maximum likelihood (Stata heckprobit): a binary outcome observed only for a selected... \\
     \texttt{hurdle} & regression & Hurdle (two-part) model for count data. \\
     \texttt{interflex} & regression & Conditional marginal effects of ``d`` across a moderator ``x`` \\
     \texttt{interflex\_\allowbreak{}plot} & regression & The interflex figure: marginal effect of ``d`` across ``x`` with its \\
+    \texttt{intreg} & regression & Interval regression by maximum likelihood (Stata intreg): a normal linear model for an outcome known only to lie betw... \\
+    \texttt{invlogit} & regression & Inverse logit, ``1 / (1 + exp(-x))``. \\
     \texttt{iv} & regression & Unified IV estimation and the entry point for the whole IV family: k-class (2SLS, LIML, Fuller, GMM, JIVE) plus the m... \\
+    \texttt{ivpoisson} & regression & Exponential-mean (Poisson) regression with endogenous regressors by GMM, additive or multiplicative errors, as Stata'... \\
+    \texttt{ivprobit} & regression & Probit with continuous endogenous regressors: maximum likelihood or Newey's two-step, as Stata's ivprobit. \\
     \texttt{ivqreg} & regression & Instrumental-variable quantile regression (Chernozhukov-Hansen). \\
     \texttt{ivreg} & regression & Two-stage least squares (2SLS) IV regression. Alias for sp.iv(method='2sls'). \\
+    \texttt{ivtobit} & regression & Tobit with continuous endogenous regressors: maximum likelihood or Newey's two-step, as Stata's ivtobit. \\
     \texttt{jive} & regression & Jackknife Instrumental Variables Estimation (JIVE). \\
     \texttt{lasso\_\allowbreak{}iv} & regression & LASSO-selected instrumental variables (information-criterion penalty). \\
     \texttt{lasso\_\allowbreak{}select} & regression & LASSO-based variable selection. \\
@@ -1046,28 +1311,43 @@ Function & Category & Description \\
     \texttt{logit} & regression & Logit (logistic) regression via maximum likelihood. \\
     \texttt{mixlogit} & regression & Mixed Logit (random-coefficient MNL) via simulated maximum likelihood. \\
     \texttt{mlogit} & regression & Multinomial logit for J > 2 unordered categories via MLE. \\
+    \texttt{model\_\allowbreak{}average} & regression & Model selection criteria and averaging weights for candidate least-squares regressions of one outcome: AIC, BIC and l... \\
+    \texttt{mprobit} & regression & Multinomial probit choice model for long data (one row per case and alternative): regressors that vary over alternati... \\
     \texttt{nbreg} & regression & Negative-binomial count regression for overdispersed non-negative outcomes. Formula fixed effects such as 'y \textasciitilde{} x | id... \\
+    \texttt{nlogit} & regression & Nested logit (random-utility consistent) on long-format choice data, as Stata's nlogit and R's mlogit(nests=). \\
+    \texttt{nls} & regression & Nonlinear least squares for y = m(x, theta) + e. The regression function is a formula with the parameters in braces,... \\
     \texttt{ologit} & regression & Ordered logit (proportional odds) model via MLE. \\
     \texttt{oprobit} & regression & Ordered probit model via MLE. \\
     \texttt{poisson} & regression & Poisson regression via MLE (IRLS). \\
     \texttt{ppmlhdfe} & regression & Pseudo-Poisson Maximum Likelihood with high-dimensional fixed effects. \\
+    \texttt{prais} & regression & Linear regression with AR(1) errors by feasible GLS: Prais-Winsten (keeps the first observation) or Cochrane-Orcutt (... \\
     \texttt{probit} & regression & Probit regression via maximum likelihood. \\
     \texttt{qreg} & regression & Quantile regression at specified quantile(s). \\
     \texttt{regress} & regression & OLS regression with robust/clustered standard errors. The workhorse of econometric analysis. \\
+    \texttt{ridge} & regression & Ridge regression on standardised regressors over one or a grid of penalties, chosen by generalized cross-validation (... \\
+    \texttt{robreg} & regression & Robust regression that bounds the influence of outliers: MM (S start, 50\% breakdown, 85\% efficiency by default), Hube... \\
+    \texttt{rolling} & regression & Rolling or recursive least squares: the same regression on a window of fixed length that moves through the sample, or... \\
+    \texttt{shrinkage} & regression & Prediction with many regressors: ridge, lasso, principal components regression or OLS, with the penalty / number of c... \\
     \texttt{sqreg} & regression & Simultaneous quantile regression at multiple quantiles. \\
+    \texttt{standardize} & regression & Centre numeric inputs and divide by two standard deviations (Gelman 2008), so a coefficient compares one sd below wit... \\
     \texttt{stepwise} & regression & Stepwise variable selection for OLS regression. \\
     \texttt{sureg} & regression & Seemingly Unrelated Regression (SUR). \\
     \texttt{three\_\allowbreak{}sls} & regression & Three-Stage Least Squares (3SLS). \\
+    \texttt{threshold} & regression & Threshold regression with an unknown threshold: the intercept and the coefficients named in regime= change when the t... \\
     \texttt{tobit} & regression & Tobit model for censored dependent variables. \\
     \texttt{truncreg} & regression & Truncated regression (MLE). \\
     \texttt{zinb} & regression & Zero-Inflated Negative Binomial (ZINB) regression via MLE. \\
     \texttt{zip\_\allowbreak{}model} & regression & Zero-Inflated Poisson (ZIP) regression via MLE. \\
     \texttt{FrontierSensitivityResult} & robustness & Container for frontier sensitivity analysis. \\
+    \texttt{RefutationResult} & robustness & Outcome of one refutation test. \\
     \texttt{RobustnessResult} & robustness & Container for robustness report results. \\
     \texttt{SpecCurveResult} & robustness & Holds all specification curve outputs. \\
     \texttt{SubgroupResult} & robustness & Container for subgroup heterogeneity analysis. \\
     \texttt{calibrate\_\allowbreak{}confounding\_\allowbreak{}strength} & robustness & Calibrate the strength of an unobserved confounder required to \\
     \texttt{copula\_\allowbreak{}sensitivity} & robustness & Gaussian-copula sensitivity to unobserved confounding. \\
+    \texttt{itcv} & robustness & Impact threshold for a confounding variable (Frank 2000): how strongly an omitted variable would have to be correlate... \\
+    \texttt{refute} & robustness & Refutation tests for any effect estimator: rerun it on data altered so the answer is known (treatment shuffled, outco... \\
+    \texttt{reset\_\allowbreak{}spec\_\allowbreak{}counter} & robustness & Forget the session's specification-search count (the 'specification\_search' violation that sp.regress / feols / fepoi... \\
     \texttt{robustness\_\allowbreak{}report} & robustness & Run an automated battery of robustness checks. \\
     \texttt{spec\_\allowbreak{}curve} & robustness & Specification curve analysis -- run many model specifications and visualise robustness. \\
     \texttt{subgroup\_\allowbreak{}analysis} & robustness & Run subgroup heterogeneity analysis with forest plot. \\
@@ -1123,8 +1403,9 @@ Function & Category & Description \\
     \texttt{geary} & spatial & Global Geary's C -- squared-difference measure of spatial autocorrelation. \\
     \texttt{getis\_\allowbreak{}ord\_\allowbreak{}g} & spatial & Global Getis-Ord G -- overall concentration of high (or low) values. \\
     \texttt{getis\_\allowbreak{}ord\_\allowbreak{}local} & spatial & Local Getis-Ord Gi / Gi* -- hotspot and coldspot detection. \\
+    \texttt{gns} & spatial & General nesting spatial model (Manski-type): spatial lag of ``y``, \\
     \texttt{gwr} & spatial & Fit Geographically Weighted Regression. \\
-    \texttt{gwr\_\allowbreak{}bandwidth} & spatial & Select a GWR bandwidth by golden-section search (``GWmodel::bw.gwr``). \\
+    \texttt{gwr\_\allowbreak{}bandwidth} & spatial & Select a GWR bandwidth by golden-section search. \\
     \texttt{impacts} & spatial & Compute direct / indirect / total impacts + simulated SEs. \\
     \texttt{join\_\allowbreak{}counts} & spatial & Join-count statistics for a binary spatial variable. \\
     \texttt{kernel\_\allowbreak{}weights} & spatial & Kernel (distance-decay) spatial weights from point coordinates. \\
@@ -1143,6 +1424,7 @@ Function & Category & Description \\
     \texttt{sar} & spatial & Spatial Autoregressive (Lag) Model: Y = rhoWY + Xbeta + epsilon via ML. \\
     \texttt{sar\_\allowbreak{}gmm} & spatial & Kelejian-Prucha (1998) 2SLS for SAR with spatial-lag instruments. \\
     \texttt{sarar\_\allowbreak{}gmm} & spatial & SARAR (spatial lag + spatial error) by generalized spatial 2SLS. \\
+    \texttt{sdem} & spatial & Spatial Durbin error model: ``y = Xb + WXt + u, u = lambda W u + e``. \\
     \texttt{sdm} & spatial & Spatial Durbin Model: Y = rhoWY + Xbeta + WXtheta + epsilon with direct/indirect effects. \\
     \texttt{sem} & spatial & Spatial Error Model: Y = Xbeta + u, u = lambdaWu + epsilon via ML. \\
     \texttt{sem\_\allowbreak{}gmm} & spatial & Kelejian-Prucha (1999) GMM for the spatial-error parameter lambda. \\
@@ -1152,23 +1434,31 @@ Function & Category & Description \\
     \texttt{spatial\_\allowbreak{}iv} & spatial & Spatial 2SLS estimator. \\
     \texttt{spatial\_\allowbreak{}panel} & spatial & Fit a spatial panel model by concentrated ML (Elhorst 2014). \\
     \texttt{BLPResult} & structural & Results from BLP demand estimation. \\
+    \texttt{PathAnalysisResult} & structural & Fitted path model. \\
     \texttt{ProductionResult} & structural & Result object for production function estimation. \\
     \texttt{acf} & structural & Alias for sp.ackerberg\_caves\_frazer. Ackerberg-Caves-Frazer (2015) production function estimator. Modern default. Cor... \\
     \texttt{ackerberg\_\allowbreak{}caves\_\allowbreak{}frazer} & structural & Ackerberg-Caves-Frazer (2015) production function estimator. Modern default. Corrects the OP/LP identification proble... \\
     \texttt{blp} & structural & Estimate a BLP random-coefficients logit demand model. \\
+    \texttt{blp\_\allowbreak{}instruments} & structural & Characteristics-based instruments for differentiated-products demand. \\
     \texttt{levinsohn\_\allowbreak{}petrin} & structural & Levinsohn-Petrin (2003) production function estimator. Uses intermediate inputs (materials/energy) as proxy -- avoids... \\
     \texttt{levpet} & structural & Alias for sp.levinsohn\_petrin. Levinsohn-Petrin (2003) production function estimator. Uses intermediate inputs (mater... \\
     \texttt{markup} & structural & De Loecker \& Warzynski (2012) firm-time markup estimator. Takes a fitted ProductionResult plus revenue and input-cost... \\
     \texttt{olley\_\allowbreak{}pakes} & structural & Olley-Pakes (1996) production function estimator. Two-stage control function with INVESTMENT as the productivity prox... \\
     \texttt{opreg} & structural & Alias for sp.olley\_pakes. Olley-Pakes (1996) production function estimator. Two-stage control function with INVESTMEN... \\
+    \texttt{path\_\allowbreak{}analysis} & structural & Path analysis and structural equation models with latent variables, written in lavaan syntax (y \textasciitilde{} a*x + m; f =\textasciitilde{} a + b... \\
     \texttt{prod\_\allowbreak{}fn} & structural & Production function estimator (Cobb-Douglas) -- unified method= dispatcher. Solves the simultaneity between input cho... \\
     \texttt{wooldridge\_\allowbreak{}prod} & structural & Wooldridge (2009) production function estimator: the level and productivity-substituted equations share the elasticit... \\
     \texttt{long\_\allowbreak{}term\_\allowbreak{}from\_\allowbreak{}short} & surrogate & Long-term ATE under multi-wave short-term surrogates; extends the classical surrogate index to sustained treatments v... \\
     \texttt{proximal\_\allowbreak{}surrogate\_\allowbreak{}index} & surrogate & Proximal surrogate-index estimator: long-term ATE when an unobserved U confounds S->Y, using a proxy W and 2SLS-style... \\
     \texttt{surrogate\_\allowbreak{}index} & surrogate & Athey-Chetty-Imbens-Kang surrogate-index estimator for the long-term ATE: combines an experimental sample (treatment... \\
+    \texttt{PoststratResult} & survey & Result of :func:`poststratify`. \\
+    \texttt{ReplicateDesign} & survey & A survey design described by replicate weights. \\
     \texttt{SurveyDesign} & survey & Declare a complex survey design. \\
+    \texttt{as\_\allowbreak{}svrepdesign} & survey & Replicate weights from a strata / PSU design (R ``as.svrepdesign``). \\
     \texttt{linear\_\allowbreak{}calibration} & survey & Deville-Sarndal (1992) linear calibration. \\
+    \texttt{poststratify} & survey & Poststratification: average a model's predictions over the cells of a known population, weighting by cell counts, dra... \\
     \texttt{rake} & survey & Raking (iterative proportional fitting). \\
+    \texttt{svrepdesign} & survey & Declare a survey design by its replicate weights. \\
     \texttt{svydesign} & survey & Declare a complex survey design for design-corrected estimation. \\
     \texttt{svyglm} & survey & Survey-weighted generalised linear model. \\
     \texttt{svymean} & survey & Survey-weighted mean with design-corrected standard errors. \\
@@ -1178,6 +1468,7 @@ Function & Category & Description \\
     \texttt{CumIncResult} & survival & Cumulative incidence functions for competing risks. \\
     \texttt{FineGrayResult} & survival & Fine-Gray proportional subdistribution hazards model result. \\
     \texttt{KMResult} & survival & Kaplan-Meier survival analysis result. \\
+    \texttt{RMSTResult} & survival & Restricted mean survival time per group and contrasts. \\
     \texttt{aft} & survival & Fit an Accelerated Failure Time model by MLE. \\
     \texttt{causal\_\allowbreak{}survival} & survival & Causal survival forest: heterogeneous effects on censored survival. \\
     \texttt{cox} & survival & Cox Proportional Hazards model via partial likelihood. \\
@@ -1186,6 +1477,8 @@ Function & Category & Description \\
     \texttt{finegray} & survival & Fine \& Gray (1999) proportional subdistribution hazards model. \\
     \texttt{kaplan\_\allowbreak{}meier} & survival & Kaplan-Meier non-parametric survival function estimator. \\
     \texttt{logrank\_\allowbreak{}test} & survival & Log-rank test for equality of survival distributions across groups. \\
+    \texttt{rmst} & survival & Restricted mean survival time per group, with difference and ratios. \\
+    \texttt{stteffects} & survival & Average treatment effect on survival time (Stata ``stteffects``). \\
     \texttt{survreg} & survival & Parametric survival model (AFT parameterization). \\
     \texttt{synth\_\allowbreak{}experimental\_\allowbreak{}design} & synth & Synthetic-control experimental design heuristic: picks the k candidate units whose leave-one-out synthetic-control pr... \\
     \texttt{CloneCensorWeightResult} & target\_trial & Cloned, censored and IP-of-censoring-weighted target-trial data. \\
@@ -1197,26 +1490,94 @@ Function & Category & Description \\
     \texttt{target\_\allowbreak{}trial\_\allowbreak{}emulate} & target\_trial & Emulate the target trial defined by ``protocol``. \\
     \texttt{target\_\allowbreak{}trial\_\allowbreak{}protocol} & target\_trial & Create a 7-component target trial protocol (Hernan-Robins / JAMA 2022 framework). Formalizes eligibility, treatment s... \\
     \texttt{target\_\allowbreak{}trial\_\allowbreak{}report} & target\_trial & Render a target-trial emulation result as a structured Methods + Results block (Markdown / LaTeX / plain text), track... \\
+    \texttt{ARDLResult} & timeseries & A fitted AR(p) or ADL(p, q) forecasting regression. \\
     \texttt{ARIMAResult} & timeseries & Fitted ARIMA(p,d,q) / SARIMAX model returned by :func:`statspai.arima`. \\
+    \texttt{AbnormalReturnsResult} & timeseries & Outcome of :func:`abnormal\_returns`. \\
     \texttt{BVARResult} & timeseries & Posterior summary of a Bayesian VAR with Minnesota prior. \\
+    \texttt{BaggedForecastResult} & timeseries & Bagged forecasts returned by :func:`statspai.bagged\_forecast`. \\
+    \texttt{BeveridgeNelsonResult} & timeseries & Decomposition returned by :func:`statspai.beveridge\_nelson`. \\
     \texttt{CointegrationResult} & timeseries & Results from cointegration test. \\
+    \texttt{CrossCorrelogram} & timeseries & Cross-correlogram returned by :func:`statspai.xcorr`. \\
+    \texttt{CumulativePeriodogramResult} & timeseries & Bartlett's test returned by \\
+    \texttt{DLMResult} & timeseries & Result of :func:`dlm`. \\
+    \texttt{DecompositionResult} & timeseries & Decomposition of a series returned by :func:`statspai.stl` and \\
+    \texttt{ETSResult} & timeseries & Fitted ETS model returned by :func:`statspai.ets`. \\
+    \texttt{FilterResult} & timeseries & Trend and cycle returned by :func:`statspai.tsfilter`. \\
     \texttt{GARCHResult} & timeseries & Fitted GARCH(p,q) model returned by :func:`garch`. \\
+    \texttt{Hierarchy} & timeseries & An aggregation structure returned by :func:`statspai.hierarchy`. \\
     \texttt{ITSResult} & timeseries & Result container for :func:`its`. \\
+    \texttt{JohansenLRTest} & timeseries & Result of :func:`johansen\_lrtest`. \\
+    \texttt{KalmanResult} & timeseries & Output of :func:`kalman\_filter`. \\
     \texttt{LocalProjectionsResult} & timeseries & Impulse-response container returned by :func:`local\_projections`. \\
+    \texttt{LongRunVariance} & timeseries & Long-run variance returned by :func:`statspai.lrvar`. \\
+    \texttt{MarkovSwitchingLRTest} & timeseries & Result of :func:`mswitch\_lrtest`. \\
+    \texttt{MarkovSwitchingResult} & timeseries & Result of :func:`mswitch`. \\
+    \texttt{ReconcileResult} & timeseries & Reconciled forecasts returned by :func:`statspai.reconcile`. \\
+    \texttt{SVARResult} & timeseries & Outcome of :func:`svar`. \\
+    \texttt{SimpleForecastResult} & timeseries & A fitted benchmark method returned by :func:`statspai.simple\_forecast`. \\
+    \texttt{SpectrumResult} & timeseries & Estimated spectral density returned by :func:`statspai.periodogram`. \\
+    \texttt{StateSpaceResult} & timeseries & Maximum-likelihood fit returned by :func:`statespace`. \\
     \texttt{StructuralBreakResult} & timeseries & Results from structural break tests. \\
+    \texttt{TSCVResult} & timeseries & Rolling-origin forecast errors returned by :func:`statspai.tscv`. \\
+    \texttt{TVPVARResult} & timeseries & Result of :func:`tvp\_var`. \\
+    \texttt{TVPVARSVResult} & timeseries & Posterior draws of a TVP-VAR with stochastic volatility. \\
+    \texttt{UnitRootResult} & timeseries & Outcome of :func:`unitroot`. \\
     \texttt{VARResult} & timeseries & Results from VAR estimation. \\
+    \texttt{VECResult} & timeseries & Fitted vector error-correction model. \\
+    \texttt{ZivotAndrewsResult} & timeseries & Result of :func:`zivot\_andrews`. \\
+    \texttt{abnormal\_\allowbreak{}returns} & timeseries & Event study on security returns: abnormal returns around each event from a market, market-adjusted, mean-adjusted or... \\
+    \texttt{ardl} & timeseries & Autoregression AR(p) or autoregressive distributed lag ADL(p, q) forecasting regression by OLS: y on its own lags and... \\
     \texttt{arima} & timeseries & Fit ARIMA(p,d,q) or SARIMAX. \\
+    \texttt{bagged\_\allowbreak{}forecast} & timeseries & Bagged forecasts: forecast every bootstrapped version of a series (sp.bootstrap\_series) and average. Averages over mo... \\
+    \texttt{bds} & timeseries & BDS test that a series is independent and identically distributed, from the share of pairs of m-histories that stay w... \\
+    \texttt{beveridge\_\allowbreak{}nelson} & timeseries & Beveridge-Nelson decomposition of an integrated series into a random walk with drift (the long-horizon forecast) and... \\
+    \texttt{bootstrap\_\allowbreak{}series} & timeseries & Bootstrapped versions of a series that keep its trend, seasonal pattern and the autocorrelation of the remainder: Box... \\
+    \texttt{boxcox\_\allowbreak{}lambda} & timeseries & Box-Cox parameter that stabilises the variance of a series across its level, by Guerrero's method (minimum coefficien... \\
     \texttt{bvar} & timeseries & Bayesian VAR with the original Minnesota (Litterman) prior. \\
+    \texttt{chow\_\allowbreak{}test} & timeseries & Chow test for a structural break at a date fixed in advance: F test that the regression coefficients are equal before... \\
+    \texttt{classical\_\allowbreak{}decompose} & timeseries & Classical additive or multiplicative decomposition by centred moving averages: a 2 x m moving-average trend and a fix... \\
+    \texttt{corrgram} & timeseries & Correlogram of one series: autocorrelations, partial autocorrelations and the Ljung-Box portmanteau Q statistic with... \\
+    \texttt{cumulative\_\allowbreak{}periodogram\_\allowbreak{}test} & timeseries & Bartlett's test for white noise from the cumulative periodogram: a Kolmogorov-Smirnov statistic for the distance betw... \\
     \texttt{cusum\_\allowbreak{}test} & timeseries & CUSUM test for parameter stability. \\
+    \texttt{dlm} & timeseries & Dynamic linear model: regression whose coefficients follow random walks (time-varying parameters; 'y \textasciitilde{} 1' is the loca... \\
     \texttt{engle\_\allowbreak{}granger} & timeseries & Engle-Granger (1987) two-step cointegration test. \\
-    \texttt{garch} & timeseries & Fit GARCH(p,q) by conditional Gaussian MLE. \\
+    \texttt{ets} & timeseries & Exponential smoothing state space model ETS(error, trend, season): simple exponential smoothing, Holt's linear and da... \\
+    \texttt{forecast\_\allowbreak{}accuracy} & timeseries & Accuracy of one or several forecasts against the outcomes: ME, RMSE, MAE, MPE, MAPE, the scaled errors MASE and RMSSE... \\
+    \texttt{fourier\_\allowbreak{}terms} & timeseries & Sine and cosine regressors sin(2 pi k t / period), cos(2 pi k t / period), k = 1..K, for smooth, long, non-integer or... \\
+    \texttt{garch} & timeseries & Fit GARCH(p,q) by conditional maximum likelihood. \\
     \texttt{granger\_\allowbreak{}causality} & timeseries & Granger causality test. \\
+    \texttt{hierarchy} & timeseries & Build a hierarchical or grouped time series structure from a long table: aggregate the bottom-level series along the... \\
     \texttt{irf} & timeseries & Compute impulse response functions from VAR. \\
     \texttt{its} & timeseries & Segmented regression for interrupted time series. \\
     \texttt{johansen} & timeseries & Johansen (1991) cointegration test. \\
+    \texttt{johansen\_\allowbreak{}lrtest} & timeseries & Likelihood-ratio tests in a cointegrated VAR with the rank held fixed: the same linear restrictions on every cointegr... \\
+    \texttt{kalman\_\allowbreak{}filter} & timeseries & Kalman filter and fixed-interval smoother for a linear state space model given by its matrices: X\_t = F X\_\{t-1\} + V\_t... \\
+    \texttt{ljungbox} & timeseries & Ljung-Box or Box-Pierce portmanteau test that the first `lags` autocorrelations are zero, with the degrees of freedom... \\
     \texttt{local\_\allowbreak{}projections} & timeseries & Estimate impulse responses via Jorda (2005) local projections. \\
+    \texttt{lrvar} & timeseries & Long-run variance (sum of all autocovariances, the HAC variance of a mean times T) of one or several series. Bartlett... \\
+    \texttt{mswitch} & timeseries & Markov-switching regression by maximum likelihood (Hamilton filter, Kim smoother): the constant, selected coefficient... \\
+    \texttt{mswitch\_\allowbreak{}lrtest} & timeseries & Parametric-bootstrap likelihood-ratio test of the number of regimes in a Markov-switching regression: k0 regimes agai... \\
+    \texttt{ndiffs} & timeseries & Number of first differences that make a series stationary: difference until a KPSS test no longer rejects level stati... \\
+    \texttt{nsdiffs} & timeseries & Number of seasonal differences a series needs: one while the strength of seasonality of an STL decomposition exceeds... \\
+    \texttt{periodogram} & timeseries & Spectral density of a series: raw periodogram, periodogram smoothed with modified Daniell kernels, or the spectrum of... \\
+    \texttt{reconcile} & timeseries & Reconcile base forecasts of a hierarchical or grouped structure so that they add up: bottom-up, top-down, OLS, struct... \\
+    \texttt{seasonal\_\allowbreak{}dummies} & timeseries & Seasonal indicator regressors season\_2 ... season\_m for a regression with a seasonal pattern; start= gives the rows o... \\
+    \texttt{simple\_\allowbreak{}forecast} & timeseries & Benchmark forecasting methods: mean, naive (random walk), seasonal naive and drift, with normal or bootstrapped predi... \\
+    \texttt{statespace} & timeseries & Maximum-likelihood estimation of a user-written linear state space model: build(theta) returns the system matrices, t... \\
+    \texttt{stl} & timeseries & STL decomposition of a series into trend, seasonal and remainder by loess, optionally robust to outliers, with a peri... \\
     \texttt{structural\_\allowbreak{}break} & timeseries & Structural break detection. \\
+    \texttt{svar} & timeseries & Structural VAR on a fitted sp.var: short-run restrictions in the AB model A e = B u (Stata svar aeq() beq()), long-ru... \\
+    \texttt{ts\_\allowbreak{}features} & timeseries & Summary features of a time series, or of every column of a table of series: autocorrelation and partial autocorrelati... \\
+    \texttt{tscv} & timeseries & Time series cross-validation on a rolling forecast origin: refit at each origin on the observations up to it (expandi... \\
+    \texttt{tsfilter} & timeseries & Trend-cycle decomposition by a linear filter: Hodrick-Prescott, Baxter-King band-pass, Christiano-Fitzgerald band-pas... \\
+    \texttt{tvp\_\allowbreak{}var} & timeseries & Time-varying-parameter VAR: coefficients that follow random walks, estimated equation by equation with the Kalman fil... \\
+    \texttt{tvp\_\allowbreak{}var\_\allowbreak{}sv} & timeseries & Time-varying-parameter VAR with stochastic volatility (Primiceri): coefficients, the contemporaneous relations and th... \\
+    \texttt{unitroot} & timeseries & Unit-root test for one time series: augmented Dickey-Fuller, DF-GLS (Elliott-Rothenberg-Stock), Phillips-Perron or KP... \\
     \texttt{var} & timeseries & Estimate a Vector Autoregression (VAR) model. \\
+    \texttt{varsoc} & timeseries & Lag-order selection for a VAR: log likelihood, sequential likelihood-ratio test, FPE, AIC, HQIC and SBIC for orders 0... \\
+    \texttt{vec} & timeseries & Vector error-correction model by Johansen maximum likelihood for a given cointegration rank: adjustment coefficients... \\
+    \texttt{xcorr} & timeseries & Cross-correlogram of two series at leads and lags, raw or after prewhitening each series with its own autoregression,... \\
+    \texttt{zivot\_\allowbreak{}andrews} & timeseries & Zivot-Andrews unit-root test allowing one break in the level, the slope of the trend, or both, at a date chosen by th... \\
     \texttt{ConcordanceResult} & transport & RCT-vs-RWD concordance report. \\
     \texttt{EvidenceSynthesisResult} & transport & Output of :func:`synthesise\_evidence`. \\
     \texttt{TransportIdentificationResult} & transport & Result of a Pearl-Bareinboim transportability identification check. \\
@@ -1227,9 +1588,11 @@ Function & Category & Description \\
     \texttt{synthesise\_\allowbreak{}evidence} & transport & Inverse-variance pooling of an RCT and RWD estimate with optional transport shift (Dahabreh et al. 2020; arXiv:2511.1... \\
     \texttt{transport\_\allowbreak{}generalize} & transport & Transport an RCT effect to ``target\_population``. \\
     \texttt{transport\_\allowbreak{}weights\_\allowbreak{}fn} & transport & Density-ratio (inverse odds of sampling) weighting to transport an effect estimated in the source population to a nam... \\
+    \texttt{collapse} & utils & Stata's collapse: a dataset of summary statistics by group, written '(mean) x (sum) total=y' or as a dict; missing by... \\
+    \texttt{decode} & utils & Replace value-labelled codes by their label texts. \\
     \texttt{describe} & utils & Stata-style ``describe`` -- variable names, types, labels, and \\
     \texttt{dgp\_\allowbreak{}bartik} & utils & Generate shift-share (Bartik) instrument data. \\
-    \texttt{dgp\_\allowbreak{}bunching} & utils & Generate bunching data around a kink point. \\
+    \texttt{dgp\_\allowbreak{}bunching} & utils & Generate earnings that bunch at a kink in the marginal tax schedule. \\
     \texttt{dgp\_\allowbreak{}cluster\_\allowbreak{}rct} & utils & Generate cluster-randomised trial data. \\
     \texttt{dgp\_\allowbreak{}did} & utils & Generate Difference-in-Differences panel data. \\
     \texttt{dgp\_\allowbreak{}iv} & utils & Generate Instrumental Variables data with endogeneity. \\
@@ -1243,14 +1606,21 @@ Function & Category & Description \\
     \texttt{dgp\_\allowbreak{}rd\_\allowbreak{}multi} & utils & Generate multi-cutoff RD data. \\
     \texttt{dgp\_\allowbreak{}rdit} & utils & Generate Regression Discontinuity in Time data (Hausman-Rapson 2018). \\
     \texttt{dgp\_\allowbreak{}synth} & utils & Generate synthetic control data with a factor model. \\
+    \texttt{diff} & utils & Stata's D. operator read from the time variable: the n-th difference (D2.x = x - 2 L.x + L2.x) in the same panel, mis... \\
+    \texttt{doctor} & utils & Environment report: which StatsPAI this interpreter imports (version, location, editable install, pip metadata, git r... \\
+    \texttt{egen} & utils & Stata's egen: a new variable from a statistic by group (mean / count / sd / pctile / mode ...), rank, seq, std, group... \\
     \texttt{get\_\allowbreak{}label} & utils & Get the label for a variable, falling back to the column name. \\
     \texttt{get\_\allowbreak{}labels} & utils & Get all variable labels as a dictionary. \\
+    \texttt{label\_\allowbreak{}values} & utils & Attach value labels to the codes of one or more variables. \\
     \texttt{label\_\allowbreak{}var} & utils & Attach a human-readable label to a variable. \\
-    \texttt{label\_\allowbreak{}vars} & utils & Attach labels to multiple variables at once. \\
+    \texttt{label\_\allowbreak{}vars} & utils & Attach labels to multiple variables at once, or copy them from a frame. \\
+    \texttt{lag} & utils & Stata's L. operator read from the time variable: x at t - n*delta in the same panel, missing where that period is abs... \\
+    \texttt{lead} & utils & Stata's F. operator read from the time variable: x at t + n*delta in the same panel, missing where that period is abs... \\
     \texttt{outlier\_\allowbreak{}indicator} & utils & Flag outlier observations by percentile cutoffs. \\
     \texttt{pwcorr} & utils & Pairwise correlation matrix with significance stars. \\
     \texttt{rank} & utils & Rank a variable, optionally within groups. \\
     \texttt{read\_\allowbreak{}data} & utils & Read data from any common format, preserving variable labels. \\
+    \texttt{reshape} & utils & Stata's reshape wide / reshape long with i() and j(): the same column order and rows as Stata, and its refusals (j no... \\
     \texttt{rowcount} & utils & Row-wise count of non-missing values (Stata ``egen rownonmiss``). \\
     \texttt{rowmax} & utils & Row-wise max across ``vars``, ignoring NaN. \\
     \texttt{rowmean} & utils & Row-wise mean across ``vars``, ignoring NaN (Stata ``egen rowmean``). \\
@@ -1259,6 +1629,8 @@ Function & Category & Description \\
     \texttt{rowtotal} & utils & Row-wise sum across ``vars``, treating NaN as 0 (Stata ``egen rowtotal``). \\
     \texttt{scalar\_\allowbreak{}iv\_\allowbreak{}projection} & utils & Project a vector of instruments onto a scalar first-stage index. \\
     \texttt{winsor} & utils & Winsorize variables at specified percentiles. \\
+    \texttt{write\_\allowbreak{}data} & utils & Write data to a file, keeping variable and value labels. \\
+    \texttt{xtset} & utils & Declare the panel and time variables (Stata xtset id t / tsset t): stored in data.attrs and read by sp.lag / sp.lead... \\
     \texttt{ReproductionResult} & validation & Structured result returned by :func:`reproduce\_jss\_tables`. \\
     \texttt{ReproductionStep} & validation & One command or file-copy step in a JSS table reproduction run. \\
     \texttt{ValidationReport} & validation & Structured validation evidence for the current StatsPAI checkout. \\

@@ -24,6 +24,7 @@ import numpy as np
 import pandas as pd
 
 from .._aliases import accepts_aliases
+from ..core._call_record import records_call
 from ..exceptions import MethodIncompatibility
 from ._grf_family import (
     GRFFamilyForest,
@@ -111,7 +112,10 @@ def variable_importance(
     Returns
     -------
     pd.Series
-        Importance per covariate (sums to one), in covariate order.
+        Importance per covariate, in covariate order. The importances sum
+        to one when every counted depth has at least one split, and to less
+        otherwise (a depth without splits contributes zero while its weight
+        stays in the normaliser, grf's convention).
 
     Examples
     --------
@@ -210,6 +214,7 @@ def get_scores(forest: Any, **kwargs: Any) -> np.ndarray:
     return np.asarray(fn(**kwargs), dtype=float)
 
 
+@records_call("best_linear_projection")
 @accepts_aliases(_strict=True, vcov_type="vce")
 def best_linear_projection(
     forest: Any,
@@ -230,10 +235,14 @@ def best_linear_projection(
 
     Parameters
     ----------
-    forest : fitted forest
+    forest : fitted forest, or a DML result
         ``sp.causal_forest`` (GRF engine), ``sp.iv_forest``,
         ``sp.multi_arm_forest`` (one projection per contrast, stacked),
-        ``sp.causal_survival_forest``.
+        ``sp.causal_survival_forest``. Also the result of
+        ``sp.dml(model='irm')`` with the ATE score: its cross-fitted
+        doubly-robust scores are projected the same way (``DoubleML``'s
+        ``cate()`` / ``gate()`` with ``A`` a basis or group indicators),
+        and the joint covariance is in ``.attrs['vcov']``.
     A : array-like or DataFrame, optional
         Projection covariates, one row per training observation (after
         missing-value removal).
@@ -248,7 +257,10 @@ def best_linear_projection(
     -------
     pd.DataFrame
         Rows ``Intercept`` and one per column of ``A`` with ``coef``,
-        ``se``, ``t``, ``p``, ``ci_lower``, ``ci_upper``.
+        ``se``, ``t``, ``p``, ``ci_lower``, ``ci_upper``. For causal
+        forests and DML fits ``.attrs['vcov']`` holds the covariance of
+        the coefficients, from which the standard error of the projected
+        effect at any covariate value, ``sqrt(a' V a)``, follows.
 
     Examples
     --------
@@ -265,6 +277,9 @@ def best_linear_projection(
     """
     alpha = validate_alpha(alpha, "best_linear_projection()")
     vce = validate_vcov_type(vce, "best_linear_projection()")
+    info = getattr(forest, "model_info", None)
+    if isinstance(info, dict) and "dml_model" in info:
+        return _dml_best_linear_projection(info, A, vce, alpha)
     if _is_causal_forest(forest):
         from . import _grf_inference as gi
 
@@ -289,6 +304,48 @@ def best_linear_projection(
             recovery_hint="Supported: " + ", ".join(_SCORE_FORESTS) + ".",
         )
     return fn(A=A, vce=vce, alpha=alpha, **kwargs)
+
+
+def _dml_best_linear_projection(
+    info: dict, A: Any, vce: str, alpha: float
+) -> pd.DataFrame:
+    """Project the cross-fitted doubly-robust scores of ``sp.dml(model='irm')``."""
+    from ._grf_inference import _coef_table, cluster_robust_vcov
+
+    context = "best_linear_projection()"
+    scores = info.get("_dr_scores")
+    if scores is None or info.get("cluster") is not None:
+        raise MethodIncompatibility(
+            f"{context}: needs the doubly-robust scores of an unweighted, "
+            "unclustered sp.dml(model='irm') fit with the ATE score; got "
+            f"model={str(info.get('dml_model')).lower()!r}"
+            + (", clustered" if info.get("cluster") is not None else "")
+            + ".",
+            recovery_hint=(
+                "Fit sp.dml(..., model='irm') without sample_weight / cluster, "
+                "or use sp.causal_forest for clustered data."
+            ),
+        )
+    scores = np.asarray(scores, dtype=float)
+    n = len(scores)
+
+    class _N:
+        n_obs = n
+
+    mat, names = _projection_design(A, _N, context)
+    design = np.ones((n, 1)) if mat is None else np.column_stack([np.ones(n), mat])
+    beta = np.linalg.lstsq(design, scores, rcond=None)[0]
+    resid = scores - design @ beta
+    V = cluster_robust_vcov(
+        design, resid, weights=np.ones(n), clusters=None, vcov_type=vce
+    )
+    out = _coef_table(beta, V, names, alpha)
+    out = out.drop(columns=["null"]).rename(
+        columns={"ci_low": "ci_lower", "ci_high": "ci_upper"}
+    )
+    out.attrs["method"] = f"cross-fitted AIPW scores of sp.dml(model='irm'), {vce} SE"
+    out.attrs["vcov"] = pd.DataFrame(V, index=names, columns=names)
+    return out
 
 
 __all__ = ["variable_importance", "best_linear_projection", "get_scores"]

@@ -42,22 +42,12 @@ OUTPUT = PAPER_ROOT / "manuscript" / "tables" / "appendix_b_parity.tex"
 
 _HEADER = r"""ID & Method & Worst diff vs \proglang{R} & Worst diff vs \proglang{Stata} & Verdict \\"""
 
-_CAPTION = r"""\caption{Every Track A module, at \statspai{}~\StatsPAIVersion{}.
-The \code{ID} column is the module's two-digit prefix in
-\code{tests/r\_parity/}. The two difference columns report the worst
-residual gap across that module's headline rows, point estimates only;
-per-row standard errors, confidence bounds, and documented convention
-gaps are in the generated
-\code{tests/r\_parity/results/parity\_table\_3way.md}. Italic text in
-the \proglang{Stata} column is the measured reason no portable
-\proglang{Stata} artifact exists for that module, not an untested
-assumption of unavailability. \textbf{S} marks a stochastic screen: one
-draw per engine, reported but not graded (the T3 grade of that
-estimator rests on the seed study of Table~\ref{tab:forest-seed-mc}).
-All \RParityModuleCount{} modules are
-joined to a canonical \proglang{R} reference and
-\StataParityModuleCount{} additionally to a canonical or audited
-\proglang{Stata} bridge, every side reading the same CSV bytes.}"""
+_CAPTION = r"""\caption{Every parity module, at \statspai{}~\StatsPAIVersion{}.
+The \code{ID} is the module's two-digit prefix in \code{tests/r\_parity/}.
+The difference columns report the worst observed gap across that module's
+headline rows, point estimates only. ``none'' means no \proglang{Stata}
+reference exists, for a reason recorded in the archive. S marks a stochastic
+screen, one draw per engine.}"""
 
 
 #: ``compare.py`` writes tolerances as ``$\le 5.1e-08$``. Inside math mode
@@ -97,12 +87,41 @@ def _grade_row(row: str) -> str:
     return row
 
 
+def _compact_cell(cell: str) -> str:
+    """Drop a cell's parenthetical note; the per-row ledger keeps it.
+
+    89 rows with their notes ran to five and a half pages. The evidence a
+    reader needs on the page is the worst gap, so the notes stay in
+    ``parity_table_3way.md``. Nested parentheses are peeled from the inside.
+    """
+    previous = None
+    while previous != cell:
+        previous = cell
+        cell = re.sub(r"\s*\([^()]*\)", "", cell)
+    return cell.replace("{\\footnotesize}", "").strip()
+
+
+def _compact_row(row: str) -> str:
+    cells = row.rstrip().rstrip("\\\\").split(" & ")
+    if len(cells) != 5:
+        return row
+    module, method, vs_r, vs_stata, verdict = (c.strip() for c in cells)
+    if "n/a" in vs_stata:
+        vs_stata = "see text"  # module 76: Stata side exists, default rows differ
+    elif "\\emph{" in vs_stata or "\\textit{" in vs_stata:
+        vs_stata = "none"
+    return (
+        f"{module} & {_compact_cell(method)} & {_compact_cell(vs_r)} & "
+        f"{_compact_cell(vs_stata)} & {verdict} \\\\"
+    )
+
+
 def _body_rows(text: str) -> list[str]:
     """The data rows of the generated longtable, without its own frame."""
     start = text.index(r"\endlastfoot")
     end = text.index(r"\end{longtable}")
     rows = [
-        _grade_row(_tidy_numbers(line))
+        _compact_row(_grade_row(_tidy_numbers(line)))
         for line in text[start:end].splitlines()
         if line.startswith(r"\code{")
     ]
@@ -119,7 +138,7 @@ def render() -> str:
             "% Data rows come from tests/r_parity/compare.py; the caption and",
             "% table frame are authored in this script. Do not edit by hand.",
             r"\begingroup",
-            r"\footnotesize",
+            r"\scriptsize",
             r"\setlength{\tabcolsep}{2pt}",
             # longtable sets its caption in a 4in box by default, which
             # prints the caption indented into the middle of a full-width
@@ -128,8 +147,8 @@ def render() -> str:
             # L{} is main.tex's ragged-right p-column. Justified p-columns
             # stretch "rel $\le 5\times 10^{-15}$" across the full column
             # width, which reads as five separate tokens.
-            r"\begin{longtable}{@{}L{0.045\linewidth}L{0.20\linewidth}"
-            r"L{0.305\linewidth}L{0.305\linewidth}L{0.075\linewidth}@{}}",
+            r"\begin{longtable}{@{}L{0.04\linewidth}L{0.44\linewidth}"
+            r"L{0.19\linewidth}L{0.19\linewidth}L{0.07\linewidth}@{}}",
             r"\toprule",
             _HEADER,
             r"\midrule",

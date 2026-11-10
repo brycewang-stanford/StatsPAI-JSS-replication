@@ -213,7 +213,7 @@ def _cross_not_certified_claims() -> dict[str, object]:
     }
 
 
-def _track_a_verdict_claims() -> dict[str, int]:
+def _track_a_verdict_claims() -> dict[str, int | str]:
     """Headline verdicts of the Track A table (``tests/r_parity/compare.py``).
 
     The manuscript used to type the pass count by hand, which went stale
@@ -240,6 +240,21 @@ def _track_a_verdict_claims() -> dict[str, int]:
     # official port, third-party Python library, or the reference itself).
     # Verified against a call trace by test_parity_implementation_provenance.
     census = module.implementation_census(sorted(module.TOLERANCES))
+    tiers = module.tier_breakdown(sorted(module.TOLERANCES))
+    # The row-level register: every joined row above 1e-6 has an entry.
+    notes = [e for entries in module.ROW_GAP_NOTES.values() for e in entries]
+    kinds = [e["kind"] for e in notes]
+
+    def _gap(stem: str, statistics: tuple[str, ...], side: str = "R") -> str:
+        attr = "rel_est" if side == "R" else "rel_est_st"
+        worst = max(
+            getattr(row, attr)
+            for row in module.collect(stem)
+            if row.statistic in statistics and getattr(row, attr) is not None
+        )
+        mantissa, exponent = f"{worst:.1e}".split("e")
+        return f"\\({mantissa}\\times10^{{{int(exponent)}}}\\)"
+
     return {
         "RParityPassCount": passes,
         "RParityNonPassCount": len(verdicts) - passes,
@@ -249,7 +264,36 @@ def _track_a_verdict_claims() -> dict[str, int]:
         "ParityPortModuleCount": census["official_python_port"],
         "ParityThirdPartyModuleCount": census["third_party_python"],
         "ParityBackendModuleCount": census["reference_backend"],
+        "RParityMachineCount": tiers.get("machine", 0),
+        "RParityIterativeCount": tiers.get("iterative", 0),
+        "RowGapEntryCount": len(notes),
+        "RowGapModuleCount": len(module.ROW_GAP_NOTES),
+        "RowGapConventionCount": kinds.count("convention"),
+        "RowGapNumericsCount": kinds.count("reference_numerics"),
+        "RowGapStochasticCount": kinds.count("stochastic_reference"),
+        "RowGapPinnedCount": sum(bool(e.get("pinned_by")) for e in notes),
+        **_cross_language_source_split(),
+        "TrackASdidGap": _gap("12_sdid", ("att_sdid",)),
+        "TrackARddensityPGap": _gap("09_rddensity", ("test_pvalue",)),
+        "TrackARdNativeGap": _gap(
+            "06_rd", ("default_robust_est", "default_bandwidth_h")
+        ),
     }
+
+
+def _cross_language_source_split() -> dict[str, int]:
+    """Where the cross-language symbols' evidence lives: the Track A modules
+    (and tested aliases of them) versus frozen reference-parity fixtures."""
+    sys.path.insert(0, str(REPO_ROOT / "src"))
+    import statspai as sp  # noqa: PLC0415
+
+    cross = [
+        r for r in sp.parity_matrix() if r.get("status") in {"bit-exact", "aligned"}
+    ]
+    track_a = sum(r.get("source") in {"track_a", "track_a_alias"} for r in cross)
+    frozen = sum(r.get("source") == "reference_parity_frozen" for r in cross)
+    assert track_a + frozen == len(cross), "unexpected cross-language source"
+    return {"ParityTrackACrossCount": track_a, "ParityFrozenCrossCount": frozen}
 
 
 def _orig_parity_claims() -> dict[str, int]:

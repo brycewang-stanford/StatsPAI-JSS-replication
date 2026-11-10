@@ -22,11 +22,11 @@ uses :class:`~statspai.exceptions.DataInsufficient`, which is *also* a
 
 from __future__ import annotations
 
-from typing import Sequence
+from typing import Any, Dict, Iterable, Mapping, Optional, Sequence, Union
 
 import pandas as pd
 
-from .exceptions import DataInsufficient, StatsPAIError
+from .exceptions import ColumnNotFound, DataInsufficient, StatsPAIError
 
 
 def require_columns(
@@ -35,8 +35,10 @@ def require_columns(
     """Validate that ``data`` is a frame carrying every required column.
 
     A wrong type raises :class:`~statspai.exceptions.StatsPAIError`; a missing
-    column raises :class:`~statspai.exceptions.DataInsufficient` (a
-    ``ValueError`` *and* a ``StatsPAIError``) whose message contains the
+    column raises :class:`~statspai.exceptions.ColumnNotFound` (a
+    :class:`~statspai.exceptions.DataInsufficient`, hence a ``ValueError``
+    *and* a ``StatsPAIError``, with ``diagnostics["did_you_mean"]``) whose
+    message contains the
     conventional ``"Missing columns"`` phrase plus the offending names — far
     more actionable than the bare ``KeyError: "['typo'] not in index"`` pandas
     would otherwise raise, while staying back-compatible with callers that
@@ -52,14 +54,90 @@ def require_columns(
         )
     missing = [c for c in columns if c not in data.columns]
     if missing:
-        raise DataInsufficient(
-            f"{function}: Missing columns {missing} — not found in data.",
-            recovery_hint="Check the column-name arguments against "
-            f"data.columns: {list(data.columns)}.",
-            diagnostics={
-                "missing_columns": [str(c) for c in missing],
-                "available_columns": [str(c) for c in data.columns],
-            },
+        raise ColumnNotFound.from_missing(
+            missing,
+            list(data.columns),
+            message=f"{function}: Missing columns {missing} — not found in data.",
+        )
+
+
+def missing_named_columns(
+    columns: Union[Mapping[str, Any], Sequence[Any]], available: Iterable[Any]
+) -> Dict[str, Any]:
+    """``{label: column}`` for every requested column absent from ``available``.
+
+    ``columns`` is either ``{argument_label: column_or_columns}`` or a plain
+    sequence of column names (each labelled by itself).  ``None`` values are
+    skipped; a list / tuple value under ``label`` is expanded element-wise to
+    ``label[i]`` so the label says which entry of the user's list is wrong.
+    Unhashable values (an array passed where a name is also accepted) are
+    not column names and are skipped.
+    """
+    avail = set(available)
+
+    def _absent(col: Any) -> bool:
+        # arrays / Series passed in place of a name are not column names
+        try:
+            return col is not None and col not in avail
+        except TypeError:
+            return False
+
+    if isinstance(columns, Mapping):
+        items = list(columns.items())
+    else:
+        items = [(str(c), c) for c in columns]
+    missing: Dict[str, Any] = {}
+    for label, value in items:
+        if value is None:
+            continue
+        if isinstance(value, (list, tuple)):
+            for i, col in enumerate(value):
+                if _absent(col):
+                    missing[f"{label}[{i}]"] = col
+        elif _absent(value):
+            missing[str(label)] = value
+    return missing
+
+
+def check_columns(
+    data: pd.DataFrame,
+    columns: Union[Mapping[str, Any], Sequence[Any]],
+    *,
+    function: Optional[str] = None,
+    message: Optional[str] = None,
+    recovery_hint: Optional[str] = None,
+    extra_hint: Optional[str] = None,
+    extra_diagnostics: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Raise :class:`~statspai.exceptions.ColumnNotFound` for absent columns.
+
+    The column-name guard every estimator needs, with ``did_you_mean``
+    suggestions.  ``columns`` follows :func:`missing_named_columns`:
+    ``{"y": y, "treat": treat, "covariates": covariates}`` labels each
+    missing column with the argument the caller typed.
+
+    Examples
+    --------
+    >>> import pandas as pd
+    >>> from statspai._input_validation import check_columns
+    >>> from statspai.exceptions import ColumnNotFound
+    >>> df = pd.DataFrame({"wage": [1.0], "x1": [0.0]})
+    >>> try:
+    ...     check_columns(df, {"y": "wage", "covariates": ["x11"]})
+    ... except ColumnNotFound as e:
+    ...     print(e.diagnostics["did_you_mean"])
+    {'covariates[0]': 'x1'}
+    """
+    missing = missing_named_columns(columns, data.columns)
+    if missing:
+        raise ColumnNotFound.from_missing(
+            missing,
+            list(data.columns),
+            message=message,
+            recovery_hint=recovery_hint,
+            context=function,
+            extra_hint=extra_hint,
+            extra_diagnostics=extra_diagnostics,
         )
 
 

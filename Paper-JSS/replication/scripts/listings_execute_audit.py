@@ -27,7 +27,9 @@ against the live package:
   surrounding prose quotes;
 * listings that continue an earlier context declare a ``PRELUDE`` that
   reproduces exactly the objects the surrounding prose says are in
-  scope (e.g. the parity-module fixtures of Section 4.7).
+  scope;
+* listings that read a file by an archive-relative path declare it in
+  ``FIXTURES`` (the parity-module fixtures of Section 4.7).
 
 A listing that is present in the manuscript but not covered here fails
 the audit, so a newly added listing cannot bypass execution.
@@ -38,6 +40,7 @@ import io
 import json
 import os
 import re
+import shutil
 import sys
 import tempfile
 import time
@@ -65,8 +68,6 @@ OUT_MD = RESULTS_DIR / "listings_execute_audit.md"
 sys.path.insert(0, str(HERE))
 from _paths import STATSPAI_ROOT  # noqa: E402
 
-R_DATA = STATSPAI_ROOT / "tests" / "r_parity" / "data"
-
 # The sections actually compiled into main.tex.
 ACTIVE_SECTIONS = [
     "01-introduction-compact.tex",
@@ -91,7 +92,7 @@ _CARD_SESSION = (
     'ols = sp.regress("lwage ~ educ + " + " + ".join(X), data=card)\n'
     'iv = sp.iv("lwage ~ " + " + ".join(X) + " + (educ ~ nearc4)",\n'
     "           data=card)\n"
-    'dml = sp.dml(card, y="lwage", d="educ", X=X,\n'
+    'dml = sp.dml(card, y="lwage", treat="educ", covariates=X,\n'
     '             model="plr", n_folds=5, random_state=42)\n'
     'cf = sp.causal_forest("lwage ~ educ | " + " + ".join(X), data=card,\n'
     "                      n_estimators=2000, discrete_treatment=False,\n"
@@ -108,25 +109,45 @@ PRELUDE: dict[str, str] = {
     # a drift between the two shows up as a transcript mismatch.
     "lst:card-output": _CARD_SESSION,
     "lst:card-cate": _CARD_SESSION,
-    "lst:csdid": "import statspai as sp\n",
-    # The Section 4.3 transcript continues the Listing 3 session.
+    "lst:csdid": "",
+    # The Section 4.3 transcript continues the Listing 5 session.
     "lst:csdid-output": (
-        "import statspai as sp\n"
-        "mpdta = sp.datasets.mpdta()\n"
-        'cs = sp.callaway_santanna(mpdta, y="lemp", t="year",\n'
-        '                          i="countyreal", g="first_treat",\n'
-        '                          control_group="nevertreated",\n'
-        '                          estimator="reg")\n'
-        'agg = sp.aggte(cs, type="simple", random_state=0)\n'
-        'hd = sp.honest_did(cs, e=0, method="smoothness")\n'
-    ),
-    # Section 5.4: the output-level scope of the Card IV fit with HC3 errors.
-    "lst:scope": "import statspai as sp\ncard = sp.datasets.card_1995()\n",
-    "lst:fect": (
         "import pandas as pd\n"
         "import statspai as sp\n"
-        f"panel = pd.read_csv(r'{R_DATA / '86_fect.csv'}')\n"
-        f"sample = pd.read_csv(r'{R_DATA / '87_interflex.csv'}')\n"
+        'mpdta = pd.read_csv("tests/orig_parity/data/02_mpdta_original.csv")\n'
+        'cs = sp.callaway_santanna(mpdta, y="lemp", time="year",\n'
+        '                          id="countyreal", g="first_treat",\n'
+        '                          control_group="nevertreated",\n'
+        '                          estimator="reg")\n'
+        'agg = sp.aggte(cs, type="simple")\n'
+        'hd = sp.honest_did(cs, e=1, method="smoothness")\n'
+        'mpdta["post"] = ((mpdta["first_treat"] > 0) &\n'
+        '                 (mpdta["year"] >= mpdta["first_treat"])).astype(int)\n'
+        'bd = sp.bacon_decomposition(mpdta, y="lemp", treat="post",\n'
+        '                            time="year", id="countyreal")\n'
+    ),
+    "lst:typed-error": "import statspai as sp\ncard = sp.datasets.card_1995()\n",
+    # Section 4.2: the ADH specification on the original Synth::basque bytes.
+    "lst:basque": "import pandas as pd\nimport statspai as sp\n",
+    "lst:other-calls": "import statspai as sp\n",
+    # Section 5.4: the output-level scope of the Card IV fit with HC3 errors.
+    "lst:scope": "import statspai as sp\ncard = sp.datasets.card_1995()\n",
+    # Section 4.7 is self-contained: it imports and reads its own data, by
+    # the archive-relative paths registered in FIXTURES below.
+    "lst:fect": "",
+}
+
+#: Files a listing reads by a path relative to the archive root. Listings
+#: run in a temporary working directory, so each file is copied there under
+#: the same relative path the listing prints. A reader running the listing
+#: from the archive root reads the same bytes.
+FIXTURES: dict[str, tuple[str, ...]] = {
+    "lst:basque": ("tests/orig_parity/data/03_basque_original.csv",),
+    "lst:csdid": ("tests/orig_parity/data/02_mpdta_original.csv",),
+    "lst:csdid-output": ("tests/orig_parity/data/02_mpdta_original.csv",),
+    "lst:fect": (
+        "tests/r_parity/data/86_fect.csv",
+        "tests/r_parity/data/87_interflex.csv",
     ),
 }
 
@@ -139,8 +160,9 @@ EXPECTED: dict[str, str] = {
         "assert spec['limitations'], 'expected a non-empty limitations list'\n"
     ),
     "lst:fect": (
-        "assert info['staggered'] is True and info['has_reversals'] is False\n"
-        "assert bins.model_info['tests']['p_wald'] is not None\n"
+        "assert pattern == (True, False), pattern\n"
+        "assert len(att_by_period) > 0\n"
+        "assert 0.0 < p_linear < 1e-3, p_linear\n"
     ),
     "lst:motivating": (
         "import pathlib\n"
@@ -182,13 +204,17 @@ EXPECTED: dict[str, str] = {
         "assert np.isfinite(sp.cate_summary(cf).loc['Mean', 'CATE'])\n"
     ),
     "lst:csdid": (
-        "assert abs(float(agg.estimate) - (-0.0330)) < 1e-3\n"
+        "assert abs(float(agg.estimate) - (-0.03995)) < 1e-4\n"
     ),
     "lst:csdid-output": (
+        # Table of Section 4.3: at e = 1 the interval excludes zero at M = 0.
         "assert bool(hd['rejects_zero'].iloc[0])\n"
         "assert not bool(hd['rejects_zero'].iloc[-1])\n"
-        # The text quotes the continuous-search breakdown value, 0.0080.
-        "assert abs(sp.breakdown_m(cs, e=0, method='smoothness') - 0.0080) < 5e-5\n"
+        "assert abs(sp.breakdown_m(cs, e=1, method='smoothness') - 0.0014) < 5e-5\n"
+    ),
+    "lst:basque": (
+        # Row 1 of the Basque table: the ADH gap on the original data.
+        "assert abs(float(sc.estimate) - (-0.8946)) < 5e-5, sc.estimate\n"
     ),
     "lst:scope": (
         "assert scope['outputs']['estimate']['status'] == 'reference'\n"
@@ -327,6 +353,10 @@ def run_listing(label: str, body: str) -> dict[str, object]:
             import os
 
             os.chdir(tmp)
+            for rel in FIXTURES.get(label, ()):
+                target = Path(tmp) / rel
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(STATSPAI_ROOT / rel, target)
             try:
                 with redirect_stdout(buf):
                     exec(compile(source, f"<{label}>", "exec"), {"__name__": "__main__"})

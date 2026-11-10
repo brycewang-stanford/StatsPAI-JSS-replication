@@ -61,6 +61,7 @@ EXPECTED_SOURCE_DATASETS = {
     "src/statspai/datasets/data/card_1995.csv",
     "src/statspai/datasets/data/lalonde_matchit.csv",
     "src/statspai/datasets/data/lee_2008_senate.csv",
+    "src/statspai/datasets/data/nsw_psid_dw.csv",
     "src/statspai/datasets/data/nhefs.csv",
     "src/statspai/datasets/data/castle_2013.csv",
     "src/statspai/datasets/data/sasp_panel.csv",
@@ -76,7 +77,7 @@ EXPECTED_ORIGINAL_PARITY_EXTRACTS = {
     "tests/orig_parity/data/05_lee_original.csv",
     "tests/orig_parity/data/06_nhefs_ch12_ipw.csv",
 }
-EXPECTED_R_PARITY_CSV_COUNT = 91
+EXPECTED_R_PARITY_CSV_COUNT = 94  # 88 Track A + 6 Stata option-parity (3 added in 1.40.x)
 
 DATA_SOURCE_NOTES = {
     "src/statspai/datasets/data/california_prop99.csv": (
@@ -88,6 +89,10 @@ DATA_SOURCE_NOTES = {
     ),
     "src/statspai/datasets/data/lalonde_matchit.csv": (
         "Dehejia-Wahba/MatchIt Lalonde extract used by matching examples."
+    ),
+    "src/statspai/datasets/data/nsw_psid_dw.csv": (
+        "Dehejia-Wahba NSW treated sample with the PSID-1 comparison group, "
+        "returned by sp.datasets.nsw_dw(simulated=False)."
     ),
     "src/statspai/datasets/data/lee_2008_senate.csv": (
         "Public Lee-style RD Senate extract used for redistribution-safe RD."
@@ -178,6 +183,13 @@ def _classify(arcname: str) -> str:
     # both sides from the same bytes exactly as tests/r_parity/data/ is.
     if arcname.startswith("tests/stata_parity/option_parity/") and suffix == ".csv":
         return "same_byte_r_stata_fixture_csv"
+    # Stata-translation holdout inputs, read by tests/test_validation_scope.py.
+    if arcname.startswith("tests/stata_translation_holdout/") and suffix == ".csv":
+        return "reference_fixture_csv"
+    # Section 4.3: moments of the original-data case study and the R HonestDiD
+    # intervals computed from them.
+    if arcname.startswith("Paper-JSS/replication/results/ex0") and suffix == ".csv":
+        return "generated_replication_result_csv"
     if arcname.startswith("tests/reference_parity/_fixtures/") and suffix == ".csv":
         return "reference_fixture_csv"
     if arcname.startswith("tests/coverage_monte_carlo/results_b1000/"):

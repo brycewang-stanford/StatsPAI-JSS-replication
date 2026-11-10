@@ -23,9 +23,14 @@ from scipy import sparse, stats
 from scipy.sparse.linalg import lsqr
 
 from .._aliases import accepts_aliases
+from .._input_validation import check_columns, missing_named_columns
 from ..core._bootstrap import bootstrap_se as _bootstrap_se
+from ..core._call_record import records_call
+from ..core._covariates import expands_categorical_covariates as _expands_categorical
+from ..core._vcov_spec import cluster_from_vce
 from ..core.results import CausalResult
-from ..exceptions import MethodIncompatibility
+from ..exceptions import ColumnNotFound, MethodIncompatibility
+from ._arg_roles import check_unit_is_not_treatment as _check_unit_is_not_treatment
 from ._bjs_pretrends import EVENT_STUDY_CONVENTION as _EVENT_STUDY_CONVENTION
 from ._bjs_pretrends import (
     PRETREND_METHODS,
@@ -33,8 +38,12 @@ from ._bjs_pretrends import (
     symmetric_pretrend_scale,
 )
 from ._bjs_variance import bjs_se_for_target as _bjs_se
+from ._core import calendar_time_aware as _calendar_time_aware
 from ._core import drop_unusable_rows as _drop_unusable_rows
 from ._core import normalize_se_method as _normalize_se_method
+from ._validate import duplicate_unit_period_rows as _duplicate_unit_period_rows
+from ._validate import require_constant_cohort as _require_constant_cohort
+from ._validate import warn_few_treated_clusters as _warn_few_treated_clusters
 
 
 def _didimp_cluster_bootstrap(
@@ -48,6 +57,7 @@ def _didimp_cluster_bootstrap(
     n_boot: int,
     seed: int,
     weights: Optional[str] = None,
+    shift: int = 0,
 ) -> float:
     """Pairs-cluster bootstrap of the overall ATT for ``did_imputation``.
 
@@ -74,18 +84,23 @@ def _didimp_cluster_bootstrap(
             parts.append(sub)
         bd = pd.concat(parts, ignore_index=True)
         try:
-            r = did_imputation(
-                bd,
-                y=y,
-                group=group,
-                time=time,
-                first_treat=first_treat,
-                controls=ctrl,
-                horizon=None,
-                cluster="__bcl",
-                vce="none",
-                weights=weights,
-            )
+            # The sample checks already warned on the full data; a replicate
+            # repeating them (few treated clusters, ...) adds nothing.
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                r = did_imputation(
+                    bd,
+                    y=y,
+                    group=group,
+                    time=time,
+                    first_treat=first_treat,
+                    controls=ctrl,
+                    horizon=None,
+                    cluster="__bcl",
+                    vce="none",
+                    weights=weights,
+                    shift=shift,
+                )
         except Exception:
             continue  # replicate stays NaN; bootstrap_se tracks the failure
         if np.isfinite(r.estimate):
@@ -93,7 +108,30 @@ def _didimp_cluster_bootstrap(
     return _bootstrap_se(boot, label="did.imputation")
 
 
-@accepts_aliases(_strict=True, id="group", unit="group", covariates="controls")
+def _raise_missing(df: pd.DataFrame, columns: Dict[str, Any], what: str) -> None:
+    """Raise ColumnNotFound worded ``<what> 'x' not found in data.``"""
+    missing = missing_named_columns(columns, df.columns)
+    if missing:
+        first = next(iter(missing.values()))
+        raise ColumnNotFound.from_missing(
+            missing,
+            list(df.columns),
+            message=f"{what} '{first}' not found in data.",
+        )
+
+
+@records_call("did_imputation")
+@accepts_aliases(
+    _strict=True,
+    id="group",
+    unit="group",
+    covariates="controls",
+    cohort="first_treat",
+    g="first_treat",
+    seed="boot_seed",
+)
+@_calendar_time_aware(time="time", cohort="first_treat")
+@_expands_categorical("controls")
 def did_imputation(
     data: pd.DataFrame,
     y: str,
@@ -120,6 +158,8 @@ def did_imputation(
     save_weights: bool = False,
     save_residuals: bool = False,
     weights: Optional[str] = None,
+    autosample: bool = False,
+    shift: int = 0,
 ) -> CausalResult:
     """
     Borusyak, Jaravel & Spiess (2024) imputation DID estimator.
@@ -134,11 +174,18 @@ def did_imputation(
     y : str
         Outcome variable name.
     group : str
-        Unit identifier column.
+        Unit identifier column. Spell it ``id=`` (the canonical name;
+        ``unit=`` is also accepted). It is **not** the treatment
+        indicator (``sp.drdid`` used to call its 0/1 treatment group
+        ``group``; that keyword is deprecated there in favour of
+        ``treat=``), so a 0/1 column passed here is refused when the
+        cohort varies within it and flagged with an
+        ``ArgumentRoleWarning`` when it has several rows per period.
     time : str
         Time period column.
     first_treat : str
-        Column indicating the period of first treatment.
+        Cohort column: the period of first treatment. Spell it
+        ``cohort=`` (canonical; ``g=`` is also accepted).
         Use ``np.inf``, ``np.nan``, or ``0`` for never-treated units.
     controls : list of str, optional
         Continuous time-varying controls, entering the Y(0) model
@@ -167,9 +214,10 @@ def did_imputation(
             fe=['unit', 'state#year']    # unit FE + state-by-year FE
             fe=[]                        # no fixed effects at all
 
-        Levels are factorized over the whole panel, so a cell seen only
-        among treated rows still gets a column and is imputed rather than
-        silently absorbing the reference level.
+        A level carried by treated rows only (a state-year in which every
+        unit is treated, under ``'state#year'``) has no untreated row to
+        estimate it, so those rows cannot be imputed: the call raises, as
+        Stata does, and ``autosample=True`` drops them.
     horizon : list of int, optional
         Relative time periods for event study estimates,
         e.g. ``list(range(-5, 6))``. If ``None``, reports only the
@@ -228,7 +276,8 @@ def did_imputation(
     n_boot : int, default 199
         Number of cluster-bootstrap replications when ``vce='bootstrap'``.
     boot_seed : int, default 0
-        Seed for the cluster bootstrap (deterministic results).
+        Seed for the cluster bootstrap (deterministic results). Also
+        accepted as ``seed=``.
     pretrends : int, optional
         Stata ``did_imputation, pretrends(k)``: estimate the ``k``
         pre-treatment placebo coefficients (horizons ``-k .. -1``, added
@@ -274,11 +323,40 @@ def did_imputation(
         composition is stable across ``k`` (no cohort churn).
         Never-treated units are always kept.  Requires ``horizon`` (or
         ``pretrends``).  Warns with the number of units dropped.
+    autosample : bool, default False
+        Stata ``did_imputation, autosample``. A treated observation whose
+        unit (or period) has no untreated observation has no imputable
+        fixed effect; with ``fe=``, the same holds for a level of any of
+        the fixed effects named there. By default that is an error, as in
+        Stata; with
+        ``autosample=True`` those observations are dropped from the
+        estimation sample, with a warning and the count in
+        ``model_info['n_obs_autosample_dropped']``. Typical case: units
+        treated from the first period of the panel.
+    shift : int, default 0
+        Stata ``did_imputation, shift()``: allow for anticipation by
+        treating every treated unit as if treatment began ``shift``
+        periods earlier. Rows from ``first_treat - shift`` on leave the
+        untreated sample and count as treated, and event-study horizons are
+        measured from the **shifted** date, as in Stata: with ``shift=3``,
+        horizon ``1`` is the anticipation effect two periods before actual
+        treatment and horizon ``8`` is five periods after it. The overall
+        ATT averages over the anticipation periods too. Use
+        ``pretrends=`` rather than ``shift`` to test for pre-trends.
     min_n : int, optional
         Stata ``did_imputation, minn(#)``: drop event-study horizons
         with fewer than ``min_n`` treated observations (they are noisy
         and dominated by a single cohort).  Dropped horizons are listed
-        in a warning and excluded from the pre-trend test.
+        in a warning and excluded from the pre-trend test.  ``0`` keeps
+        every horizon, as Stata's ``minn(0)`` does, and is the same as
+        ``None``; unlike Stata, whose default is ``minn(30)``, nothing is
+        dropped unless ``min_n`` is given.  Stata counts the *effective*
+        number of treated observations (the inverse Herfindahl index of
+        the coefficient's weights), which equals the count used here for
+        an unweighted horizon and is smaller with ``weights=``.
+
+        .. versionchanged:: 1.40.1
+           ``min_n=0`` used to raise.
     hetby : str, optional
         Stata ``did_imputation, hetby(varname)``: report heterogeneous
         overall ATTs by the levels of a **time-invariant** unit-level
@@ -331,8 +409,8 @@ def did_imputation(
     ...                      'first_treat': first})
     >>> df = pd.DataFrame(rows)
     >>> result = sp.did_imputation(
-    ...     data=df, y='wage', group='county', time='year',
-    ...     first_treat='first_treat', horizon=list(range(-5, 6)),
+    ...     data=df, y='wage', id='county', time='year',
+    ...     cohort='first_treat', horizon=list(range(-5, 6)),
     ... )
     >>> bool(result.estimate > 0)
     True
@@ -357,15 +435,24 @@ def did_imputation(
     designs: Robust and efficient estimation. *Review of Economic Studies*.
     [@borusyak2024revisiting]
     """
+    vce, cluster = cluster_from_vce(
+        vce, cluster, function="did_imputation", native="analytic"
+    )
     # ── Input validation ─────────────────────────────────────────── #
     df = data.copy()
     control_names = list(controls or [])
-    for col in [y, group, time, first_treat]:
-        if col not in df.columns:
-            raise ValueError(f"Column '{col}' not found in data.")
-    for col in control_names:
-        if col not in df.columns:
-            raise ValueError(f"Control column '{col}' not found in data.")
+    check_columns(
+        df,
+        {
+            "y": y,
+            "group": group,
+            "time": time,
+            "first_treat": first_treat,
+            "cluster": cluster,
+        },
+        function="sp.did_imputation",
+    )
+    _raise_missing(df, {"controls": control_names}, "Control column")
 
     if se_method is not None:
         if vce != "analytic":
@@ -387,9 +474,7 @@ def did_imputation(
         ("unit_covariates", unit_cov_names),
         ("time_covariates", time_cov_names),
     ):
-        for col in names:
-            if col not in df.columns:
-                raise ValueError(f"{label} column '{col}' not found in data.")
+        _raise_missing(df, {label: names}, f"{label} column")
         overlap = sorted(set(names) & set(control_names))
         if overlap:
             raise ValueError(
@@ -414,6 +499,33 @@ def did_imputation(
         function="did_imputation",
         reset_index=False,
     )
+    # rows the fit can use (n_obs counted the dropped missing rows too)
+    n_usable = len(df)
+    # group= is the unit id here (sp.drdid's deprecated group= is the treatment);
+    # a swapped call is refused (cohort varies within it) or flagged.
+    _check_unit_is_not_treatment(
+        df, unit=group, time=time, cohort=first_treat, function="did_imputation"
+    )
+    _require_constant_cohort(
+        df, unit=group, cohort=first_treat, function="did_imputation"
+    )
+    _duplicate_unit_period_rows(df, unit=group, time=time, function="did_imputation")
+    if isinstance(shift, bool) or not isinstance(shift, (int, np.integer)):
+        raise MethodIncompatibility(
+            f"shift must be a non-negative int, got {shift!r}.",
+            recovery_hint="Pass shift=0 (no anticipation) or a positive int.",
+            diagnostics={"shift": repr(shift)},
+        )
+    shift = int(shift)
+    if shift < 0:
+        raise MethodIncompatibility(
+            f"shift must be >= 0, got {shift}.",
+            recovery_hint=(
+                "shift moves treatment earlier to allow for anticipation; "
+                "pass a positive int, or 0 for none."
+            ),
+            diagnostics={"shift": shift},
+        )
 
     if vce not in ("analytic", "bootstrap", "none"):
         raise ValueError(f"vce must be 'analytic', 'bootstrap', or 'none'; got {vce!r}")
@@ -422,9 +534,11 @@ def did_imputation(
 
     if weights is not None:
         if weights not in df.columns:
-            raise MethodIncompatibility(
-                f"weights column '{weights}' not found in data.",
-                diagnostics={"weights": weights},
+            raise ColumnNotFound.from_missing(
+                {"weights": weights},
+                list(df.columns),
+                message=f"weights column '{weights}' not found in data.",
+                extra_diagnostics={"weights": weights},
             )
         if project is not None:
             raise MethodIncompatibility(
@@ -462,9 +576,25 @@ def did_imputation(
         # Placebo horizons -k..-1 join whatever the caller asked for.
         horizon = sorted(set(horizon or []) | set(range(-pretrends, 0)))
     if min_n is not None:
-        if isinstance(min_n, bool) or int(min_n) < 1:
-            raise ValueError(f"min_n must be a positive integer, got {min_n!r}")
-        min_n = int(min_n)
+        if (
+            isinstance(min_n, bool)
+            or not isinstance(min_n, (int, np.integer, float, np.floating))
+            or not float(min_n).is_integer()
+            or min_n < 0
+        ):
+            raise MethodIncompatibility(
+                f"did_imputation: min_n must be a non-negative integer, got "
+                f"{min_n!r}.",
+                recovery_hint=(
+                    "Pass the minimum number of treated observations a "
+                    "horizon needs (Stata minn(#)); min_n=0 or None keeps "
+                    "every horizon."
+                ),
+                diagnostics={"min_n": repr(min_n)},
+            )
+        # minn(0) suppresses nothing: the same fit as no threshold at all.
+        min_n = int(min_n) or None
+    if min_n is not None:
         if horizon is None:
             raise ValueError(
                 "min_n filters event-study horizons — pass horizon= (or "
@@ -477,7 +607,11 @@ def did_imputation(
         )
     if hetby is not None:
         if hetby not in df.columns:
-            raise ValueError(f"hetby column '{hetby}' not found in data.")
+            raise ColumnNotFound.from_missing(
+                {"hetby": hetby},
+                list(df.columns),
+                message=f"hetby column '{hetby}' not found in data.",
+            )
         het_nuniq = df.groupby(group)[hetby].nunique(dropna=False)
         if (het_nuniq > 1).any():
             bad = het_nuniq[het_nuniq > 1].index.tolist()[:5]
@@ -492,7 +626,9 @@ def did_imputation(
     ft = df[first_treat].copy().astype(float)
     ft = ft.replace(0, np.inf)
     ft = ft.fillna(np.inf)
-    df["_ft"] = ft
+    # shift(): pretend treatment began `shift` periods earlier (Stata's
+    # K = t - Ei + shift); never-treated (inf) stay never-treated.
+    df["_ft"] = ft - shift
 
     df["_treated_obs"] = df[time].astype(float) >= df["_ft"]
     df["_never_treated"] = np.isinf(df["_ft"])
@@ -537,8 +673,56 @@ def did_imputation(
             keep_mask = (~ev_mask) | df[group].isin(keep_units).values
             df = df[keep_mask].copy()
 
+    # ── Optional autosample (Stata: autosample) ─────────────────── #
+    # A treated row needs an untreated row in its unit and in its period
+    # for both fixed effects to be imputable.
+    n_autosample_dropped = 0
+    if not isinstance(autosample, bool):
+        raise MethodIncompatibility(
+            f"autosample must be True or False, got {autosample!r}"
+        )
+    fe_specs = _fe_spec_columns(df, fe, group, time)
+    if autosample:
+        bad = _unimputable_treated_rows(df, fe_specs)
+        n_autosample_dropped = int(bad.sum())
+        if n_autosample_dropped:
+            warnings.warn(
+                f"did_imputation: autosample dropped {n_autosample_dropped} "
+                "treated observation(s) whose unit or period has no untreated "
+                "observation (fixed effect not imputable); the estimates "
+                "refer to the remaining sample.",
+                UserWarning,
+                stacklevel=2,
+            )
+            df = df[~bad].copy()
+    elif fe is not None:
+        # ⚠️ correctness fix (2026-10-15): a level of a custom fixed effect
+        # carried by treated rows only (a state-year in which every county
+        # is treated, under fe=['unit', 'state#year']) has no untreated row
+        # to estimate it. The design gave it no column, so those rows were
+        # imputed at the reference level's effect: on mpdta with
+        # fe=['countyreal', 'state#year'] the ATT came back -1.118 with no
+        # warning, where Stata did_imputation stops ("Could not impute FE
+        # for 291 observations"). The default two-way model is checked
+        # below with its own messages.
+        bad = _unimputable_treated_rows(df, fe_specs)
+        if bad.any():
+            raise ValueError(
+                f"did_imputation: could not impute the fixed effects of "
+                f"{int(bad.sum())} treated observation(s): a level of "
+                f"fe={list(fe)} that they carry has no untreated observation "
+                "(Stata did_imputation stops here too). Pass autosample=True "
+                "to drop those observations, or use coarser fixed effects."
+            )
+
     n_treated = df["_treated_obs"].sum()
     n_untreated = df["_untreated_obs"].sum()
+    _warn_few_treated_clusters(
+        df,
+        treated_rows=df["_treated_obs"].to_numpy(),
+        cluster=cluster,
+        function="did_imputation",
+    )
 
     if n_treated == 0:
         raise ValueError("No treated observations found. Check 'first_treat' column.")
@@ -569,11 +753,18 @@ def did_imputation(
     treated_mask = df["_treated_obs"].values
     treated_uids = np.unique(df.loc[treated_mask, "_uid"].values)
     treated_tids = np.unique(df.loc[treated_mask, "_tid"].values)
+    # The two-way default model needs both effects of every treated row. A
+    # custom fe= was checked level by level above, and may not carry a unit
+    # or a period effect at all (fe=['year'], fe=[]).
     missing_units = [
-        unit_ids[int(ui)] for ui in treated_uids if unit_adj_count[int(ui)] <= 0
+        unit_ids[int(ui)]
+        for ui in treated_uids
+        if fe is None and unit_adj_count[int(ui)] <= 0
     ]
     missing_times = [
-        time_ids[int(ti)] for ti in treated_tids if time_resid_count[int(ti)] <= 0
+        time_ids[int(ti)]
+        for ti in treated_tids
+        if fe is None and time_resid_count[int(ti)] <= 0
     ]
     if missing_units:
         preview = ", ".join(map(str, missing_units[:5]))
@@ -582,6 +773,8 @@ def did_imputation(
             "every treated unit to estimate its unit fixed effect. "
             f"Missing untreated history for unit(s): {preview}"
             + (" ..." if len(missing_units) > 5 else "")
+            + ". Pass autosample=True to drop those observations (Stata "
+            "did_imputation, autosample)."
         )
     if missing_times:
         preview = ", ".join(map(str, missing_times[:5]))
@@ -726,6 +919,7 @@ def did_imputation(
             n_boot,
             boot_seed,
             weights=weights,
+            shift=shift,
         )
         if np.isfinite(se_boot):
             se_att = se_boot
@@ -861,6 +1055,8 @@ def did_imputation(
                 rel_time_untreated=rel_untreated,
                 cluster_untreated=untreated[cluster].to_numpy(),
                 n_unit_columns=int(len(np.unique(uid_u)) - 1),
+                unit_untreated=uid_u,
+                time_untreated=untreated[time].to_numpy(),
                 leads=requested_leads,
                 alpha=alpha,
                 weights_untreated=(
@@ -869,25 +1065,26 @@ def did_imputation(
                     else None
                 ),
             )
-            _lead_vcov = pre_frame.attrs.get("vcov")
-            if _lead_vcov is not None:
+            _lead_scores = pre_frame.attrs.get("scores")
+            if _lead_scores is not None:
                 # The leads come from a separate auxiliary regression on the
-                # untreated sample; their covariance with the imputation
-                # horizons is not produced by that construction (nor by Stata
-                # did_imputation), so the joint matrix is block diagonal and
-                # flagged as such.
+                # untreated sample and the horizons from the imputation, but
+                # both are linear in the outcome: their cross-covariance is
+                # the sum over clusters of the products of their cluster
+                # scores, which is how Stata did_imputation builds e(V)
+                # (matrix accum of the horizon and pre-trend scores). Through
+                # 1.39 this block was left at zero and flagged
+                # block-diagonal, so sp.honest_did fell back to its
+                # worst-case-bias interval on these fits.
                 _leads = [int(k) for k in pre_frame["relative_time"]]
-                _post = (
-                    event_study_vcov if event_study_vcov is not None else pd.DataFrame()
+                _cols = [_lead_scores[k].rename(k) for k in _leads] + [
+                    es_scores[k].rename(k) for k in _kept
+                ]
+                _S = pd.concat(_cols, axis=1).fillna(0.0).to_numpy()
+                _labels = _leads + _kept
+                event_study_vcov = pd.DataFrame(
+                    _S.T @ _S, index=_labels, columns=_labels
                 )
-                _labels = _leads + list(_post.index)
-                _full = np.zeros((len(_labels), len(_labels)))
-                _nl = len(_leads)
-                _full[:_nl, :_nl] = np.asarray(_lead_vcov, dtype=float)
-                if len(_post):
-                    _full[_nl:, _nl:] = _post.to_numpy()
-                event_study_vcov = pd.DataFrame(_full, index=_labels, columns=_labels)
-                event_study_vcov.attrs["block_diagonal"] = True
             event_study_df = (
                 pd.concat([pre_frame, event_study_df], ignore_index=True)
                 .sort_values("relative_time")
@@ -954,9 +1151,7 @@ def did_imputation(
     project_df = None
     if project is not None:
         project_names = list(project)
-        for col in project_names:
-            if col not in df.columns:
-                raise ValueError(f"project column '{col}' not found in data.")
+        _raise_missing(df, {"project": project_names}, "project column")
         if hetby is not None:
             raise ValueError(
                 "project= and hetby= cannot be combined: they are two "
@@ -1049,7 +1244,18 @@ def did_imputation(
         "cluster_var": cluster,
         "vce": vce,
         "weights": weights,
+        # The Y(0) specification that was fitted, recorded for
+        # sp.validation_scope (which reads, never infers, the configuration).
+        "y0_fe": _y0_fe_label(fe, group, time),
+        "y0_covariates": _y0_covariates_label(
+            has_controls, unit_cov_names, time_cov_names
+        ),
+        "horizon_requested": horizon is not None,
     }
+    if vce == "bootstrap":
+        # The only stochastic step; recorded so the result card can say
+        # whether the SE is reproducible.
+        model_info["boot_seed"] = boot_seed
 
     if has_controls:
         model_info["controls"] = control_names
@@ -1072,6 +1278,11 @@ def did_imputation(
     if balanced:
         model_info["balanced"] = True
         model_info["n_units_dropped_balance"] = n_units_balanced_out
+    if autosample:
+        model_info["autosample"] = True
+        model_info["n_obs_autosample_dropped"] = n_autosample_dropped
+    if shift:
+        model_info["shift"] = shift
     if min_n is not None:
         model_info["min_n"] = min_n
     if hetby_df is not None:
@@ -1100,7 +1311,7 @@ def did_imputation(
         pvalue=pvalue_att,
         ci=ci_att,
         alpha=alpha,
-        n_obs=len(data),
+        n_obs=n_usable,
         detail=event_study_df,
         model_info=model_info,
         _citation_key="did_imputation",
@@ -1127,6 +1338,7 @@ def did_imputation(
                 "save_weights": save_weights,
                 "save_residuals": save_residuals,
                 "weights": weights,
+                "shift": shift,
             },
             data=data,
             overwrite=False,
@@ -1141,6 +1353,38 @@ def did_imputation(
 # ══════════════════════════════════════════════════════════════════════
 
 
+def _y0_fe_label(fe: Optional[Sequence[str]], group: str, time: str) -> str:
+    """``unit_time`` (the default), ``time``, ``none``, or ``custom``."""
+    if fe is None:
+        return "unit_time"
+    spec = [str(f) for f in fe]
+    if not spec:
+        return "none"
+    if sorted(spec) == sorted([group, time]):
+        return "unit_time"
+    if spec == [time]:
+        return "time"
+    return "custom"
+
+
+def _y0_covariates_label(
+    has_controls: bool, unit_cov_names: Sequence[str], time_cov_names: Sequence[str]
+) -> str:
+    """Which covariate block entered Y(0): one kind, ``none`` or ``mixed``."""
+    kinds = [
+        name
+        for name, present in (
+            ("controls", has_controls),
+            ("unit_covariates", bool(unit_cov_names)),
+            ("time_covariates", bool(time_cov_names)),
+        )
+        if present
+    ]
+    if not kinds:
+        return "none"
+    return kinds[0] if len(kinds) == 1 else "mixed"
+
+
 def _ols_coef(X: np.ndarray, y: np.ndarray) -> np.ndarray:
     """OLS coefficients via least squares. Returns empty array if no regressors."""
     if X.shape[1] == 0:
@@ -1149,6 +1393,53 @@ def _ols_coef(X: np.ndarray, y: np.ndarray) -> np.ndarray:
         return np.asarray(np.linalg.lstsq(X, y, rcond=None)[0], dtype=float)
     except np.linalg.LinAlgError:
         return np.zeros(X.shape[1])
+
+
+def _fe_spec_columns(
+    df: pd.DataFrame, fe: Optional[Sequence[str]], group: str, time: str
+) -> List[List[str]]:
+    """The columns of each fixed effect of the Y(0) model.
+
+    ``fe=None`` is the two-way ``[[group], [time]]``; an entry ``'a#b'`` is
+    the cell ``['a', 'b']``. Column names are checked as in
+    :func:`_build_fe_blocks`.
+    """
+    if fe is None:
+        return [[group], [time]]
+    out: List[List[str]] = []
+    for spec in fe:
+        if not isinstance(spec, str) or not spec.strip():
+            raise ValueError(
+                f"fe entries must be non-empty strings, got {spec!r}. Use "
+                "'state' for a single factor or 'state#year' for the "
+                "interacted cell."
+            )
+        parts = [p.strip() for p in spec.split("#") if p.strip()]
+        missing = [p for p in parts if p not in df.columns]
+        if missing:
+            raise ColumnNotFound.from_missing(
+                {"fe": spec} if len(parts) == 1 else missing,
+                list(df.columns),
+                message=f"fe='{spec}' names column(s) {missing} that are not "
+                f"in the data. Available: {sorted(df.columns)[:12]}...",
+            )
+        out.append(parts)
+    return out
+
+
+def _unimputable_treated_rows(
+    df: pd.DataFrame, fe_specs: Sequence[Sequence[str]]
+) -> pd.Series:
+    """Treated rows carrying a fixed-effect level no untreated row has."""
+    untr = df["_untreated_obs"].to_numpy(dtype=bool)
+    bad = np.zeros(len(df), dtype=bool)
+    for cols in fe_specs:
+        key = pd.MultiIndex.from_arrays([df[c].to_numpy() for c in cols])
+        codes, _ = pd.factorize(key)
+        seen = np.zeros(int(codes.max()) + 1 if len(codes) else 0, dtype=bool)
+        seen[codes[untr]] = True
+        bad |= ~seen[codes]
+    return pd.Series(bad & df["_treated_obs"].to_numpy(dtype=bool), index=df.index)
 
 
 def _build_fe_blocks(
@@ -1165,12 +1456,11 @@ def _build_fe_blocks(
     requests in Stata.
 
     Levels are factorized over the **full** panel, not the untreated
-    subsample, so that a level appearing only among treated rows still
-    receives a column and its Y(0) is imputed rather than silently taking
-    the reference level's value. Levels never seen untreated end up
-    unidentified; ``lsqr`` returns the minimum-norm solution there, and
-    the caller's untreated-coverage check is what rejects the genuinely
-    unimputable cases.
+    subsample, so codes are comparable between the untreated fit and the
+    all-rows prediction. A level never seen untreated gets no column; the
+    caller rejects (or, under ``autosample``, drops) the treated rows that
+    carry one before the fit (``_unimputable_treated_rows``), since they
+    would otherwise be imputed at the reference level's effect.
 
     Returns ``(blocks, codes_over_full_panel)`` where each block is
     ``(name, codes_on_untreated, n_levels)``.
@@ -1187,9 +1477,11 @@ def _build_fe_blocks(
         parts = [p.strip() for p in spec.split("#") if p.strip()]
         missing = [p for p in parts if p not in df.columns]
         if missing:
-            raise ValueError(
-                f"fe='{spec}' names column(s) {missing} that are not in the "
-                f"data. Available: {sorted(df.columns)[:12]}..."
+            raise ColumnNotFound.from_missing(
+                {"fe": spec} if len(parts) == 1 else missing,
+                list(df.columns),
+                message=f"fe='{spec}' names column(s) {missing} that are not "
+                f"in the data. Available: {sorted(df.columns)[:12]}...",
             )
         # Factorize the tuple of levels over the full panel so codes are
         # comparable between the untreated fit and the all-rows prediction.

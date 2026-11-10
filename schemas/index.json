@@ -1,8 +1,8 @@
 {
   "counts": {
-    "agent_cards": 422,
-    "functions": 1255,
-    "tools": 579
+    "agent_cards": 1026,
+    "functions": 1216,
+    "tools": 738
   },
   "files": [
     "tools.json",
@@ -11,5 +11,5 @@
     "result.schema.json"
   ],
   "schema_version": "1",
-  "statspai_version": "1.32.0"
+  "statspai_version": "1.40.2"
 }

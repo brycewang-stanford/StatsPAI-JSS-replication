@@ -75,7 +75,6 @@ _REQUIRED_DISCLOSURE_TEMPLATES = {
         "release \\StatsPAIVersion{}",
     ],
     "Paper-JSS/manuscript/sections/appendix.tex": [
-        "forest headline moved to the \\pkg{grf} AIPW estimand",
     ],
     "Paper-JSS/manuscript/sections/08-computational-details-compact.tex": [
         "release \\StatsPAIVersion{}",
@@ -93,7 +92,7 @@ _REQUIRED_DISCLOSURE_TEMPLATES = {
         "cites the JOSS paper explicitly",
         "{V}",
     ],
-    "Paper-JSS/REVIEWER-HARDENING-AUDIT.md": [
+    "Paper-JSS/RELEASE-CHECKLIST.md": [
         "tagged {V} release",
         "source_snapshot_manifest",
     ],
@@ -313,7 +312,7 @@ def _check_misleading_patterns(failures: list[str]) -> None:
         "Paper-JSS/manuscript/sections/08-computational-details-compact.tex",
         "Paper-JSS/README.md",
         "Paper-JSS/cover-letter.md",
-        "Paper-JSS/REVIEWER-HARDENING-AUDIT.md",
+        "Paper-JSS/RELEASE-CHECKLIST.md",
     ]
     for rel in files:
         if withheld_editor_doc(rel):

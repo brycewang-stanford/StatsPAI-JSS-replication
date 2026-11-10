@@ -19,12 +19,14 @@ cases.
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+import warnings
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 import pandas as pd
 
-from ..exceptions import MethodIncompatibility
+from ..exceptions import DataInsufficient, MethodIncompatibility
+from ._psd import psd_diagnostics, se_from_vcov
 from .wild_bootstrap import _wild_weight_matrix
 
 
@@ -67,7 +69,31 @@ def _iv_cluster_vcov(
         moments_c = (AX[idx] * resid[idx, None]).sum(axis=0)
         meat += np.outer(moments_c, moments_c)
     correction = (n_clusters / (n_clusters - 1)) * ((n - 1) / (n - k))
-    return correction * bread @ meat @ bread
+    return np.asarray(correction * bread @ meat @ bread)
+
+
+def _two_way_se(V: np.ndarray, names: List[str]) -> np.ndarray:
+    """Standard errors from the raw two-way matrix; ``nan`` where negative.
+
+    The inclusion-exclusion matrix is not positive semi-definite in finite
+    samples and can carry negative variances. ``ivreg2`` reports those
+    standard errors as missing. Through 1.39.6 they were clamped to 0, which
+    reads as infinite precision (t = inf, p = 0).
+    """
+    diag = psd_diagnostics(V)
+    se = np.sqrt(np.where(diag["negative_mask"], np.nan, np.maximum(diag["diag"], 0)))
+    if diag["n_negative"]:
+        bad = [str(names[i]) for i in np.flatnonzero(diag["negative_mask"])]
+        warnings.warn(
+            "The two-way clustered 2SLS covariance has negative variances for "
+            f"{bad}; their standard errors are reported as nan, as ivreg2 "
+            "reports them as missing. sp.iv(formula, data, cluster=[a, b]) "
+            "sets the negative eigenvalues to zero (Cameron, Gelbach and "
+            "Miller 2011; fixest's default) and gives finite standard errors.",
+            RuntimeWarning,
+            stacklevel=3,
+        )
+    return np.asarray(se)
 
 
 def iv_twoway_vcov(
@@ -129,7 +155,7 @@ def iv_twoway_vcov(
     g_min = min(g1, g2)
     corr = (g_min / (g_min - 1)) * ((n - 1) / (n - k))
     V = corr * bread @ meat @ bread
-    se = pd.Series(np.sqrt(np.maximum(np.diag(V), 0)), index=names)
+    se = pd.Series(_two_way_se(V, names), index=names)
     return {
         "vcov": V,
         "std_errors": se,
@@ -259,8 +285,61 @@ def iv_conley_vcov(
     score = x_hat * resid[:, None]
     core = bread @ (score.T @ weig @ score) @ bread
     vcov = 0.5 * (core + core.T)  # _makesymmetric
-    se = pd.Series(np.sqrt(np.maximum(np.diag(vcov), 0)), index=names)
+    # The uniform kernel is not PSD: a negative variance is nan (acreg: "."),
+    # not 0. Through 1.39.6 it was clamped to 0 (t = inf, p = 0).
+    se = pd.Series(
+        se_from_vcov(vcov, names, estimator="Conley spatial HAC for 2SLS"),
+        index=names,
+    )
     return {"vcov": vcov, "std_errors": se, "var_names": names}
+
+
+def _absorber(fe_codes: Any) -> Any:
+    """Residualise columns on the fixed effects with these codes (identity
+    when there are none)."""
+    if not fe_codes:
+        return lambda M: M
+    from .wild_bootstrap import absorb_columns
+
+    codes = [np.asarray(c, dtype=np.int64) for c in fe_codes]
+    return lambda M: absorb_columns(M, codes)
+
+
+def _check_row_alignment(result: Any, data: pd.DataFrame, y: np.ndarray) -> None:
+    """Refuse ``data`` whose rows are not the fit's rows in the fit's order.
+
+    Only the length used to be checked, so a shuffled frame
+    (``df.sample(frac=1)``) paired every residual with another row's
+    cluster and moved the p-value silently (2026-10-20 probe). The stored
+    sample index decides when the fit recorded one; otherwise the outcome
+    column must reproduce the stored outcome (unweighted fits only reach
+    here).
+    """
+    di = getattr(result, "data_info", None) or {}
+    kept = di.get("sample_index")
+    if kept is not None and len(kept) == len(data):
+        ok = bool(pd.Index(kept).equals(data.index))
+    else:
+        dep = di.get("dependent_var") or getattr(result, "model_info", {}).get(
+            "dependent_var"
+        )
+        if not isinstance(dep, str) or dep not in data.columns:
+            return  # nothing to compare against; the length check stands
+        if di.get("iv", {}).get("fe_codes"):
+            return  # residualised outcome; no raw column to compare
+        try:
+            col = data[dep].to_numpy(dtype=float)
+        except (TypeError, ValueError):
+            return
+        ok = bool(np.allclose(col, y, rtol=1e-10, atol=1e-12, equal_nan=False))
+    if not ok:
+        raise MethodIncompatibility(
+            "iv_wild_bootstrap: the rows of `data` are not the rows of the "
+            "fit in the fit's order, so the cluster labels would be paired "
+            "with other observations' residuals.",
+            recovery_hint="Pass the same frame (same row order, same rows) "
+            "that the IV model was fitted on.",
+        )
 
 
 def iv_wild_bootstrap(
@@ -294,6 +373,43 @@ def iv_wild_bootstrap(
         endogenous regressor on the instruments **and** the restricted
         structural residual, exploiting the u-v correlation). If False, use the
         plain restricted reduced form (projection on instruments only).
+
+    Returns
+    -------
+    dict
+        ``beta_hat``, ``se_cluster``, ``t_stat``, ``p_boot`` (symmetric,
+        strict inequality as in ``boottest``), ``ci_boot`` (the test-inversion
+        confidence set), ``t_distribution``, ``n_clusters``, ``n_obs``,
+        ``n_boot`` (``2**G`` when the Rademacher grid is enumerated),
+        ``enumerated``, ``weight_type`` and ``method`` (``'WRE'`` /
+        ``'WUR'``).
+
+    Notes
+    -----
+    After ``sp.feols`` with absorbed fixed effects and an IV part, the
+    stored columns are residualised on the effects and each bootstrap draw
+    is residualised again, so the bootstrap is that of the model with the
+    effects as dummies. ``sp.wild_cluster_boot`` routes 2SLS results here.
+
+    Examples
+    --------
+    >>> import numpy as np, pandas as pd
+    >>> import statspai as sp
+    >>> rng = np.random.default_rng(0)
+    >>> n, g = 400, 12
+    >>> firm = rng.integers(0, g, n)
+    >>> z = rng.normal(size=n)
+    >>> u = rng.normal(size=g)[firm] + rng.normal(size=n)
+    >>> d = 0.6 * z + 0.5 * u + rng.normal(size=n)
+    >>> df = pd.DataFrame({"y": 1 + 0.3 * d + u, "d": d, "z": z, "firm": firm})
+    >>> fit = sp.ivreg("y ~ (d ~ z)", data=df, cluster="firm")
+    >>> out = sp.iv_wild_bootstrap(fit, df, "firm", "d", n_boot=199, seed=1)
+    >>> bool(0.0 <= out["p_boot"] <= 1.0)
+    True
+
+    References
+    ----------
+    roodman2019fast
     """
     iv = getattr(result, "data_info", {}).get("iv")
     _reject_weighted(iv)
@@ -327,15 +443,28 @@ def iv_wild_bootstrap(
             "iv_wild_bootstrap needs the cluster column row-aligned to the "
             "fitted sample with no missing values."
         )
+    _check_row_alignment(result, data, y)
     cl_codes = pd.Categorical(cl_series).codes
     n_clusters = int(cl_codes.max()) + 1
+    if n_clusters < 2:
+        raise DataInsufficient(
+            f"iv_wild_bootstrap: {cluster!r} has one cluster; the wild "
+            "cluster bootstrap needs at least two.",
+            recovery_hint="Cluster on a coarser-than-one variable with two or "
+            "more groups, or use a heteroskedasticity-robust test.",
+        )
 
     rng = np.random.default_rng(seed)
+    # Absorbed fixed effects (sp.feols IV): the stored columns are already
+    # residualised on them, but a bootstrap draw is not -- the wild weights
+    # vary by cluster, not by fixed-effect level -- so each draw is
+    # residualised again, as the model with the effects as dummies would.
+    absorb = _absorber(iv.get("fe_codes"))
 
     # --- projection / 2SLS bread (instruments are fixed across bootstrap) ---
     P_W = W @ np.linalg.solve(W.T @ W, W.T)  # A = P_W for kappa = 1 (2SLS)
 
-    def _fit(Xmat: np.ndarray, yvec: np.ndarray):
+    def _fit(Xmat: np.ndarray, yvec: np.ndarray) -> Any:
         AX = P_W @ Xmat
         bread = np.linalg.inv(Xmat.T @ AX)
         beta = bread @ (AX.T @ yvec)
@@ -346,59 +475,119 @@ def iv_wild_bootstrap(
     beta_hat, V_hat = _fit(X, y)
     se = float(np.sqrt(max(V_hat[test_idx, test_idx], 1e-20)))
     t_obs = (beta_hat[test_idx] - beta0) / se if se > 0 else 0.0
-
-    # --- restricted estimation under H0: beta_test = beta0 ---
-    # Fix the tested coefficient and re-estimate the rest by 2SLS (the *other*
-    # endogenous regressors stay endogenous), giving the restricted structural
-    # residual u_tilde. With a single endogenous regressor `Xo` is all-exogenous
-    # and this 2SLS reduces to OLS.
-    y_tilde = y - beta0 * X[:, test_idx]
     other = [j for j in range(k) if j != test_idx]
     Xo = X[:, other]
     AXo = P_W @ Xo
-    g = np.linalg.solve(Xo.T @ AXo, AXo.T @ y_tilde)
-    u_tilde = y_tilde - Xo @ g
-
-    # --- restricted reduced form for every endogenous regressor ---
-    # Efficient: regress each endogenous variable on the instruments AND the
-    # restricted structural residual (exploiting the u-v correlation). The
-    # instrument-explained part is the bootstrap base; the remainder is
-    # wild-resampled with the *same* weight as u_tilde.
     n_w = W.shape[1]
-    rf_base: Dict[int, np.ndarray] = {}
-    rf_resid: Dict[int, np.ndarray] = {}
-    wd = np.column_stack([W, u_tilde]) if efficient else W
-    for e in endog_cols:
-        if efficient:
-            coef = np.linalg.lstsq(wd, X[:, e], rcond=None)[0]
-            d_base = W @ coef[:n_w]
-        else:
-            d_base = P_W @ X[:, e]
-        rf_base[e] = d_base
-        rf_resid[e] = X[:, e] - d_base
 
-    # --- bootstrap ---
     # With Rademacher weights and 2**G <= n_boot every sign vector is used
     # exactly once (the boottest / fwildclusterboot rule), so the bootstrap
-    # distribution and the p-value are exact rather than simulated.
+    # distribution and the p-value are exact rather than simulated. The same
+    # draws serve every null value, as in boottest's test inversion.
     weights, enumerated = _wild_weight_matrix(n_clusters, n_boot, weight_type, rng)
-    t_boot = np.empty(weights.shape[0])
-    for b, w_g in enumerate(weights):
-        eps = w_g[cl_codes]
-        u_star = eps * u_tilde
-        x_star = X.copy()
-        for e in endog_cols:
-            x_star[:, e] = rf_base[e] + eps * rf_resid[e]
-        y_star = beta0 * x_star[:, test_idx] + x_star[:, other] @ g + u_star
-        beta_s, V_s = _fit(x_star, y_star)
-        se_s = float(np.sqrt(max(V_s[test_idx, test_idx], 1e-20)))
-        t_boot[b] = (beta_s[test_idx] - beta0) / se_s if se_s > 0 else 0.0
 
-    # Symmetric two-sided p with a strict inequality, as boottest counts it.
-    p_boot = float(np.mean(np.abs(t_boot) > np.abs(t_obs)))
-    t_lo = float(np.percentile(t_boot, 100 * alpha / 2))
-    t_hi = float(np.percentile(t_boot, 100 * (1 - alpha / 2)))
-    ci = (beta_hat[test_idx] - t_hi * se, beta_hat[test_idx] - t_lo * se)
+    def _restricted(b0: float) -> Any:
+        # Fix the tested coefficient and re-estimate the rest by 2SLS (the
+        # *other* endogenous regressors stay endogenous), giving the
+        # restricted structural residual u_tilde; then the (efficient)
+        # restricted reduced form of every endogenous regressor.
+        y_tilde = y - b0 * X[:, test_idx]
+        g = np.linalg.solve(Xo.T @ AXo, AXo.T @ y_tilde)
+        u_tilde = y_tilde - Xo @ g
+        wd = np.column_stack([W, u_tilde]) if efficient else W
+        base, rres = {}, {}
+        for e in endog_cols:
+            if efficient:
+                coef = np.linalg.lstsq(wd, X[:, e], rcond=None)[0]
+                d_base = W @ coef[:n_w]
+            else:
+                d_base = P_W @ X[:, e]
+            base[e] = d_base
+            rres[e] = X[:, e] - d_base
+        return g, u_tilde, base, rres
+
+    # Fast path: one endogenous regressor whose exogenous companions are
+    # among the instruments. By Frisch-Waugh-Lovell the tested 2SLS
+    # coefficient and its CRV1 variance are then a few vector operations per
+    # draw, so the draws are processed as matrices.
+    single = len(endog_cols) == 1 and np.allclose(AXo, Xo, atol=1e-9)
+    corr = (n_clusters / (n_clusters - 1)) * ((n - 1) / (n - k))
+    if single:
+        Q_w, _ = np.linalg.qr(W)
+        ZtZi_Zt = np.linalg.solve(Xo.T @ Xo, Xo.T)
+        onehot = np.zeros((n_clusters, n))
+        onehot[cl_codes, np.arange(n)] = 1.0
+
+    def _t_boot(b0: float) -> np.ndarray:
+        g, u_tilde, base, rres = _restricted(b0)
+        if single:
+            e = endog_cols[0]
+            fixed = Xo @ g
+            out = np.empty(weights.shape[0])
+            for lo in range(0, weights.shape[0], 512):
+                eps = weights[lo : lo + 512][:, cl_codes].T  # (n, C)
+                xs = base[e][:, None] + eps * rres[e][:, None]
+                ys = b0 * xs + fixed[:, None] + eps * u_tilde[:, None]
+                xs, ys = absorb(xs), absorb(ys)
+                px = Q_w @ (Q_w.T @ xs)
+                a = px - Xo @ (ZtZi_Zt @ px)
+                den = np.sum(a * xs, axis=0)
+                bs = np.sum(a * ys, axis=0) / den
+                r = ys - bs * xs
+                u = r - Xo @ (ZtZi_Zt @ r)
+                sc = onehot @ (a * u)
+                se_s = np.sqrt(corr * np.sum(sc**2, axis=0)) / np.abs(den)
+                with np.errstate(divide="ignore", invalid="ignore"):
+                    out[lo : lo + 512] = np.where(se_s > 0, (bs - b0) / se_s, 0.0)
+            return out
+        out = np.empty(weights.shape[0])
+        for b, w_g in enumerate(weights):
+            eps = w_g[cl_codes]
+            x_star = X.copy()
+            for e in endog_cols:
+                x_star[:, e] = base[e] + eps * rres[e]
+            y_star = b0 * x_star[:, test_idx] + x_star[:, other] @ g + eps * u_tilde
+            x_star = absorb(x_star)
+            y_star = absorb(y_star[:, None])[:, 0]
+            beta_s, V_s = _fit(x_star, y_star)
+            se_s = float(np.sqrt(max(V_s[test_idx, test_idx], 1e-20)))
+            out[b] = (beta_s[test_idx] - b0) / se_s if se_s > 0 else 0.0
+        return out
+
+    def _pvalue(b0: float) -> float:
+        t0 = (beta_hat[test_idx] - b0) / se
+        # Symmetric two-sided p with a strict inequality, as boottest counts it.
+        return float(np.mean(np.abs(_t_boot(b0)) > abs(t0) * (1 + 1e-10)))
+
+    t_boot = _t_boot(beta0)
+    p_boot = float(np.mean(np.abs(t_boot) > np.abs(t_obs) * (1 + 1e-10)))
+
+    # Confidence set by test inversion (boottest). The previous interval --
+    # the beta0-imposed bootstrap-t quantiles placed around beta_hat -- is
+    # valid only at beta0 itself (ADH, AER 2013: [-0.496, -0.078] against
+    # boottest's [-0.580, -0.112]).
+    def _bound(direction: float) -> float:
+        step = 2.0 * se
+        inside = float(beta_hat[test_idx])
+        outside = inside + direction * step
+        for _ in range(40):
+            if _pvalue(outside) <= alpha:
+                break
+            inside, outside = outside, outside + direction * step
+            step *= 2
+        else:
+            return float(direction * np.inf)
+        for _ in range(60):
+            mid = 0.5 * (inside + outside)
+            if _pvalue(mid) > alpha:
+                inside = mid
+            else:
+                outside = mid
+            if abs(outside - inside) < 1e-6 * max(se, 1e-12):
+                break
+        return 0.5 * (inside + outside)
+
+    ci = (_bound(-1.0), _bound(1.0))
 
     return {
         "beta_hat": float(beta_hat[test_idx]),

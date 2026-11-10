@@ -58,11 +58,13 @@ def sdid(
     treat_time: Any = None,
     method: Literal["sdid", "sc", "did"] = "sdid",
     covariates: Optional[List[str]] = None,
-    se_method: Literal["placebo", "bootstrap", "jackknife"] = "placebo",
+    se_method: Literal["placebo", "bootstrap", "jackknife", "noinference"] = "placebo",
     n_reps: int = 200,
     seed: Optional[int] = None,
     alpha: float = 0.05,
     backend: Literal["native", "synthdid", "r"] = "native",
+    treat: Optional[str] = None,
+    covariate_method: Optional[str] = None,
 ) -> CausalResult:
     """
     Synthetic Difference-in-Differences estimator (and SC / DID variants).
@@ -88,12 +90,15 @@ def sdid(
         * ``'sc'``   — Synthetic Control (unit weights only)
         * ``'did'``  — DID (uniform weights)
     covariates : list of str, optional
-        Not supported by the native solver yet; passing any raises
-        :class:`~statspai.exceptions.MethodIncompatibility` rather than
-        silently estimating the unadjusted model (through 1.28.0 the
-        argument was accepted and ignored).
-    se_method : {'placebo', 'bootstrap', 'jackknife'}, default 'placebo'
-        Standard-error method (see Notes).
+        Covariates; need ``covariate_method=``. With ``treated_unit=`` /
+        ``treatment_time=`` the block design is run through the ``treat=``
+        path (a 0/1 column switching on at ``treatment_time`` for the
+        treated units), which agrees with it to machine precision without
+        covariates. Through 1.28.0 the argument was accepted and ignored;
+        until 1.39 it raised with ``treated_unit=``.
+    se_method : {'placebo', 'bootstrap', 'jackknife', 'noinference'}, default 'placebo'
+        Standard-error method (see Notes). ``'noinference'`` returns the
+        point estimate with NaN SE, as Stata's ``vce(noinference)``.
     n_reps : int, default 200
         Replications for placebo / bootstrap SE.
     seed : int, optional
@@ -107,6 +112,27 @@ def sdid(
         estimate and ``synthdid_se`` standard error. The R backend is
         mainly for exact cross-language parity claims; the dependency-
         light native implementation remains the default.
+    treat : str, optional
+        A 0/1 column that switches on when a unit is treated and stays on,
+        as in Stata's ``sdid Y unit time W``; replaces ``treated_unit`` /
+        ``treatment_time``. Units may adopt at different periods: each
+        adoption cohort is fitted against the never-treated units and the
+        cohort effects are averaged with weights proportional to treated
+        units x post periods ([@clarke2024synthetic], eq. 7). This path follows
+        Stata ``sdid`` 2.0.2, including its checks and inference rules;
+        cohort detail is in ``model_info['tau_by_cohort']``.
+    covariate_method : {'projected', 'optimized'}, optional
+        With ``treat=`` and ``covariates=``: ``'projected'`` removes
+        ``X beta``, ``beta`` from a unit and period fixed-effects regression
+        on the never-treated units, before estimation (Stata's
+        ``covariates(..., projected)``).
+        ``'optimized'`` puts the covariates into the weight problem, as R
+        ``synthdid_estimate(X=)`` does (single adoption date, point estimate
+        only: pass ``se_method='noinference'``). It reproduces R to 1e-12.
+        The iteration stops at its cap of 10,000 steps, not at an optimum,
+        and it depends on the scale of the covariates; Stata's ``sdid``,
+        whose default this is, lands about 3e-4 away from R on the same
+        data. Required whenever covariates are given.
 
     Returns
     -------
@@ -178,7 +204,8 @@ def sdid(
     ----------
     Arkhangelsky, D., Athey, S., Hirshberg, D. A., Imbens, G. W. and Wager, S.
     (2021). Synthetic difference-in-differences. *American Economic Review*.
-    [@arkhangelsky2021synthetic]
+    [@arkhangelsky2021synthetic]; staggered adoption, covariates and the
+    ``treat=`` interface: [@clarke2024synthetic].
     """
     # --- Resolve canonical/legacy parameter names ---------------------
     if outcome is None:
@@ -192,26 +219,71 @@ def sdid(
         raise TypeError("sdid: provide `outcome` (or legacy alias `y`)")
     if unit is None or time is None:
         raise TypeError("sdid: `unit` and `time` are required")
+    if treat is not None:
+        if treated_unit is not None or treatment_time is not None:
+            raise MethodIncompatibility(
+                "sdid: pass either treat= (a 0/1 column) or "
+                "treated_unit= with treatment_time=, not both.",
+                recovery_hint="Drop treated_unit / treatment_time when using treat=.",
+            )
+        if backend.lower() != "native":
+            raise MethodIncompatibility(
+                "sdid: treat= runs the native estimator only.",
+                recovery_hint="Use backend='native'.",
+            )
+        from ._sdid_staggered import sdid_from_treatment
+
+        return sdid_from_treatment(
+            data,
+            y=outcome,
+            unit=unit,
+            time=time,
+            treatment=treat,
+            method=method,
+            covariates=covariates,
+            covariate_method=covariate_method,
+            se_method=se_method,
+            n_reps=n_reps,
+            seed=seed,
+            alpha=alpha,
+        )
     if treated_unit is None:
         raise TypeError("sdid: provide `treated_unit` (or legacy alias `treat_unit`)")
     if treatment_time is None:
         raise TypeError("sdid: provide `treatment_time` (or legacy alias `treat_time`)")
 
+    if covariates or covariate_method is not None or se_method == "noinference":
+        # Covariates and vce(noinference) live on the treat= path. A block
+        # design written as treated_unit= / treatment_time= is the same
+        # design as a 0/1 column switching on at treatment_time for those
+        # units, and the two interfaces agree to machine precision without
+        # covariates, so build that column and hand over.
+        if backend.lower() != "native":
+            raise MethodIncompatibility(
+                "sdid: covariates and se_method='noinference' run the native "
+                "estimator only.",
+                recovery_hint="Use backend='native'.",
+            )
+        return _sdid_block_via_treat(
+            data,
+            outcome=outcome,
+            unit=unit,
+            time=time,
+            treated_unit=treated_unit,
+            treatment_time=treatment_time,
+            method=method,
+            covariates=covariates,
+            covariate_method=covariate_method,
+            se_method=se_method,
+            n_reps=n_reps,
+            seed=seed,
+            alpha=alpha,
+        )
+
     # Internal variable names kept short for the math below.
     y = outcome
     treat_unit = treated_unit
     treat_time = treatment_time
-
-    if covariates:
-        raise MethodIncompatibility(
-            "sdid: covariate adjustment is not implemented; `covariates` "
-            "would be ignored.",
-            recovery_hint=(
-                "Residualise the outcome on the covariates first, or drop "
-                "`covariates`."
-            ),
-            diagnostics={"covariates": list(covariates)},
-        )
 
     backend_norm = backend.lower().replace("-", "_")
     if backend_norm in ("synthdid", "r", "synthdid_r"):
@@ -407,6 +479,43 @@ def sdid(
         model_info=model_info,
         _citation_key="sdid",
     )
+
+
+def _sdid_block_via_treat(
+    data: pd.DataFrame,
+    *,
+    outcome: str,
+    unit: str,
+    time: str,
+    treated_unit: Any,
+    treatment_time: Any,
+    **kwargs: Any,
+) -> CausalResult:
+    """Run a ``treated_unit=`` block design through the ``treat=`` path."""
+    from ._sdid_staggered import sdid_from_treatment
+
+    treated = (
+        list(treated_unit)
+        if isinstance(treated_unit, (list, tuple, set, np.ndarray, pd.Index))
+        else [treated_unit]
+    )
+    missing = [u for u in treated if u not in set(data[unit])]
+    if missing:
+        raise MethodIncompatibility(
+            f"sdid: treated unit(s) {missing!r} not found in {unit!r}",
+            recovery_hint="Check treated_unit against the unit column.",
+        )
+    col = "__statspai_sdid_treat__"
+    while col in data.columns:
+        col += "_"
+    d = data.copy()
+    d[col] = (d[unit].isin(treated) & (d[time] >= treatment_time)).astype(int)
+    res = sdid_from_treatment(
+        d, y=outcome, unit=unit, time=time, treatment=col, **kwargs
+    )
+    res.model_info["treated_units"] = treated
+    res.model_info["treatment_time"] = treatment_time
+    return res
 
 
 def _find_rscript() -> str:
@@ -750,21 +859,33 @@ def synthdid_placebo(
     treat_unit: Any,
     treat_time: Any,
     method: Literal["sdid", "sc", "did"] = "sdid",
+    kind: Literal["unit", "time"] = "unit",
     **kw: Any,
 ) -> pd.DataFrame:
     """
-    Run placebo estimates assigning treatment to each control unit.
+    Placebo estimates for a synthetic difference-in-differences fit.
 
-    Replicates ``synthdid::synthdid_placebo``.
+    ``kind='unit'`` (default) is the in-space placebo table: the treated
+    units are set aside and :func:`sdid` is refitted once per control unit
+    as if that unit had been treated at ``treat_time``.
+
+    ``kind='time'`` is R's ``synthdid::synthdid_placebo``: the estimator
+    is run on the pre-treatment periods only, with the treatment date
+    moved earlier so that the placebo post-period is the same fraction of
+    the panel as the real one, and with the regularisation constants of
+    the original fit. On the real Proposition 99 panel it returns
+    -1.6674164, equal to ``synthdid`` 0.0.9 to 1e-8.
 
     Accepts the same arguments as :func:`sdid`, plus any extra keyword
-    arguments.
+    arguments (used by ``kind='unit'`` only).
 
     Returns
     -------
     pd.DataFrame
-        One row per control unit with columns:
-        ``unit``, ``estimate``, ``se``, ``pvalue``.
+        Columns ``unit``, ``estimate``, ``se``, ``pvalue``. One row per
+        control unit for ``kind='unit'``. One row for ``kind='time'``,
+        with ``unit`` set to ``'in-time placebo'``, no standard error, and
+        the placebo treatment date in ``attrs['placebo_treat_time']``.
 
     Examples
     --------
@@ -790,9 +911,18 @@ def synthdid_placebo(
     """
     if not isinstance(treat_unit, (list, tuple, np.ndarray)):
         treat_unit = [treat_unit]
+    if kind not in ("unit", "time"):
+        raise MethodIncompatibility(
+            f"synthdid_placebo: kind must be 'unit' or 'time', got {kind!r}."
+        )
 
     panel = data.pivot_table(index=unit, columns=time, values=y, aggfunc="first")
     control_units = [u for u in panel.index if u not in treat_unit]
+
+    if kind == "time":
+        return _synthdid_time_placebo(
+            panel, control_units, treat_unit, treat_time, method
+        )
 
     # Subset data to exclude the real treated units
     control_data = data[~data[unit].isin(treat_unit)]
@@ -822,10 +952,77 @@ def synthdid_placebo(
                     "pvalue": r.pvalue,
                 }
             )
-        except Exception:
+        except Exception as exc:
+            from ..core._fallback import warn_fallback
+
+            warn_fallback(
+                f"sdid placebo fit for control unit {cu!r}",
+                exc,
+                "it is left out of the placebo table",
+            )
             continue
 
     return pd.DataFrame(rows)
+
+
+def _synthdid_time_placebo(
+    panel: pd.DataFrame,
+    control_units: list,
+    treat_units: Any,
+    treat_time: Any,
+    method: str,
+) -> pd.DataFrame:
+    """``synthdid::synthdid_placebo(estimate)`` on a unit-by-time panel.
+
+    Keeps the pre-treatment columns, sets the placebo ``T0`` to
+    ``floor(T0 * T0 / T)`` (the default ``treated.fraction``), and reruns
+    the estimator from uniform weights with the constants of the original
+    fit -- ``attr(estimate, 'opts')`` in R -- not ones recomputed on the
+    shorter panel.
+    """
+    times = sorted(panel.columns)
+    treated = [u for u in panel.index if u in set(treat_units)]
+    Y = panel.loc[list(control_units) + treated, times].to_numpy(dtype=float)
+    if not np.isfinite(Y).all():
+        raise DataInsufficient(
+            "synthdid_placebo(kind='time') needs a balanced panel without "
+            "missing outcomes."
+        )
+    N0 = len(control_units)
+    T0 = int(sum(t < treat_time for t in times))
+    if N0 == 0 or not treated or T0 == 0 or T0 == len(times):
+        raise DataInsufficient(
+            "synthdid_placebo(kind='time') needs control units, treated "
+            "units, and periods on both sides of treat_time."
+        )
+    placebo_T0 = int(np.floor(T0 * (T0 / len(times))))
+    if placebo_T0 < 1:
+        raise DataInsufficient(
+            f"synthdid_placebo(kind='time'): {T0} pre-treatment periods out "
+            f"of {len(times)} leave no placebo pre-period."
+        )
+    opts = _synthdid_opts(Y, N0, T0, method)
+    theta = _synthdid_refit(
+        Y[:, :T0],
+        N0,
+        placebo_T0,
+        np.full(N0, 1.0 / N0),
+        np.full(placebo_T0, 1.0 / placebo_T0),
+        opts,
+    )
+    out = pd.DataFrame(
+        [
+            {
+                "unit": "in-time placebo",
+                "estimate": theta,
+                "se": np.nan,
+                "pvalue": np.nan,
+            }
+        ]
+    )
+    out.attrs["placebo_treat_time"] = times[placebo_T0]
+    out.attrs["placebo_pre_periods"] = placebo_T0
+    return out
 
 
 # ======================================================================
@@ -1078,17 +1275,24 @@ def synthdid_rmse_plot(
 
 def california_prop99() -> pd.DataFrame:
     """
-    California Proposition 99 tobacco control dataset.
+    Simulated panel with the shape of the California Proposition 99 data.
 
-    Returns a balanced panel of per-capita cigarette sales for 39 US states,
-    1970-2000. California implemented Proposition 99 in 1989.
+    A balanced panel of per-capita cigarette sales for 39 US states,
+    1970-2000, with California treated from 1989. **The numbers are
+    simulated** (fixed seed), laid out like the ``synthdid`` example
+    dataset with the same states, years and column meaning. They are not
+    the Abadie, Diamond and Hainmueller data: estimates on this panel do
+    not reproduce published ones (``sp.sdid`` gives -17.9 here, and -15.60
+    on the real panel, where it agrees with R ``synthdid`` to 1e-9).
 
-    This is the canonical ``synthdid`` example dataset.
+    For the real panel use ``sp.datasets.california_prop99()``, whose
+    outcome column is ``cigsale``.
 
     Returns
     -------
     pd.DataFrame
         Columns: ``state``, ``year``, ``packspercapita``, ``treated``.
+        ``df.attrs['simulated']`` is ``True``.
 
     Examples
     --------
@@ -1176,7 +1380,14 @@ def california_prop99() -> pd.DataFrame:
                 }
             )
 
-    return pd.DataFrame(rows)
+    out = pd.DataFrame(rows)
+    out.attrs["simulated"] = True
+    out.attrs["data_source"] = "simulated"
+    out.attrs["notes"] = (
+        "Simulated replica with the layout of the Prop 99 panel; the real "
+        "ADH panel is sp.datasets.california_prop99()."
+    )
+    return out
 
 
 # ======================================================================
@@ -1365,17 +1576,46 @@ def _sc_weight_fw(
     if intercept:
         Y_work = Y_work - Y_work.mean(axis=0, keepdims=True)
 
-    # synthdid:::fw.step + sc.weight.fw, with A x carried incrementally: a
-    # step moves x -> (1 - s) x + s e_i, so A x -> (1 - s) A x + s A[:, i],
-    # and every quantity below is the one fw.step forms, without re-forming
-    # the direction vector or the full residual each iteration.
     A = np.ascontiguousarray(Y_work[:, :n_weights])
     At = np.ascontiguousarray(A.T)
-    b = Y_work[:, n_weights]
+    b = np.ascontiguousarray(Y_work[:, n_weights])
     eta = n_rows * float(zeta) ** 2
     zeta2 = float(zeta) ** 2
     min_dec2 = float(min_decrease) ** 2
     ax = A @ weights
+    try:
+        from ._sdid_kernels import fw_loop  # numba: imported on first use
+    except ImportError:  # numba missing or broken: the interpreted loop
+        return _sc_weight_fw_loop(
+            A, At, b, weights, ax, eta, zeta2, min_dec2, int(max_iter)
+        )
+    return np.asarray(
+        fw_loop(A, At, b, weights, ax, eta, zeta2, min_dec2, int(max_iter))
+    )
+
+
+def _sc_weight_fw_loop(
+    A: np.ndarray,
+    At: np.ndarray,
+    b: np.ndarray,
+    weights: np.ndarray,
+    ax: np.ndarray,
+    eta: float,
+    zeta2: float,
+    min_dec2: float,
+    max_iter: int,
+) -> np.ndarray:
+    """The Frank-Wolfe iteration of ``_sc_weight_fw``, interpreted.
+
+    ``_sdid_kernels.fw_loop`` is this loop compiled, operation for
+    operation; this one runs when numba cannot be imported and is the
+    reference the kernel is tested against.
+    """
+    # synthdid:::fw.step + sc.weight.fw, with A x carried incrementally: a
+    # step moves x -> (1 - s) x + s e_i, so A x -> (1 - s) A x + s A[:, i],
+    # and every quantity below is the one fw.step forms, without re-forming
+    # the direction vector or the full residual each iteration.
+    n_rows = A.shape[0]
     prev = None
     for _ in range(max_iter):
         resid = ax - b
@@ -1402,6 +1642,101 @@ def _sc_weight_fw(
         prev = val
 
     return weights
+
+
+def _fw_step(A: np.ndarray, x: np.ndarray, b: np.ndarray, eta: float) -> np.ndarray:
+    """One Frank-Wolfe step on ``||A x - b||^2 + eta ||x||^2`` over the simplex."""
+    ax = A @ x
+    half_grad = (ax - b) @ A + eta * x
+    vertex = int(np.argmin(half_grad))
+    direction = -x.copy()
+    direction[vertex] += 1.0
+    if not direction.any():
+        return x
+    err_dir = A[:, vertex] - ax
+    denom = float(err_dir @ err_dir) + eta * float(direction @ direction)
+    step = 0.0 if denom <= 0 else -float(half_grad @ direction) / denom
+    return np.asarray(x + min(1.0, max(0.0, step)) * direction)
+
+
+def _sdid_optimized_covariates(
+    Y: np.ndarray, X: np.ndarray, N0: int, T0: int, max_iter: int = 10000
+) -> Tuple[float, np.ndarray, np.ndarray, np.ndarray, int]:
+    """SDID with covariates entering the weight problem (``optimized``).
+
+    The procedure of ``synthdid_estimate(Y, N0, T0, X=)``, written by the
+    method's authors [@arkhangelsky2021synthetic]: starting from uniform
+    weights and ``beta = 0``, each iteration takes a gradient step of size
+    ``1/t`` on ``beta`` and one Frank-Wolfe step on each of ``lambda`` and
+    ``omega`` for the adjusted outcome ``Y - X beta``, on the collapsed
+    panel. It stops when the objective changes by less than
+    ``(1e-5 sigma)^2`` or after ``max_iter`` iterations, and in practice it
+    is the cap that binds: the result is the state of the iteration at that
+    point, not a converged optimum, and it depends on the scale of ``X``.
+
+    ``Y`` is ``(N, T)`` and ``X`` is ``(N, T, K)`` with the ``N0`` controls
+    first and the ``T0`` pre-treatment periods first. Returns
+    ``(tau, beta, lambda, omega, iterations)``.
+    """
+    N, T = Y.shape
+    N1, T1 = N - N0, T - T0
+
+    def collapse(M: np.ndarray) -> np.ndarray:
+        top = np.column_stack([M[:N0, :T0], M[:N0, T0:].mean(axis=1)])
+        bottom = np.r_[M[N0:, :T0].mean(axis=0), M[N0:, T0:].mean()]
+        return np.vstack([top, bottom])
+
+    noise = _sdid_noise_level(Y[:N0, :T0])
+    zeta_omega = (N1 * T1) ** 0.25 * noise
+    zeta_lambda = 1e-6 * noise
+    min_dec2 = (1e-5 * noise) ** 2
+    Yc = collapse(Y)
+    K = X.shape[-1]
+    Xc = np.stack([collapse(X[..., k]) for k in range(K)], axis=-1)
+    lam = np.full(T0, 1.0 / T0)
+    omega = np.full(N0, 1.0 / N0)
+    beta = np.zeros(K)
+
+    def update(
+        Yb: np.ndarray, lam: np.ndarray, omega: np.ndarray
+    ) -> Tuple[float, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        Yl = Yb[:N0, :] - Yb[:N0, :].mean(axis=0, keepdims=True)
+        lam = _fw_step(Yl[:, :T0], lam, Yl[:, T0], N0 * zeta_lambda**2)
+        err_l = Yl @ np.r_[lam, -1.0]
+        Yo = Yb[:, :T0].T
+        Yo = Yo - Yo.mean(axis=0, keepdims=True)
+        omega = _fw_step(Yo[:, :N0], omega, Yo[:, N0], T0 * zeta_omega**2)
+        err_o = Yo @ np.r_[omega, -1.0]
+        val = (
+            zeta_omega**2 * float(omega @ omega)
+            + zeta_lambda**2 * float(lam @ lam)
+            + float(err_o @ err_o) / T0
+            + float(err_l @ err_l) / N0
+        )
+        return val, lam, omega, err_l, err_o
+
+    _, lam, omega, err_l, err_o = update(Yc - Xc @ beta, lam, omega)
+    vals: List[float] = []
+    t = 0
+    while t < max_iter and (t < 2 or abs(vals[t - 2] - vals[t - 1]) > min_dec2):
+        t += 1
+        lam1, om1 = np.r_[lam, -1.0], np.r_[omega, -1.0]
+        grad = -np.array(
+            [
+                err_l @ Xc[:N0, :, k] @ lam1 / N0 + err_o @ Xc[:, :T0, k].T @ om1 / T0
+                for k in range(K)
+            ]
+        )
+        beta = beta - grad / t
+        val, lam, omega, err_l, err_o = update(Yc - Xc @ beta, lam, omega)
+        vals.append(val)
+    adjusted = Y - X @ beta
+    tau = float(
+        np.r_[-omega, np.full(N1, 1.0 / N1)]
+        @ adjusted
+        @ np.r_[-lam, np.full(T1, 1.0 / T1)]
+    )
+    return tau, beta, lam, omega, t
 
 
 def _sparsify_function(weights: np.ndarray) -> np.ndarray:
@@ -1644,3 +1979,42 @@ CausalResult._CITATIONS["sdid"] = (
     "  publisher={American Economic Association}\n"
     "}"
 )
+
+
+def _sdid_on_cohort_column(
+    data: pd.DataFrame, *, y: str, unit: str, time: str, cohort: str, **kwargs: Any
+) -> CausalResult:
+    """``sp.sdid`` from a cohort column, the encoding ``sp.did`` /
+    ``sp.did_analysis`` use: each unit's first treated period, 0 or less for
+    never treated.
+
+    One adoption period is the block design and goes through
+    ``treated_unit=`` / ``treatment_time=`` exactly as before. Several go
+    through ``treat=`` (cohort-by-cohort fits, [@clarke2024synthetic] eq. 7);
+    through 1.31 they were collapsed onto the earliest period, which counted
+    later cohorts' untreated periods as treated.
+    """
+    treated = data[cohort] > 0
+    periods = sorted(pd.unique(data.loc[treated, cohort]))
+    if len(periods) <= 1:
+        units = data.loc[treated, unit].unique().tolist()
+        return sdid(
+            data,
+            y=y,
+            unit=unit,
+            time=time,
+            treat_unit=units,
+            treat_time=_plain(periods[0]) if periods else None,
+            **kwargs,
+        )
+    indicator = "__sdid_treated__"
+    while indicator in data.columns:
+        indicator += "_"
+    frame = data.assign(
+        **{indicator: (treated & (data[time] >= data[cohort])).astype(int)}
+    )
+    return sdid(frame, y=y, unit=unit, time=time, treat=indicator, **kwargs)
+
+
+def _plain(value: Any) -> Any:
+    return value.item() if hasattr(value, "item") else value

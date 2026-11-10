@@ -67,7 +67,7 @@ PAPER_INCLUDE_FILES = [
     PAPER_DIR / "cover-letter.md",
     PAPER_DIR / "cover-letter.template.md",
     PAPER_DIR / "JOSS-JSS-OVERLAP.md",
-    PAPER_DIR / "REVIEWER-HARDENING-AUDIT.md",
+    PAPER_DIR / "RELEASE-CHECKLIST.md",
     PAPER_DIR / "manuscript" / "main.tex",
     PAPER_DIR / "manuscript" / "main.pdf",
     PAPER_DIR / "manuscript" / "generated_claims.tex",
@@ -133,9 +133,10 @@ ROOT_INCLUDE_FILES = [
     ROOT / "README.md",
     ROOT / "CHANGELOG.md",
     ROOT / "MIGRATION.md",
-    # `make pdf` re-derives manuscript/jss-bib.bib from the master bib.
+    # No bib_subset.py: the Makefile's bib targets then skip and the archive
+    # builds from the shipped derived manuscript/jss-bib.bib. The manuscript
+    # cites entries verified after the tag, which this tag's bib does not hold.
     ROOT / "paper.bib",
-    ROOT / "tools" / "bib_subset.py",
     ROOT / "tests" / "conftest.py",
     ROOT / "tests" / "test_api_stable_evidence.py",
     ROOT / "tests" / "test_jss_reproduction_environment.py",
@@ -152,6 +153,15 @@ ROOT_INCLUDE_FILES = [
     ROOT / "tests" / "test_rddensity_io.py",
     ROOT / "tests" / "test_stability_audit.py",
     ROOT / "tests" / "test_schema_export.py",
+    # tests/test_validation_scope.py is a Tier 1 step and checks that every
+    # artifact its configuration map cites exists, and reads these files.
+    ROOT / "tests" / "test_validation_scope.py",
+    ROOT / "tests" / "test_did_multiplegt_dyn_castle_reference.py",
+    ROOT / "tests" / "test_dml_ivtype_reference.py",
+    ROOT / "tests" / "test_etwfe_emfx_reference.py",
+    ROOT / "tests" / "test_inference_scan3_weighting.py",
+    ROOT / "tests" / "stata_translation_holdout" / "holdout_panel.csv",
+    ROOT / "tests" / "stata_translation_holdout" / "holdout_cross.csv",
     # Imported by the provenance tracer and the fixture lock (hash gates).
     ROOT / "scripts" / "ascii_source.py",
     ROOT / "scripts" / "tier_a_fixture_lock.py",
@@ -213,6 +223,8 @@ EXCLUDED_SUFFIXES = {
 EXCLUDED_NAMES = {
     ".DS_Store",
     ".gitignore",
+    # Session notes from development, not evidence.
+    "PARITY_SESSION_2026-05-28.md",
 }
 
 ACTIVE_EXTERNAL_REVIEW_FILES = {
@@ -229,9 +241,19 @@ ACTIVE_EXTERNAL_REVIEW_FILE_REASONS = {
 }
 
 EXCLUDED_FILES = {
+    # Author-distributed Stata datasets of Clarke, Pailanir, Athey & Imbens
+    # (2024), read by tests/reference_parity/test_sdid_staggered_parity.py
+    # (StatsPAI 1.33.0). Their redistribution terms are not recorded, and the
+    # archive carries no raw .dta (data_provenance_audit), so they stay out;
+    # the test, its Stata do-file and the reference JSON are kept, and the
+    # do-file names the source (www.damianclarke.net/stata/). No JSS table
+    # or reproduction tier reads them.
+    ROOT / "tests" / "reference_parity" / "_fixtures" / "sdid_staggered" / "prop99_example.dta",
+    ROOT / "tests" / "reference_parity" / "_fixtures" / "sdid_staggered" / "quota_example.dta",
     # JOSS-facing root documents stay out of the JSS archive even when the
     # source-snapshot manifest lists them as hand-edited (dirty) paths.
     ROOT / "README_CN.md",
+    ROOT / "README_EN.md",  # the same JOSS-facing README after the post-1.34.2 rename
     ROOT / "docs" / "joss_reviewer_guide.md",
     ROOT / "docs" / "joss_validation_dossier.md",
     PAPER_DIR / "DRAFT-NOTES.md",
@@ -391,36 +413,55 @@ def _ascii_source_bytes(path: Path) -> tuple[bytes | None, bool]:
 
 def _jss_archive_root_readme_bytes() -> bytes:
     """Return a JSS-safe root README for the submission archive only."""
-    text = """# StatsPAI JSS Source Snapshot
+    text = """# StatsPAI: replication archive for the JSS manuscript
 
-This root README is generated only for the JSS submission archive. It keeps
-`pyproject.toml` installable while avoiding the live repository README's
-separate active software-review navigation.
+The manuscript is `Paper-JSS/manuscript/main.pdf`. The package source is `src/`.
 
-For this archive, start with:
+## Reproduce the article (no R or Stata, a few minutes)
 
-- `Paper-JSS/README.md` for reviewer commands and replication tiers.
-- `Paper-JSS/manuscript/main.pdf` for the JSS manuscript.
-- `Paper-JSS/cover-letter.md` for submission disclosures.
-- `docs/jss_source_audit_dossier.md` for the package-facing source audit.
-- `Paper-JSS/build/statspai-jss-submission-manifest.md` next to this zip
-  for the archive member list, generated metadata files, and active
-  external-review exclusions.
-
-Minimal reviewer check from the extracted archive root:
+From this directory, with Python 3.10:
 
 ```bash
+python3.10 -m venv .venv
+.venv/bin/pip install -r Paper-JSS/requirements-jss-lock.txt
+.venv/bin/pip install --no-deps -e .
 cd Paper-JSS
-make reproduce-jss PYTHON=../.venv/bin/python
-make audit PYTHON=../.venv/bin/python
+../.venv/bin/python replication/reproduce.py --tier 1
 ```
 
-The JSS manuscript uses a validation-tiered claim: certified and validated
-registry entries have explicit evidence, while API-stable breadth is not
-presented as numerical validation.
+The run recomputes the worked examples, every printed listing and transcript,
+and the registry census, and re-tabulates the stored parity, coverage and
+timing results. It ends with `RESULT: OK`, and
+`replication/results/reproduce_manifest.json` says how each manuscript input
+was produced. The transcript of our run is
+`replication/results/reproduce_tier1_output.txt`.
 
-The active external-review materials (`paper.md` and `docs/joss_*`) are
-intentionally not included in this archive.
+To rebuild the PDF as well (needs a TeX distribution):
+
+```bash
+make reproduce-jss PYTHON=../.venv/bin/python
+```
+
+## Recompute the stored results
+
+```bash
+../.venv/bin/python replication/reproduce.py --tier 2                 # R references (R 4.5.2, renv.lock)
+../.venv/bin/python replication/reproduce.py --tier 3                 # Stata references (licence)
+../.venv/bin/python replication/reproduce.py --recompute parity-py    # Python side, about 15 min
+../.venv/bin/python replication/reproduce.py --recompute montecarlo   # coverage study, about 6 h, R for two checks
+../.venv/bin/python replication/reproduce.py --recompute forest-seed  # forest seeds, about 50 min, needs R
+../.venv/bin/python replication/reproduce.py --recompute performance  # timings, about 1 h, needs R
+```
+
+## Where things are
+
+- `Paper-JSS/cover-letter.md` and `Paper-JSS/JOSS-JSS-OVERLAP.md`: disclosures.
+- `Paper-JSS/README.md`: a table of which file produces each experiment, and
+  the authors' release checks. `make audit` and `make release-audit` are those
+  checks; they need the full development repository and do not pass here.
+- `tests/r_parity/results/parity_table_3way.md`: every parity row with its notes.
+- `tests/`: the tests behind the reproduction, not the whole suite.
+- `CHANGELOG.md`, `MIGRATION.md`: every output-changing correction.
 """
     return text.encode("ascii")
 
@@ -435,6 +476,52 @@ def _jss_archive_citation_bytes() -> bytes:
     # typographic dashes. Transliterate rather than fail the package build.
     text = text.replace("\u2014", "--").replace("\u2013", "-")
     return text.encode("ascii")
+
+
+#: The schema bundle as the archive carries it: regenerated from the
+#: archive's own (ASCII-transliterated) source. Descriptions are cut at a
+#: character limit, and transliteration lengthens text before the cut (an em
+#: dash becomes "--"), so a bundle dumped from the Unicode tree and then
+#: transliterated is not the one ``scripts/dump_schemas.py --check`` rebuilds
+#: from the archive. The tag's own bundle is held to its source by StatsPAI's
+#: schema-drift gate; this keeps the archive consistent with what it contains.
+ARCHIVE_SCHEMA_FILES = tuple(
+    f"{prefix}{name}"
+    for prefix in ("schemas/", "src/statspai/schemas/")
+    for name in ("agent_cards.json", "functions.json", "index.json", "result.schema.json", "tools.json")
+)
+
+
+def _regenerate_archive_schemas(archive: Path) -> list[str]:
+    """Rebuild the schema bundle inside ``archive`` from the archive's source."""
+    import shutil
+    import subprocess
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tree = Path(tmp)
+        with zipfile.ZipFile(archive) as zf:
+            zf.extractall(tree)
+            infos = {info.filename: info for info in zf.infolist()}
+            members = {name: zf.read(name) for name in zf.namelist()}
+        env = dict(os.environ, PYTHONPATH=str(tree / "src"))
+        proc = subprocess.run(
+            [sys.executable, "scripts/dump_schemas.py"],
+            cwd=tree, env=env, capture_output=True, text=True,
+        )
+        if proc.returncode != 0:
+            sys.exit("FAIL -- dump_schemas.py failed inside the archive tree:\n"
+                     + (proc.stdout + proc.stderr)[-2000:])
+        regenerated = {name: (tree / name).read_bytes() for name in ARCHIVE_SCHEMA_FILES}
+        missing = [name for name in ARCHIVE_SCHEMA_FILES if name not in infos]
+        if missing:
+            sys.exit("FAIL -- schema bundle members missing from the archive: " + ", ".join(missing))
+        rebuilt = archive.with_suffix(".rebuild.zip")
+        with zipfile.ZipFile(rebuilt, "w", compression=zipfile.ZIP_DEFLATED) as out:
+            for name, data in members.items():
+                out.writestr(infos[name], regenerated.get(name, data))
+        shutil.move(str(rebuilt), str(archive))
+    return list(ARCHIVE_SCHEMA_FILES)
 
 
 def _zip_info(path: Path, arcname: str) -> zipfile.ZipInfo:
@@ -500,6 +587,8 @@ def main() -> int:
                 zf.writestr(_zip_info(path, arcname), normalized)
             else:
                 zf.writestr(_zip_info(path, arcname), path.read_bytes())
+
+    jss_archive_generated_files.extend(_regenerate_archive_schemas(ARCHIVE))
 
     size_bytes = ARCHIVE.stat().st_size
     size_mib = size_bytes / (1024 * 1024)

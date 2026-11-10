@@ -6,10 +6,11 @@ client (Claude Desktop, Copilot CLI, Cursor, custom agents) can call
 ``sp.iv()``, ``sp.did()``, ``sp.causal()``, etc. directly from a
 natural-language workflow.
 
-The server speaks JSON-RPC 2.0 over stdio — the transport required by
-the MCP spec (https://modelcontextprotocol.io/specification). It is
-implemented in pure Python with no external dependencies so it can
-ship inside the StatsPAI wheel.
+The server speaks JSON-RPC 2.0 over stdio by default, and over the MCP
+Streamable HTTP transport with ``--transport http``
+(:mod:`statspai.agent._http_transport`). It is implemented in pure
+Python with no external dependencies so it can ship inside the StatsPAI
+wheel.
 
 Quick start
 -----------
@@ -30,13 +31,52 @@ For Claude Desktop, add to ``claude_desktop_config.json``::
 
 Tool contract
 -------------
-Every tool takes a ``data_path`` argument — an absolute CSV path on
-the local filesystem — plus whatever column-name arguments the
-underlying StatsPAI function expects. The server loads the CSV, runs
-the estimator, and returns the result both as a human-readable JSON
-``text`` block and — for clients on protocol ``2025-06-18`` and up — as
-machine-readable ``structuredContent`` validated against each tool's
-``outputSchema``.
+Every tool takes one data source — ``data_path`` (absolute path on the
+server), ``data_id`` (a handle from ``load_data`` / ``transform_data``)
+or an inline ``data_records`` / ``data_csv`` table — plus whatever
+column-name arguments the underlying StatsPAI function expects. The
+shared arguments carry one clause each in every tool schema; their full
+reference is the ``statspai://arguments`` resource. The
+server loads the data, runs the estimator, and returns the result as
+``structuredContent`` (validated against each tool's ``outputSchema``)
+plus the same object serialised compactly in a ``text`` block for
+clients that predate structured output.
+
+Failures while *executing* a call — an unknown or expired ``data_id`` /
+``result_id``, an unreadable file, a refused path, a timeout, an
+estimator error — come back as a normal result with ``isError: true``
+and a structured payload (``error_kind``, ``message``, ``hint``, …), so
+the model sees them and can repair its next call. Only protocol errors
+(malformed JSON-RPC, unknown method or tool name, ``params`` /
+``arguments`` not an object) are JSON-RPC errors.
+
+Results are bounded by ``max_output_bytes`` (default 256 KiB,
+``STATSPAI_MCP_MAX_OUTPUT_BYTES``): the longest lists / tables are cut
+first and listed under ``truncated``; risk lists (``violations``,
+``runtime_warnings``, ``degradations``, ``warnings``) are cut last and
+leave ``risk_summary`` + ``risk_details_complete: false``; ``output_budget``
+reports ``truncated`` or ``unavoidable_overflow`` (the budget covers
+``structuredContent``, not the repeated ``text`` block or an image).
+Non-finite numbers are sent as
+``null`` and their paths listed under ``_nonfinite``. Estimator results
+carry ``replay`` — the ``sp.<fn>(...)`` call that reproduces them.
+
+Operator controls: ``STATSPAI_MCP_DATA_ROOTS`` restricts readable
+directories, network URLs need ``STATSPAI_MCP_ALLOW_REMOTE=1``,
+``STATSPAI_MCP_MAX_DATA_BYTES`` caps loads (local and remote),
+``STATSPAI_MCP_TOOL_TIMEOUT_SECONDS`` bounds a call,
+``STATSPAI_MCP_WORKERS`` sizes the ``tools/call`` pool, and
+``STATSPAI_MCP_MAX_QUEUED_CALLS`` / ``STATSPAI_MCP_MAX_ORPHANED_CALLS`` /
+``STATSPAI_MCP_MAX_QUEUE_SECONDS`` / ``STATSPAI_MCP_MAX_REQUEST_BYTES``
+bound what the stdio loop admits (``server_busy`` / ``-32600`` beyond
+them). ``STATSPAI_MCP_ISOLATION=process`` runs every call that needs no
+data handle in a child process that is killed on timeout or cancel;
+result handles travel both ways, so a fit that asks for one
+(``as_handle``) and a follow-up that reads one (``result_id``) are both
+isolated (:mod:`statspai.agent._process_worker`).
+``STATSPAI_MCP_STATE_DIR`` keeps a copy of every result and data handle
+on disk so handles resolve after a restart
+(:mod:`statspai.agent._state_store`).
 
 Protocol features
 -----------------
@@ -44,12 +84,16 @@ The server negotiates its protocol revision with the client
 (:data:`SUPPORTED_PROTOCOL_VERSIONS`, newest preferred) and, on top of
 the original ``2024-11-05`` surface, advertises:
 
-* **Tool annotations** (``2025-03-26``) — every tool is tagged
-  ``readOnlyHint=true`` / ``openWorldHint=false`` (StatsPAI estimators
-  read the supplied data and compute; they never mutate state), so a
-  client can auto-approve calls.
+* **Tool annotations** (``2025-03-26``) — ``readOnlyHint`` is true
+  except for tools that can write a file; ``openWorldHint`` is true only
+  when network data URLs are enabled.
 * **Structured tool output** (``2025-06-18``) — ``outputSchema`` on every
   tool plus ``structuredContent`` on every result.
+* ``ping``, ``notifications/progress`` (with ``_meta.progressToken``) and
+  ``notifications/cancelled`` — the stdio loop keeps answering while a
+  tool runs (see :func:`serve_stdio`).
+* ``completion/complete`` for resource-template variables and prompt
+  arguments (:mod:`statspai.agent._completion`).
 
 Older clients negotiate ``2024-11-05`` and simply ignore the extra
 fields, so the additions are fully backward-compatible.
@@ -66,7 +110,11 @@ from __future__ import annotations
 
 import json
 import os
+import queue
+import re
 import sys
+import threading
+import time
 import traceback
 from functools import lru_cache
 from pathlib import Path
@@ -114,7 +162,7 @@ _PRIVATE_COMPAT_EXPORTS = (
 #: structured tool output — ``outputSchema`` + ``structuredContent`` (added
 #: in ``2025-06-18``). Both are now emitted by :func:`_build_mcp_tools` /
 #: :func:`_handle_tools_call`, so advertising the newer revision is honest.
-MCP_PROTOCOL_VERSION = "2025-06-18"
+MCP_PROTOCOL_VERSION = "2025-11-25"
 
 #: Every protocol revision this server can speak, newest first. The
 #: handshake (:func:`_handle_initialize`) negotiates against this set: if
@@ -125,7 +173,12 @@ MCP_PROTOCOL_VERSION = "2025-06-18"
 #: are backward-compatible — older clients negotiating ``2024-11-05`` simply
 #: ignore the extra keys, so there is no behavioural downside to a client
 #: that only knows the original revision.
-SUPPORTED_PROTOCOL_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
+SUPPORTED_PROTOCOL_VERSIONS = ("2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05")
+
+#: Per-request revisions (``2026-07-28``: no handshake, version and client
+#: capabilities in every request's ``_meta``) are served by
+#: :mod:`._protocol`; :func:`handle_request` routes them there.
+from ._protocol import MODERN_PROTOCOL_VERSIONS  # noqa: E402
 
 SERVER_NAME = "statspai"
 
@@ -266,117 +319,138 @@ def _clean_floats(o: Any) -> Any:
     return o
 
 
-def _json_default(o: Any) -> Any:
-    """Best-effort JSON encoder for numpy / pandas / std-lib scalars.
+def _make_json_default(clean: Callable[[Any], Any]) -> Callable[[Any], Any]:
+    """Build a ``json.dumps(default=...)`` encoder.
 
-    Covers every type we've actually seen leak out of estimator dicts:
-
-    * numpy: ``integer`` / ``floating`` / ``bool_`` / ``complex_`` /
-      ``datetime64`` / ``timedelta64`` / ``ndarray``
-    * pandas: ``Series`` / ``DataFrame`` / ``Index`` / ``Timestamp`` /
-      ``Timedelta`` / ``Categorical`` / ``Interval``
-    * stdlib: ``set`` / ``frozenset`` / ``bytes`` / ``Decimal`` /
-      ``Path`` / dataclasses / Enums
-
-    A bare ``__dict__`` fallback is risky on heavy result objects (live
-    DataFrames recursing into themselves), so it's reached last and only
-    walks public attributes one level deep.
-
-    Any branch that produces a Python list/dict (numpy arrays, pandas
-    Series/DataFrame/Index/Categorical) routes its return through
-    :func:`_clean_floats` so nan/inf inside the produced container are
-    scrubbed before json.dumps re-walks them.
+    ``clean`` post-processes every container the encoder produces:
+    :func:`_clean_floats` for wire output (non-finite → ``null``), or the
+    identity for :data:`_json_default_raw`, which keeps NaN / ±Inf so the
+    tool-result path can record where they were.
     """
-    # NaN/Inf — JSON has no representation; emit ``None`` so json.dumps
-    # without ``allow_nan=False`` doesn't silently round-trip 'NaN'.
-    if isinstance(o, float):
-        import math
 
-        if math.isnan(o) or math.isinf(o):
-            return None
+    def _json_default(o: Any) -> Any:
+        """Best-effort JSON encoder for numpy / pandas / std-lib scalars.
 
-    try:
-        import numpy as _np
+        Covers every type we've actually seen leak out of estimator dicts:
 
-        if isinstance(o, _np.bool_):
-            return bool(o)
-        if isinstance(o, _np.integer):
-            return int(o)
-        if isinstance(o, _np.floating):
+        * numpy: ``integer`` / ``floating`` / ``bool_`` / ``complex_`` /
+          ``datetime64`` / ``timedelta64`` / ``ndarray``
+        * pandas: ``Series`` / ``DataFrame`` / ``Index`` / ``Timestamp`` /
+          ``Timedelta`` / ``Categorical`` / ``Interval``
+        * stdlib: ``set`` / ``frozenset`` / ``bytes`` / ``Decimal`` /
+          ``Path`` / dataclasses / Enums
+
+        A bare ``__dict__`` fallback is risky on heavy result objects (live
+        DataFrames recursing into themselves), so it's reached last and only
+        walks public attributes one level deep.
+
+        Any branch that produces a Python list/dict (numpy arrays, pandas
+        Series/DataFrame/Index/Categorical) routes its return through
+        :func:`_clean_floats` so nan/inf inside the produced container are
+        scrubbed before json.dumps re-walks them.
+        """
+        # NaN/Inf — JSON has no representation; emit ``None`` so json.dumps
+        # without ``allow_nan=False`` doesn't silently round-trip 'NaN'.
+        if isinstance(o, float):
+            import math
+
+            if clean is _clean_floats and (math.isnan(o) or math.isinf(o)):
+                return None
+
+        try:
+            import numpy as _np
+
+            if isinstance(o, _np.bool_):
+                return bool(o)
+            if isinstance(o, _np.integer):
+                return int(o)
+            if isinstance(o, _np.floating):
+                v = float(o)
+                import math
+
+                if clean is not _clean_floats:
+                    return v
+                return None if (math.isnan(v) or math.isinf(v)) else v
+            if isinstance(o, _np.complexfloating):
+                return clean({"real": float(o.real), "imag": float(o.imag)})
+            if isinstance(o, _np.datetime64):
+                # ns-precision ISO-8601 string; stable across pandas versions
+                return str(o)
+            if isinstance(o, _np.timedelta64):
+                return str(o)
+            if isinstance(o, _np.ndarray):
+                return clean(o.tolist())
+        except ImportError:  # pragma: no cover
+            pass
+
+        try:
+            import pandas as _pd
+
+            if isinstance(o, _pd.DataFrame):
+                return clean(o.to_dict(orient="list"))
+            if isinstance(o, _pd.Series):
+                return clean(o.to_dict())
+            if isinstance(o, _pd.Index):
+                return clean(o.tolist())
+            if isinstance(o, _pd.Timestamp):
+                return o.isoformat()
+            if isinstance(o, _pd.Timedelta):
+                return o.isoformat()
+            if isinstance(o, _pd.Categorical):
+                return clean(list(o))
+            if isinstance(o, _pd.Interval):
+                return clean({"left": o.left, "right": o.right, "closed": o.closed})
+        except ImportError:  # pragma: no cover
+            pass
+
+        if isinstance(o, (set, frozenset)):
+            return clean(sorted(o, key=str))
+        if isinstance(o, bytes):
+            # Round-trippable; agents reading JSON shouldn't get garbled UTF-8
+            import base64
+
+            return {"__bytes_b64__": base64.b64encode(o).decode("ascii")}
+
+        from decimal import Decimal
+
+        if isinstance(o, Decimal):
             v = float(o)
             import math
 
+            if clean is not _clean_floats:
+                return v
             return None if (math.isnan(v) or math.isinf(v)) else v
-        if isinstance(o, _np.complexfloating):
-            return _clean_floats({"real": float(o.real), "imag": float(o.imag)})
-        if isinstance(o, _np.datetime64):
-            # ns-precision ISO-8601 string; stable across pandas versions
-            return str(o)
-        if isinstance(o, _np.timedelta64):
-            return str(o)
-        if isinstance(o, _np.ndarray):
-            return _clean_floats(o.tolist())
-    except ImportError:  # pragma: no cover
-        pass
 
-    try:
-        import pandas as _pd
+        from pathlib import PurePath
 
-        if isinstance(o, _pd.DataFrame):
-            return _clean_floats(o.to_dict(orient="list"))
-        if isinstance(o, _pd.Series):
-            return _clean_floats(o.to_dict())
-        if isinstance(o, _pd.Index):
-            return _clean_floats(o.tolist())
-        if isinstance(o, _pd.Timestamp):
-            return o.isoformat()
-        if isinstance(o, _pd.Timedelta):
-            return o.isoformat()
-        if isinstance(o, _pd.Categorical):
-            return _clean_floats(list(o))
-        if isinstance(o, _pd.Interval):
-            return _clean_floats({"left": o.left, "right": o.right, "closed": o.closed})
-    except ImportError:  # pragma: no cover
-        pass
+        if isinstance(o, PurePath):
+            # Use POSIX form so JSON output is byte-stable across OSes (Windows
+            # would otherwise emit ``\\tmp\\x`` which breaks downstream consumers
+            # and round-trip tests).
+            return o.as_posix()
 
-    if isinstance(o, (set, frozenset)):
-        return _clean_floats(sorted(o, key=str))
-    if isinstance(o, bytes):
-        # Round-trippable; agents reading JSON shouldn't get garbled UTF-8
-        import base64
+        from enum import Enum
 
-        return {"__bytes_b64__": base64.b64encode(o).decode("ascii")}
+        if isinstance(o, Enum):
+            return clean(o.value)
 
-    from decimal import Decimal
+        # dataclasses (without using asdict, which recurses and re-hits us)
+        if hasattr(o, "__dataclass_fields__"):
+            return clean({f: getattr(o, f, None) for f in o.__dataclass_fields__})
 
-    if isinstance(o, Decimal):
-        v = float(o)
-        import math
+        if hasattr(o, "__dict__"):
+            return clean({k: v for k, v in vars(o).items() if not k.startswith("_")})
+        return str(o)
 
-        return None if (math.isnan(v) or math.isinf(v)) else v
+    return _json_default
 
-    from pathlib import PurePath
 
-    if isinstance(o, PurePath):
-        # Use POSIX form so JSON output is byte-stable across OSes (Windows
-        # would otherwise emit ``\\tmp\\x`` which breaks downstream consumers
-        # and round-trip tests).
-        return o.as_posix()
+#: Encoder used for every JSON-RPC message: non-finite floats become null.
+_json_default = _make_json_default(_clean_floats)
 
-    from enum import Enum
-
-    if isinstance(o, Enum):
-        return _clean_floats(o.value)
-
-    # dataclasses (without using asdict, which recurses and re-hits us)
-    if hasattr(o, "__dataclass_fields__"):
-        return _clean_floats({f: getattr(o, f, None) for f in o.__dataclass_fields__})
-
-    if hasattr(o, "__dict__"):
-        return _clean_floats(
-            {k: v for k, v in vars(o).items() if not k.startswith("_")}
-        )
-    return str(o)
+#: Encoder that keeps NaN / ±Inf so :func:`_normalise_tool_result` can
+#: record *where* they were before scrubbing them (``_nonfinite``).
+_json_default_raw = _make_json_default(lambda x: x)
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -389,10 +463,18 @@ def _json_default(o: Any) -> Any:
 #: ``CausalResult.to_dict``). Each entry is the (single) source of
 #: truth for both the schema injection in :func:`_build_mcp_tools`
 #: and the argument stripping in :func:`_handle_tools_call`.
-_RESERVED_ARG_NAMES = ("data_path", "detail")
+_RESERVED_ARG_NAMES = (
+    "data_path",
+    "data_id",
+    "data_records",
+    "data_csv",
+    "detail",
+)
 
 #: Allowed values for ``detail`` (mirrors ``CausalResult.to_dict``).
 _DETAIL_LEVELS = ("minimal", "standard", "agent")
+#: Spellings accepted for ``detail`` and the level they mean.
+_DETAIL_ALIASES = {"full": "agent"}
 
 #: Tools whose underlying StatsPAI function does NOT take a DataFrame
 #: as input (they consume pre-computed statistics or string handles).
@@ -418,12 +500,323 @@ _DATALESS_OVERRIDES = frozenset(
         "interpret_result",
         "sensitivity_from_result",
         "honest_did_from_result",
+        "vcov_from_result",
         "plot_from_result",
         "bibtex",
         "from_stata",
         "from_r",
+        # Discovery meta-tools (search / describe never touch data;
+        # call_function loads data only when the target function needs it).
+        "search_functions",
+        "describe_function",
+        "call_function",
+        # Data-handle tools take data_id / data_path / inline data — none of
+        # the three is individually required.
+        "load_data",
+        "describe_data",
+        "transform_data",
+        "route_estimator",
     }
 )
+
+#: Tools that receive the resolved data handle / provenance of their input
+#: (under ``_source_data_id`` / ``_source_provenance``) so they can record
+#: lineage. Every other tool sees only the DataFrame.
+_DATA_TOOLS = frozenset({"load_data", "describe_data", "transform_data"})
+
+
+#: Tool-list profiles. ``tools/list`` with the ``full`` profile returns
+#: every auto-generated tool (several hundred entries, megabytes on the
+#: wire) — more than any client context window holds. ``curated`` (the
+#: default everywhere) lists only the
+#: hand-written estimator / workflow / pipeline tools plus the three
+#: discovery meta-tools (``search_functions`` / ``describe_function`` /
+#: ``call_function``) through which every other registered function
+#: stays reachable. ``core`` is the smallest useful set for constrained
+#: clients. Select with ``statspai-mcp --profile <name>`` or
+#: ``STATSPAI_MCP_PROFILE``; ``tools/call`` accepts any tool name under
+#: every profile — the profile only shapes the advertised list.
+_PROFILES = ("core", "curated", "full")
+
+#: Every name here must be a curated tool: the profile is the
+#: intersection with the curated list, and a name outside it was filtered
+#: out silently (``synth`` / ``dml`` until 2026-10-16; both stay reachable
+#: through ``call_function``). ``load_data`` / ``describe_data`` /
+#: ``transform_data`` are here because the session instructions start the
+#: workflow with them. ``tests/test_mcp_w3_audit.py`` checks both.
+_CORE_PROFILE_TOOLS = frozenset(
+    {
+        "search_functions",
+        "describe_function",
+        "call_function",
+        "load_data",
+        "describe_data",
+        "transform_data",
+        "route_estimator",
+        "detect_design",
+        "preflight",
+        "recommend",
+        "regress",
+        "did",
+        "callaway_santanna",
+        "rdrobust",
+        "ivreg",
+        "audit_result",
+        "brief_result",
+        "interpret_result",
+        "honest_did_from_result",
+        "sensitivity_from_result",
+        "plot_from_result",
+        "bibtex",
+        "pipeline_did",
+        "pipeline_iv",
+        "pipeline_rd",
+    }
+)
+
+#: Hand-listed tools whose underlying function writes a file when asked
+#: to. The advertised set is this list *plus* every tool whose input
+#: schema has a file-output parameter (:data:`_FILE_OUTPUT_PARAMS`), see
+#: :func:`_is_file_writing_tool`. Their MCP annotations carry
+#: ``readOnlyHint=False`` so a client does not auto-approve a call that
+#: touches the filesystem.
+_FILE_WRITING_TOOLS = frozenset(
+    {
+        "cs_report",
+        "did_report",
+        "influence_functions",
+        "rd_dashboard",
+        "synth_report_to_file",
+        "synth_to_excel",
+    }
+)
+
+#: Input-schema parameter names that name a file / directory to write.
+_FILE_OUTPUT_PARAMS = frozenset(
+    {
+        "output",
+        "output_path",
+        "output_file",
+        "output_dir",
+        "outfile",
+        "out",
+        "out_path",
+        "out_dir",
+        "outdir",
+        "path",
+        "file",
+        "filename",
+        "file_path",
+        "filepath",
+        "fname",
+        "save",
+        "save_to",
+        "save_path",
+        "save_dir",
+        "export",
+        "export_path",
+        "to_file",
+        "dir",
+        "directory",
+    }
+)
+
+
+def _is_file_writing_tool(name: str, input_schema: Optional[Dict[str, Any]]) -> bool:
+    """True if ``name`` may write a file: hand-listed or schema-derived."""
+    if name in _FILE_WRITING_TOOLS:
+        return True
+    props = (input_schema or {}).get("properties") or {}
+    return any(p in _FILE_OUTPUT_PARAMS for p in props)
+
+
+def _file_writing_tool_names() -> "frozenset[str]":
+    """Every advertised tool that carries ``readOnlyHint=False``."""
+    return frozenset(
+        t["name"]
+        for t in _build_mcp_tools()
+        if t.get("annotations", {}).get("readOnlyHint") is False
+    )
+
+
+#: Profile used when neither :func:`set_tool_profile` nor
+#: ``STATSPAI_MCP_PROFILE`` chooses one — the same for the CLI and for
+#: in-process callers of :func:`handle_request`.
+DEFAULT_PROFILE = "curated"
+
+
+def _normalise_profile(profile: Optional[str]) -> str:
+    if profile is None:
+        profile = os.environ.get("STATSPAI_MCP_PROFILE", DEFAULT_PROFILE)
+    key = str(profile).strip().lower()
+    if key not in _PROFILES:
+        raise ValueError(
+            f"Unknown MCP tool profile {profile!r}; choose one of {list(_PROFILES)}."
+        )
+    return key
+
+
+#: Active profile for this server process (set by :func:`main` /
+#: :func:`set_tool_profile`; ``None`` means "read ``STATSPAI_MCP_PROFILE``,
+#: default :data:`DEFAULT_PROFILE`").
+_ACTIVE_PROFILE: Optional[str] = None
+
+
+def set_tool_profile(profile: Optional[str]) -> str:
+    """Set the ``tools/list`` profile for this process and return it."""
+    global _ACTIVE_PROFILE
+    _ACTIVE_PROFILE = None if profile is None else _normalise_profile(profile)
+    _build_mcp_tools.cache_clear()
+    _tools_list_result_json.cache_clear()
+    return _normalise_profile(_ACTIVE_PROFILE)
+
+
+#: What the ``text`` content block of a successful ``tools/call`` carries.
+#: ``full`` (default): the compact JSON of ``structuredContent`` again, as
+#: the spec asks for clients that ignore structured output. ``summary``: a
+#: few lines (headline numbers, violations, errors, handles) that point at
+#: ``structuredContent`` for the rest -- for clients known to read it.
+_TEXT_MODES = ("full", "summary")
+DEFAULT_TEXT_MODE = "full"
+_ACTIVE_TEXT_MODE: Optional[str] = None
+
+
+def _normalise_text_mode(mode: Optional[str]) -> str:
+    key = str(mode).strip().lower()
+    if key not in _TEXT_MODES:
+        raise ValueError(
+            f"Unknown MCP text mode {mode!r}; choose one of {list(_TEXT_MODES)} "
+            "(STATSPAI_MCP_TEXT / --text)."
+        )
+    return key
+
+
+def set_text_mode(mode: Optional[str]) -> str:
+    """Set the ``tools/call`` text-block mode for this process; return it.
+
+    ``None`` goes back to ``STATSPAI_MCP_TEXT`` (default ``'full'``).
+    """
+    global _ACTIVE_TEXT_MODE
+    _ACTIVE_TEXT_MODE = None if mode is None else _normalise_text_mode(mode)
+    return _text_mode()
+
+
+def _text_mode() -> str:
+    if _ACTIVE_TEXT_MODE is not None:
+        return _ACTIVE_TEXT_MODE
+    env = os.environ.get("STATSPAI_MCP_TEXT")
+    if env is None or not env.strip():
+        return DEFAULT_TEXT_MODE
+    return _normalise_text_mode(env)
+
+
+def _fmt_num(v: Any) -> str:
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return str(v)
+    if isinstance(v, int):
+        return str(v)
+    return f"{v:.6g}"
+
+
+_SUMMARY_MAX_TERMS = 12
+_SUMMARY_MAX_VIOLATIONS = 5
+
+
+def _summary_text(structured: Dict[str, Any], n_bytes: int) -> str:
+    """A few plain lines describing ``structured`` (``--text summary``)."""
+    lines: List[str] = []
+    head = [
+        str(structured[k])
+        for k in ("method", "estimand")
+        if structured.get(k) not in (None, "")
+    ]
+    if head:
+        lines.append(" | ".join(head))
+    est = structured.get("estimate")
+    if isinstance(est, (int, float)) and not isinstance(est, bool):
+        parts = [f"estimate {_fmt_num(est)}"]
+        for key, label in (("se", "SE"), ("pvalue", "p")):
+            if isinstance(structured.get(key), (int, float)):
+                parts.append(f"{label} {_fmt_num(structured[key])}")
+        ci = structured.get("ci")
+        if isinstance(ci, (list, tuple)) and len(ci) == 2:
+            parts.append(f"CI [{_fmt_num(ci[0])}, {_fmt_num(ci[1])}]")
+        lines.append(", ".join(parts))
+    coefs = structured.get("coefficients")
+    if isinstance(coefs, dict) and coefs:
+        items = list(coefs.items())
+        for term, row in items[:_SUMMARY_MAX_TERMS]:
+            if isinstance(row, dict):
+                cell = f"{term}: {_fmt_num(row.get('estimate'))}"
+                if row.get("std_error") is not None:
+                    cell += f" ({_fmt_num(row.get('std_error'))})"
+                if row.get("p_value") is not None:
+                    cell += f" p={_fmt_num(row.get('p_value'))}"
+                lines.append(cell)
+        if len(items) > _SUMMARY_MAX_TERMS:
+            lines.append(f"... {len(items) - _SUMMARY_MAX_TERMS} more terms")
+    if structured.get("n_obs") is not None:
+        lines.append(f"N = {_fmt_num(structured['n_obs'])}")
+    if structured.get("error"):
+        lines.append(
+            f"error ({structured.get('error_kind', 'error')}): {structured['error']}"
+        )
+        if structured.get("hint"):
+            lines.append(f"hint: {structured['hint']}")
+    viol = structured.get("violations")
+    if isinstance(viol, list) and viol:
+        lines.append(f"violations: {len(viol)}")
+        for v in viol[:_SUMMARY_MAX_VIOLATIONS]:
+            if isinstance(v, dict):
+                msg = v.get("message", v.get("test", ""))
+                lines.append(f"- [{v.get('severity', '?')}] {msg}")
+    for key in ("result_id", "data_id"):
+        if structured.get(key):
+            lines.append(f"{key}: {structured[key]}")
+    if structured.get("truncated"):
+        lines.append("output truncated by the byte budget (see output_budget)")
+    if not lines and structured.get("narrative"):
+        lines.append(str(structured["narrative"]))
+    if not lines:
+        keys = list(structured)
+        shown = ", ".join(keys[:20]) + (", ..." if len(keys) > 20 else "")
+        lines.append(f"fields: {shown}")
+    lines.append(
+        f"Full result ({n_bytes} bytes of JSON) is in structuredContent; this "
+        "server sends a summary text block (STATSPAI_MCP_TEXT=summary)."
+    )
+    return "\n".join(lines)
+
+
+def _profile_tool_names(profile: str) -> Optional["frozenset[str]"]:
+    """Names advertised under ``profile``; ``None`` means every tool."""
+    if profile == "full":
+        return None
+    curated = _curated_tool_names()
+    if profile == "curated":
+        return curated
+    return frozenset(n for n in curated if n in _CORE_PROFILE_TOOLS)
+
+
+def _curated_tool_names() -> "frozenset[str]":
+    """Names of the hand-curated tools, without building their manifest.
+
+    ``tool_manifest(curated_only=True)`` appends each tool's validation tier
+    to its description, which loads the full registry (every lazy
+    submodule, about 3 s cold). Only the names are needed to filter the
+    tool list, and they come from the three static sources the manifest is
+    assembled from, in the same order of precedence.
+    """
+    from .pipeline_tools import pipeline_tool_manifest
+    from .tools._specs import TOOL_REGISTRY
+    from .workflow_tools import workflow_tool_manifest
+
+    # A spec marked ``"profile": "full"`` keeps its hand-written schema and
+    # stays callable by name, but is listed only under the full profile.
+    names = {t["name"] for t in TOOL_REGISTRY if t.get("profile") != "full"}
+    names.update(t["name"] for t in workflow_tool_manifest())
+    names.update(t["name"] for t in pipeline_tool_manifest())
+    return frozenset(names)
 
 
 #: Backwards-compatible alias for the old hand-curated set. New code
@@ -598,6 +991,83 @@ _RESULT_OUTPUT_SCHEMA: Dict[str, Any] = {
             "description": "Structured repair hints for the next call.",
             "additionalProperties": True,
         },
+        "replay": {
+            "type": "string",
+            "description": (
+                "The sp.<fn>(...) call that was run, with the data source "
+                "named in a trailing comment."
+            ),
+        },
+        "replay_completeness": {
+            "type": "object",
+            "description": (
+                "What re-running `replay` needs. level: 'standalone' (a new "
+                "process can re-run it given the file in needs), "
+                "'session_replayable' (depends on a data_id / result_id "
+                "held by this server), 'call_only' (documents the call but "
+                "cannot re-run it: inline or remote data, or an argument "
+                "without a literal form). needs: the dependencies."
+            ),
+            "additionalProperties": True,
+        },
+        "isolation": {
+            "type": "object",
+            "description": (
+                "Present when the call ran in a child process "
+                "(STATSPAI_MCP_ISOLATION=process): mode; adopted_handles "
+                "when the result handle was handed over to this server and "
+                "works in follow-up calls; dropped_handles (with a reason) "
+                "for handles that could not outlive the child."
+            ),
+            "additionalProperties": True,
+        },
+        "runtime_warnings": {
+            "type": "array",
+            "description": (
+                "Python warnings raised during the call, as {category, "
+                "message}; at most 20 distinct ones (risk_summary gives the "
+                "count when more were raised)."
+            ),
+            "items": {"type": "object", "additionalProperties": True},
+        },
+        "truncated": {
+            "type": "array",
+            "description": (
+                "Containers shortened to meet max_output_bytes: {path, "
+                "total, shown}. Absent when nothing was cut."
+            ),
+            "items": {"type": "object", "additionalProperties": True},
+        },
+        "risk_details_complete": {
+            "type": "boolean",
+            "description": (
+                "false when violations / runtime_warnings / degradations / "
+                "warnings were shortened: the lists shown are not all the "
+                "risks raised. Absent when they are complete."
+            ),
+        },
+        "risk_summary": {
+            "type": "object",
+            "description": (
+                "Present with risk_details_complete=false. Per shortened "
+                "risk field: total, shown, omitted, by_severity, categories; "
+                "plus full_details (how to obtain every entry)."
+            ),
+            "additionalProperties": True,
+        },
+        "output_budget": {
+            "type": "object",
+            "description": (
+                "Outcome of max_output_bytes when the result did not fit "
+                "untouched: status ('truncated' = cut to fit; "
+                "'unavoidable_overflow' = fields that are never cut exceed "
+                "the budget, listed under oversized_fields), max_bytes, "
+                "actual_bytes, scope ('structuredContent': the text block "
+                "repeats the object and an image is sent on top). Absent "
+                "when the result fit."
+            ),
+            "additionalProperties": True,
+        },
     },
     "additionalProperties": True,
 }
@@ -609,7 +1079,7 @@ RESULT_SCHEMA_URI = "statspai://schema/result"
 
 #: The *compact* output schema actually injected into every tool's
 #: ``outputSchema`` in ``tools/list``. The full documented envelope above
-#: is byte-identical for all ~480 tools, so inlining it everywhere would
+#: is byte-identical for all ~580 tools, so inlining it everywhere would
 #: duplicate ~1.3 MB of the same schema across the manifest (half the
 #: payload) for zero added information. Instead each tool advertises this
 #: compact-but-valid schema — enough for a client to validate
@@ -620,12 +1090,7 @@ RESULT_SCHEMA_URI = "statspai://schema/result"
 _RESULT_OUTPUT_SCHEMA_COMPACT: Dict[str, Any] = {
     "type": "object",
     "additionalProperties": True,
-    "description": (
-        "Agent-facing estimator result (object). Shape varies by tool and "
-        "the `detail` level; on failure it carries `error` / `error_kind` / "
-        "`remediation` instead. Full typed field reference: read the "
-        f"`{RESULT_SCHEMA_URI}` resource."
-    ),
+    "description": f"Fields: {RESULT_SCHEMA_URI}",
 }
 
 
@@ -747,17 +1212,171 @@ def _dataless_tool_names() -> "frozenset[str]":
     return frozenset(derived)
 
 
-@lru_cache(maxsize=1)
-def _build_mcp_tools() -> List[Dict[str, Any]]:
+#: URI of the reference for the arguments the server adds to every tool.
+COMMON_ARGUMENTS_URI = "statspai://arguments"
+
+#: Order in which the server-handled arguments are added to a tool schema.
+_COMMON_ARGUMENT_ORDER = (
+    "data_path",
+    "data_id",
+    "data_records",
+    "data_csv",
+    "data_columns",
+    "data_sample_n",
+    "result_id",
+    "max_output_bytes",
+    "as_handle",
+    "detail",
+)
+
+#: Arguments that shape how a file is read. Every tool *accepts* them,
+#: but only the tools an agent loads data with advertise them: on the
+#: other tools they are reached just in time, from the hint of the
+#: oversize-file error that names them, and leaving them out of
+#: ``tools/list`` saves two schema entries per tool.
+_LOAD_ONLY_ARGUMENTS = frozenset({"data_columns", "data_sample_n"})
+
+_LOAD_ARGUMENT_TOOLS = frozenset(
+    {"load_data", "describe_data", "transform_data", "call_function"}
+)
+
+
+def _common_argument_schemas(remote_ok: bool) -> Dict[str, Dict[str, Any]]:
+    """Schemas of the arguments the server handles for every tool.
+
+    These ten entries are repeated in each advertised tool, so their
+    descriptions are one short clause each: with the long form they were
+    two thirds of ``tools/list`` (97 KiB of 146 KiB under the ``curated``
+    profile). The long form is served once, by
+    :func:`common_arguments_reference` at :data:`COMMON_ARGUMENTS_URI`.
+    """
+    return {
+        "data_path": {
+            "type": "string",
+            "description": (
+                "Absolute path of a data file on the server"
+                + (" or an s3 / gs / https URL." if remote_ok else ".")
+            ),
+        },
+        "data_id": {
+            "type": "string",
+            "description": "Data handle (d_...) from load_data; replaces data_path.",
+        },
+        "data_records": {
+            "type": "array",
+            "items": {"type": "object"},
+            "description": "Small inline table as row objects.",
+        },
+        "data_csv": {
+            "type": "string",
+            "description": "Small inline table as CSV text.",
+        },
+        "data_columns": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Load only these columns.",
+        },
+        "data_sample_n": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Uniform random subsample of this many rows (seed 0).",
+        },
+        "result_id": {
+            "type": "string",
+            "description": "Handle of an earlier fit made with as_handle=true.",
+        },
+        "max_output_bytes": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Result byte budget (default 262144; 0 = none).",
+        },
+        "as_handle": {
+            "type": "boolean",
+            "default": False,
+            "description": "Cache the fit and return its result_id.",
+        },
+        "detail": {
+            "type": "string",
+            "enum": list(_DETAIL_LEVELS),
+            "default": "agent",
+            "description": "Payload depth; agent is the fullest.",
+        },
+    }
+
+
+def common_arguments_reference() -> str:
+    """Long-form reference for the arguments added to every tool.
+
+    Served as the :data:`COMMON_ARGUMENTS_URI` resource. The per-tool
+    schemas carry one clause per argument; everything an agent may need
+    beyond that clause is here, once.
+    """
+    from ._data_loader import ALLOW_REMOTE_ENV, DATA_ROOTS_ENV, remote_loading_enabled
+
+    remote = (
+        "Network URLs (s3://, gs://, https://) are enabled on this server."
+        if remote_loading_enabled()
+        else f"Network URLs are disabled (operator opt-in: {ALLOW_REMOTE_ENV}=1)."
+    )
+    return (
+        "# Arguments the StatsPAI MCP server handles for every tool\n\n"
+        "Pass exactly one data source: `data_path`, `data_id`, "
+        "`data_records` or `data_csv`.\n\n"
+        "- `data_path`: absolute path to a data file on the server, or a "
+        "file:// URL. Supported: .csv / .tsv / .txt (delimited), .parquet / "
+        ".pq, .feather / .arrow, .xlsx / .xls, .dta (Stata), .json / .jsonl. "
+        f"{remote} The operator may restrict readable directories "
+        f"({DATA_ROOTS_ENV}).\n"
+        "- `data_id`: handle (d_...) of a dataset already loaded with "
+        "load_data or derived with transform_data. Use it instead of "
+        "data_path to avoid re-sending the file; the handle's lineage is "
+        "recorded in data_provenance.\n"
+        "- `data_records`: inline table as a JSON array of row objects. "
+        "Small data only; same byte cap as file loads.\n"
+        "- `data_csv`: inline table as CSV text with a header row.\n"
+        "`data_columns` and `data_sample_n` are accepted by every tool but "
+        "advertised only on load_data, describe_data, transform_data and "
+        "call_function.\n\n"
+        "- `data_columns`: column projection, honoured by every reader that "
+        "supports it (CSV / Parquet / Feather / Stata) and by streamed "
+        "sampling.\n"
+        "- `data_sample_n`: uniform random subsample size (seed=0, "
+        "deterministic, file order kept). Files over the server's size cap "
+        "are sampled in one streamed pass for .csv / .tsv / .txt / .parquet "
+        "/ .jsonl / .dta, which is useful on huge panels.\n"
+        "- `result_id`: handle to a previously fitted result, returned by an "
+        "earlier call made with as_handle=true. Tools that operate on a "
+        "fitted object accept it in place of data_path and column names.\n"
+        "- `as_handle`: if true, the server caches the fitted result and "
+        "returns result_id + result_uri alongside the payload, so a later "
+        "tools/call can chain without re-running the estimator.\n"
+        "- `max_output_bytes`: byte budget for this result (default 262144, "
+        "server env STATSPAI_MCP_MAX_OUTPUT_BYTES; 0 = no limit). Over "
+        "budget, the longest lists and tables are shortened first and "
+        "listed under `truncated`; headline numbers are never cut. Risk "
+        "lists are cut last and leave `risk_summary`; `output_budget` "
+        "reports the outcome.\n"
+        "- `detail`: payload depth. 'minimal' (about 150 tokens) for "
+        "sub-step calls where only the point estimate is needed; 'standard' "
+        "(about 1K tokens) for diagnostics and the coefficient table; "
+        "'agent' (about 2K tokens, the default) adds violations, next_steps "
+        "and suggested_functions so the next call can be planned without "
+        "another round trip.\n"
+    )
+
+
+@lru_cache(maxsize=4)
+def _build_mcp_tools(profile: Optional[str] = None) -> List[Dict[str, Any]]:
     """Convert the StatsPAI agent-tool manifest into MCP tool specs.
 
     We inject server-handled arguments into every tool's schema so the
     LLM can supply them via the standard ``tools/call`` arguments
     object:
 
-    * ``data_path`` (required for data-bound tools) — absolute path or
-      ``s3://`` / ``gs://`` / ``https://`` URL to a CSV / Parquet / Stata
-      / Feather / JSON file the server loads into a DataFrame.
+    * ``data_path`` / ``data_id`` / ``data_records`` / ``data_csv``
+      (none marked required; a data-bound call without one gets
+      ``error_kind='missing_data'``) — a file path or URL, a handle from
+      ``load_data``, or an inline table the server loads into a DataFrame.
     * ``data_columns`` (optional) — column projection for Parquet /
       Stata reads to skip loading unused columns.
     * ``data_sample_n`` (optional) — random subsample size for fast
@@ -771,111 +1390,70 @@ def _build_mcp_tools() -> List[Dict[str, Any]]:
       next call can reference it without re-running the estimator.
     * ``detail`` (optional, default ``"agent"``) — payload depth,
       forwarded to ``result.to_dict(detail=...)``.
+
+    ``profile`` defaults to the active profile (:func:`set_tool_profile`);
+    the resources layer passes ``"full"`` so ``statspai://functions``
+    indexes every tool whatever the advertised list is.
     """
+    from ._data_loader import remote_loading_enabled
+
+    remote_ok = remote_loading_enabled()
+    common = _common_argument_schemas(remote_ok)
     manifest = _agent_tool_manifest()
-    dataless = _dataless_tool_names()
+    profile = _normalise_profile(_ACTIVE_PROFILE if profile is None else profile)
+    allowed = _profile_tool_names(profile)
+    # The committed snapshot may predate a curated tool added in this
+    # release; make sure every curated entry is advertised regardless.
+    present = {t["name"] for t in manifest}
+    if _curated_tool_names() - present:
+        from .tools import tool_manifest as _tool_manifest
+
+        manifest = list(manifest) + [
+            t for t in _tool_manifest(curated_only=True) if t["name"] not in present
+        ]
+    if allowed is not None:
+        manifest = [t for t in manifest if t["name"] in allowed]
     out: List[Dict[str, Any]] = []
     for t in manifest:
         schema = dict(t.get("input_schema") or {})
         props = dict(schema.get("properties") or {})
         required = list(schema.get("required") or [])
-        if "data_path" not in props:
-            props["data_path"] = {
-                "type": "string",
-                "description": (
-                    "Absolute path or URL to a data file. Supported: "
-                    ".csv / .tsv / .txt (delimited), .parquet / .pq, "
-                    ".feather / .arrow, .xlsx / .xls, .dta (Stata), "
-                    ".json / .jsonl. Schemes: file://, s3://, gs://, "
-                    "https://."
-                ),
-            }
-            # Mark required ONLY for tools whose underlying function
-            # actually takes a DataFrame; dataless tools leave
-            # ``data_path`` optional so strict-schema MCP clients don't
-            # refuse to dispatch them.
-            if t["name"] not in dataless:
-                required.append("data_path")
-        if "data_columns" not in props:
-            props["data_columns"] = {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": (
-                    "Optional column projection, honoured by every "
-                    "reader that supports it (CSV/Parquet/Feather/Stata) "
-                    "and by streamed sampling."
-                ),
-            }
-        if "data_sample_n" not in props:
-            props["data_sample_n"] = {
-                "type": "integer",
-                "minimum": 1,
-                "description": (
-                    "Optional uniform random subsample size "
-                    "(seed=0, deterministic, file order kept). Files over "
-                    "the server's size cap are sampled in one streamed "
-                    "pass for .csv/.tsv/.txt/.parquet/.jsonl/.dta — useful "
-                    "on huge panels."
-                ),
-            }
-        if "result_id" not in props:
-            props["result_id"] = {
-                "type": "string",
-                "description": (
-                    "Optional handle to a previously-fitted result "
-                    "(returned by an earlier call when as_handle=true). "
-                    "Tools that operate on a fitted object accept this "
-                    "in place of re-supplying data_path + columns."
-                ),
-            }
-        if "as_handle" not in props:
-            props["as_handle"] = {
-                "type": "boolean",
-                "default": False,
-                "description": (
-                    "If true, cache the fitted result on the server "
-                    "and return result_id + result_uri alongside the "
-                    "JSON payload so a subsequent tools/call can chain "
-                    "without re-running."
-                ),
-            }
-        # Unconditional overwrite: ``detail`` is a server-handled control
-        # arg (forwarded to ``result.to_dict(detail=...)``) — if a
-        # registry estimator happens to have its own ``detail`` parameter
-        # (e.g. ``oaxaca`` uses it as a bool), we hide it so the manifest
-        # schema is uniform across tools. Reaching that estimator's
-        # ``detail`` requires the direct Python API.
-        props["detail"] = {
-            "type": "string",
-            "enum": list(_DETAIL_LEVELS),
-            "default": "agent",
-            "description": (
-                "Payload depth: 'minimal' (~150 tokens) for "
-                "sub-step calls where only the point estimate is "
-                "needed; 'standard' (~1K tokens) for diagnostics "
-                "+ coefficient table; 'agent' (~2K tokens, "
-                "default) adds violations / next_steps / "
-                "suggested_functions so the LLM can plan its "
-                "next call without another round-trip."
-            ),
-        }
+        writes_files = _is_file_writing_tool(t["name"], schema)
+        # No data argument is ever marked required: a data-bound tool takes
+        # one of data_path / data_id / data_records / data_csv, and a strict
+        # client refused a data_id-only call while data_path was required.
+        # JSON Schema could say "one of four" with a top-level anyOf, but
+        # several clients reject anyOf at the top level, so the server
+        # enforces it instead: a call without a dataset returns
+        # error_kind='missing_data' naming the four arguments.
+        for arg in _COMMON_ARGUMENT_ORDER:
+            if arg in _LOAD_ONLY_ARGUMENTS and t["name"] not in _LOAD_ARGUMENT_TOOLS:
+                continue
+            # ``detail`` is overwritten unconditionally: it is a
+            # server-handled control arg (forwarded to
+            # ``result.to_dict(detail=...)``). If a registry estimator has
+            # its own ``detail`` parameter (``oaxaca`` uses it as a bool)
+            # we hide it so the schema is uniform across tools; reaching
+            # that estimator's ``detail`` requires the direct Python API.
+            if arg == "detail" or arg not in props:
+                props[arg] = common[arg]
         schema["type"] = schema.get("type", "object")
         schema["properties"] = props
         schema["required"] = sorted(set(required))
 
         # Tool annotations (MCP ``2025-03-26``+). StatsPAI tools are
         # estimators / diagnostics / report builders: they read the
-        # supplied dataset, compute, and return — they never mutate the
-        # input file or any external state, and their "world" is the
-        # closed StatsPAI library plus the one dataset handed to them
-        # (not an open set of external entities). So ``readOnlyHint`` and
-        # ``openWorldHint=False`` are honestly uniform; a client can use
-        # ``readOnlyHint`` to auto-approve calls without a confirmation
-        # prompt. A manifest entry may override either hint by carrying
-        # its own ``annotations`` dict (none do today).
+        # supplied dataset, compute, and return. ``readOnlyHint`` is
+        # False for tools that can write a file (hand list + schema-
+        # derived output parameters). ``openWorldHint`` is True only when
+        # the tool can reach beyond the server — i.e. it accepts
+        # ``data_path`` and the operator enabled network URLs
+        # (``STATSPAI_MCP_ALLOW_REMOTE``); otherwise the tool's world is
+        # the closed library plus local / inline data. A manifest entry
+        # may override either hint by carrying its own ``annotations``.
         annotations = dict(t.get("annotations") or {})
-        annotations.setdefault("readOnlyHint", True)
-        annotations.setdefault("openWorldHint", False)
+        annotations.setdefault("readOnlyHint", not writes_files)
+        annotations.setdefault("openWorldHint", bool(remote_ok))
 
         out.append(
             {
@@ -982,13 +1560,53 @@ _SESSION_INSTRUCTIONS = (
     "cross_language_command_check. For cross-software evidence, read "
     "statspai://parity/track-a-summary; it summarizes committed artifacts "
     "only and is not a live Stata/R execution.\n\n"
-    "Data provenance: tools/call responses that load data_path include "
+    "Data handling: load_data(data_path=... | data_records=[...] | "
+    "data_csv='...') returns a data_id; pass data_id to any tool instead "
+    "of re-sending the file. transform_data(data_id=..., operations=[...]) "
+    "filters / reshapes / winsorises / imputes and returns a new handle "
+    "whose lineage rides in every result's data_provenance; "
+    "describe_data profiles a handle; statspai://data/{id} reads it. "
+    "Lost a data_id or result_id? statspai://handles lists the ones the "
+    "server still holds.\n\n"
+    "Data provenance: tools/call responses that load data include "
     "data_provenance. Local files carry size, mtime, and SHA-256; remote "
-    "URLs are sanitized and not re-hashed.\n\n"
+    "URLs are sanitized and not re-hashed; inline tables are hashed; "
+    "handles carry their lineage.\n\n"
     "Token economy: pass detail='minimal' on cheap sub-step calls; "
     "default 'agent' carries violations + next_steps. Inline plots "
-    "arrive as image content blocks for vision-capable clients."
+    "arrive as image content blocks for vision-capable clients.\n\n"
+    "Every tool takes the same data / handle / output arguments "
+    "(data_path, data_id, data_records, data_csv, data_columns, "
+    "data_sample_n, result_id, as_handle, max_output_bytes, detail); "
+    "their schemas carry one clause each and statspai://arguments has "
+    "the full reference. data_columns / data_sample_n are accepted by "
+    "every tool but listed only on the data tools. detail is 'minimal' "
+    "(estimate only), 'standard' (+ diagnostics, coefficients) or "
+    "'agent' (default; + violations, next steps); as_handle defaults "
+    "to false."
 )
+
+
+def _runtime_instructions() -> str:
+    """The last paragraph of the instructions: which Python runs the server.
+
+    A client cannot otherwise tell which environment its ``statspai-mcp``
+    entry resolved to, and an old StatsPAI in another environment is the
+    most common broken setup (``statspai mcp doctor``).
+    """
+    from .._doctor import runtime_summary
+
+    rt = runtime_summary()
+    return (
+        f"\n\nServer runtime: StatsPAI {rt['statspai_version']} on Python "
+        f"{rt['python_version']} at {rt['python']} ({rt['install_kind']}). "
+        "describe_function and preflight replies repeat this as "
+        "server_runtime; `statspai doctor` in a shell lists the other "
+        "interpreters and their StatsPAI versions."
+    )
+
+
+_SESSION_INSTRUCTIONS = _SESSION_INSTRUCTIONS + _runtime_instructions()
 
 
 def _handle_initialize(params: Dict[str, Any]) -> Dict[str, Any]:
@@ -1019,13 +1637,19 @@ def _handle_initialize(params: Dict[str, Any]) -> Dict[str, Any]:
             "tools": {"listChanged": False},
             "resources": {"subscribe": False, "listChanged": False},
             "prompts": {"listChanged": False},
+            # Argument completion for prompts and resource templates
+            # (function names, guide families, live handles).
+            "completions": {},
         },
-        "serverInfo": {
-            "name": SERVER_NAME,
-            "version": SERVER_VERSION,
-        },
+        "serverInfo": _protocol_identity(),
         "instructions": _SESSION_INSTRUCTIONS,
     }
+
+
+def _protocol_identity() -> Dict[str, Any]:
+    from ._protocol import server_identity
+
+    return server_identity(full=True)
 
 
 def _handle_tools_list(params: Dict[str, Any]) -> Dict[str, Any]:
@@ -1042,11 +1666,29 @@ def _handle_tools_list(params: Dict[str, Any]) -> Dict[str, Any]:
 #: thing for in-process tests.
 _PROGRESS_SINK: Optional[TextIO] = None
 
+#: Per-thread override of :data:`_PROGRESS_SINK`. The HTTP transport
+#: serves several connections at once, each with its own response stream,
+#: so it binds the stream of the request being served on the thread that
+#: serves it (:func:`_bind_progress_sink`).
+_THREAD_PROGRESS = threading.local()
+
+
+def _bind_progress_sink(sink: Optional[Any]) -> None:
+    """Route this thread's progress notifications to ``sink``."""
+    _THREAD_PROGRESS.sink = sink
+    _THREAD_PROGRESS.bound = sink is not None
+
+
+def _progress_sink() -> Optional[Any]:
+    if getattr(_THREAD_PROGRESS, "bound", False):
+        return getattr(_THREAD_PROGRESS, "sink", None)
+    return _PROGRESS_SINK
+
 
 def _make_progress_drain() -> Callable[[Dict[str, Any]], None]:
     """Return a callable that writes a progress notification to the
     active stdio sink. Returns a no-op if no sink is registered."""
-    sink = _PROGRESS_SINK
+    sink = _progress_sink()
     if sink is None:
 
         def _noop(payload: Dict[str, Any]) -> None:
@@ -1078,31 +1720,317 @@ def _make_progress_drain() -> Callable[[Dict[str, Any]], None]:
     return _drain
 
 
+class _ToolCallError(Exception):
+    """A failure while *executing* a ``tools/call``.
+
+    MCP separates protocol errors (unknown method, malformed request,
+    unknown tool — JSON-RPC ``error``) from tool-execution errors, which
+    are returned as a normal result with ``isError: true`` so the model
+    sees them and can correct its next call. Many clients never show a
+    JSON-RPC error to the model at all, so a bad ``data_id``, an
+    unreadable file, a timeout or an estimator failure must travel as a
+    result. ``kind`` becomes ``error_kind``; ``fields`` (``hint``,
+    ``miss_reason``, ...) are merged into ``structuredContent``.
+    """
+
+    def __init__(self, kind: str, message: str, **fields: Any) -> None:
+        super().__init__(message)
+        self.kind = kind
+        self.message = message
+        self.fields = fields
+
+
+def _tool_error_result(kind: str, message: str, **fields: Any) -> Dict[str, Any]:
+    """``tools/call`` result for a tool-execution failure (``isError``)."""
+    payload: Dict[str, Any] = {"error": message, "error_kind": kind, "message": message}
+    for k, v in fields.items():
+        if v is not None:
+            payload[k] = v
+    # The text block is the compact JSON of the same (small) payload, as
+    # for successful results, so a client that ignores structuredContent
+    # can still parse ``error_kind`` / ``hint``.
+    payload = _clean_floats(payload)
+    text = json.dumps(payload, separators=(",", ":"), default=_json_default)
+    return {
+        "content": [{"type": "text", "text": text}],
+        "isError": True,
+        "structuredContent": payload,
+    }
+
+
+def _exception_kind(exc: BaseException, default: str) -> str:
+    """Stable ``error_kind`` for a data-loading exception."""
+    if isinstance(exc, FileNotFoundError):
+        return "file_not_found"
+    from ..exceptions import StatsPAIError
+
+    code = getattr(exc, "code", None) if isinstance(exc, StatsPAIError) else None
+    if isinstance(code, str) and code not in ("", "method_incompatibility"):
+        return code
+    return default
+
+
+def _debug_enabled() -> bool:
+    return os.environ.get("STATSPAI_MCP_DEBUG", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+
+
+def _normalise_tool_result(result: Dict[str, Any]) -> Dict[str, Any]:
+    """Native-JSON copy of ``result`` with non-finite values recorded.
+
+    numpy / pandas values are converted with :data:`_json_default_raw`
+    (which keeps NaN / ±Inf), then every non-finite float becomes
+    ``null`` and its JSON Pointer is listed under ``_nonfinite`` so an
+    agent can tell "infinite" or "undefined" from "missing".
+    """
+    from ._output_budget import scrub_nonfinite
+
+    try:
+        native = json.loads(
+            json.dumps(result, default=_json_default_raw, allow_nan=True)
+        )
+    except (TypeError, ValueError, RecursionError) as exc:
+        raise _ToolCallError(
+            "serialization_error",
+            f"The tool ran but its result could not be serialised to JSON: "
+            f"{type(exc).__name__}: {exc}",
+            hint="Retry with detail='minimal', or report this as a bug.",
+        ) from exc
+    clean, found, total = scrub_nonfinite(native)
+    if not isinstance(clean, dict):
+        clean = {"value": clean}
+    if found:
+        clean["_nonfinite"] = found
+        if total > len(found):
+            clean["_nonfinite_total"] = total
+    return clean
+
+
 def _handle_tools_call(params: Dict[str, Any]) -> Dict[str, Any]:
     name = params.get("name")
-    arguments = dict(params.get("arguments") or {})
-    if not isinstance(name, str):
+    if not isinstance(name, str) or not name:
         raise _InvalidParamsError("`name` is required and must be a string")
+    raw_args = params.get("arguments")
+    if raw_args is None:
+        arguments: Dict[str, Any] = {}
+    elif isinstance(raw_args, dict):
+        arguments = dict(raw_args)
+    else:
+        raise _InvalidParamsError("`arguments` must be a JSON object")
+    try:
+        from . import _process_worker
 
-    # Server-handled args are stripped before estimator dispatch — the
-    # estimator's signature has no ``data_path`` / ``detail`` etc. and
-    # would crash with a "got an unexpected keyword argument" error.
+        if _process_worker.isolation_mode() == "process" and _process_worker.eligible(
+            name, arguments
+        ):
+            isolated = _run_isolated_call(name, arguments, params)
+            if isolated is not None:
+                return isolated
+        try:
+            # An isolated worker first takes the results its call reads.
+            _process_worker.import_inbound()
+            return _run_tools_call(name, arguments, params)
+        finally:
+            # ... and leaves the ones it produced for the parent.
+            _process_worker.export_handles()
+    except _ToolCallError as err:
+        return _tool_error_result(err.kind, err.message, **err.fields)
+
+
+def _run_isolated_call(
+    name: str, arguments: Dict[str, Any], params: Dict[str, Any]
+) -> Optional[Dict[str, Any]]:
+    """Run a call in a child process that can be killed.
+
+    Returns ``None`` when the call reads a result that cannot be handed
+    to a worker; the caller then runs it on the thread runner.
+    """
+    from . import _process_worker
+    from ._runner import current_cancel_event, tool_timeout
+
+    meta = params.get("_meta") if isinstance(params.get("_meta"), dict) else None
+    sink = _progress_sink()
+
+    def _forward(line: str) -> None:
+        if sink is not None:
+            sink.write(line + "\n")
+            sink.flush()
+
+    import shutil
+    import tempfile
+
+    timeout = tool_timeout()
+    import secrets
+
+    handoff = tempfile.mkdtemp(prefix="statspai-mcp-handoff-")
+    handoff_key = secrets.token_hex(32)
+    reads = arguments.get("result_id")
+    if isinstance(reads, str) and reads:
+        if not _process_worker.export_inbound(handoff, handoff_key, [reads]):
+            # Not in the cache, or not picklable: answer from this process.
+            shutil.rmtree(handoff, ignore_errors=True)
+            return None
+    try:
+        status, payload = _process_worker.run_isolated(
+            name,
+            arguments,
+            meta,
+            timeout=timeout,
+            cancel_event=current_cancel_event(),
+            forward=_forward,
+            handoff_dir=handoff,
+            handoff_key=handoff_key,
+        )
+        adopted: List[str] = []
+        failed: Dict[str, str] = {}
+        if status == "result":
+            adopted, failed = _process_worker.import_handles(handoff, handoff_key)
+            if isinstance(reads, str) and reads:
+                # the handle the call read is still held here
+                adopted = list(adopted) + [reads]
+    finally:
+        shutil.rmtree(handoff, ignore_errors=True)
+    if status == "result":
+        return _process_worker.annotate(payload, adopted=adopted, failed=failed)
+    if status == "rpc_error":
+        code = payload.get("code") if isinstance(payload, dict) else None
+        message = str(payload.get("message")) if isinstance(payload, dict) else ""
+        if code == -32602:
+            raise _InvalidParamsError(message)
+        raise _ToolCallError("internal_error", message, tool=name)
+    if status == "timeout":
+        raise _ToolCallError(
+            "timeout",
+            f"tool exceeded {timeout:.0f}s timeout "
+            "(env: STATSPAI_MCP_TOOL_TIMEOUT_SECONDS)",
+            hint=(
+                "Retry on a sample (data_sample_n) or with cheaper options, or "
+                "raise the timeout. The worker process was killed: nothing is "
+                "left running."
+            ),
+            timeout_seconds=timeout,
+            worker_may_still_be_running=False,
+            worker_killed=True,
+            isolation="process",
+        )
+    if status == "cancelled":
+        raise _ToolCallError(
+            "cancelled",
+            "The client cancelled this tools/call.",
+            worker_may_still_be_running=False,
+            worker_killed=True,
+            isolation="process",
+        )
+    raise _ToolCallError(
+        "internal_error",
+        f"isolated worker exited without an answer "
+        f"(returncode {payload.get('returncode')})",
+        tool=name,
+        stderr=payload.get("stderr") if _debug_enabled() else None,
+        isolation="process",
+    )
+
+
+def _resolve_tool_data(
+    name: str, arguments: Dict[str, Any]
+) -> "tuple[Any, Optional[Dict[str, Any]], str]":
+    """Pop the data-source arguments and load the frame.
+
+    Returns ``(df, data_provenance, replay_comment)``; raises
+    :class:`_ToolCallError` for every caller-fixable failure.
+    """
     data_path = arguments.pop("data_path", None)
     data_columns = arguments.pop("data_columns", None) or None
     data_sample_n = arguments.pop("data_sample_n", None)
-    result_id = arguments.pop("result_id", None)
-    as_handle = bool(arguments.pop("as_handle", False))
+    data_id = arguments.pop("data_id", None)
+    data_records = arguments.pop("data_records", None)
+    data_csv = arguments.pop("data_csv", None)
 
-    # MCP ``_meta.progressToken`` is the standard handshake the client
-    # uses to opt in to receiving progress notifications. It's set
-    # OUTSIDE the ``arguments`` block (per spec) — pull it from
-    # ``params['_meta']``.
-    meta = params.get("_meta") or {}
-    progress_token = meta.get("progressToken") if isinstance(meta, dict) else None
+    from ._replay import data_comment
+
+    sources = [
+        k
+        for k, v in (
+            ("data_id", data_id),
+            ("data_path", data_path),
+            ("data_records", data_records),
+            ("data_csv", data_csv),
+        )
+        if v is not None and v != ""
+    ]
+    if len(sources) > 1:
+        raise _ToolCallError(
+            "invalid_arguments",
+            f"Pass exactly one data source; got {sources}.",
+            hint=(
+                "Use data_id for a handle from load_data / transform_data, "
+                "data_path for a file or URL, data_records / data_csv for an "
+                "inline table."
+            ),
+        )
+    if data_columns is not None and (
+        not isinstance(data_columns, list)
+        or not all(isinstance(c, str) for c in data_columns)
+    ):
+        raise _ToolCallError(
+            "invalid_arguments", "data_columns must be a list of column names."
+        )
 
     df = None
-    data_prov = None
-    if data_path:
+    data_prov: Optional[Dict[str, Any]] = None
+    comment = ""
+    if data_id:
+        from ._data_cache import DATA_CACHE, handle_provenance, missing_handle_error
+
+        if not isinstance(data_id, str):
+            raise _ToolCallError(
+                "invalid_arguments", "data_id must be a string handle (d_...)."
+            )
+        cached = DATA_CACHE.get(data_id)
+        if cached is None:
+            miss = missing_handle_error(data_id)
+            raise _ToolCallError(
+                miss["error_kind"],
+                miss["error"],
+                hint=miss["hint"],
+                miss_reason=miss["miss_reason"],
+                data_id=data_id,
+            )
+        df = cached
+        data_prov = handle_provenance(data_id)
+        if data_columns:
+            missing_cols = [c for c in data_columns if c not in df.columns]
+            if missing_cols:
+                raise _ToolCallError(
+                    "column_not_found",
+                    f"data_columns not in handle {data_id}: {missing_cols}",
+                    hint="describe_data(data_id=...) lists the columns.",
+                )
+            df = df[list(data_columns)]
+            data_prov["columns_requested"] = list(data_columns)
+        comment = data_comment(data_id=data_id, data_columns=data_columns)
+    elif data_records is not None or data_csv is not None:
+        from ._data_cache import inline_frame
+
+        try:
+            df, data_prov = inline_frame(
+                records=data_records, csv_text=data_csv, max_bytes=_max_data_bytes()
+            )
+        except (ValueError, TypeError) as e:  # MethodIncompatibility / parse errors
+            raise _ToolCallError(
+                _exception_kind(e, "invalid_data"),
+                str(e),
+                hint=getattr(e, "recovery_hint", None),
+            ) from e
+        comment = data_comment(inline_provenance=data_prov)
+    elif data_path:
+        if not isinstance(data_path, str):
+            raise _ToolCallError(
+                "invalid_arguments", "data_path must be a string path or URL."
+            )
         try:
             df = _load_dataframe(
                 data_path,
@@ -1114,77 +2042,385 @@ def _handle_tools_call(params: Dict[str, Any]) -> Dict[str, Any]:
                 columns=data_columns,
                 sample_n=data_sample_n,
             )
-        except (FileNotFoundError, ValueError) as e:
-            # Surface as -32602 rather than a generic -32000 — a
-            # bad/missing path is a caller-supplied params problem.
-            raise _InvalidParamsError(str(e))
+        except (OSError, ValueError, ImportError) as e:
+            raise _ToolCallError(
+                _exception_kind(e, "data_load_error"),
+                str(e) or type(e).__name__,
+                hint=getattr(e, "recovery_hint", None),
+                data_path=data_path,
+            ) from e
+        comment = data_comment(
+            data_path=data_path, data_columns=data_columns, data_sample_n=data_sample_n
+        )
+    if name in _DATA_TOOLS:
+        # Let the handle tools record where their input came from.
+        if data_id:
+            arguments["_source_data_id"] = data_id
+        if data_prov is not None:
+            arguments["_source_provenance"] = data_prov
+    return df, data_prov, comment
+
+
+def _ensure_headless_matplotlib() -> None:
+    """Make plots render off the main thread: select the Agg backend.
+
+    Every ``tools/call`` runs on a worker thread, and macOS's default
+    backend refuses to create a figure outside the main thread
+    (``pipeline_rd``'s bandwidth-sensitivity stage failed with "Cannot
+    create a GUI FigureManager outside the main thread"). A choice made by
+    the user is respected: ``MPLBACKEND`` in the environment, or a backend
+    already resolved by a matplotlib the host imported. Matplotlib is never
+    imported here; when it is not loaded yet, setting ``MPLBACKEND`` is
+    enough for its first import.
+    """
+    if os.environ.get("MPLBACKEND"):
+        return
+    mpl = sys.modules.get("matplotlib")
+    if mpl is None:
+        os.environ["MPLBACKEND"] = "Agg"
+        return
+    getter = getattr(getattr(mpl, "rcParams", None), "_get_backend_or_none", None)
+    try:
+        chosen = getter() if callable(getter) else "unknown"
+    except (AttributeError, TypeError, ValueError, KeyError):
+        # A private accessor that changed shape: treat the backend as
+        # chosen and leave it alone.
+        chosen = "unknown"
+    if chosen is None:
+        # Imported but no backend resolved yet: nobody has chosen one.
+        mpl.use("Agg")
+
+
+def _needs_data_error(result: Dict[str, Any]) -> bool:
+    """Whether a tool error says the call had no dataset."""
+    rem = result.get("remediation")
+    if isinstance(rem, dict) and "data" in (rem.get("missing_arguments") or []):
+        return True
+    if result.get("expected_argument") in ("data_path", "data_id", "data"):
+        return True
+    return bool(re.search(r"requires? (a )?data_path", str(result.get("error") or "")))
+
+
+def _phrase_error_for_mcp(
+    result: Dict[str, Any], name: str, *, data_given: bool
+) -> None:
+    """Rewrite Python-API remediation text in MCP terms, in place.
+
+    ``remediate`` is shared with the Python and CLI surfaces and says
+    "Pass data=... to sp.regress"; an MCP client passes the dataset as
+    data_id / data_path / data_records / data_csv and reads parameter
+    names from describe_function. A call that ran without any dataset is
+    reported as ``error_kind='missing_data'`` naming the four sources.
+    """
+    from .remediation import MCP_DATA_HINT, MCP_DATA_SOURCES, mcp_remediation
+
+    rem = result.get("remediation")
+    if isinstance(rem, dict):
+        result["remediation"] = mcp_remediation(rem, tool=name)
+    if not data_given and _needs_data_error(result):
+        result.setdefault("tool", name)
+        result["error_kind"] = "missing_data"
+        result["hint"] = MCP_DATA_HINT
+        result["data_sources"] = list(MCP_DATA_SOURCES)
+
+
+def _run_tools_call(
+    name: str, arguments: Dict[str, Any], params: Dict[str, Any]
+) -> Dict[str, Any]:
+    _ensure_headless_matplotlib()
+    # Server-handled args are stripped before estimator dispatch — the
+    # estimator's signature has no ``data_path`` / ``detail`` etc. and
+    # would crash with a "got an unexpected keyword argument" error.
+    result_id = arguments.pop("result_id", None)
+    as_handle = bool(arguments.pop("as_handle", False))
+    raw_budget = arguments.pop("max_output_bytes", None)
+
+    # MCP ``_meta.progressToken`` is the standard handshake the client
+    # uses to opt in to receiving progress notifications. It's set
+    # OUTSIDE the ``arguments`` block (per spec) — pull it from
+    # ``params['_meta']``.
+    meta = params.get("_meta") or {}
+    progress_token = meta.get("progressToken") if isinstance(meta, dict) else None
+
+    # Loading the data is supervised like the estimator: a read that never
+    # returns (a FIFO, a stalled network mount, a slow URL) would otherwise
+    # hold the worker forever, outside any timeout.
+    from ._runner import ToolCancelled as _LoadCancelled
+    from ._runner import current_cancel_event as _load_cancel_event
+    from ._runner import orphaned_threads as _load_orphans
+    from ._runner import run_with_progress as _run_supervised
+    from ._runner import tool_timeout as _load_timeout
+
+    load_limit = _load_timeout()
+    loaded_ok, loaded = _run_supervised(
+        lambda: _resolve_tool_data(name, arguments),
+        timeout=load_limit,
+        cancel_event=_load_cancel_event(),
+    )
+    if not loaded_ok:
+        if isinstance(loaded, TimeoutError):
+            raise _ToolCallError(
+                "timeout",
+                f"loading the data exceeded the {load_limit:.0f}s timeout "
+                "(env: STATSPAI_MCP_TOOL_TIMEOUT_SECONDS)",
+                hint=(
+                    "The source did not finish reading. Check that data_path "
+                    "is a regular file or a reachable URL; the read cannot be "
+                    "killed and keeps waiting in the background."
+                ),
+                timeout_seconds=load_limit,
+                stage="data_load",
+                worker_may_still_be_running=True,
+                orphaned_tool_threads=_load_orphans(),
+            )
+        if isinstance(loaded, _LoadCancelled):
+            raise _ToolCallError(
+                "cancelled",
+                "The client cancelled this tools/call.",
+                stage="data_load",
+                worker_may_still_be_running=True,
+            )
+        raise loaded
+    df, data_prov, replay_comment = loaded
 
     detail = arguments.pop("detail", "agent")
+    if detail in _DETAIL_ALIASES:
+        # Agents ask for "full" by analogy with other servers; "agent" is
+        # the fullest payload here.
+        detail = _DETAIL_ALIASES[detail]
     if detail not in _DETAIL_LEVELS:
-        raise _InvalidParamsError(
+        raise _ToolCallError(
+            "invalid_arguments",
             "detail must be one of "
-            f"{', '.join(repr(v) for v in _DETAIL_LEVELS)}; "
-            f"got {detail!r}"
+            f"{', '.join(repr(v) for v in _DETAIL_LEVELS)}; got {detail!r}",
         )
+    if raw_budget is not None and (
+        isinstance(raw_budget, bool)
+        or not isinstance(raw_budget, int)
+        or raw_budget < 0
+    ):
+        raise _ToolCallError(
+            "invalid_arguments",
+            f"max_output_bytes must be a non-negative integer (0 = no limit); "
+            f"got {raw_budget!r}",
+        )
+    from ._output_budget import apply_budget, max_output_bytes, note_risk_omission
+
+    budget = max_output_bytes(raw_budget)
+
+    if result_id is not None and result_id != "":
+        from ._result_cache import RESULT_CACHE, missing_result_error
+
+        if not isinstance(result_id, str):
+            raise _ToolCallError(
+                "invalid_arguments", "result_id must be a string handle (r_...)."
+            )
+        if RESULT_CACHE.get_entry(result_id) is None:
+            miss = missing_result_error(result_id)
+            raise _ToolCallError(
+                miss["error_kind"],
+                miss["error"],
+                hint=miss["hint"],
+                miss_reason=miss["miss_reason"],
+                result_id=result_id,
+                available_result_ids=miss["available_result_ids"],
+            )
+    else:
+        result_id = None
 
     # Run the actual estimator under the timeout-enforcing runner so
     # MCP can stay responsive during long calls (BCF / spec_curve /
-    # synthdid_placebo / dml). Tools that don't hit ``progress(...)``
-    # see no behaviour change.
-    from ._runner import run_with_progress, tool_timeout
+    # synthdid_placebo / dml).
+    from ._runner import (
+        ToolCancelled,
+        current_cancel_event,
+        orphaned_threads,
+        run_with_progress,
+        tool_timeout,
+    )
 
     def _do() -> Dict[str, Any]:
-        return execute_tool(
-            name,
-            arguments,
-            data=df,
-            detail=detail,
-            result_id=result_id,
-            as_handle=as_handle,
-        )
+        # Two protections around the estimator call:
+        #
+        # * ``print()`` inside an estimator (``verbose=True`` defaults,
+        #   ``rdsummary``, ``assumption_audit``) would land on the
+        #   JSON-RPC channel and corrupt the stream, so stdout is
+        #   redirected to stderr for the duration of the call.
+        # * Python warnings (``ConvergenceWarning``, ``AssumptionWarning``,
+        #   weak-instrument / few-cluster notices, LIML->2SLS fallbacks)
+        #   were only ever visible on stderr, which an MCP client never
+        #   reads. They are recorded and attached to the payload under
+        #   ``runtime_warnings`` so the agent sees what a human at a
+        #   terminal would (CLAUDE.md §3.7, 失败要响亮).
+        import contextlib
+        import warnings as _warnings
 
-    drain = _make_progress_drain()
+        with contextlib.redirect_stdout(sys.stderr):
+            with _warnings.catch_warnings(record=True) as caught:
+                _warnings.simplefilter("always")
+                out = execute_tool(
+                    name,
+                    arguments,
+                    data=df,
+                    detail=detail,
+                    result_id=result_id,
+                    as_handle=as_handle,
+                )
+        if caught and isinstance(out, dict):
+            seen: set = set()
+            recorded: List[Dict[str, str]] = []
+            for w in caught:
+                key = (w.category.__name__, str(w.message))
+                if key in seen:
+                    continue
+                seen.add(key)
+                if len(recorded) < 20:
+                    recorded.append({"category": key[0], "message": key[1]})
+            out["runtime_warnings"] = recorded
+            # The cap is reported, not silent: risk_summary carries the
+            # count of distinct warnings that were raised.
+            note_risk_omission(out, "runtime_warnings", len(seen))
+        return out
 
+    timeout = tool_timeout()
     ok, payload = run_with_progress(
         _do,
         progress_token=progress_token,
-        timeout=tool_timeout(),
-        drain=drain,
+        timeout=timeout,
+        drain=_make_progress_drain(),
+        cancel_event=current_cancel_event(),
     )
 
     if not ok:
         if isinstance(payload, TimeoutError):
-            raise _RpcError(str(payload))
-        # Unexpected exception — re-raise so the outer ``handle_request``
-        # turns it into a clean ``-32000`` JSON-RPC error.
-        raise payload
+            raise _ToolCallError(
+                "timeout",
+                str(payload),
+                hint=(
+                    "Retry on a sample (data_sample_n) or with cheaper options, "
+                    "or raise STATSPAI_MCP_TOOL_TIMEOUT_SECONDS. The computation "
+                    "cannot be killed: it keeps running in the background until "
+                    "it finishes or reaches a progress checkpoint."
+                ),
+                timeout_seconds=timeout,
+                worker_may_still_be_running=True,
+                orphaned_tool_threads=orphaned_threads(),
+            )
+        if isinstance(payload, ToolCancelled):
+            raise _ToolCallError(
+                "cancelled",
+                "The client cancelled this tools/call.",
+                worker_may_still_be_running=True,
+            )
+        if isinstance(payload, _RpcError) or not isinstance(payload, Exception):
+            # Typed protocol errors keep their code; KeyboardInterrupt /
+            # SystemExit propagate.
+            raise payload
+        # An exception that escaped the dispatcher's own error envelope
+        # (dispatch / serializer bug). Report it to the model as a tool
+        # error; tracebacks only with STATSPAI_MCP_DEBUG=1.
+        fields: Dict[str, Any] = {"tool": name}
+        if _debug_enabled():
+            fields["traceback"] = "".join(
+                traceback.format_exception(
+                    type(payload), payload, payload.__traceback__
+                )
+            )
+        raise _ToolCallError(
+            "internal_error", f"{type(payload).__name__}: {payload}", **fields
+        )
 
-    # Image content: estimators can attach a PNG plot under ``_plot_png``
-    # for the MCP layer to surface as an image content block. Claude
-    # vision (and any MCP client supporting image content) will render
-    # it inline; the bytes are stripped from the JSON payload above.
-    result = payload
-    if isinstance(result, dict) and data_prov is not None:
+    result = payload if isinstance(payload, dict) else {"value": payload}
+    if (
+        result.get("error_kind") == "unknown_tool"
+        and "called_via" not in result
+        and "error" in result
+    ):
+        # An unknown tool name is a protocol error per the MCP spec; the
+        # closest dispatchable names ride in the message and error.data.
+        suggestions = list(result.get("did_you_mean") or [])
+        raise _InvalidParamsError(
+            f"Unknown tool: {name!r}."
+            + (f" Did you mean: {', '.join(suggestions)}?" if suggestions else "")
+            + " tools/list (or statspai://functions) lists the callable names.",
+            data={"did_you_mean": suggestions} if suggestions else None,
+        )
+
+    if result.get("error"):
+        _phrase_error_for_mcp(result, name, data_given=df is not None)
+
+    rid = result.get("result_id")
+    capped = result.get("arrays_capped")
+    if isinstance(capped, list):
+        # The cut arrays stay readable in full, one at a time, while the
+        # handle is live; without a handle there is nothing to read from.
+        for item in capped:
+            if isinstance(item, dict) and isinstance(item.get("path"), str):
+                if isinstance(rid, str):
+                    item["full"] = f"statspai://result/{rid}/arrays{item['path']}"
+                else:
+                    item["full"] = "re-run with as_handle=true to read it in full"
+    if data_prov is not None:
         result.setdefault("data_provenance", data_prov)
-        rid = result.get("result_id")
         if isinstance(rid, str):
             from ._result_cache import RESULT_CACHE
 
             RESULT_CACHE.annotate(rid, {"_mcp_data_provenance": data_prov})
+        # Follow-ups that need data run on the same dataset: hand them the
+        # handle (or the file) this call was resolved from.
+        from ._enrichment import attach_data_source
 
-    plot_bytes = None
-    result_for_text = result
-    if isinstance(result, dict):
-        plot_bytes = result.get("_plot_png")
-        if isinstance(plot_bytes, (bytes, bytearray)):
-            result_for_text = {k: v for k, v in result.items() if k != "_plot_png"}
+        source: Dict[str, Any] = {}
+        if data_prov.get("data_id"):
+            source["data_id"] = data_prov["data_id"]
+        elif data_prov.get("source_type") == "local" and data_prov.get("source"):
+            source["data_path"] = data_prov["source"]
+        attach_data_source(result, source)
+    replay = result.get("replay")
+    if isinstance(replay, str) and replay_comment and "  # data = " not in replay:
+        result["replay"] = replay + replay_comment
+        if isinstance(rid, str):
+            from ._result_cache import RESULT_CACHE
 
-    text = json.dumps(
-        _clean_floats(result_for_text), indent=2, default=_json_default, allow_nan=False
-    )
-    content: List[Dict[str, Any]] = [{"type": "text", "text": text}]
+            RESULT_CACHE.set_replay(rid, result["replay"])
+    if isinstance(result.get("replay"), str):
+        from ._replay import replay_completeness
 
+        # A replay line is not a script: say what re-running it needs.
+        result["replay_completeness"] = replay_completeness(
+            result["replay"], result.get("data_provenance"), result_id=result_id
+        )
+        if isinstance(rid, str):
+            # The handle can be exported as a script a new process can run.
+            result["replay_completeness"][
+                "bundle_uri"
+            ] = f"statspai://result/{rid}/bundle"
+
+    # Image content: estimators can attach a PNG plot under ``_plot_png``
+    # for the MCP layer to surface as an image content block. Claude
+    # vision (and any MCP client supporting image content) will render
+    # it inline; the bytes are stripped from the JSON payload.
+    plot_bytes = result.get("_plot_png")
     if isinstance(plot_bytes, (bytes, bytearray)):
+        result = {k: v for k, v in result.items() if k != "_plot_png"}
+    else:
+        plot_bytes = None
+
+    structured = _normalise_tool_result(result)
+    # Writes ``truncated`` / ``risk_summary`` / ``output_budget`` itself.
+    structured, _ = apply_budget(structured, budget)
+
+    # Structured tool output (MCP ``2025-06-18``+): ``structuredContent``
+    # is the machine-readable result; the spec asks that the serialised
+    # JSON also be returned as a ``text`` block for older clients, so the
+    # same object is sent once more, compactly (no indentation).
+    text = json.dumps(structured, separators=(",", ":"), allow_nan=False)
+    if _text_mode() == "summary":
+        # Opt-in: clients that read structuredContent do not need the same
+        # JSON twice (owner decision 2026-10-20; default stays "full").
+        text = _summary_text(structured, len(text))
+    content: List[Dict[str, Any]] = [{"type": "text", "text": text}]
+    if plot_bytes is not None:
         import base64
 
         content.append(
@@ -1194,28 +2430,11 @@ def _handle_tools_call(params: Dict[str, Any]) -> Dict[str, Any]:
                 "mimeType": "image/png",
             }
         )
-
-    out: Dict[str, Any] = {
+    return {
         "content": content,
-        "isError": bool(isinstance(result, dict) and result.get("error")),
+        "isError": bool(structured.get("error")),
+        "structuredContent": structured,
     }
-
-    # Structured tool output (MCP ``2025-06-18``+). We advertise an
-    # ``outputSchema`` on every tool, so we return the result object
-    # *also* as ``structuredContent`` — the machine-readable twin of the
-    # ``text`` block, which spec-compliant clients validate against the
-    # schema and hand to the model as typed data instead of re-parsing
-    # the serialised string. ``result_for_text`` is always a JSON object
-    # (``execute_tool`` returns a dict; the image bytes are already
-    # stripped), so it conforms to the ``type: object`` schema. The
-    # surrounding ``_jsonrpc_result`` re-walks it through
-    # ``_clean_floats`` / ``_json_default``, so numpy / nan values are
-    # scrubbed here exactly as they are in the text block. Older clients
-    # that negotiated an earlier revision simply ignore the extra key.
-    if isinstance(result_for_text, dict):
-        out["structuredContent"] = result_for_text
-
-    return out
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -1241,7 +2460,32 @@ def _handle_prompts_get(params: Dict[str, Any]) -> Dict[str, Any]:
     return _prompts_get_impl(params, _InvalidParamsError, _ResourceNotFoundError)
 
 
+def _handle_completion_complete(params: Dict[str, Any]) -> Dict[str, Any]:
+    from ._completion import handle_completion_complete
+
+    return handle_completion_complete(params, InvalidParamsError=_InvalidParamsError)
+
+
+def _handle_skills_list(params: Dict[str, Any]) -> Dict[str, Any]:
+    """``skills/list`` (extension ``io.modelcontextprotocol/skills``)."""
+    from ._skills_ext import handle_skills_list
+
+    return handle_skills_list(params)
+
+
+def _handle_skills_get(params: Dict[str, Any]) -> Dict[str, Any]:
+    from ._skills_ext import handle_skills_get
+
+    return handle_skills_get(params, InvalidParamsError=_InvalidParamsError)
+
+
+def _handle_ping(params: Dict[str, Any]) -> Dict[str, Any]:
+    """MCP ``ping``: liveness check, answered with an empty result."""
+    return {}
+
+
 _METHODS = {
+    "ping": _handle_ping,
     "initialize": _handle_initialize,
     "tools/list": _handle_tools_list,
     "tools/call": _handle_tools_call,
@@ -1250,6 +2494,9 @@ _METHODS = {
     "resources/read": _handle_resources_read,
     "prompts/list": _handle_prompts_list,
     "prompts/get": _handle_prompts_get,
+    "completion/complete": _handle_completion_complete,
+    "skills/list": _handle_skills_list,
+    "skills/get": _handle_skills_get,
 }
 
 
@@ -1278,9 +2525,14 @@ def handle_request(line: str) -> Optional[str]:
         if _sampling.route_response(msg):
             return None
 
+    if not isinstance(msg, dict):
+        return _jsonrpc_error(None, -32600, "Invalid Request: expected a JSON object")
+
     request_id = msg.get("id")
     method = msg.get("method")
-    params = msg.get("params") or {}
+    params = msg.get("params")
+    if params is None:
+        params = {}
 
     # JSON-RPC 2.0: a notification has no ``id`` field at all.
     if request_id is None and "id" not in msg:
@@ -1292,9 +2544,18 @@ def handle_request(line: str) -> Optional[str]:
     if isinstance(method, str) and method.startswith("notifications/"):
         return None
 
-    handler = _METHODS.get(method)
+    from . import _protocol
+
+    if _protocol.is_modern_request(method, params):
+        return _handle_modern_request(request_id, method, params)
+
+    handler = _METHODS.get(method) if isinstance(method, str) else None
     if handler is None:
         return _jsonrpc_error(request_id, -32601, f"Method not found: {method!r}")
+    if not isinstance(params, dict):
+        return _jsonrpc_error(
+            request_id, -32602, "Invalid params: `params` must be a JSON object"
+        )
 
     try:
         if method == "tools/list":
@@ -1308,19 +2569,16 @@ def handle_request(line: str) -> Optional[str]:
         # (``-32602`` invalid params, ``-32002`` resource not found,
         # ``-32000`` generic). No traceback for these — they're
         # expected / actionable on the client side.
-        return _jsonrpc_error(request_id, exc.code, str(exc))
+        return _jsonrpc_error(
+            request_id, exc.code, str(exc), data=getattr(exc, "data", None)
+        )
     except Exception as exc:
         # Tracebacks expose internal paths and class names; only emit
         # them when the operator opts in via STATSPAI_MCP_DEBUG=1. Plain
         # ``"<class>: <msg>"`` is enough for the agent to remediate in
         # the common case.
         data = None
-        if os.environ.get("STATSPAI_MCP_DEBUG", "").strip() in {
-            "1",
-            "true",
-            "True",
-            "yes",
-        }:
+        if _debug_enabled():
             data = {"traceback": traceback.format_exc()}
         return _jsonrpc_error(
             request_id,
@@ -1331,30 +2589,292 @@ def handle_request(line: str) -> Optional[str]:
     return _jsonrpc_result(request_id, result)
 
 
+def _handle_modern_request(request_id: Any, method: Any, params: Any) -> str:
+    """Serve one request of a per-request revision (``2026-07-28``).
+
+    The metadata is validated first (:func:`._protocol.validate_request`),
+    the method handler is the one the handshake path uses, and the result
+    gains ``resultType`` / server identity / caching hints afterwards.
+    """
+    from . import _protocol
+
+    if not isinstance(params, dict):
+        return _jsonrpc_error(
+            request_id, -32602, "Invalid params: `params` must be a JSON object"
+        )
+    refusal = _protocol.validate_request(method, params)
+    if refusal is not None:
+        code, message, data = refusal
+        return _jsonrpc_error(request_id, code, message, data=data)
+    try:
+        with _protocol.modern_request():
+            if method == "tools/list":
+                return _jsonrpc_result_preencoded(
+                    request_id,
+                    _protocol.decorate_result_json(
+                        method, params, _tools_list_result_json()
+                    ),
+                )
+            if method == "server/discover":
+                result = _protocol.discover_result()
+            elif method == "subscriptions/listen":
+                return _jsonrpc_error(
+                    request_id,
+                    -32603,
+                    "subscriptions/listen needs a streaming transport "
+                    "(the stdio loop or Streamable HTTP).",
+                )
+            else:
+                result = _METHODS[method](params)
+    except _RpcError as exc:
+        return _jsonrpc_error(
+            request_id,
+            _protocol.map_error_code(exc.code),
+            str(exc),
+            data=getattr(exc, "data", None),
+        )
+    except Exception as exc:
+        data = {"traceback": traceback.format_exc()} if _debug_enabled() else None
+        return _jsonrpc_error(
+            request_id, -32603, f"{type(exc).__name__}: {exc}", data=data
+        )
+    return _jsonrpc_result(
+        request_id, _protocol.decorate_result(method, params, result)
+    )
+
+
 # ═══════════════════════════════════════════════════════════════════════
 #  stdio event loop
 # ═══════════════════════════════════════════════════════════════════════
 
 
+class _LockedSink:
+    """A ``write`` / ``flush`` pair serialised by one lock.
+
+    Three writers share the stdio channel: the request loop (responses),
+    the progress drain (``notifications/progress`` from the tool worker)
+    and the sampling client (``sampling/createMessage``). Interleaved
+    partial lines would corrupt the JSON-RPC stream, so every line goes
+    through this object.
+    """
+
+    def __init__(self, stream: TextIO) -> None:
+        self._stream = stream
+        self._lock = threading.Lock()
+
+    def write(self, text: str) -> int:
+        with self._lock:
+            n = self._stream.write(text)
+            self._stream.flush()
+            return n or 0
+
+    def flush(self) -> None:
+        with self._lock:
+            self._stream.flush()
+
+    def write_line(self, line: str) -> None:
+        self.write(line + "\n")
+
+
+def _is_jsonrpc_reply(line: str) -> Optional[Dict[str, Any]]:
+    """Parse ``line`` and return it when it is a JSON-RPC *reply*.
+
+    A reply has an ``id`` and no ``method`` — the shape the client sends
+    back for a server-initiated ``sampling/createMessage``. Anything else
+    (requests, notifications, garbage) returns ``None`` and is handled by
+    the request loop.
+    """
+    try:
+        msg = json.loads(line)
+    except json.JSONDecodeError:
+        return None
+    if isinstance(msg, dict) and "method" not in msg and "id" in msg:
+        return msg
+    return None
+
+
+#: Env var: size of the ``tools/call`` worker pool (default 1).
+WORKERS_ENV = "STATSPAI_MCP_WORKERS"
+
+
+def _worker_count() -> int:
+    raw = os.environ.get(WORKERS_ENV)
+    if raw is None:
+        return 1
+    try:
+        return max(1, int(raw))
+    except (TypeError, ValueError):
+        return 1
+
+
+#: Env var: ``tools/call`` requests allowed to wait behind the running
+#: ones (default 32; ``0`` = unlimited). Beyond it a call is answered at
+#: once with ``error_kind='server_busy'`` instead of queueing.
+MAX_QUEUED_CALLS_ENV = "STATSPAI_MCP_MAX_QUEUED_CALLS"
+DEFAULT_MAX_QUEUED_CALLS = 32
+
+#: Env var: timed-out / cancelled computations that may still be running
+#: in the background before new calls are refused (default 4; ``0`` =
+#: unlimited). A thread cannot be killed, so without this cap every
+#: timeout adds one more estimator computing next to the following call.
+MAX_ORPHANED_CALLS_ENV = "STATSPAI_MCP_MAX_ORPHANED_CALLS"
+DEFAULT_MAX_ORPHANED_CALLS = 4
+
+#: Env var: longest a ``tools/call`` may wait in the queue before it
+#: starts, in seconds (default 900; ``0`` = unlimited). A call that waited
+#: longer is answered ``server_busy`` instead of being run for a client
+#: that has most likely given up on it.
+MAX_QUEUE_SECONDS_ENV = "STATSPAI_MCP_MAX_QUEUE_SECONDS"
+DEFAULT_MAX_QUEUE_SECONDS = 900
+
+#: Env var: largest accepted request line, in bytes (default 64 MiB;
+#: ``0`` = unlimited). Larger lines are answered with ``-32600`` and
+#: never parsed or queued.
+MAX_REQUEST_BYTES_ENV = "STATSPAI_MCP_MAX_REQUEST_BYTES"
+DEFAULT_MAX_REQUEST_BYTES = 64 * 1024 * 1024
+
+
+def _env_limit(name: str, default: int) -> Optional[int]:
+    """Non-negative integer limit from the environment; ``None`` = unlimited."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        v = int(raw)
+    except (TypeError, ValueError):
+        return default
+    return v if v > 0 else None
+
+
+def _request_key(request_id: Any) -> str:
+    """Hashable, type-preserving key for a JSON-RPC id (``1`` ≠ ``"1"``)."""
+    return json.dumps(request_id, sort_keys=True)
+
+
+def _admission_refusal(
+    in_flight: int,
+    n_workers: int,
+    max_queued: Optional[int],
+    max_orphans: Optional[int],
+) -> Optional[Dict[str, Any]]:
+    """``server_busy`` result when a new ``tools/call`` must not be admitted.
+
+    Shared by the stdio loop and the HTTP transport.
+    """
+    from . import _runner
+
+    orphans = _runner.orphaned_threads()
+    if max_orphans is not None and orphans >= max_orphans:
+        return _tool_error_result(
+            "server_busy",
+            f"{orphans} timed-out or cancelled computations are still "
+            "running in the background; no new call is started until "
+            "they finish.",
+            hint=(
+                "Wait and retry, or restart the server to stop them. "
+                f"{MAX_ORPHANED_CALLS_ENV} sets the limit."
+            ),
+            orphaned_tool_threads=orphans,
+            retryable=True,
+        )
+    if max_queued is not None and in_flight >= n_workers + max_queued:
+        return _tool_error_result(
+            "server_busy",
+            f"{in_flight} tools/call requests are already running or "
+            "queued; this one was not queued.",
+            hint=(
+                "Wait for earlier calls to answer (or cancel them) and "
+                f"retry. {MAX_QUEUED_CALLS_ENV} sets the limit."
+            ),
+            calls_in_flight=in_flight,
+            retryable=True,
+        )
+    return None
+
+
+def _prepare_for_threads() -> None:
+    """Do the process's fork-unsafe one-time work before any worker exists.
+
+    Every result records the StatsPAI source revision, which a source
+    checkout reads by running ``git`` (``_build_info.source_revision``,
+    cached after the first call). Left to the first fit, that ``git`` is
+    forked from a tool thread after numerical code ran; on macOS the
+    child can crash before ``exec``, the revision is cached as ``None``
+    and every later result silently lacks it. Reading it here, on the
+    thread that starts the server, keeps the fork single-threaded. An
+    installed wheel has no checkout and runs nothing.
+    """
+    from .._build_info import source_revision
+
+    source_revision()
+
+
 def serve_stdio(
     stdin: Optional[Iterable[str]] = None,
     stdout: Optional[TextIO] = None,
+    *,
+    workers: Optional[int] = None,
 ) -> None:
     """Run the JSON-RPC loop on stdio until stdin closes.
+
+    Three kinds of thread cooperate:
+
+    * a **reader** consumes stdin. JSON-RPC *replies* (the client's answer
+      to a server-initiated ``sampling/createMessage``) are routed straight
+      to :mod:`_sampling`, so a tool that asks the client's LLM a question
+      (``interpret_result``) gets its answer while it is still running;
+      everything else is queued for the main loop.
+    * the **main loop** answers ``initialize`` / ``ping`` /
+      ``tools/list`` / ``resources/*`` / ``prompts/*`` inline and hands
+      each ``tools/call`` to the worker pool, so a long estimator never
+      blocks liveness checks or catalogue reads. It also handles
+      ``notifications/cancelled``: the named in-flight call's cancel event
+      is set, the tool stops at its next progress checkpoint
+      (:func:`statspai.agent._runner.progress`), and — per the MCP spec —
+      no response is sent for the cancelled request.
+    * a **worker pool** runs ``tools/call`` requests. It has one worker by
+      default, so estimator execution stays serialised (estimators share
+      process-global state such as warning filters and matplotlib);
+      ``STATSPAI_MCP_WORKERS`` (or ``workers=``) raises it.
+
+    The loop is bounded. A request line over
+    ``STATSPAI_MCP_MAX_REQUEST_BYTES`` is refused unparsed (``-32600``);
+    a ``tools/call`` arriving while ``STATSPAI_MCP_MAX_QUEUED_CALLS``
+    others already wait, or while ``STATSPAI_MCP_MAX_ORPHANED_CALLS``
+    timed-out computations are still running, is answered immediately
+    with an ``isError`` result of kind ``server_busy``; one that waited in
+    the queue longer than ``STATSPAI_MCP_MAX_QUEUE_SECONDS`` gets the same
+    answer when its turn comes instead of being run; and a
+    ``tools/call`` reusing the id of one still in flight is refused
+    (``-32600``) rather than taking over its cancel handle.
+
+    All output goes through one locked sink, so responses, progress
+    notifications and sampling requests never interleave mid-line.
+    Responses to ``tools/call`` may arrive out of order relative to
+    requests handled inline, as JSON-RPC allows.
 
     Parameters
     ----------
     stdin, stdout : file-like, optional
         Defaults to ``sys.stdin`` / ``sys.stdout``. Tests can supply
         in-memory buffers instead.
+    workers : int, optional
+        Worker-pool size; defaults to ``STATSPAI_MCP_WORKERS`` or 1.
     """
+    from concurrent.futures import ThreadPoolExecutor
+
+    from . import _runner
+
     if stdin is None:
         stdin = sys.stdin
     if stdout is None:
         stdout = sys.stdout
 
+    _prepare_for_threads()
+    sink = _LockedSink(stdout)
+
     global _PROGRESS_SINK
-    _PROGRESS_SINK = stdout
+    _PROGRESS_SINK = cast(TextIO, sink)
 
     # Register a writer for server-initiated ``sampling/createMessage``
     # requests. Helpers that need to invoke the client's LLM go through
@@ -1364,35 +2884,337 @@ def serve_stdio(
     # sampling is opt-in on both sides.
     from . import _sampling
 
-    def _writer(line: str) -> None:
-        stdout.write(line + "\n")
-        stdout.flush()
+    _sampling.set_writer(sink.write_line)
 
-    _sampling.set_writer(_writer)
+    inbox: "queue.Queue[Optional[str]]" = queue.Queue()
+    n_workers = workers if workers else _worker_count()
+    max_queued = _env_limit(MAX_QUEUED_CALLS_ENV, DEFAULT_MAX_QUEUED_CALLS)
+    max_orphans = _env_limit(MAX_ORPHANED_CALLS_ENV, DEFAULT_MAX_ORPHANED_CALLS)
+    max_request = _env_limit(MAX_REQUEST_BYTES_ENV, DEFAULT_MAX_REQUEST_BYTES)
+    max_wait = _env_limit(MAX_QUEUE_SECONDS_ENV, DEFAULT_MAX_QUEUE_SECONDS)
+
+    def _emit(line: str) -> None:
+        try:
+            sink.write_line(line)
+        except (OSError, ValueError) as exc:  # stdout closed by the client
+            print(f"statspai-mcp: could not write response: {exc}", file=sys.stderr)
+
+    def _reader() -> None:
+        try:
+            for raw in stdin:
+                line = raw.strip()
+                if not line:
+                    continue
+                if max_request is not None and len(line) > max_request:
+                    # Not parsed, so the id is unknown (JSON-RPC: null).
+                    _emit(
+                        _jsonrpc_error(
+                            None,
+                            -32600,
+                            f"Invalid Request: {len(line)} characters exceeds "
+                            f"the {max_request}-byte limit "
+                            f"({MAX_REQUEST_BYTES_ENV}); pass data by "
+                            "data_path or a data_id handle instead of inline.",
+                        )
+                    )
+                    continue
+                reply = _is_jsonrpc_reply(line)
+                if reply is not None and _sampling.route_response(reply):
+                    continue
+                inbox.put(line)
+        finally:
+            inbox.put(None)
+
+    inflight: Dict[str, threading.Event] = {}
+    inflight_lock = threading.Lock()
+
+    def _busy(in_flight: int) -> Optional[Dict[str, Any]]:
+        return _admission_refusal(in_flight, n_workers, max_queued, max_orphans)
+
+    def _run_call(
+        line: str, key: str, cancel: threading.Event, request_id: Any, queued_at: float
+    ) -> None:
+        try:
+            if cancel.is_set():
+                return  # cancelled while queued
+            waited = time.monotonic() - queued_at
+            if max_wait is not None and waited > max_wait:
+                _emit(
+                    _jsonrpc_result(
+                        request_id,
+                        _tool_error_result(
+                            "server_busy",
+                            f"This call waited {waited:.0f}s in the queue, past "
+                            f"the {max_wait}s limit; it was not started.",
+                            hint=(
+                                "Retry now that earlier calls have finished. "
+                                f"{MAX_QUEUE_SECONDS_ENV} sets the limit."
+                            ),
+                            queued_seconds=round(waited, 1),
+                            retryable=True,
+                        ),
+                    )
+                )
+                return
+            _runner.set_cancel_event(cancel)
+            try:
+                response = handle_request(line)
+            finally:
+                _runner.set_cancel_event(None)
+            if response is not None and not cancel.is_set():
+                _emit(response)
+        finally:
+            with inflight_lock:
+                inflight.pop(key, None)
+
+    #: Open ``subscriptions/listen`` requests (2026-07-28), by request key.
+    listens: Dict[str, Any] = {}
+
+    def _cancel(params: Any) -> None:
+        if not isinstance(params, dict) or "requestId" not in params:
+            return
+        key = _request_key(params["requestId"])
+        # A cancelled listen stream ends silently: no further message for it.
+        listens.pop(key, None)
+        with inflight_lock:
+            ev = inflight.get(key)
+        if ev is not None:
+            ev.set()
+
+    def _listen(msg: Dict[str, Any]) -> None:
+        from . import _protocol
+
+        refusal = _protocol.validate_request("subscriptions/listen", msg.get("params"))
+        if refusal is not None:
+            code, message, data = refusal
+            _emit(_jsonrpc_error(msg["id"], code, message, data=data))
+            return
+        listens[_request_key(msg["id"])] = msg["id"]
+        _emit(
+            json.dumps(
+                _protocol.listen_acknowledgement(msg["id"]), separators=(",", ":")
+            )
+        )
+
+    executor = ThreadPoolExecutor(
+        max_workers=n_workers,
+        thread_name_prefix="statspai-mcp-call",
+    )
+    reader = threading.Thread(target=_reader, name="statspai-mcp-stdin", daemon=True)
+    reader.start()
     try:
-        for raw in stdin:
-            line = raw.strip()
-            if not line:
-                continue
+        while True:
+            line = inbox.get()
+            if line is None:
+                break
+            try:
+                msg = json.loads(line)
+            except json.JSONDecodeError:
+                msg = None
+            if isinstance(msg, dict):
+                method = msg.get("method")
+                if method == "notifications/cancelled":
+                    _cancel(msg.get("params"))
+                    continue
+                if method == "subscriptions/listen" and "id" in msg:
+                    _listen(msg)
+                    continue
+                if method == "tools/call" and "id" in msg:
+                    key = _request_key(msg["id"])
+                    cancel = threading.Event()
+                    with inflight_lock:
+                        duplicate = key in inflight
+                        busy = None if duplicate else _busy(len(inflight))
+                        if not duplicate and busy is None:
+                            inflight[key] = cancel
+                    if duplicate:
+                        _emit(
+                            _jsonrpc_error(
+                                msg["id"],
+                                -32600,
+                                "Invalid Request: a tools/call with this id "
+                                "is still in flight.",
+                            )
+                        )
+                    elif busy is not None:
+                        _emit(_jsonrpc_result(msg["id"], busy))
+                    else:
+                        executor.submit(
+                            _run_call, line, key, cancel, msg["id"], time.monotonic()
+                        )
+                    continue
             response = handle_request(line)
             if response is None:
                 continue
-            stdout.write(response + "\n")
-            stdout.flush()
+            _emit(response)
     finally:
+        # Let queued / running tool calls finish and write their responses
+        # (a timed-out call returns at its deadline; an orphaned thread
+        # does not hold the pool).
+        executor.shutdown(wait=True)
+        # Close the listen streams still open, as a graceful teardown.
+        if listens:
+            from . import _protocol
+
+            for rid in list(listens.values()):
+                _emit(_jsonrpc_result(rid, _protocol.listen_teardown_result(rid)))
         _PROGRESS_SINK = None
         _sampling.set_writer(None)
         _sampling.set_capability(False)
 
 
-def main() -> None:  # pragma: no cover
-    """Entry point for ``python -m statspai.agent.mcp_server``."""
+def serve_http(*args: Any, **kwargs: Any) -> None:
+    """Serve MCP over Streamable HTTP until interrupted.
+
+    Thin wrapper over :func:`statspai.agent._http_transport.serve_http`
+    (``host``, ``port``, ``path=``, ``token=``, ``allowed_origins=``,
+    ``workers=``) so ``http.server`` is imported only when used.
+    """
+    from ._http_transport import serve_http as _impl
+
+    _impl(*args, **kwargs)
+
+
+def _profile_help() -> str:
+    """``--profile`` help text; sizes are described, not hard-coded."""
+    return (
+        "tools/list profile: 'core' (smallest useful set: discovery "
+        "meta-tools, flagship estimators, result tools), 'curated' "
+        "(hand-written estimators + workflow + pipelines + discovery "
+        "meta-tools; default), or 'full' (every registered function as its "
+        "own tool — several hundred entries, too large for most client "
+        "context windows). Every function stays callable under every "
+        "profile via call_function or by name."
+    )
+
+
+def main(argv: Optional[List[str]] = None) -> None:  # pragma: no cover
+    """Entry point for ``statspai-mcp`` / ``python -m statspai.agent.mcp_server``.
+
+    ``--profile`` picks the ``tools/list`` shape (see :data:`_PROFILES`);
+    the default is :data:`DEFAULT_PROFILE` (``curated``) because the full
+    catalogue does not fit a client context window. Every function stays
+    callable through ``call_function`` or by name.
+    """
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        prog="statspai-mcp",
+        description=(
+            "StatsPAI MCP server: JSON-RPC over stdio (default) or "
+            "Streamable HTTP (--transport http)."
+        ),
+        epilog=(
+            "Environment: STATSPAI_MCP_DATA_ROOTS (readable directories), "
+            "STATSPAI_MCP_ALLOW_REMOTE=1 (network data URLs), "
+            "STATSPAI_MCP_MAX_DATA_BYTES, STATSPAI_MCP_MAX_OUTPUT_BYTES, "
+            "STATSPAI_MCP_TOOL_TIMEOUT_SECONDS, STATSPAI_MCP_WORKERS, "
+            "STATSPAI_MCP_MAX_QUEUED_CALLS, STATSPAI_MCP_MAX_ORPHANED_CALLS, "
+            "STATSPAI_MCP_MAX_QUEUE_SECONDS, STATSPAI_MCP_MAX_REQUEST_BYTES, "
+            "STATSPAI_MCP_ISOLATION=process (killable workers), "
+            "STATSPAI_MCP_DATA_CACHE_SIZE / _BYTES, STATSPAI_MCP_STATE_DIR "
+            "(keep handles on disk across restarts), "
+            "STATSPAI_MCP_STATE_MAX_BYTES, STATSPAI_MCP_HTTP_TOKEN (bearer "
+            "token; required to bind a non-loopback host), "
+            "STATSPAI_MCP_HTTP_ALLOWED_ORIGINS, STATSPAI_MCP_DEBUG, "
+            "STATSPAI_MCP_TEXT (full | summary; same as --text)."
+        ),
+    )
+
+    class _Version(argparse.Action):
+        """Print the version line unwrapped (argparse would reflow it)."""
+
+        def __call__(self, parser: Any, *args: Any, **kwargs: Any) -> None:
+            print(
+                f"statspai-mcp {SERVER_VERSION} (Python {sys.version.split()[0]}, "
+                f"{os.path.abspath(sys.executable)}); protocols "
+                + ", ".join(MODERN_PROTOCOL_VERSIONS + SUPPORTED_PROTOCOL_VERSIONS)
+            )
+            parser.exit()
+
+    parser.add_argument(
+        "--version",
+        nargs=0,
+        action=_Version,
+        help="Print the server version, interpreter and protocol revisions.",
+    )
+    parser.add_argument(
+        "--profile",
+        choices=list(_PROFILES),
+        default=os.environ.get("STATSPAI_MCP_PROFILE", DEFAULT_PROFILE),
+        help=_profile_help(),
+    )
+    from ._http_transport import DEFAULT_HTTP_HOST, DEFAULT_HTTP_PATH, DEFAULT_HTTP_PORT
+
+    parser.add_argument(
+        "--transport",
+        choices=["stdio", "http"],
+        default="stdio",
+        help="'stdio' (default) or 'http' (Streamable HTTP on one endpoint).",
+    )
+    parser.add_argument(
+        "--host",
+        default=DEFAULT_HTTP_HOST,
+        help="HTTP bind address (default 127.0.0.1; any other address "
+        "needs STATSPAI_MCP_HTTP_TOKEN).",
+    )
+    parser.add_argument(
+        "--port", type=int, default=DEFAULT_HTTP_PORT, help="HTTP port (default 8765)."
+    )
+    parser.add_argument(
+        "--http-path",
+        default=DEFAULT_HTTP_PATH,
+        help="HTTP endpoint path (default /mcp).",
+    )
+    parser.add_argument(
+        "--text",
+        default=os.environ.get("STATSPAI_MCP_TEXT") or DEFAULT_TEXT_MODE,
+        help="Text block of a tools/call result: 'full' (default; the JSON "
+        "of structuredContent again, for clients that ignore it) or "
+        "'summary' (a few lines; for clients that read structuredContent).",
+    )
+    args = parser.parse_args(argv)
+    try:
+        set_text_mode(args.text)
+    except ValueError as exc:
+        parser.error(str(exc))
+    set_tool_profile(args.profile)
+    # Tools run on worker threads; a GUI backend cannot plot there.
+    _ensure_headless_matplotlib()
+    if args.profile == "full":
+        size = len(_tools_list_result_json())
+        print(
+            f"statspai-mcp: warning: --profile full advertises "
+            f"{len(_build_mcp_tools())} tools ({size / 1048576:.1f} MiB of "
+            "tools/list), more than a client context window holds. It is "
+            "meant for schema dumps and debugging; under 'curated' every "
+            "function is still reachable through search_functions / "
+            "describe_function / call_function.",
+            file=sys.stderr,
+        )
+    if args.transport == "http":
+        from . import mcp_server as _canonical
+        from ._http_transport import serve_http
+
+        # Under ``python -m`` this file runs as ``__main__`` while the
+        # transport imports the package module; set the profile there.
+        _canonical.set_tool_profile(args.profile)
+        _canonical.set_text_mode(args.text)
+        try:
+            serve_http(args.host, args.port, path=args.http_path)
+        except ValueError as exc:
+            parser.error(str(exc))
+        return
     serve_stdio()
 
 
 __all__ = [
     "serve_stdio",
+    "serve_http",
     "handle_request",
+    "set_tool_profile",
+    "set_text_mode",
+    "DEFAULT_PROFILE",
     "tool_manifest",
     "MCP_PROTOCOL_VERSION",
     "SUPPORTED_PROTOCOL_VERSIONS",

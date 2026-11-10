@@ -27,6 +27,17 @@ with Multiple Time Periods. *Journal of Econometrics*, 225(2), 200-230.
 order of magnitude match; exact numerical R parity not claimed
 because the data is simulated).
 
+**Checked 2026-10-21 (R `did` 2.5.1 run as a black box on the original
+`mpdta`, DR, never-treated, varying base, analytic SEs):** simple
+-0.03995 (0.01203), group -0.03102 (0.01245), calendar -0.04170
+(0.01597), dynamic -0.07724 (0.01996); the group effects are 2004
+-0.0797, 2006 -0.0229, 2007 -0.0261. These do not match the first table
+above (-0.0454, and group ATTs attributed to a "Table 5"), whose source
+could not be confirmed; treat those rows as unverified. The original
+data is `sp.datasets.mpdta(simulated=False)` (fetched), and
+`tests/external_parity/test_did_paper_gallery.py` checks the verified
+numbers against R and Stata `csdid`.
+
 ## Card (1995) returns to schooling
 
 | Statistic | Value | Source |
@@ -192,3 +203,17 @@ in the repository. Pinned regression tests live in
    - One test asserting the output is in a reasonable neighbourhood
      of the published value on the original data (calibration check).
 4. Document the primary-source citation in this file.
+
+## Cengiz, Dube, Lindner & Zipperer (2019) minimum-wage bunching
+
+| Statistic | Value | Source |
+| --- | --- | --- |
+| Missing jobs below new MW (Delta b) | -0.018 (SE 0.004) | QJE 2019, Table 1, col 1 |
+| Excess jobs above new MW (Delta a) | 0.021 (SE 0.003) | QJE 2019, Table 1, col 1 |
+| % change affected wages | 0.068 (SE 0.010) | QJE 2019, Table 1, col 1 |
+| % change affected employment | 0.028 (SE 0.029) | QJE 2019, Table 1, col 1 |
+| Employment elasticity w.r.t. MW | 0.024 (SE 0.025) | QJE 2019, Table 1, col 1 |
+| Employment elasticity w.r.t. affected wage | 0.411 (SE 0.430) | QJE 2019, Table 1, col 1 |
+
+Test: `test_cdlz_bunching_table1.py`, from the column's regression
+coefficients (`data/cdlz_table1_col1.json`).

@@ -51,7 +51,7 @@ CLAIM_FILES = [
     "Paper-JSS/manuscript/tables/appendix_b_parity.tex",
     "Paper-JSS/README.md",
     "Paper-JSS/cover-letter.md",
-    "Paper-JSS/REVIEWER-HARDENING-AUDIT.md",
+    "Paper-JSS/RELEASE-CHECKLIST.md",
     "Paper-JSS/manuscript/README.md",
     "CHANGELOG.md",
     "CONTRIBUTING.md",
@@ -81,10 +81,18 @@ CLAIM_FILES = [
     "docs/jss_source_audit_dossier.md",
 ]
 
+# StatsPAI renamed its READMEs after 1.34.2: the English one moved from
+# README.md to README_EN.md and the Chinese one from README_CN.md to
+# README.md. The manuscript is anchored to a tag, so both layouts occur;
+# pick the one the checkout under ROOT actually has.
+_NEW_README_LAYOUT = (ROOT / "README_EN.md").exists()
+ENGLISH_README = "README_EN.md" if _NEW_README_LAYOUT else "README.md"
+CHINESE_README = "README.md" if _NEW_README_LAYOUT else "README_CN.md"
+
 JOSS_PROTECTED_FILES = [
     "paper.md",
-    "README.md",
-    "README_CN.md",
+    ENGLISH_README,
+    CHINESE_README,
     "CITATION.cff",
     "src/statspai/CITATION.cff",
     "docs/joss_reviewer_guide.md",
@@ -322,44 +330,26 @@ def _registry_evidence_snippets() -> list[str]:
 REQUIRED_SNIPPETS = {
     "Paper-JSS/manuscript/main.tex": [
         "Validation-Tiered",
-        "evidence tier that a user or an agent can query at call time",
         "licence-free replication path",
     ],
     "Paper-JSS/manuscript/sections/05-parity-compact.tex": [
-        "are earned in exactly two ways",
-        "\\RegistryAutoUnbacked{} stable auto-registered symbols are\nAPI-stable but not parity-backed",
         "so it is a stochastic screen",
         "\\RParityStrictCount{} are T2",
         "two\nnon-T2 Track A rows stay visible",
-        "is a T4\nidentification/reference-disagreement disclosure",
         "calibrated Basque replica",
-        "follows \\pkg{augsynth}'s Ridge+SCM convention",
-        "\\code{sp.gsynth} follows \\pkg{gsynth}'s two-way factor convention",
         "one specification, two data sets",
-        "no printed vignette anchor",
     ],
     "Paper-JSS/manuscript/sections/02-architecture-compact.tex": [
-        "Mature estimator paths return",
-        "remain\nregistered with explicit stability and validation\nmetadata",
-        "validated or mature variants return compatible result surfaces",
     ],
     "Paper-JSS/manuscript/sections/01-introduction-compact.tex": [
-        "evidence tier rather than a blanket claim over the whole API surface",
-        "the full census opens Section~\\ref{sec:parity}",
-        "integration-and-validation layer around reference software",
-        "Where it remains the reference choice",
-        "contribution and boundary",
-        "records disagreements as ledger entries rather than",
-        "strict parity claims",
-        "standardizes cross-family handoffs",
+        "have not been\naudited externally",
+        "It does\nnot supersede",
     ],
     "Paper-JSS/manuscript/sections/03-agent-facing-compact.tex": [
-        "software-interface contribution",
-        "tool discovery, failure recovery, result reuse, and citation",
-        "schema/MCP/citation reproducibility",
+        "software interface",
     ],
     "Paper-JSS/manuscript/sections/07-agent-eval.tex": [
-        "To make that deferral auditable",
+        "The paper makes no such claim",
         "agent\\_benchmark\\_protocol.md",
         "matched arms, task families, scoring dimensions, leakage controls",
         "before any behavioural claim is made",
@@ -370,20 +360,12 @@ REQUIRED_SNIPPETS = {
         "mpdta} replica",
     ],
     "Paper-JSS/manuscript/tables/appendix_b_parity.tex": [
-        "Causal forest (AIPW)",
-        "T3; single draw per engine",
         "\\textbf{PASS}",
         "\\textbf{S}",
     ],
     "Paper-JSS/manuscript/sections/09-discussion-compact.tex": [
-        "\\RegistryAutoUnbacked{} stable auto-registered symbols remain API-stable but not parity-backed",
-        "validated claim is limited to certified/validated entries",
-        "named rows and modules in the validation-suite evidence",
         "certified or validated functions list scoped",
-        "with the function and its evidence grade",
         "The unification itself has costs",
-        "cross-validation selectors",
-        "data-dependent non-uniqueness",
     ],
     "Paper-JSS/README.md": [
         'validated" as a registry evidence tier, not as a blanket claim',
@@ -392,14 +374,12 @@ REQUIRED_SNIPPETS = {
     "Paper-JSS/cover-letter.md": [
         "Validation-Tiered Python Workflows",
         'validated" is used as a scoped evidence claim',
-        "common reporting surface for mature estimator results",
-        "shared surface and evidence ledger make cross-family handoffs auditable",
         "reference implementations in their home domains",
         f"complete {_expected_r()}/{_expected_r()} R modules and {_expected_stata()}/{_expected_stata()} Stata modules",
         "final full-document visual spot-check remains an upload-time manual action",
         "page inventory",
     ],
-        "Paper-JSS/REVIEWER-HARDENING-AUDIT.md": [
+        "Paper-JSS/RELEASE-CHECKLIST.md": [
             "Last updated: 2026-09-23",
             f"describes the tagged {_release_version()} release",
             "one methodological/T4 Track A row is classified",
@@ -421,10 +401,10 @@ REQUIRED_SNIPPETS = {
         "Validation-status counts are evidence-audit outputs, not vanity floors",
         "they may go down when a function is honestly demoted",
     ],
-    "README.md": [
+    ENGLISH_README: [
         "`validation_status` distinguishes certified/validated evidence from API-stable breadth",
     ],
-    "README_CN.md": [
+    CHINESE_README: [
         "`validation_status`",
         "certified / validated / api_stable",
         "docs/jss_source_audit_dossier.md",
@@ -618,13 +598,9 @@ def _dynamic_required_snippets(counts: dict[str, int]) -> dict[str, list[str]]:
             "without expanding the compact PDF",
         ],
         "Paper-JSS/manuscript/sections/05-parity-compact.tex": [
-            "are earned in exactly two ways",
-            "the remaining \\RegistryAutoUnbacked{} stable auto-registered symbols are API-stable but not parity-backed",
         ],
         "Paper-JSS/manuscript/sections/09-discussion-compact.tex": [
-            "\\RegistryAutoUnbacked{} stable auto-registered symbols remain API-stable but not parity-backed",
             "certified or validated functions list scoped",
-            "with the function and its evidence grade",
         ],
         "Paper-JSS/README.md": [
             (
@@ -638,7 +614,7 @@ def _dynamic_required_snippets(counts: dict[str, int]) -> dict[str, list[str]]:
             ),
             f"all {stata_modules} committed Stata JSONs",
         ],
-        "Paper-JSS/REVIEWER-HARDENING-AUDIT.md": [
+        "Paper-JSS/RELEASE-CHECKLIST.md": [
             (f"{certified} registry symbols with certified/validated " "evidence"),
             (f"{unbacked_auto} stable auto-registered symbols still " "unbacked"),
             "Last updated: 2026-09-23",

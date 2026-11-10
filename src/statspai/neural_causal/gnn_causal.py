@@ -43,8 +43,10 @@ from scipy import stats
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.linear_model import LogisticRegression
 
+from .._aliases import accepts_aliases
+from .._input_validation import missing_named_columns
 from .._result_serialize import ResultProtocolMixin
-from ..exceptions import DataInsufficient, MethodIncompatibility
+from ..exceptions import ColumnNotFound, DataInsufficient, MethodIncompatibility
 
 _GNN_CAUSAL_ALTERNATIVES = [
     "sp.gnn_causal",
@@ -138,6 +140,7 @@ def _row_normalise(A: np.ndarray) -> np.ndarray:
     return np.asarray(A / rs, dtype=float)
 
 
+@accepts_aliases(seed="random_state")
 def gnn_causal(
     data: pd.DataFrame,
     y: str,
@@ -193,13 +196,15 @@ def gnn_causal(
         )
     cov = _normalize_covariates(covariates)
     required = [y, treat] + cov
-    missing = set(required) - set(data.columns)
+    missing = missing_named_columns(
+        {"y": y, "treat": treat, "covariates": cov}, data.columns
+    )
     if missing:
-        raise _gnn_error(
-            f"Missing columns: {missing}",
-            diagnostics={"missing_columns": sorted(str(col) for col in missing)},
-            recovery_hint="Pass column names present in the input DataFrame.",
+        err = ColumnNotFound.from_missing(
+            missing, list(data.columns), context="sp.gnn_causal"
         )
+        err.alternative_functions = list(_GNN_CAUSAL_ALTERNATIVES)
+        raise err
     if n_layers < 0:
         raise _gnn_error(
             f"n_layers must be >= 0, got {n_layers}.",
@@ -305,7 +310,15 @@ def gnn_causal(
         lr = LogisticRegression(C=1e6, solver="lbfgs", max_iter=500)
         lr.fit(F, D)
         e_hat = lr.predict_proba(F)[:, 1]
-    except Exception:
+    except Exception as exc:
+        from ..core._fallback import warn_fallback
+
+        warn_fallback(
+            "gnn_causal propensity model",
+            exc,
+            "using the treated share as a constant propensity, which "
+            "drops the confounding adjustment",
+        )
         e_hat = np.full(n, float(D.mean()))
     e_hat = np.clip(e_hat, p_lo, p_hi)
 

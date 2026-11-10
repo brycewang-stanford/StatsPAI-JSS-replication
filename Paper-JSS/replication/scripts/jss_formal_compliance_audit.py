@@ -46,7 +46,19 @@ RELEASE = _release_version()
 #: body by about a third of a page, which moved the second affiliation
 #: block onto a 54th page. Trimming content to recover it would repeat the
 #: compression the v2 review ruled out.
-PAGE_CEILING = 54
+#: Raised to 57 on 2026-10-02: the pre-submission pass against the JSS style
+#: guide added twenty software references (R, Stata, Python and the packages
+#: named in the text, which the guide requires to be cited), expanded
+#: abbreviations at first use, explained the curated MCP profile in
+#: Section 3, and added the maturity paragraph of Section 5.9. The reference
+#: list alone grew by more than a page. JSS sets no page limit; the ceiling
+#: is this project's own guard against unnoticed growth.
+#: Raised to 58 on 2026-10-08, at the re-anchor to the 1.39 line: the table
+#: of output-changing corrections gained rows for releases 1.35.0 to 1.39.0
+#: and the registry inventory five categories. The rows were cut to about
+#: forty words each and the body shortened first; the second affiliation
+#: block still moves to a 58th page.
+PAGE_CEILING = 48
 
 
 HERE = Path(__file__).resolve().parent
@@ -122,17 +134,7 @@ REQUIRED_FRONT_MATTER = (
 
 COMPARATIVE_SCOPE_SNIPPETS = (
     r"\label{tab:related-software}",
-    "Closest existing implementations and comparative scope",
-    "surveyed in May 2026",
-    "Where it remains the reference choice",
-    r"\statspai{} contribution and boundary",
-    "integration-and-validation layer around reference software",
-    r"not a claim that \statspai{} supersedes",
-    "T3 equivalence claim",
     "T4",
-    "separate licensed runtime",
-    "larger dependency surface",
-    "Comparison with existing platforms and prior art",
 )
 
 COMPARATIVE_PACKAGE_SNIPPETS = (
@@ -142,9 +144,7 @@ COMPARATIVE_PACKAGE_SNIPPETS = (
     r"\pkg{EconML}",
     r"\pkg{CausalML}",
     r"\pkg{DoWhy}",
-    r"\pkg{differences}",
     r"\pkg{pyfixest}",
-    r"\pkg{causalimpact}",
     r"\pkg{fixest}",
     r"\pkg{did}",
     r"\pkg{rdrobust}",
@@ -169,28 +169,22 @@ BLOCKING_LOG_PATTERNS = (
 )
 
 PDF_BOUNDARY_SNIPPETS = (
-    "evidence tier that a user",
-    "or an agent can query at call time",
     "certified/validated",
     "API-stable",
     "not parity-backed",
     f"This article describes StatsPAI {RELEASE}",
     f"tag v{RELEASE}",
-    "not a behavioural claim",
     "matched arms, task families",
     # Trimmed to the clause that cannot straddle a float: the full
     # sentence ends one page and resumes after Table 15, so the
     # halves are separated in the PDF's reading order by the whole
     # table. The clause still pins the boundary statement.
     "before any behavioural claim",
-    "software-interface contribution",
-    "named rows and modules",
     "limitations in their registry entries",
     "calibrated Basque replica",
     "no printed vignette anchor",
     "The unification itself has costs",
     "licence-free replication path",
-    "an evidence map that routes each",
 )
 
 PDF_STALE_PROSE_SNIPPETS = (
@@ -454,7 +448,7 @@ def _output_tail(text: str, n: int = 20) -> str:
 
 
 def _display_command(cmd: list[str], tmp_path: Path | None = None) -> str:
-    text = " ".join(cmd)
+    text = " ".join(cmd).replace(sys.executable, "python").replace(str(ROOT), ".")
     if SOURCE_DATE_EPOCH is not None and tmp_path is not None:
         text = text.replace(str(tmp_path), "<tmp>")
     return text
@@ -871,7 +865,7 @@ def main() -> int:
                 and _has_snippet(active_manuscript, "representative, not exhaustive")
                 and _has_snippet(
                     active_manuscript,
-                    r"Track B checks 95\% interval coverage on known DGPs",
+                    r"coverage study checks 95\% intervals on known DGPs",
                 )
                 and _has_snippet(
                     active_manuscript,

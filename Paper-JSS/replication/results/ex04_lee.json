@@ -7,20 +7,20 @@
   "published_original_jump_pp": 7.99,
   "pinned_replica_jump": 0.0768,
   "rdrobust": {
-    "robust_estimate": 0.0763362891502054,
-    "robust_se": 0.00898303659605468,
-    "robust_pvalue": 1.931730479216922e-17,
+    "robust_estimate": 0.07633893820878046,
+    "robust_se": 0.008982632094579267,
+    "robust_pvalue": 1.920490037777195e-17,
     "robust_ci": [
-      0.05872986095013295,
-      0.09394271735027786
+      0.05873330281703151,
+      0.09394457360052941
     ],
-    "conventional_estimate": 0.07754508346450995,
-    "conventional_se": 0.007540432056184212,
-    "bandwidth_h": 0.17576152200279643,
-    "bandwidth_b": 0.2755555898135891,
+    "conventional_estimate": 0.07754710574057638,
+    "conventional_se": 0.007539938100127872,
+    "bandwidth_h": 0.17578426640129624,
+    "bandwidth_b": 0.27557561608054004,
     "n_left": 3260,
     "n_right": 3298,
-    "n_effective_left": 1679,
+    "n_effective_left": 1680,
     "n_effective_right": 1737
   },
   "original_rdrobust_Rdsenate_cct": {
@@ -40,7 +40,7 @@
     "n_effective_right": 323
   },
   "pinned_check": {
-    "abs_diff": 0.000463710849794588,
+    "abs_diff": 0.00046106179121953306,
     "passes_at_1e-3": true
   },
   "cct_parity_check": {

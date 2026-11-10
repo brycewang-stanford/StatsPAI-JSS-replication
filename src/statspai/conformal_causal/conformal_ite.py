@@ -31,6 +31,8 @@ from scipy import stats as sp_stats
 from sklearn.base import BaseEstimator, clone
 from sklearn.ensemble import GradientBoostingRegressor
 
+from .._aliases import accepts_aliases
+from .._input_validation import check_columns
 from ..core.results import CausalResult
 
 # ======================================================================
@@ -38,6 +40,7 @@ from ..core.results import CausalResult
 # ======================================================================
 
 
+@accepts_aliases(seed="random_state")
 def conformal_cate(
     data: pd.DataFrame,
     y: str,
@@ -197,12 +200,16 @@ class ConformalCATE:
         self.y = y
         self.treat = treat
         self.covariates = covariates
-        self.model = model or GradientBoostingRegressor(
-            n_estimators=200,
-            max_depth=4,
-            learning_rate=0.05,
-            subsample=0.8,
-            random_state=random_state,
+        self.model = (
+            model
+            if model is not None
+            else GradientBoostingRegressor(
+                n_estimators=200,
+                max_depth=4,
+                learning_rate=0.05,
+                subsample=0.8,
+                random_state=random_state,
+            )
         )
         self.alpha = alpha
         self.calib_fraction = calib_fraction
@@ -212,9 +219,11 @@ class ConformalCATE:
         """Compute conformal CATE intervals."""
         # Prepare data
         cols = [self.y, self.treat] + self.covariates
-        missing = [c for c in cols if c not in self.data.columns]
-        if missing:
-            raise ValueError(f"Columns not found in data: {missing}")
+        check_columns(
+            self.data,
+            {"y": self.y, "treat": self.treat, "covariates": list(self.covariates)},
+            function="sp.conformal_cate",
+        )
 
         clean = self.data[cols].dropna()
         Y = clean[self.y].values.astype(np.float64)

@@ -48,7 +48,9 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 
+from .._aliases import accepts_aliases
 from .._result_serialize import ResultProtocolMixin
+from ..core._covariates import expands_categorical_covariates as _expands_categorical
 from ..core.results import CausalResult
 
 # sklearn imports moved to function bodies — keeps ``import statspai``
@@ -345,7 +347,14 @@ def _blp_calibration(
             p1 = np.nan
         b2 = float(ols.params[2])
         p2 = float(ols.pvalues[2])
-    except Exception:
+    except Exception as exc:
+        from ..core._fallback import warn_fallback
+
+        warn_fallback(
+            "auto_cate BLP calibration regression",
+            exc,
+            "the BLP coefficients and p-values are reported as NaN",
+        )
         b1, p1, b2, p2 = np.nan, np.nan, np.nan, np.nan
     return {
         "blp_beta1": b1,
@@ -374,6 +383,8 @@ def _validate_learners(learners: Sequence[str]) -> List[str]:
 # ---------------------------------------------------------------------------
 
 
+@accepts_aliases(seed="random_state")
+@_expands_categorical("covariates")
 def auto_cate(
     data: pd.DataFrame,
     y: str,
@@ -439,8 +450,13 @@ def auto_cate(
     >>> df["wage"], df["training"] = wage, training
     >>> result = sp.auto_cate(df, y="wage", treat="training",
     ...                       covariates=["age", "edu", "exp"],
-    ...                       learners=("s", "t"))
-    >>> print(result.summary())
+    ...                       learners=("s", "t"), n_folds=3, n_bootstrap=50)
+    >>> result.leaderboard["learner"].tolist()
+    ['S-Learner', 'T-Learner']
+    >>> result.selection_rule
+    'lowest held-out Nie-Wager R-loss'
+    >>> bool(result.best_learner in set(result.leaderboard["learner"]))
+    True
     """
     if score != "r_loss":
         raise NotImplementedError(

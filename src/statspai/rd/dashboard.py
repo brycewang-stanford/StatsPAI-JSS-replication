@@ -41,6 +41,7 @@ import numpy as np
 import pandas as pd
 
 from .._aliases import accepts_aliases
+from ..core._call_record import records_call
 
 # =============================================================================
 # rd_dashboard
@@ -62,7 +63,7 @@ def rd_dashboard(
     save: Optional[str] = None,
 ) -> Tuple[Any, Any]:
     """
-    Four-panel RD diagnostic dashboard.
+    Plot a four-panel RD diagnostic dashboard.
 
     Combines the four checks every RD analysis should report:
 
@@ -344,10 +345,12 @@ def _plot_bw_sensitivity(
 # rd_compare
 # =============================================================================
 
+# Local randomisation ('randinf') is not in the default set: it needs a
+# window (``wl`` / ``wr``) that only the analyst can choose, and without
+# one its row was an error on every call.
 _DEFAULT_COMPARE_METHODS = (
     "rdrobust",
     "honest",
-    "randinf",
 )
 
 
@@ -376,7 +379,9 @@ def rd_compare(
     c : float, default 0.0
     methods : sequence of str
         Method aliases recognised by the :data:`sp.rd._RD_METHOD_ALIASES`
-        dispatcher.  Default: ``('rdrobust', 'honest', 'randinf')``.
+        dispatcher.  Default: ``('rdrobust', 'honest')``.  Add
+        ``'randinf'`` together with its window, e.g.
+        ``method_kwargs={'randinf': {'wl': -0.1, 'wr': 0.1}}``.
     fuzzy : str, optional
         Fuzzy treatment column passed through to all methods that
         accept it.
@@ -408,7 +413,7 @@ def rd_compare(
     >>> tab.loc[0, "method"], tab.loc[0, "status"]
     ('rdrobust', 'ok')
     >>> round(float(tab.loc[0, "estimate"]), 3)
-    0.813
+    0.818
     """
     method_kwargs = method_kwargs or {}
     rows = []
@@ -478,6 +483,7 @@ def rd_compare(
 # =============================================================================
 
 
+@records_call("rd_robustness_table")
 @accepts_aliases(covariates="covs")
 def rd_robustness_table(
     data: pd.DataFrame,
@@ -491,6 +497,7 @@ def rd_robustness_table(
     donuts: Sequence[float] = (0.0,),
     covs: Optional[List[str]] = None,
     cluster: Optional[str] = None,
+    vce: str = "nn",
     alpha: float = 0.05,
 ) -> pd.DataFrame:
     """
@@ -509,6 +516,10 @@ def rd_robustness_table(
     y, x : str
     c : float
     fuzzy, covs, cluster : optional, forwarded to rdrobust
+    vce : {'nn', 'hc0', 'hc1', 'hc2', 'hc3'}, default 'nn'
+        Variance estimator of every ``rdrobust`` fit, as in ``sp.rdrobust``
+        (it also enters the bandwidth selection). With ``cluster=``,
+        ``'nn'`` / ``'hc0'`` / ``'hc1'`` become R's ``'cr1'``.
     kernels, bwselects, polynomials, donuts : sequences
         Specification grid.
     alpha : float
@@ -541,7 +552,7 @@ def rd_robustness_table(
     >>> tab["kernel"].tolist()
     ['triangular', 'uniform']
     >>> round(float(tab.loc[0, "estimate_conv"]), 3)
-    0.765
+    0.806
     """
     from .rdrobust import rdrobust
 
@@ -569,6 +580,7 @@ def rd_robustness_table(
                             donut=float(donut),
                             covs=covs,
                             cluster=cluster,
+                            vce=vce,
                             alpha=alpha,
                             warn_mass_points=False,
                             warn_weak_first_stage=False,

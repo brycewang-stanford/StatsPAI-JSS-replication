@@ -36,12 +36,20 @@ def _hausman_from_data(
     id_col: str,
     time_col: str,
     alpha: float = 0.05,
+    sigmamore: bool = False,
 ) -> Dict[str, Any]:
     """
     Hausman (1978) specification test.
 
     H0: RE is consistent and efficient (use RE).
     H1: RE is inconsistent (use FE).
+
+    Matches Stata ``xtreg, fe`` / ``xtreg, re`` / ``hausman fe re``
+    (``tests/reference_parity/test_hausman_stata_parity.py``).
+    ``sigmamore=True`` is ``hausman fe re, sigmamore``: both covariance
+    matrices use the RE disturbance variance, i.e. ``V_FE`` is rescaled by
+    ``s2_RE / s2_FE``, which keeps the variance difference usable where the
+    classical statistic goes negative.
     """
     df = data[[id_col, time_col, y] + x].dropna()
     k = len(x)
@@ -59,34 +67,17 @@ def _hausman_from_data(
     beta_re = fit_re.params.loc[x].to_numpy(dtype=float)
     vcov_fe = fit_fe.cov.loc[x, x].to_numpy(dtype=float)
     vcov_re = fit_re.cov.loc[x, x].to_numpy(dtype=float)
+    if sigmamore:
+        vcov_fe = vcov_fe * float(fit_re.s2) / float(fit_fe.s2)
 
-    b_diff = beta_fe - beta_re
-    V_diff = vcov_fe - vcov_re
-
-    try:
-        V_inv = np.linalg.inv(V_diff)
-        H = float(b_diff @ V_inv @ b_diff)
-    except np.linalg.LinAlgError:  # pragma: no cover
-        V_inv = np.linalg.pinv(V_diff)
-        H = float(max(b_diff @ V_inv @ b_diff, 0))
-
-    H = max(H, 0)
-    pvalue = float(stats.chi2.sf(H, k))
-    reject_re = pvalue <= alpha
-    recommendation = "FE" if reject_re else "RE"
+    from ..diagnostics.hausman import _hausman_decision
 
     return {
-        "statistic": H,
-        "df": k,
-        "pvalue": pvalue,
-        "recommendation": recommendation,
+        **_hausman_decision(beta_fe - beta_re, vcov_fe - vcov_re, k, alpha),
+        "sigmamore": bool(sigmamore),
         "beta_fe": pd.Series(beta_fe, index=x),
         "beta_re": pd.Series(beta_re, index=x),
         "covariance_reference": "linearmodels/plm unadjusted FE-RE covariance",
-        "interpretation": (
-            f"chi2({k}) = {H:.4f}, p = {pvalue:.4f}. "
-            f"{'Reject H0: use Fixed Effects.' if reject_re else 'Cannot reject H0: Random Effects is more efficient.'}"
-        ),
     }
 
 
@@ -108,11 +99,14 @@ def _bp_lm_test(
     H0: Var(alpha_i) = 0 (Pooled OLS appropriate).
     H1: Var(alpha_i) > 0 (Random Effects needed).
 
-    The test statistic is:
+    With ``N`` observations in panels of ``T_i`` periods, the statistic is
 
-        LM = nT/(2(T-1)) * [sum_i (sum_t e_it)^2 / sum_i sum_t e_it^2 - 1]^2
+        LM = N^2 / (2 (sum_i T_i^2 - N))
+             * [sum_i (sum_t e_it)^2 / sum_i sum_t e_it^2 - 1]^2
 
-    Under H0, LM ~ chi2(1).
+    the form of Baltagi and Li (1990) for incomplete panels, which is the
+    textbook ``nT / (2 (T - 1))`` factor when every panel has ``T`` periods
+    (Stata's ``xttest0``). Under H0, LM ~ chi2(1). [@baltagi1990lagrange]
     """
     df = data[[id_col, time_col, y] + x].dropna()
 
@@ -132,9 +126,7 @@ def _bp_lm_test(
     unique_ids = np.unique(ids)
     nT = len(e)
 
-    # Average T per unit
     T_counts = np.array([np.sum(ids == uid) for uid in unique_ids])
-    T_bar = np.mean(T_counts)
 
     # Sum of squared group-summed residuals
     sum_ei_sq = 0.0
@@ -145,9 +137,10 @@ def _bp_lm_test(
     # Total sum of squared residuals
     total_sq = np.sum(e**2)
 
-    # LM statistic (Honda 1985 variant for unbalanced panels)
+    # Baltagi-Li (1990): with unequal T_i the scale factor uses sum T_i^2,
+    # not the average panel length (which overstated LM on unbalanced panels).
     ratio = sum_ei_sq / total_sq - 1
-    LM = (nT / (2 * (T_bar - 1))) * ratio**2
+    LM = nT**2 / (2.0 * (float(np.sum(T_counts.astype(float) ** 2)) - nT)) * ratio**2
 
     LM = max(LM, 0)
     pvalue = float(stats.chi2.sf(LM, 1))

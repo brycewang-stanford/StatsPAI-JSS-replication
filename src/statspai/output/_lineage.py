@@ -78,6 +78,16 @@ def _statspai_version() -> str:
         return "unknown"
 
 
+def _statspai_revision() -> Optional[str]:
+    """Git revision of the imported source (None for an installed wheel)."""
+    try:
+        from .._build_info import source_revision
+
+        return source_revision()
+    except Exception:  # pragma: no cover — defensive
+        return None
+
+
 def _python_version() -> str:
     v = sys.version_info
     return f"{v.major}.{v.minor}.{v.micro}"
@@ -147,7 +157,9 @@ def compute_data_hash(data: Any, length: int = 12) -> Optional[str]:
                     arr = np.ascontiguousarray(arr)
                     digest.update(str(arr.shape).encode())
                     digest.update(str(arr.dtype).encode())
-                    digest.update(arr.tobytes())
+                    # The array's own buffer: the same bytes as ``tobytes()``
+                    # (so the same digest) without a copy of the frame.
+                    digest.update(memoryview(arr).cast("B"))
                     return digest.hexdigest()[:length]
 
             row_h = pd.util.hash_pandas_object(data, index=True).values.tobytes()
@@ -172,7 +184,7 @@ def compute_data_hash(data: Any, length: int = 12) -> Optional[str]:
             h = hashlib.sha256()
             h.update(str(data.shape).encode())
             h.update(str(data.dtype).encode())
-            h.update(np.ascontiguousarray(data).tobytes())
+            h.update(memoryview(np.ascontiguousarray(data)).cast("B"))
             return h.hexdigest()[:length]
         if isinstance(data, (bytes, bytearray)):
             return hashlib.sha256(bytes(data)).hexdigest()[:length]
@@ -260,6 +272,11 @@ class Provenance:
         calls in the same session.
     statspai_version : str
         Package version at the time of the call.
+    statspai_revision : str or None
+        Git revision of the StatsPAI source that ran (``"eed77f6c"``, with
+        ``+dirty`` for uncommitted changes); None for an installed wheel.
+        Many commits share one version string, so this is what pins the
+        code.
     python_version : str
         ``"3.11.5"``-style.
     timestamp : str
@@ -273,7 +290,7 @@ class Provenance:
     >>> prov.function
     'sp.did.callaway_santanna'
     >>> sorted(prov.to_dict())  # JSON-able view
-    ['data_hash', 'data_shape', 'function', 'params', 'python_version', 'run_id', 'statspai_version', 'timestamp']
+    ['data_hash', 'data_shape', 'function', 'params', 'python_version', 'run_id', 'statspai_revision', 'statspai_version', 'timestamp']
     >>> prov.short().startswith("sp.did.callaway_santanna")
     True
     """
@@ -284,6 +301,7 @@ class Provenance:
     data_shape: Optional[list] = None
     run_id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
     statspai_version: str = field(default_factory=_statspai_version)
+    statspai_revision: Optional[str] = field(default_factory=_statspai_revision)
     python_version: str = field(default_factory=_python_version)
     timestamp: str = field(
         default_factory=lambda: _dt.datetime.now().isoformat(timespec="seconds")
@@ -371,8 +389,29 @@ def attach_provenance(
         except Exception:
             return result
 
+    return _attach(result, function=function, params=params, data=data)
+
+
+#: Sentinel: the data hash has not been computed yet.
+_UNSET: Any = object()
+
+
+def _attach(
+    result: Any,
+    *,
+    function: str,
+    params: Optional[Mapping[str, Any]],
+    data: Optional[Any],
+    data_hash: Any = _UNSET,
+) -> Any:
+    """Body of :func:`attach_provenance`, after its early exits.
+
+    ``data_hash`` takes a hash already computed from ``data`` (see
+    :func:`records_provenance`, which computes it while the fit runs).
+    """
     try:
-        data_hash = compute_data_hash(data) if data is not None else None
+        if data_hash is _UNSET:
+            data_hash = compute_data_hash(data) if data is not None else None
         data_shape = None
         if data is not None:
             try:
@@ -472,6 +511,79 @@ def _capture_if_requested(result: Any, prov: Any) -> None:
         )
 
 
+class _HashAhead:
+    """The fingerprint of a large input, computed while the fit runs.
+
+    SHA-256 of a million-row frame costs about as much as a fixed-effects
+    regression on it (45 ms of a 110 ms ``sp.feols``). ``hashlib`` releases
+    the GIL on large buffers, so a second thread hashes the caller's frame
+    while the estimator works on it; the record holds the same digest as a
+    hash taken afterwards. Small inputs are hashed inline, where a thread
+    would cost more than it saves. The thread is joined before the call
+    returns, so none outlives it (fork-safe).
+    """
+
+    #: Inputs with at least this many cells are hashed on a second thread.
+    THREAD_CELLS = 200_000
+
+    #: ``STATSPAI_PROVENANCE_HASH=0`` skips the fingerprint of the input in
+    #: the record every fit attaches (``data_hash`` is then ``None``, as for
+    #: frames over :data:`MAX_HASH_ROWS`): for loops of many fits on one
+    #: frame where its ~50 ms per million rows matters. Explicit calls of
+    #: :func:`compute_data_hash` (replication packs) are not affected.
+    ENV = "STATSPAI_PROVENANCE_HASH"
+
+    def __init__(self, data: Any) -> None:
+        self._data = data
+        self._value: Any = _UNSET
+        self._thread: Any = None
+
+    @classmethod
+    def start(cls, data: Any) -> "_HashAhead":
+        ahead = cls(data)
+        if data is None or os.environ.get(cls.ENV, "").strip().lower() in (
+            "0",
+            "false",
+            "no",
+            "off",
+        ):
+            ahead._value = None
+            return ahead
+        import pandas as pd
+
+        big = (
+            isinstance(data, pd.DataFrame)
+            and 0 < len(data) <= MAX_HASH_ROWS
+            and data.shape[0] * max(data.shape[1], 1) >= cls.THREAD_CELLS
+        )
+        if big:
+            import threading
+
+            ahead._thread = threading.Thread(
+                target=ahead._run, name="statspai-data-hash", daemon=True
+            )
+            ahead._thread.start()
+        return ahead
+
+    def _run(self) -> None:
+        self._value = compute_data_hash(self._data)
+
+    def discard(self) -> None:
+        """Wait for the hashing thread, if any, without using its value."""
+        if self._thread is not None:
+            self._thread.join()
+            self._thread = None
+
+    def result(self) -> Any:
+        """The digest (``None`` when there is none); hashes inline if needed."""
+        if self._thread is not None:
+            self._thread.join()
+            self._thread = None
+        if self._value is _UNSET:
+            self._value = compute_data_hash(self._data)
+        return self._value
+
+
 def records_provenance(function: str, *, data_arg: str = "data") -> Callable[[_F], _F]:
     """Decorator: attach a :class:`Provenance` record to the returned result.
 
@@ -490,23 +602,35 @@ def records_provenance(function: str, *, data_arg: str = "data") -> Callable[[_F
 
         @functools.wraps(fn)
         def wrapper(*args: Any, **kwargs: Any) -> Any:
-            result = fn(*args, **kwargs)
             try:
                 bound = sig.bind_partial(*args, **kwargs)
             except TypeError:
-                return result
+                return fn(*args, **kwargs)
+            data = bound.arguments.get(data_arg)
+            pending = _HashAhead.start(data)
+            try:
+                result = fn(*args, **kwargs)
+            except BaseException:
+                pending.discard()
+                raise
+            data_hash = pending.result()
+            if result is None or getattr(result, "_provenance", None) is not None:
+                return result  # keep the inner (most specific) record
             params: Dict[str, Any] = {}
-            data = None
             for name, value in bound.arguments.items():
                 kind = sig.parameters[name].kind
                 if name == data_arg:
-                    data = value
+                    continue
                 elif kind is inspect.Parameter.VAR_KEYWORD:
                     params.update(value)
                 elif kind is not inspect.Parameter.VAR_POSITIONAL:
                     params[name] = value
-            return attach_provenance(
-                result, function=function, params=params, data=data
+            return _attach(
+                result,
+                function=function,
+                params=params,
+                data=data,
+                data_hash=data_hash,
             )
 
         return cast(_F, wrapper)
@@ -608,7 +732,7 @@ def _note_listwise_deletion(
         if not isinstance(data, pd.DataFrame) or len(data) == 0:
             return
         used = _referenced_columns(params, data.columns)
-        if not used:
+        if not used or not any(data[c].hasnans for c in used):
             return
         incomplete = data[used].isna()
         n_dropped = int(incomplete.any(axis=1).sum())
@@ -701,7 +825,9 @@ def format_provenance(prov: Provenance, *, indent: int = 2) -> str:
         f"{pad}function   : {prov.function}",
         f"{pad}run_id     : {prov.run_id}",
         f"{pad}timestamp  : {prov.timestamp}",
-        f"{pad}StatsPAI v{prov.statspai_version} · Python {prov.python_version}",
+        f"{pad}StatsPAI v{prov.statspai_version}"
+        + (f" (git {prov.statspai_revision})" if prov.statspai_revision else "")
+        + f" · Python {prov.python_version}",
     ]
     if prov.data_hash:
         shape = (
@@ -739,7 +865,7 @@ def lineage_summary(*results: Any) -> Dict[str, Any]:
     >>> report["n_runs"]
     2
     >>> sorted(report)
-    ['data_inputs', 'n_runs', 'python_version', 'runs', 'statspai_version']
+    ['data_inputs', 'n_runs', 'python_version', 'runs', 'statspai_revision', 'statspai_version']
     """
     runs: Dict[str, Dict[str, Any]] = {}
     data_hashes: Dict[str, list] = {}
@@ -757,5 +883,6 @@ def lineage_summary(*results: Any) -> Dict[str, Any]:
         "runs": runs,
         "data_inputs": [{"hash": h, "consumers": v} for h, v in data_hashes.items()],
         "statspai_version": _statspai_version(),
+        "statspai_revision": _statspai_revision(),
         "python_version": _python_version(),
     }

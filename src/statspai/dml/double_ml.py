@@ -61,10 +61,11 @@ def dml(
     normalize_ipw: bool = False,
     trimming_threshold: float = 1e-2,
     *,
-    cluster: Optional[str] = None,
+    cluster: Optional[Union[str, Sequence[str]]] = None,
     external_predictions: Optional["OOFPredictions"] = None,
     store_oof: bool = False,
     observation_ids: Optional[Sequence[str]] = None,
+    design: Optional[Any] = None,
 ) -> CausalResult:
     """
     Estimate causal effect using Double/Debiased Machine Learning.
@@ -102,6 +103,12 @@ def dml(
 
         For binary treatment (``model='irm'``) ``ml_m`` is auto-coerced
         to the classifier variant; same for ``ml_r`` under ``'iivm'``.
+        Under ``'plr'`` and ``'pliv'`` a classifier may be passed for a
+        0/1 outcome, treatment or instrument; its ``predict_proba`` is
+        the conditional mean (as in DoubleML's PLR). A classifier for a
+        target that is not 0/1 is refused. Up to 1.38.0 these two models
+        called ``predict`` on a classifier and residualised on the hard
+        label.
         ``None`` falls back to the per-model gradient-boosting default.
     n_folds : int, default 5
     n_rep : int, default 1
@@ -118,7 +125,11 @@ def dml(
         ``model in {'plr', 'irm', 'pliv', 'iivm'}``.
     fold_indices : array-like or str, optional
         Explicit cross-fit fold labels. Pass either a 1-D array of length
-        ``len(data)`` or a column name. For internal fitting, labels must
+        ``len(data)`` or a column name. Scikit-learn style splits, a list of
+        ``(train, test)`` positional index pairs such as
+        ``list(KFold(5).split(X))``, are also read, provided the test sets
+        partition the rows and each training set is its complement. For
+        internal fitting, labels must
         define exactly ``n_folds`` non-empty folds and ``n_rep`` must be 1.
         External repeated IRM predictions may use the same labels when that
         partition is equivalent to every caller repeat.
@@ -151,13 +162,25 @@ def dml(
         estimated propensity is clipped to ``[t, 1 - t]``. The default
         ``0.01`` reproduces the historical clip and matches DoubleML's
         ``trimming_threshold`` with ``trimming_rule='truncate'``.
-    cluster : str, optional
-        Column identifying clusters (one-way). Cross-fitting folds are
-        formed over whole clusters and the standard error is the
-        cluster-robust DML variance of Chiang, Kato, Ma and Sasaki (2022),
-        as DoubleML computes it for ``DoubleMLClusterData``; the estimate
-        solves the fold-weighted score. Not available with
-        ``external_predictions``.
+    cluster : str or list of two str, optional
+        Column identifying clusters, or two columns for two-way
+        clustering. Cross-fitting folds are formed over whole clusters and
+        the standard error is the cluster-robust DML variance of Chiang,
+        Kato, Ma and Sasaki (2022) [@chiang2022multiway], as DoubleML
+        computes it for ``DoubleMLClusterData``; the estimate solves the
+        fold-weighted score. Two-way: each dimension is split into
+        ``n_folds`` folds of clusters, the ``n_folds**2`` cells test the
+        units in fold ``k`` of the first and fold ``l`` of the second
+        dimension and train on units sharing no cluster with them, and the
+        variance sums the two dimensions' within-cell cluster scores
+        (equal to DoubleML 0.11.3 to 1e-15 given the same folds,
+        ``tests/reference_parity/test_dml_twoway_cluster_doubleml_parity.py``).
+        Pass ``fold_indices`` as an ``n x 2`` array (fold of each unit's
+        cluster in each dimension) to fix the cells. With two-way clusters
+        ``sp.dml_sensitivity`` reports the bound without its sampling
+        error (no two-way variance for the bound's score elements). Not
+        available with ``external_predictions`` or two-way with
+        ``design=``.
     external_predictions : OOFPredictions, optional
         Python-only in-memory predictions for unweighted, unnormalised
         binary-treatment IRM ATE scoring. ``caller_declared`` training records
@@ -169,10 +192,31 @@ def dml(
     observation_ids : sequence of str, optional
         Python-only stable row IDs. Internal IDs are checked before complete-case
         filtering; external IDs must match the prediction record exactly.
+    design : SurveyDesign, optional
+        A complex survey design from :func:`sp.svydesign` declared on
+        ``data`` (same rows). The design weights are the sample weights
+        (nuisance fits and the score), cross-fitting folds are formed over
+        whole PSUs when the design has them, and the standard error is the
+        survey linearisation of the weighted score,
+        ``u_i = -w_i psi_i / sum(w psi_a)``, over strata, PSUs and the
+        finite population correction (R ``survey::svyrecvar``), with t
+        inference on the design degrees of freedom (#PSU - #strata). The
+        nuisance fits are held fixed, as in every DML variance. Not with
+        ``sample_weight=``, ``cluster=``, ``external_predictions`` or
+        ``store_oof``; with ``model='irm'`` only the unnormalised ATE score
+        is weighted.
 
     Returns
     -------
     CausalResult
+        For ``model='pliv'`` (unweighted, no clusters),
+        ``model_info['anderson_rubin']`` holds a confidence set for the
+        coefficient that stays valid when the instrument is weak: the
+        values of ``theta`` at which the Anderson-Rubin statistic of the
+        cross-fitted score is below the chi-squared(1) critical value.
+        ``kind`` is ``'interval'``, or ``'unbounded'`` / ``'disjoint'``
+        when the first stage is not significant, and ``intervals`` lists
+        the pieces. With ``n_rep > 1`` it refers to the last repetition.
 
     Notes
     -----
@@ -215,33 +259,76 @@ def dml(
     orthogonal score makes nuisance error second order, not zero; pass
     learners suited to the problem, and check ``sp.validation_scope`` for
     which learner configurations carry evidence.
+    A PLR fit that used the defaults records this in
+    ``model_info["learner_note"]``, which ``summary()`` prints.
 
     Examples
     --------
-    >>> # Partially Linear Regression
+    >>> import numpy as np
+    >>> import pandas as pd
+    >>> import statspai as sp
+    >>> rng = np.random.default_rng(0)
+    >>> n = 500
+    >>> df = pd.DataFrame(rng.normal(size=(n, 3)), columns=['age', 'edu', 'exp'])
+    >>> X_cols = ['age', 'edu', 'exp']
+
+    >>> # Partially Linear Regression (true effect 1.0)
+    >>> df['training'] = 0.5 * df['age'] + rng.normal(size=n)
+    >>> df['wage'] = 1.0 * df['training'] + df['edu'] + rng.normal(size=n)
     >>> result = sp.dml(df, y='wage', treat='training',
     ...                 covariates=['age', 'edu', 'exp'])
+    >>> result.method, round(float(result.estimate), 1)
+    ('Double ML (PLR)', 1.0)
 
-    >>> # Interactive Regression (binary treatment, ATE)
-    >>> result = sp.dml(df, y='wage', treat='D', covariates=X_cols,
+    >>> # Interactive Regression (binary treatment, ATE; true effect 2.0)
+    >>> df['D'] = rng.binomial(1, 0.5, n)
+    >>> df['y_bin'] = 2.0 * df['D'] + df['edu'] + rng.normal(size=n)
+    >>> result = sp.dml(df, y='y_bin', treat='D', covariates=X_cols,
     ...                 model='irm')
+    >>> result.method, result.estimand
+    ('Double ML (IRM)', 'ATE')
 
-    >>> # Partially Linear IV — endogenous D, instrument Z
+    >>> # Partially Linear IV — endogenous schooling, instrument Z
+    >>> df['Z'] = rng.normal(size=n)
+    >>> u = rng.normal(size=n)                     # unobserved confounder
+    >>> df['schooling'] = df['Z'] + u + rng.normal(size=n)
+    >>> df['earnings'] = 0.5 * df['schooling'] + df['age'] + u + rng.normal(size=n)
     >>> result = sp.dml(df, y='earnings', treat='schooling',
-    ...                 covariates=['age', 'father_edu'],
-    ...                 model='pliv', instrument='quarter_of_birth')
+    ...                 covariates=['age', 'edu'],
+    ...                 model='pliv', instrument='Z')
+    >>> result.method, result.estimand
+    ('Double ML (PLIV)', 'LATE')
 
     >>> # Interactive IV — binary D, binary Z (LATE)
-    >>> result = sp.dml(df, y='earnings', treat='college',
-    ...                 covariates=['age', 'ability'],
+    >>> df['lottery_win'] = rng.binomial(1, 0.5, n)
+    >>> df['college'] = ((df['lottery_win'] + u + rng.normal(size=n)) > 0.5)
+    >>> df['college'] = df['college'].astype(int)
+    >>> df['earnings2'] = 1.0 * df['college'] + df['age'] + u + rng.normal(size=n)
+    >>> result = sp.dml(df, y='earnings2', treat='college',
+    ...                 covariates=['age', 'edu'],
     ...                 model='iivm', instrument='lottery_win')
+    >>> result.method, result.estimand
+    ('Double ML (IIVM)', 'LATE')
     """
     key = str(model).lower()
     if key not in _MODEL_REGISTRY:
+        import difflib
+
+        close = difflib.get_close_matches(key, list(_MODEL_REGISTRY), n=1, cutoff=0.5)
         raise MethodIncompatibility(
             f"dml: model must be one of {tuple(_MODEL_REGISTRY.keys())}, "
             f"got '{model}'",
-            diagnostics={"model": model, "supported_models": tuple(_MODEL_REGISTRY)},
+            recovery_hint=(
+                (f"Did you mean model={close[0]!r}? " if close else "")
+                + "plr: partially linear (continuous or binary treatment); "
+                "irm: interactive (binary treatment, heterogeneous effects); "
+                "pliv / iivm: the instrumental-variable versions."
+            ),
+            diagnostics={
+                "model": model,
+                "supported_models": tuple(_MODEL_REGISTRY),
+                "did_you_mean": close,
+            },
         )
     estimator_cls = _MODEL_REGISTRY[key]
     estimator = estimator_cls(
@@ -263,7 +350,13 @@ def dml(
         normalize_ipw=normalize_ipw,
         trimming_threshold=trimming_threshold,
         cluster=cluster,
+        design=design,
     )
+    if design is not None and store_oof:
+        raise MethodIncompatibility(
+            "dml: store_oof is not supported with design=.",
+            recovery_hint="Drop store_oof, or fit without the design.",
+        )
     oof_provenance = build_oof_provenance_payload(
         external_predictions=external_predictions,
         store_oof=store_oof,
@@ -369,7 +462,7 @@ class DoubleML:
         score: Optional[str] = None,
         normalize_ipw: bool = False,
         trimming_threshold: float = 1e-2,
-        cluster: Optional[str] = None,
+        cluster: Optional[Union[str, Sequence[str]]] = None,
     ):
         key = str(model).lower()
         if key not in _MODEL_REGISTRY:

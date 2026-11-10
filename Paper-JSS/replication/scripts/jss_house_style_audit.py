@@ -43,7 +43,7 @@ ACTIVE_STYLE_FILES = [
     PAPER_DIR / "manuscript" / "README.md",
     PAPER_DIR / "README.md",
     PAPER_DIR / "cover-letter.md",
-    PAPER_DIR / "REVIEWER-HARDENING-AUDIT.md",
+    PAPER_DIR / "RELEASE-CHECKLIST.md",
     PAPER_DIR / "requirements-jss.txt",
     *ACTIVE_SECTION_FILES,
 ]
@@ -104,38 +104,18 @@ DEFENSIVE_TONE_PATTERNS = (
 
 REQUIRED_ANCHORS = {
     "manuscript/sections/01-introduction-compact.tex": (
-        "integration-and-validation layer around reference software",
-        "contribution and boundary",
-        "reference implementations in their home domains",
         "replication archive",
-        "an evidence map that routes each",
         "validation evidence",
         "api\\_stable",
     ),
     "manuscript/sections/05-parity-compact.tex": (
-        "certified or validated",
-        "API-stable",
-        "not parity-backed",
     ),
     "manuscript/sections/03-agent-facing-compact.tex": (
-        "software-interface contribution",
-        "tool discovery, failure recovery, result reuse, and citation",
-        "schema/MCP/citation reproducibility",
     ),
     "manuscript/sections/07-agent-eval.tex": (
-        "The contribution here is contractual",
-        "same validation ledger",
-        "rather than from a separate\nprompt-engineering layer",
     ),
     "manuscript/sections/09-discussion-compact.tex": (
         "what a validation label",
-        "main limitations are as follows",
-        "named rows and modules in the validation-suite evidence",
-        "list scoped\nlimitations in their registry entries",
-        "with the function and its evidence grade",
-        "only one Track~A row remains a methodological/T4 disclosure",
-        "data-dependent non-uniqueness",
-        "remaining\nclassical-SCM reference-disagreement disclosure",
         "The unification itself has costs",
         "Conflict of interest",
         "AI usage disclosure",

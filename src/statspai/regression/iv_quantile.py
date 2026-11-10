@@ -62,10 +62,13 @@ import numpy as np
 import pandas as pd
 from scipy import optimize, stats
 
+from .._aliases import accepts_aliases
+from .._input_validation import check_columns
 from ..core.results import EconometricResults
 from .quantile import _qreg_fit
 
 
+@accepts_aliases(seed="random_state")
 def ivqreg(
     data: pd.DataFrame,
     y: str,
@@ -151,9 +154,16 @@ def ivqreg(
     inst_list = [instruments] if isinstance(instruments, str) else list(instruments)
     exog_list = list(exog) if exog else []
 
-    for col in [y] + endog_list + inst_list + exog_list:
-        if col not in data.columns:
-            raise ValueError(f"column '{col}' not in data")
+    check_columns(
+        data,
+        {
+            "y": y,
+            "endog": endog if isinstance(endog, str) else endog_list,
+            "instruments": (instruments if isinstance(instruments, str) else inst_list),
+            "exog": exog_list,
+        },
+        function="ivqreg",
+    )
     if len(inst_list) < len(endog_list):
         raise ValueError(
             f"need at least {len(endog_list)} instruments for "
@@ -368,11 +378,20 @@ def _fit_ivqreg_one(
         try:
             # Coefficient on D proxy: regress Y on D with X,Z partialled out
             X_all = np.column_stack([X, Z])
-            P = X_all @ np.linalg.pinv(X_all.T @ X_all) @ X_all.T
-            Y_p = Y - P @ Y
-            D_p = D[:, 0] - P @ D[:, 0]
+            # residual maker applied to the two vectors, never formed: the
+            # n x n projection is 320 GB at n = 200,000
+            XtX_inv = np.linalg.pinv(X_all.T @ X_all)
+            Y_p = Y - X_all @ (XtX_inv @ (X_all.T @ Y))
+            D_p = D[:, 0] - X_all @ (XtX_inv @ (X_all.T @ D[:, 0]))
             slope = float(D_p @ Y_p / (D_p @ D_p + 1e-12))
-        except Exception:
+        except Exception as exc:
+            from ..core._fallback import warn_fallback
+
+            warn_fallback(
+                "ivqreg starting slope for the alpha grid",
+                exc,
+                "centring the search grid at zero",
+            )
             slope = 0.0
         lo = slope - 5.0 * (abs(slope) + 1.0)
         hi = slope + 5.0 * (abs(slope) + 1.0)

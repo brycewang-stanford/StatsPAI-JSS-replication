@@ -26,8 +26,43 @@ is the intended effect, not an accident.
 | --- | --- | --- |
 | `82_csdid_conventions_Stata.json` | `csdid` `asinr` vs default, `method(stdipw)` vs `method(ipw)` | `tests/reference_parity/test_csdid_conventions_stata_parity.py` |
 | `83_sunab_control_cohort_Stata.json` | `eventstudyinteract control_cohort()` under two reference groups | `tests/reference_parity/test_sunab_control_cohort_parity.py` |
-| `84_bjs_fe_covariates_Stata.json` | `did_imputation` `fe()` / `unitcontrols()` / `timecontrols()` | `tests/reference_parity/test_bjs_fe_covariates_parity.py` |
+| `84_bjs_fe_covariates_Stata.json` | `did_imputation` `fe()` / `unitcontrols()` / `timecontrols()` | `tests/reference_parity/test_bjs_fe_covariates_parity.py` (ATTs); `test_option_fixture_bindings.py` (SEs) |
 | `85_multiplegt_dyn_options_Stata.json` | `did_multiplegt_dyn` `switchers()` / `same_switchers` | `tests/reference_parity/test_multiplegt_dyn_options_parity.py` |
+| `86_lprobust_Stata.json` | `lprobust` at supplied bandwidths | `tests/reference_parity/test_lprobust_parity.py` |
+| `87_did_had_Stata.json` | `did_had` | `tests/reference_parity/test_did_had_parity.py` |
+| `92_vce_menu_Stata.json` | `ivregress 2sls\|liml` with and without `small`; `ivreg2` `fuller(1)` and `cluster(g yr)`; `acreg` Conley; `newey`; `boottest` (WCR / WRE, every sign vector enumerated); two designs with negative variances | `tests/reference_parity/test_vce_menu_parity.py` |
+| `93_sunab_options_Stata.json` | `eventstudyinteract` on in-window dummies only (`window_rule='reference'`), with the never-treated and the last cohort as control | `tests/reference_parity/test_sunab_options_parity.py` |
+| `94_bjs_options_Stata.json` | `did_imputation` `fe()` cells, `controls()` with `timecontrols()` / `unitcontrols()`, `[aw=]`, `horizons()` on `data_94_bjs_options.csv` | `tests/reference_parity/test_bjs_options_parity.py` |
+| `95_rdrobust_comb_Stata.json` | `rdrobust` under `bwselect(msecomb1 / msecomb2 / cercomb1 / cercomb2)`, sharp and fuzzy | `tests/reference_parity/test_rdrobust_comb_parity.py` |
+| `96_csdid_options_Stata.json` | `csdid` cells with standard errors under `asinr` / the default not-yet rule and `method(ipw)`, and the pairwise rule on an unbalanced panel (`data_96_csdid_unbalanced.csv`) | `tests/reference_parity/test_csdid_options_stata_parity.py` |
+| `97_dcdh_options_Stata.json` | `did_multiplegt_dyn` one option value at a time on `data_97_dcdh_options.csv`: `switchers()`, `same_switchers`, `only_never_switchers`, `trends_nonparam()`, `normalized`, `weight()`, `cluster()`, `controls()`, `effects(1)`, `effects_equal(all)`, `continuous(1\|2)`, an unbalanced panel, one combined fit; effects, placebos, analytic SEs, `Av_tot_eff`, `e(V)`, Wald p-values; `bootstrap(200, s)` SEs at five seeds (S screen only) | `tests/reference_parity/test_dcdh_option_values_stata_parity.py` |
+
+Every consumer opens its fixture; none carries the Stata numbers as
+literals. These files are not in `TIER_A_FIXTURE_LOCK.json`: their SHA-256
+is recorded in `docs/evidence_inventory.json`, whose drift gate
+(`python scripts/build_evidence_inventory.py --check`) fails on an edited
+fixture and on a fixture that no test reads.
+
+## Double precision is required
+
+These do-files do not source Track A's `_common.do`, which forces
+`set type double`. Each one must therefore do it itself:
+
+```stata
+set type double
+import delimited "...", clear asdouble
+```
+
+Without it `import delimited` stores every decimal column as float and
+rounds the data in the 8th digit, so Stata is not estimating on the bytes
+StatsPAI reads. The first versions of all six fixtures were generated that
+way. The gaps this produced (2e-5 relative for `csdid`, 2e-6 for
+`did_imputation` and `eventstudyinteract`) had been attributed to optimizer
+and absorption tolerance; regenerated in double precision on 2026-10-02
+they are 5e-13, 6e-8 and 2e-10. Each fixture records
+`"precision": "double"` in `_meta`, and
+`tests/reference_parity/test_option_fixture_bindings.py` fails a do-file
+that imports without `asdouble`.
 
 Regenerate any of them by running the matching `.do` from
 `tests/stata_parity/` with Stata 18 MP and the packages named in its

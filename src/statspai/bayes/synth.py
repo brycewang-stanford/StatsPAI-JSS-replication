@@ -3,9 +3,12 @@
 A Bayesian counterpart to :func:`statspai.synth.synth`. Donor weights live on the
 simplex (a Dirichlet prior, matching the classic Abadie-Diamond-Hainmueller
 convex-hull constraint) and are fit to the pre-treatment outcome path; the
-post-treatment gap between the treated unit and its synthetic counterpart is the
-estimand. Because weights are sampled, the counterfactual trajectory comes with
-genuine credible bands — the small-N honesty that motivates a Bayesian SC when
+post-treatment gap between the treated unit and its untreated counterfactual is
+the estimand. That counterfactual is the synthetic control plus the idiosyncratic
+noise of the treated unit, whose variance the pre-period fit estimates; both the
+weights and that noise enter the posterior of the effect (before 1.39 only the
+weights did, and intervals were too narrow). The counterfactual trajectory comes
+with credible bands — the small-N honesty that motivates a Bayesian SC when
 there are few pre-periods or donors.
 
 The counterfactual is stored under the shared keys read by
@@ -20,6 +23,7 @@ import numpy as np
 import pandas as pd
 
 from .._aliases import accepts_aliases
+from .._input_validation import check_columns
 from ._base import BayesianCausalResult, _require_pymc, _sample_model
 
 
@@ -32,9 +36,11 @@ def _wide_panel(
     donors: Optional[Sequence[Any]],
 ) -> "Tuple[np.ndarray, np.ndarray, np.ndarray, List[Any]]":
     """Pivot long panel to (times, treated_vec, donor_matrix, donor_names)."""
-    for c in (outcome, unit, time):
-        if c not in data.columns:
-            raise ValueError(f"Column '{c}' not found in data")
+    check_columns(
+        data,
+        {"outcome": outcome, "unit": unit, "time": time},
+        function="sp.bayes_synth",
+    )
     wide = data.pivot_table(index=time, columns=unit, values=outcome)
     if treated_unit not in wide.columns:
         raise ValueError(
@@ -59,7 +65,7 @@ def _wide_panel(
     return times, treated, donor_mat, donor_names
 
 
-@accepts_aliases(id="unit", y="outcome")
+@accepts_aliases(id="unit", y="outcome", seed="random_state")
 def bayes_synth(
     data: pd.DataFrame,
     outcome: str,
@@ -132,6 +138,11 @@ def bayes_synth(
     ... )
     >>> res.posterior_mean  # posterior mean ATT  # doctest: +SKIP
     """
+    check_columns(
+        data,
+        {"outcome": outcome, "unit": unit, "time": time},
+        function="sp.bayes_synth",
+    )
     pm, _ = _require_pymc()
 
     times, treated, donor_mat, donor_names = _wide_panel(
@@ -158,7 +169,18 @@ def bayes_synth(
         sigma = pm.HalfNormal("sigma", sigma=prior_noise)
         mu_pre = pm.math.dot(Y_pre, w)
         pm.Normal("y_pre_obs", mu=mu_pre, sigma=sigma, observed=y_pre)
-        pm.Deterministic("att", ybar_post_treated - pm.math.dot(ybar_post_donor, w))
+        # The untreated outcome of the treated unit after treatment is the
+        # synthetic control plus the same idiosyncratic noise the pre-period
+        # fit has: Y0_t = donors_t' w + eps_t, eps_t ~ N(0, sigma^2). Its
+        # post-period average therefore carries eps_bar ~ N(0, sigma^2 / T1),
+        # which is not observed and belongs in the posterior of the effect.
+        # Leaving it out keeps only the uncertainty of the weights.
+        n_post = int(post_mask.sum())
+        eps_bar = pm.Normal("post_noise_mean", mu=0.0, sigma=sigma / np.sqrt(n_post))
+        pm.Deterministic(
+            "att",
+            ybar_post_treated - pm.math.dot(ybar_post_donor, w) - eps_bar,
+        )
 
     trace = _sample_model(
         model,
@@ -180,6 +202,12 @@ def bayes_synth(
     w_draws = trace.posterior["w"].values.reshape(-1, n_donors)  # (S, J)
     synth_draws = donor_mat @ w_draws.T  # (T, S)
     counterfactual = synth_draws.mean(axis=1)
+    # after treatment the band is predictive: the counterfactual outcome,
+    # not only its mean
+    sigma_draws = trace.posterior["sigma"].values.reshape(-1)
+    noise_rng = np.random.default_rng(random_state)
+    noise = noise_rng.standard_normal(synth_draws.shape) * sigma_draws[None, :]
+    synth_draws = synth_draws + noise * post_mask[:, None]
     lo = (1.0 - hdi_prob) / 2.0
     cf_lower = np.quantile(synth_draws, lo, axis=1)
     cf_upper = np.quantile(synth_draws, 1.0 - lo, axis=1)

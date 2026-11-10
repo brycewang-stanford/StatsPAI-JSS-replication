@@ -22,6 +22,7 @@ import numpy as np
 import pandas as pd
 from scipy import stats as sp_stats
 
+from .._input_validation import check_columns
 from .._result_serialize import ResultProtocolMixin
 from ..exceptions import MethodIncompatibility
 
@@ -135,6 +136,36 @@ class SelectionResult(ResultProtocolMixin):
             return self._plot_lasso_path(figsize)
         return self._plot_stepwise_history(figsize)
 
+    def _plot_subset_sizes(
+        self,
+        figsize: Tuple[float, float],
+    ) -> Tuple[Any, Any]:
+        """Best-subset search: the criterion of the best model of each size."""
+        import matplotlib.pyplot as plt
+
+        hist = self.history
+        crit = str(self.method).rsplit("_", 1)[-1]
+        if crit not in hist.columns:
+            crit = next(c for c in ("bic", "aic", "cp") if c in hist.columns)
+        fig, ax = plt.subplots(figsize=figsize)
+        ax.plot(hist["size"].values, hist[crit].values, marker="o", linewidth=2)
+        chosen = hist["size"] == len(self.selected)
+        ax.plot(
+            hist.loc[chosen, "size"].values,
+            hist.loc[chosen, crit].values,
+            marker="o",
+            markersize=12,
+            fillstyle="none",
+            linestyle="none",
+            label="selected",
+        )
+        ax.set_xlabel("Number of regressors")
+        ax.set_ylabel(crit.upper() if crit != "cp" else "Mallows Cp")
+        ax.set_title("Best subset of each size")
+        ax.legend()
+        fig.tight_layout()
+        return fig, ax
+
     def _plot_stepwise_history(
         self,
         figsize: Tuple[float, float],
@@ -145,6 +176,9 @@ class SelectionResult(ResultProtocolMixin):
         if hist.empty:
             warnings.warn("No history to plot.")
             return None, None
+
+        if "step" not in hist.columns and "size" in hist.columns:
+            return self._plot_subset_sizes(figsize)
 
         fig, ax = plt.subplots(figsize=figsize)
         steps = hist["step"].values
@@ -312,6 +346,7 @@ def stepwise(
     alpha_in: float = 0.05,
     alpha_out: float = 0.10,
     verbose: bool = True,
+    start: Optional[Literal["empty", "full"]] = None,
 ) -> SelectionResult:
     """Stepwise variable selection for OLS regression.
 
@@ -333,6 +368,15 @@ def stepwise(
         p-value threshold for variable removal (when ``criterion="pvalue"``).
     verbose : bool
         Print step-by-step progress.
+    start : {"empty", "full"}, optional
+        The model the search starts from. By default ``"forward"`` and
+        ``"both"`` start from the intercept-only model and ``"backward"``
+        from the model with every candidate. ``method="both",
+        start="full"`` is what R's ``step()`` does when handed the full
+        model: it can add and drop at every step but begins by dropping.
+        A greedy search stops at the first model no single move improves,
+        so the two starting points can end in different places; when the
+        candidates are few, ``sp.best_subset`` gives the exact answer.
 
     Returns
     -------
@@ -351,6 +395,11 @@ def stepwise(
     >>> bool(set(res.selected).isdisjoint(res.dropped))
     True
     """
+    check_columns(
+        data,
+        {"y": y, "x": x if isinstance(x, str) else list(x)},
+        function="stepwise",
+    )
     df = data.dropna(subset=[y] + list(x)).reset_index(drop=True)
     y_vec = df[y].values.astype(float)
     candidates = list(x)
@@ -358,11 +407,6 @@ def stepwise(
     # Validate
     if len(candidates) == 0:
         raise ValueError("x must contain at least one variable name.")
-    if y not in df.columns:
-        raise ValueError(f"Dependent variable '{y}' not found in data.")
-    missing = [c for c in candidates if c not in df.columns]
-    if missing:
-        raise ValueError(f"Variables not found in data: {missing}")
 
     # Choose comparator
     if criterion in ("aic", "bic"):
@@ -394,10 +438,20 @@ def stepwise(
         return float(st[criterion])
 
     # Initialise
-    if method == "backward":
-        included = list(candidates)
-    else:
-        included = []
+    if start is None:
+        start = "full" if method == "backward" else "empty"
+    if start not in ("empty", "full"):
+        raise MethodIncompatibility(
+            f"stepwise: start={start!r} is not 'empty' or 'full'.",
+            diagnostics={"start": start},
+        )
+    if (method, start) in (("forward", "full"), ("backward", "empty")):
+        raise MethodIncompatibility(
+            f"stepwise: method={method!r} cannot move from the {start} model.",
+            recovery_hint="Use method='both' to start from either end.",
+            diagnostics={"method": method, "start": start},
+        )
+    included = list(candidates) if start == "full" else []
 
     history_rows: List[Dict[str, Any]] = []
     step = 0
@@ -694,6 +748,14 @@ def lasso_select(
     Solves  min (1/2n)||y - Xβ||² + λ||β||₁  via coordinate descent.
     Selects λ by K-fold cross-validation, BIC, or AIC.
 
+    With ``method="cv"`` every training fold is centred and scaled on its
+    own rows and the error is pooled over observations. On the same folds
+    and penalties this is the cross-validated error of ``sp.glmnet``
+    (``lasso_path["cv_mse"]``). In a small sample that error curve can be
+    nearly flat, and the selected λ then changes with the fold assignment;
+    compare a few values of ``seed`` before reading much into the list of
+    selected variables. ``sp.glmnet`` also reports ``lambda.1se``.
+
     Parameters
     ----------
     data : DataFrame
@@ -735,6 +797,11 @@ def lasso_select(
     >>> bool(res.lasso_path["lambda_best"] > 0)
     True
     """
+    check_columns(
+        data,
+        {"y": y, "x": x if isinstance(x, str) else list(x)},
+        function="lasso_select",
+    )
     df = data.dropna(subset=[y] + list(x)).reset_index(drop=True)
     y_raw = df[y].values.astype(float)
     X_raw = df[x].values.astype(float)
@@ -759,15 +826,27 @@ def lasso_select(
 
     # Select best lambda
     if method == "cv":
-        # K-fold CV
-        mse_cv = np.zeros(n_lambda)
+        # K-fold CV. Each training fold is centred and scaled on its own
+        # rows and predicts the held-out rows with its own intercept, so
+        # nothing about the held-out fold enters its fit. The error is
+        # pooled over observations (the fold-size-weighted mean of the
+        # fold errors), as in cv.glmnet.
+        sse_cv = np.zeros(n_lambda)
         for train_idx, test_idx in _kfold_indices(n, n_folds, seed):
-            X_tr, y_tr = X_sc[train_idx], y_c[train_idx]
-            X_te, y_te = X_sc[test_idx], y_c[test_idx]
-            fold_coefs = _lasso_path(X_tr, y_tr, lambdas, max_iter, tol)
-            preds = X_te @ fold_coefs.T  # (n_test, n_lambda)
-            mse_cv += np.mean((preds - y_te[:, None]) ** 2, axis=0)
-        mse_cv /= n_folds
+            mu_tr = X_raw[train_idx].mean(axis=0)
+            sd_tr = X_raw[train_idx].std(axis=0, ddof=0)
+            sd_tr[sd_tr == 0] = 1.0
+            ybar_tr = y_raw[train_idx].mean()
+            fold_coefs = _lasso_path(
+                (X_raw[train_idx] - mu_tr) / sd_tr,
+                y_raw[train_idx] - ybar_tr,
+                lambdas,
+                max_iter,
+                tol,
+            )
+            preds = ((X_raw[test_idx] - mu_tr) / sd_tr) @ fold_coefs.T + ybar_tr
+            sse_cv += np.sum((preds - y_raw[test_idx][:, None]) ** 2, axis=0)
+        mse_cv = sse_cv / n
         best_idx = int(np.argmin(mse_cv))
     else:
         # Information criterion
@@ -863,6 +942,7 @@ def lasso_select(
             "lambdas": lambdas,
             "coef_paths": path_dict,
             "lambda_best": best_lambda,
+            "cv_mse": mse_cv if method == "cv" else None,
         },
     )
     try:

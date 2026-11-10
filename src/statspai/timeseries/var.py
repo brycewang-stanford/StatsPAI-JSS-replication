@@ -25,7 +25,8 @@ import pandas as pd
 from scipy import stats
 
 from .._result_serialize import ResultProtocolMixin
-from ..exceptions import MethodIncompatibility
+from ..core._collinear import independent_columns
+from ..exceptions import DataInsufficient, MethodIncompatibility
 
 
 class VARResult(ResultProtocolMixin):
@@ -95,8 +96,14 @@ class VARResult(ResultProtocolMixin):
         self._k = len(var_names)
         self._lags = lags
         self._trend: Optional[str] = None
+        self._exog: List[str] = []
         self._XtX_inv: Optional[np.ndarray] = None
         self._coef_sigma_u: Optional[np.ndarray] = None
+        self._X: Optional[np.ndarray] = None
+        self._Y: Optional[np.ndarray] = None
+        self._levels: Optional[np.ndarray] = None
+        #: final prediction error, |Sigma_ml| ((T + m) / (T - m))^K
+        self.fpe: float = float("nan")
 
     def summary(self) -> str:
         k = len(self.var_names)
@@ -144,9 +151,175 @@ class VARResult(ResultProtocolMixin):
             **kwargs,
         )
 
+    def fevd(
+        self,
+        periods: int = 20,
+        *,
+        ci: Optional[str] = None,
+        alpha: float = 0.05,
+        reps: int = 1000,
+        seed: Optional[int] = None,
+        boot: str = "kilian",
+    ) -> pd.DataFrame:
+        """Forecast-error variance decomposition under the Cholesky
+        ordering of the variables.
+
+        One row per shock, response and period: the share of the
+        ``period``-step forecast-error variance of ``response`` due to the
+        orthogonalised innovation of ``shock`` (zero at ``period = 0``, as
+        in Stata's ``irf table fevd``). The orthogonalisation uses the same
+        residual covariance as :meth:`irf`.
+
+        Parameters
+        ----------
+        periods : int, default 20
+        ci : {None, 'asymptotic', 'bootstrap'}, optional
+            Add ``se``, ``lower`` and ``upper``. ``'asymptotic'`` is the
+            delta method (Stata's ``irf table fevd, stderr``), with the
+            band ``fevd -/+ z se``, which can leave the unit interval.
+            ``'bootstrap'`` is the residual bootstrap of :func:`irf` with
+            percentile bands, which cannot.
+        alpha : float, default 0.05
+        reps : int, default 1000
+        seed : int, optional
+        boot : {'kilian', 'efron'}, default 'kilian'
+            The bias-corrected bootstrap, or the plain percentile one (see
+            :func:`irf`).
+
+        Notes
+        -----
+        A share of exactly zero or one (the first-ordered variable one
+        step ahead) is on the boundary: its asymptotic standard error is
+        zero and no normal band applies to it.
+        """
+        from .svar import fevd_shares
+
+        names = self.var_names
+        k = len(names)
+        paths = self.irf(periods=periods, orthogonal=True)["irf"]
+        theta = np.zeros((periods + 1, k, k))
+        for j, shock in enumerate(names):
+            for i, response in enumerate(names):
+                theta[:, i, j] = paths[f"{shock} -> {response}"]
+        shares = fevd_shares(theta)
+        extra: Dict[str, np.ndarray] = {}
+        if ci is not None:
+            from scipy import stats
+
+            from . import irf_bands
+
+            if not 0.0 < alpha < 1.0:
+                raise MethodIncompatibility("fevd: alpha must be in (0, 1).")
+            unbiased = str(self.se_df).lower() in {"r", "unbiased"}
+            if self._B is None or self._XtX_inv is None or self._X is None:
+                raise MethodIncompatibility(
+                    "fevd: this VARResult does not carry its data; re-fit "
+                    "with sp.var(...)."
+                )
+            m = self._B.shape[0]
+            sigma = np.asarray(self.sigma_u, dtype=float)
+            if unbiased:
+                sigma = sigma * self.n_obs / (self.n_obs - m)
+            kind = str(ci).lower()
+            if kind == "asymptotic":
+                se = irf_bands.fevd_se(
+                    np.asarray(self._B, float),
+                    sigma,
+                    np.asarray(self._XtX_inv, float),
+                    int(self.n_obs),
+                    k,
+                    int(self._lags),
+                    periods,
+                )
+                z = float(stats.norm.ppf(1.0 - alpha / 2.0))
+                extra = {"se": se, "lower": shares - z * se, "upper": shares + z * se}
+            elif kind == "bootstrap":
+                if reps < 20:
+                    raise MethodIncompatibility(
+                        f"fevd: reps={reps} is too few for percentile bands."
+                    )
+                if boot not in ("efron", "kilian"):
+                    raise MethodIncompatibility(
+                        "fevd: boot must be 'efron' or 'kilian'."
+                    )
+                draws = np.stack(
+                    [
+                        fevd_shares(
+                            irf_bands.response_array(
+                                Bb, sb, k, int(self._lags), periods, True, False
+                            )
+                        )
+                        for Bb, sb in irf_bands.bootstrap_fits(
+                            self, unbiased, reps, seed, boot
+                        )
+                    ]
+                )
+                extra = {
+                    "se": draws.std(axis=0, ddof=1),
+                    "lower": np.quantile(draws, alpha / 2.0, axis=0),
+                    "upper": np.quantile(draws, 1.0 - alpha / 2.0, axis=0),
+                }
+            else:
+                raise MethodIncompatibility(
+                    f"fevd: ci={ci!r} is not None, 'asymptotic' or 'bootstrap'."
+                )
+        rows = []
+        for j, shock in enumerate(names):
+            for i, response in enumerate(names):
+                for s in range(periods + 1):
+                    row = {
+                        "shock": shock,
+                        "response": response,
+                        "period": s,
+                        "fevd": float(shares[s, i, j]),
+                    }
+                    row.update({key: float(v[s, i, j]) for key, v in extra.items()})
+                    rows.append(row)
+        return pd.DataFrame(rows)
+
     def granger_test(self, caused: str, causing: str) -> Dict[str, Any]:
         """Test Granger causality."""
         return granger_causality(self, caused=caused, causing=causing)
+
+    def granger_table(self) -> pd.DataFrame:
+        """Granger-causality Wald tests for every equation (Stata
+        ``vargranger``)."""
+        from .var_diagnostics import granger_table
+
+        return granger_table(self)
+
+    def lag_exclusion(self) -> pd.DataFrame:
+        """Wald tests that a whole lag can be dropped (Stata ``varwle``)."""
+        from .var_diagnostics import lag_exclusion
+
+        return lag_exclusion(self)
+
+    def lm_test(self, lags: int = 2) -> pd.DataFrame:
+        """LM test for residual autocorrelation at each lag order up to
+        ``lags`` (Stata ``varlmar``)."""
+        from .var_diagnostics import lm_autocorrelation
+
+        return lm_autocorrelation(self, lags=lags)
+
+    def stability(self) -> pd.DataFrame:
+        """Eigenvalues of the companion matrix (Stata ``varstable``);
+        ``attrs['stable']`` is True when all lie inside the unit circle."""
+        from .var_diagnostics import stability
+
+        return stability(self)
+
+    def equation_table(self) -> pd.DataFrame:
+        """Root MSE, R-squared and Wald chi-squared of each equation."""
+        from .var_diagnostics import equation_table
+
+        return equation_table(self)
+
+    def forecast(self, steps: int = 1, alpha: float = 0.05) -> pd.DataFrame:
+        """Dynamic forecasts ``steps`` periods past the sample, with
+        standard errors that take the coefficients as known."""
+        from .var_diagnostics import forecast
+
+        return forecast(self, steps=steps, alpha=alpha)
 
     def plot_irf(
         self,
@@ -179,6 +352,103 @@ class VARResult(ResultProtocolMixin):
         return fig
 
 
+def _consecutive_rows(frame: pd.DataFrame, who: str) -> pd.DataFrame:
+    """The complete rows of ``frame``, which must be one unbroken stretch.
+
+    Rows with a missing value at the start or the end are trimmed. One
+    strictly inside the sample is refused: lags and differences are taken
+    between adjacent rows, so dropping it would pair the observations on
+    either side of the gap as if they were consecutive.
+    """
+    ok = frame.notna().all(axis=1).to_numpy()
+    if not ok.any():
+        raise DataInsufficient(
+            f"{who}: no row has every variable observed.",
+            recovery_hint="Check the columns for missing values.",
+        )
+    kept = np.flatnonzero(ok)
+    first, last = int(kept[0]), int(kept[-1])
+    holes = np.flatnonzero(~ok[first : last + 1]) + first
+    if holes.size:
+        raise MethodIncompatibility(
+            f"{who}: {holes.size} row(s) inside the sample have a missing "
+            f"value (first at position {int(holes[0])}, index label "
+            f"{frame.index[int(holes[0])]!r}; the complete rows run from "
+            f"position {first} to {last}). Lags and differences are taken "
+            "between adjacent rows, so dropping a row would pair the "
+            "observations on either side of the gap.",
+            recovery_hint="Use a stretch of the sample without gaps, or "
+            "fill the missing values before calling.",
+            diagnostics={
+                "n_missing_rows": int(holes.size),
+                "positions": holes[:20].tolist(),
+            },
+        )
+    # what is left has no gap, so this is the trimmed stretch (and the same
+    # memory layout the estimators have always been handed)
+    return frame.dropna()
+
+
+def _refuse_repeated_dates(col: pd.Series, time: str, who: str) -> None:
+    """Refuse a ``time=`` column in which a value occurs more than once:
+    one series has one observation per date, and a sort cannot order the
+    rows that share one."""
+    repeated = col.duplicated(keep=False)
+    if repeated.any():
+        first = col[repeated].iloc[0]
+        raise MethodIncompatibility(
+            f"{who}: the time column {time!r} has repeated values "
+            f"({int(repeated.sum())} rows share a date with another row; "
+            f"first: {first!r}).",
+            recovery_hint="Pass one row per period; for a panel, fit each "
+            "unit separately.",
+            diagnostics={"n_repeated_rows": int(repeated.sum())},
+        )
+
+
+def _require_independent_series(
+    values: np.ndarray,
+    names: Any,
+    who: str,
+    *,
+    constant: bool = True,
+) -> None:
+    """Refuse a system whose series are linearly dependent.
+
+    Two cases, both of which make the moment matrices of a VAR-type model
+    singular: a series that is constant or a linear combination of the
+    others (a duplicated column), and one that is a deterministic function
+    of its own past (a ``year`` column picked up with ``variables=None``
+    equals its lag plus one, so its equation fits exactly and the residual
+    covariance has no inverse).
+    """
+    values = np.asarray(values, dtype=float)
+    T, K = values.shape
+    labels = [str(v) for v in names]
+    if T <= K + 1:
+        return  # too short to tell; the caller's sample-size check speaks
+    _, dependent = independent_columns(
+        np.column_stack([np.ones(T), values]), ["_cons"] + labels
+    )
+    if not dependent and T - 1 > 2 * K + 1:
+        stack = [np.ones((T - 1, 1))] if constant else []
+        _, dependent = independent_columns(
+            np.column_stack(stack + [values[:-1], values[1:]]),
+            (["_cons"] if constant else []) + [f"L1.{v}" for v in labels] + labels,
+        )
+    if dependent:
+        raise MethodIncompatibility(
+            f"{who}: the series are linearly dependent ("
+            + "; ".join(f"{o['variable']}: {o['reason']}" for o in dependent[:6])
+            + "), so the moment matrices are singular.",
+            recovery_hint="Drop the redundant series (with variables=None "
+            "every numeric column is used, a year or counter column "
+            "included); the model is defined for linearly independent "
+            "variables.",
+            diagnostics={"omitted": dependent},
+        )
+
+
 def _lag_matrix(data: np.ndarray, lags: int) -> tuple[np.ndarray, np.ndarray]:
     """Create lagged matrix for VAR estimation."""
     n, k = data.shape
@@ -199,6 +469,7 @@ def var(
     trend: str = "c",
     alpha: float = 0.05,
     se_df: str = "stata",
+    exog: Optional[List[str]] = None,
 ) -> VARResult:
     """
     Estimate a Vector Autoregression (VAR) model.
@@ -223,6 +494,13 @@ def var(
         conditional-MLE standard errors. ``'r'``/``'unbiased'`` uses
         ``T - k_params`` and matches the equation-by-equation ``lm()``
         standard errors returned inside R ``vars::VAR()``.
+
+    exog : list of str, optional
+        Exogenous variables that enter every equation contemporaneously
+        (Stata's ``var ..., exog()``): a quadratic trend, seasonal dummies,
+        a policy indicator. Their coefficients are listed after the lags.
+        Impulse responses are unaffected by them; ``forecast`` would need
+        their future values and is refused.
 
     Returns
     -------
@@ -253,9 +531,36 @@ def var(
     if se_df_key not in {"stata", "ml", "r", "unbiased"}:
         raise ValueError("se_df must be one of {'stata', 'ml', 'r', 'unbiased'}")
 
-    var_data = data[variables].dropna().values.astype(float)
+    exog_names = [str(v) for v in (exog or [])]
+    missing = [v for v in exog_names if v not in data.columns]
+    if missing or set(exog_names) & set(variables):
+        raise MethodIncompatibility(
+            f"sp.var: exog={exog_names} must name columns of the data that "
+            "are not among the endogenous variables.",
+            recovery_hint="Check the names passed to exog=.",
+        )
+    if trend not in ("c", "ct", "n"):
+        raise MethodIncompatibility(
+            f"sp.var: trend must be 'c' (constant), 'ct' (constant and "
+            f"linear trend) or 'n' (neither), got {trend!r}.",
+            recovery_hint="Other deterministic terms go in exog=.",
+        )
+    if isinstance(lags, bool) or int(lags) != lags or lags < 1:
+        raise MethodIncompatibility(
+            f"sp.var: lags must be a positive integer, got {lags!r}.",
+            recovery_hint="A VAR needs at least one lag; choose the order "
+            "with sp.varsoc.",
+        )
+    lags = int(lags)
+    complete = _consecutive_rows(data[list(variables) + exog_names], "sp.var")
+    var_data = complete[list(variables)].values.astype(float)
     var_names = list(variables)
     n, k = var_data.shape
+    if n <= lags:
+        raise DataInsufficient(
+            f"sp.var: {n} complete observation(s) for {lags} lag(s).",
+            recovery_hint="Use a longer series or fewer lags.",
+        )
 
     Y, X = _lag_matrix(var_data, lags)
     T = Y.shape[0]
@@ -264,6 +569,35 @@ def var(
         X = np.column_stack([X, np.arange(1, T + 1)])
     elif trend == "n":
         X = X[:, :-1]  # remove constant
+    if exog_names:
+        X = np.column_stack([X, complete[exog_names].values.astype(float)[lags:]])
+
+    # Each equation needs residual degrees of freedom and a design of full
+    # column rank: with T <= m the fit is exact, and with dependent columns
+    # (a variable that is a multiple of another, an exog column that repeats
+    # the constant) the coefficients are not identified.
+    reg_names = [f"L{lag}.{v}" for lag in range(1, lags + 1) for v in var_names]
+    reg_names += {"c": ["_cons"], "ct": ["_cons", "_trend"], "n": []}[trend]
+    reg_names += exog_names
+    if T <= X.shape[1]:
+        raise DataInsufficient(
+            f"sp.var: {T} usable observation(s) for {X.shape[1]} "
+            "coefficient(s) per equation; the system is saturated.",
+            recovery_hint="Use fewer lags or variables, or a longer series.",
+            diagnostics={"n_obs": int(T), "n_regressors": int(X.shape[1])},
+        )
+    _, dependent = independent_columns(X, reg_names)
+    if dependent:
+        raise MethodIncompatibility(
+            "sp.var: the regressors are perfectly collinear ("
+            + "; ".join(f"{o['variable']}: {o['reason']}" for o in dependent[:6])
+            + "), so the coefficients are not identified.",
+            recovery_hint="Drop the redundant variable (a series that is a "
+            "linear combination of the others, or an exog column that "
+            "repeats the constant).",
+            diagnostics={"omitted": dependent},
+        )
+    _require_independent_series(var_data, var_names, "sp.var", constant=trend != "n")
 
     # OLS for each equation
     try:
@@ -302,6 +636,7 @@ def var(
             idx_names.append("_cons")
         if trend == "ct":
             idx_names.append("_trend")
+        idx_names.extend(exog_names)
 
         coef_df = pd.DataFrame(
             {
@@ -342,10 +677,13 @@ def var(
     result._k = k
     result._lags = lags
     result._trend = trend
+    result._exog = exog_names
     # Store (X'X)^{-1} so granger_causality can form the proper coefficient
     # covariance σ²·(X'X)^{-1} for its Wald test (not just the SE diagonal).
     result._XtX_inv = XtX_inv
     result._coef_sigma_u = coef_sigma_u
+    result._X, result._Y, result._levels = X, Y, var_data
+    result.fpe = float(det_sigma * ((T + n_params) / (T - n_params)) ** k)
 
     return result
 
@@ -356,6 +694,8 @@ def granger_causality(
     caused: Optional[str] = None,
     causing: Optional[str] = None,
     lags: Optional[int] = None,
+    id: Optional[str] = None,
+    time: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Granger causality test.
@@ -376,6 +716,14 @@ def granger_causality(
         other variable).
     lags : int, optional
         Number of lags (if fitting new VAR).
+    id, time : str, optional
+        Unit and period columns of a panel in ``data``: the
+        Dumitrescu-Hurlin test (``plm::pgrangertest``, Stata ``xtgcause``),
+        one regression per unit with its own coefficients, averaging the
+        unit Wald statistics. Returns ``W_bar``, ``Z_bar``, ``Z_tilde`` (the
+        fixed-``T`` version, whose two-sided p-value is ``p_value``) with
+        their p-values and the per-unit statistics in ``individual``.
+        ``lags`` defaults to 1.
 
     Returns
     -------
@@ -414,11 +762,30 @@ def granger_causality(
     >>> gc2 = sp.granger_causality(data=df, caused="x", causing="y", lags=2)
     >>> print(gc2["reject"])  # y does not Granger-cause x
     False
+
+    References
+    ----------
+    [@granger1969investigating],
+    [@dumitrescu2012testing]
     """
     if caused is None or causing is None:
         raise MethodIncompatibility(
             "granger_causality requires both caused=... and causing=....",
             diagnostics={"caused": caused, "causing": causing},
+        )
+
+    if id is not None or time is not None:
+        if var_result is not None or data is None or id is None or time is None:
+            raise MethodIncompatibility(
+                "granger_causality: the panel (Dumitrescu-Hurlin) test needs "
+                "data=, id= and time=, and no var_result.",
+                recovery_hint="Pass the long panel as data= with its unit "
+                "column as id= and period column as time=.",
+            )
+        from ._dh_granger import dumitrescu_hurlin
+
+        return dumitrescu_hurlin(
+            data, caused=caused, causing=causing, lags=lags, id=id, time=time
         )
 
     if var_result is None:
@@ -507,6 +874,12 @@ def irf(
     orthogonal: bool = True,
     cumulative: bool = False,
     sigma_df: Optional[str] = None,
+    *,
+    ci: Optional[str] = None,
+    alpha: float = 0.05,
+    reps: int = 1000,
+    seed: Optional[int] = None,
+    boot: str = "kilian",
 ) -> Dict[str, Any]:
     """
     Compute impulse response functions from VAR.
@@ -537,11 +910,56 @@ def irf(
         Stata after ``var, dfk``). Default follows the fitted model's
         ``se_df`` (``'stata'``/``'ml'`` -> ``'ml'``, ``'r'``/``'unbiased'`` ->
         ``'unbiased'``). Irrelevant when ``orthogonal=False``.
+    ci : {None, 'asymptotic', 'bootstrap'}, optional
+        Add standard errors and a band. ``'asymptotic'``: delta method on
+        the joint normal limit of the coefficients and the residual
+        covariance (Stata's ``irf create`` standard errors). ``'bootstrap'``:
+        residual bootstrap, the series regenerated recursively from its
+        first ``lags`` observations and the VAR re-estimated (``irf create,
+        bs``; ``vars::irf(boot = TRUE)``).
+    alpha : float, default 0.05
+        The band has nominal pointwise coverage ``1 - alpha``.
+    reps : int, default 1000
+        Bootstrap replications.
+    seed : int, optional
+        Seed of the bootstrap draws.
+    boot : {'kilian', 'efron', 'hall'}, default 'kilian'
+        Bootstrap band. ``'kilian'`` is the bias-corrected bootstrap: it
+        first estimates the small-sample bias of the lag coefficients from
+        ``reps`` samples, then draws ``reps`` more from the bias-corrected
+        VAR and corrects each of their estimates, with percentile bands.
+        ``'efron'`` is the plain percentile interval (the quantiles of the
+        replicates, which is what Stata's ``irf create, bs`` and ``vars``
+        report). ``'hall'`` reflects those quantiles about the estimate.
+        The default costs twice the fits and departs from the two
+        reference programs because their band undercovers: in a bivariate
+        VAR(1) with
+        a root of 0.92 and 60 observations, 90% bands for the own response
+        at horizons 4 to 8 covered 38% (``'efron'``), 56% (``'hall'``), 62%
+        (``ci='asymptotic'``) and 86% (``'kilian'``) of the time over 300
+        samples. With a largest root of 0.6 and 60 observations the
+        figures were 77%, 70%, 78% and 89%; with a root of 0.2 the
+        percentile and the bias-corrected band both covered 93%. The
+        uncorrected two warn when the largest estimated root exceeds 0.9.
 
     Returns
     -------
     dict
-        Keys: 'irf' (dict of arrays), 'periods'.
+        Keys: 'irf' (dict of arrays), 'periods'; with ``ci`` also 'se',
+        'lower', 'upper' (dicts with the same keys as 'irf') and 'ci' (the
+        settings used). The bootstrap 'se' is the standard deviation of
+        the replicates.
+
+    Notes
+    -----
+    Both bands are pointwise and condition on the lag order. The
+    asymptotic standard error of an orthogonalised response at horizon 0
+    comes from the residual covariance alone and is zero for the
+    responses the Cholesky ordering sets to zero. Near a unit root the
+    normal approximation is poor and the bootstrap replicates are biased
+    towards zero persistence. ``boot='kilian'`` is built for that case; it
+    removes the first-order bias and keeps every replicate stationary, and
+    it is not a unit-root method either.
 
     Examples
     --------
@@ -567,11 +985,27 @@ def irf(
 
     References
     ----------
-    lutkepohl2005new
+    [@lutkepohl2005new],
+    [@runkle1987vector],
+    [@kilian1998small],
+    [@kilian2017structural]
     """
     k = var_result._k
     p = var_result._lags
     B = var_result._B
+    if isinstance(periods, bool) or int(periods) != periods or periods < 0:
+        raise MethodIncompatibility(
+            f"irf: periods must be a non-negative integer, got {periods!r}.",
+            recovery_hint="periods=0 is the impact response alone.",
+        )
+    periods = int(periods)
+    for role, name in (("impulse", impulse), ("response", response)):
+        if name and name not in var_result.var_names:
+            raise MethodIncompatibility(
+                f"irf: {role}={name!r} is not a variable of the VAR "
+                f"({var_result.var_names}).",
+                recovery_hint=f"Pass one of the fitted variables as {role}=.",
+            )
     if B is None:
         raise MethodIncompatibility(
             "VARResult does not contain coefficient matrices for IRF. "
@@ -633,4 +1067,32 @@ def irf(
             path = irf_values[:, resp_idx]
             irfs[key] = np.cumsum(path) if cumulative else path
 
-    return {"irf": irfs, "periods": list(range(periods + 1))}
+    out: Dict[str, Any] = {"irf": irfs, "periods": list(range(periods + 1))}
+    if ci is None:
+        return out
+
+    from .irf_bands import bands, response_array
+
+    theta = response_array(B, sigma_u, k, p, periods, orthogonal, cumulative)
+    se, lo, hi, info = bands(
+        var_result,
+        theta,
+        sigma_u,
+        periods,
+        orthogonal,
+        cumulative,
+        sigma_df == "unbiased",
+        str(ci).lower(),
+        alpha,
+        reps,
+        seed,
+        boot,
+    )
+    for name, arr in (("se", se), ("lower", lo), ("upper", hi)):
+        out[name] = {
+            f"{imp} -> {resp}": arr[:, var_names.index(resp), var_names.index(imp)]
+            for imp in imp_vars
+            for resp in resp_vars
+        }
+    out["ci"] = info
+    return out

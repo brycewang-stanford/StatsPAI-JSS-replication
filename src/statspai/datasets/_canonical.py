@@ -56,19 +56,32 @@ def _load_bundled_csv(name: str) -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 
 
-def mpdta(seed: int = 42) -> pd.DataFrame:
+def mpdta(
+    seed: int = 42, simulated: bool = True, download: bool = True
+) -> pd.DataFrame:
     """Simulated replica of the ``mpdta`` dataset from R's ``did`` package.
 
     The original ``mpdta`` is a county-year panel of log teen-employment
     (2003-2007) where some counties raise their minimum wage in 2004,
     2006, or 2007 (staggered adoption).
 
-    Our replica preserves:
-    - 500 counties × 5 years = 2500 rows
-    - Three treatment cohorts: 2004, 2006, 2007 + never-treated
-    - Negative homogeneous ATT ≈ -0.04 log points (matches the published
-      R ``did::att_gt`` aggregated ATT of roughly -0.045 on the original)
-    - County-level clustering in residuals
+    ``simulated=False`` returns the original panel instead. It is not
+    shipped (R ``did`` distributes it under GPL-3): the first call
+    downloads Stata ``csdid``'s ``mpdta.dta`` (67 kB, the same values as
+    R's copy), checks a pinned SHA-256 and caches it under
+    ``$STATSPAI_DATA_DIR`` (default ``~/.cache/statspai/datasets``). On
+    it R ``did`` and Stata ``csdid`` report simple ATT -0.0400, group
+    -0.0310, calendar -0.0417 and dynamic -0.0772.
+
+    Parameters
+    ----------
+    seed : int, default 42
+        Seed of the simulated replica (ignored with ``simulated=False``).
+    simulated : bool, default True
+        ``False`` fetches the original data.
+    download : bool, default True
+        With ``simulated=False``: download when not cached. ``False``
+        raises ``DataInsufficient`` instead of touching the network.
 
     Returns
     -------
@@ -79,6 +92,14 @@ def mpdta(seed: int = 42) -> pd.DataFrame:
 
     Notes
     -----
+    Our replica preserves:
+
+    - 500 counties × 5 years = 2500 rows
+    - Three treatment cohorts: 2004, 2006, 2007 + never-treated
+    - Negative homogeneous ATT ≈ -0.04 log points (matches the published
+      R ``did::att_gt`` aggregated ATT of roughly -0.045 on the original)
+    - County-level clustering in residuals
+
     ``df.attrs['expected_simple_att']`` = -0.040  (R ``did::att_gt`` +
     ``aggte(type='simple')`` on the original data returns -0.03995
     with ``est_method='reg'``, never-treated controls, and analytic
@@ -94,6 +115,10 @@ def mpdta(seed: int = 42) -> pd.DataFrame:
     Callaway, B. & Sant'Anna, P.H.C. (2021). Difference-in-Differences
     with Multiple Time Periods. Journal of Econometrics 225(2), 200-230. [@callaway2021difference]
     """
+    if not simulated:
+        from ._did_gallery import mpdta_original
+
+        return mpdta_original(download=download)
     rng = np.random.default_rng(seed)
     n_counties = 500
     years = list(range(2003, 2008))  # 2003..2007
@@ -432,29 +457,77 @@ def _nsw_lalonde_simulated(seed: int = 42) -> pd.DataFrame:
     return df
 
 
-def nsw_dw(seed: int = 42) -> pd.DataFrame:
-    """Dehejia-Wahba NSW + PSID-1 non-experimental comparison.
+def nsw_dw(seed: int = 42, simulated: bool = True) -> pd.DataFrame:
+    """Dehejia-Wahba NSW + PSID-1 comparison: simulated replica, or the data.
 
-    Combines the 185 NSW treated (from the experiment) with 2,490
-    non-experimental PSID males as the comparison group — the classic
-    observational-vs-experimental benchmark.
+    **The default is a simulated replica, not the Dehejia-Wahba data.**
+    Every row of it is drawn from a DGP calibrated to the published summary
+    statistics: 185 "NSW treated" rows and 2,490 "PSID-1" comparison rows
+    with the right covariate imbalance, and a treatment effect of $1,794
+    on latent earnings (earnings are censored at zero, so the realised
+    effect on the treated is somewhat smaller, and the outcome is not
+    linear in the covariates where the treated are). Use it to see how an
+    estimator copes with a large selection bias and almost no overlap; do
+    not report its numbers as a replication of LaLonde (1986) or Dehejia
+    and Wahba (1999). ``df.attrs['simulated']`` says which one you have.
 
-    A naive OLS on re78 ~ treat (no covariates) yields strongly
-    *negative* estimates (~-$8,500) because the PSID controls are
-    much better-off on average.  With PSM on rich covariates, the
-    estimate should return to the experimental benchmark of ≈ $1,794.
+    ``simulated=False`` returns the real sample: the 185 treated men of
+    the Dehejia-Wahba NSW subsample and the 2,490 men of the PSID-1
+    comparison group. The difference in mean 1978 earnings is -$15,205
+    (Dehejia and Wahba 1999, Table 3); the experimental benchmark, which
+    needs the 260 experimental controls that are not in this file, is
+    $1,794.
+
+    The replica stays the default, unlike the other loaders, because
+    committed cross-language parity fixtures are built on it.
+
+    Parameters
+    ----------
+    seed : int, default 42
+        Seed of the replica (ignored when ``simulated=False``).
+    simulated : bool, default True
+        ``False`` for the real data, bundled as
+        ``statspai/datasets/data/nsw_psid_dw.csv`` (no network).
 
     Returns
     -------
     pd.DataFrame with columns: treat, age, education, black, hispanic,
-        married, nodegree, re74, re75, re78.  Treated units (185) are
-        the NSW experimental cohort; controls (2,490) are PSID.
+        married, nodegree, re74, re75, re78 (2,675 rows).
+
+    Examples
+    --------
+    >>> import statspai as sp
+    >>> real = sp.datasets.nsw_dw(simulated=False)
+    >>> real.shape, real.attrs["simulated"]
+    ((2675, 10), False)
+    >>> sp.datasets.nsw_dw().attrs["simulated"]
+    True
 
     References
     ----------
     Dehejia, R. & Wahba, S. (1999). Causal Effects in Nonexperimental
     Studies.  JASA 94(448), 1053-1062. [@dehejia1999causal]
     """
+    if not simulated:
+        df = _load_bundled_csv("nsw_psid_dw.csv")
+        df.attrs["paper"] = "Dehejia & Wahba (1999). NSW + PSID-1."
+        df.attrs["data_source"] = "real"
+        df.attrs["simulated"] = False
+        df.attrs["source_origin"] = (
+            "R causalsens::lalonde.psid (the file of the original-data "
+            "ledger, tests/orig_parity/data/04b_nsw_psid_original.csv). "
+            "Agrees row by row, to the rounding of earnings (5 cents), with "
+            "nswre74_treated.txt and psid_controls.txt on Dehejia's NBER "
+            "page."
+        )
+        df.attrs["published_naive_difference"] = -15205
+        df.attrs["published_experimental_att"] = 1794
+        df.attrs["notes"] = (
+            "Real data. The propensity score is close to zero for most of "
+            "the comparison group; estimates are sensitive to trimming and "
+            "specification, which is the point of the example."
+        )
+        return df
     rng = np.random.default_rng(seed)
     n_t, n_c = 185, 2490
 
@@ -538,6 +611,8 @@ def nsw_dw(seed: int = 42) -> pd.DataFrame:
         }
     )
     df.attrs["paper"] = "Dehejia & Wahba (1999). NSW + PSID-1."
+    df.attrs["data_source"] = "simulated"
+    df.attrs["simulated"] = True
     df.attrs["expected_naive_ols_att"] = -8498
     df.attrs["expected_psm_att"] = 1794
     df.attrs["notes"] = (

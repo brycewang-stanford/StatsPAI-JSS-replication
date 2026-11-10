@@ -11,7 +11,20 @@ Specification curve analysis. *Nature Human Behaviour*, 4(11), 1208–1214.
 
 Usage
 -----
+>>> import numpy as np
+>>> import pandas as pd
 >>> import statspai as sp
+>>> rng = np.random.default_rng(0)
+>>> n = 400
+>>> df = pd.DataFrame({
+...     "female": rng.integers(0, 2, size=n),
+...     "region": rng.integers(0, 4, size=n),
+...     "age": rng.integers(22, 60, size=n),
+...     "education": rng.normal(12, 3, size=n),
+...     "experience": rng.normal(10, 5, size=n),
+... })
+>>> df["wage"] = (5.0 + 0.4 * df["education"] + 0.1 * df["experience"]
+...               - 0.5 * df["female"] + rng.normal(size=n))
 >>> result = sp.spec_curve(
 ...     data=df,
 ...     y='wage',
@@ -19,13 +32,15 @@ Usage
 ...     controls=[[], ['experience'], ['experience', 'female']],
 ...     se_types=['nonrobust', 'hc1'],
 ... )
->>> result.plot()
->>> result.summary()
+>>> result.n_specs                  # 3 control sets x 2 SE types
+6
+>>> fig, axes = result.plot()
+>>> text = result.summary()
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from itertools import product
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -34,8 +49,9 @@ import pandas as pd
 from scipy import stats
 
 from .._aliases import accepts_aliases
+from .._input_validation import check_columns
 from .._result_serialize import ResultProtocolMixin
-from ..exceptions import MethodIncompatibility
+from ..exceptions import ColumnNotFound, MethodIncompatibility
 
 # ---------------------------------------------------------------------------
 # Result container
@@ -94,6 +110,9 @@ class SpecCurveResult(ResultProtocolMixin):
     share_significant: float
     share_positive: float
     choice_dims: List[str]
+    model_info: Dict[str, Any] = field(default_factory=dict)
+    """``multiplicity``: the session count of specifications of ``y``
+    (this curve's included), see ``core/_spec_counter.py``."""
 
     # ---- pretty-print --------------------------------------------------
 
@@ -146,7 +165,9 @@ class SpecCurveResult(ResultProtocolMixin):
 
     # ---- export ---------------------------------------------------------
 
-    def to_latex(
+    # Own layout without the base class's digits= / fmt= precision options;
+    # passing them raises TypeError rather than being ignored.
+    def to_latex(  # type: ignore[override]
         self,
         *args: Any,
         caption: Optional[str] = "Specification Curve Summary",
@@ -398,8 +419,10 @@ def _run_one_spec(
     model_type: str,
     transform_y: Optional[Callable[[pd.Series], Any]],
     transform_label: str,
+    fe: Optional[List[str]] = None,
 ) -> Optional[Dict[str, Any]]:
     """Run a single specification and return results dict."""
+    fe = list(fe or [])
     df = data.copy()
 
     # Apply subset
@@ -424,10 +447,25 @@ def _run_one_spec(
     all_vars = [y_col, x] + controls
     if cluster_var:
         all_vars.append(cluster_var)
+    all_vars += [f for f in fe if f not in all_vars]
     df_clean = df[all_vars].dropna()
 
     if len(df_clean) < len(controls) + 3:
         return None
+
+    if fe:
+        return _run_one_fe_spec(
+            df_clean,
+            y_col,
+            x,
+            controls,
+            se_type,
+            cluster_var,
+            fe,
+            subset_label,
+            model_type,
+            transform_label,
+        )
 
     Y = df_clean[y_col].values.astype(float)
     X_vars = [x] + controls
@@ -483,7 +521,8 @@ def _run_one_spec(
     # Key variable is index 1 (index 0 is intercept)
     beta_x = params[1]
     se_x = se[1]
-    df_resid = n - k
+    # Stata regress: t(n - k), or t(G - 1) with vce(cluster)
+    df_resid = G - 1 if (se_type == "cluster" and cluster_var) else n - k
     t_stat = beta_x / se_x if se_x > 0 else np.inf
     p_val = 2 * stats.t.sf(abs(t_stat), df_resid)
     t_crit = stats.t.ppf(0.975, df_resid)
@@ -507,12 +546,96 @@ def _run_one_spec(
         "subset": subset_label,
         "model": model_type,
         "y_transform": transform_label,
+        "fe": "(none)",
+    }
+
+
+def _run_one_fe_spec(
+    df_clean: pd.DataFrame,
+    y_col: str,
+    x: str,
+    controls: List[str],
+    se_type: str,
+    cluster_var: Optional[str],
+    fe: List[str],
+    subset_label: str,
+    model_type: str,
+    transform_label: str,
+) -> Optional[Dict[str, Any]]:
+    """One specification with absorbed fixed effects, as Stata ``reghdfe``.
+
+    Singletons are dropped and the absorbed levels charged to the degrees of
+    freedom as ``reghdfe`` does; ``nonrobust`` is ``vce(unadjusted)``,
+    ``hc1`` ``vce(robust)`` and ``cluster`` ``vce(cluster c)`` (fixed
+    effects nested in the cluster not charged, t with G - 1 df).
+    """
+    from ..panel.hdfe import absorb_ols
+
+    Y = df_clean[y_col].to_numpy(dtype=float)
+    X = df_clean[[x] + controls].to_numpy(dtype=float)
+    fe_frame = df_clean[fe].reset_index(drop=True)
+    cl = (
+        df_clean[cluster_var].to_numpy()
+        if se_type == "cluster" and cluster_var
+        else None
+    )
+    try:
+        out = absorb_ols(Y, X, fe_frame, cluster=cl, return_absorber=True)
+    except (ValueError, np.linalg.LinAlgError):
+        return None
+    if 0 in out["omitted"]:
+        return None  # x is collinear with the fixed effects
+    n = int(out["n"])
+    resid = out["resid"]
+    if se_type in ("hc1", "robust"):
+        ab = out["absorber"]
+        kept = [j for j in range(X.shape[1]) if j not in set(out["omitted"])]
+        Xw = ab.demean(X)[:, kept]
+        XtX_inv = np.linalg.inv(Xw.T @ Xw)
+        meat = (Xw * (resid**2)[:, None]).T @ Xw
+        V = (n / out["df_resid"]) * XtX_inv @ meat @ XtX_inv
+        se_x = float(np.sqrt(V[0, 0]))
+        dof = int(out["df_resid"])
+    else:
+        se_x = float(out["se"][0])
+        if cl is not None:
+            dof = len(np.unique(cl[out["absorber"].keep_mask])) - 1
+        else:
+            dof = int(out["df_resid"])
+    beta_x = float(out["coef"][0])
+    t_stat = beta_x / se_x if se_x > 0 else np.inf
+    p_val = 2 * stats.t.sf(abs(t_stat), dof)
+    t_crit = stats.t.ppf(0.975, dof)
+    keep = out["absorber"].keep_mask
+    Yk = Y[keep]
+    ss_tot = float(np.sum((Yk - Yk.mean()) ** 2))
+    r2 = 1 - float(np.sum(resid**2)) / ss_tot if ss_tot > 0 else np.nan
+    return {
+        "estimate": beta_x,
+        "se": se_x,
+        "ci_lower": beta_x - t_crit * se_x,
+        "ci_upper": beta_x + t_crit * se_x,
+        "pvalue": p_val,
+        "tstat": t_stat,
+        "nobs": n,
+        "r_squared": r2,
+        "controls": ", ".join(controls) if controls else "(none)",
+        "se_type": se_type,
+        "subset": subset_label,
+        "model": model_type,
+        "y_transform": transform_label,
+        "fe": ", ".join(fe),
     }
 
 
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
+
+_SE_TYPES = frozenset({"nonrobust", "hc1", "robust", "cluster"})
+#: Spellings the rest of the package uses for the same variances.
+_SE_ALIASES = {"classical": "nonrobust", "iid": "nonrobust"}
 
 
 @accepts_aliases(cluster="cluster_var", covariates="controls")
@@ -526,6 +649,7 @@ def spec_curve(
     cluster_var: Optional[str] = None,
     y_transforms: Optional[Dict[str, Optional[Callable[[pd.Series], Any]]]] = None,
     alpha: float = 0.05,
+    fe: Optional[List[List[str]]] = None,
 ) -> SpecCurveResult:
     """
     Run a specification curve analysis.
@@ -549,7 +673,8 @@ def spec_curve(
         If *None*, defaults to ``[[]]`` (no controls only).
     se_types : list of str, optional
         Standard-error types to iterate over.
-        Options: ``'nonrobust'``, ``'hc1'`` (or ``'robust'``),
+        Options: ``'nonrobust'`` (or ``'classical'`` / ``'iid'``),
+        ``'hc1'`` (or ``'robust'``),
         ``'cluster'`` (requires *cluster_var*).
         Default: ``['nonrobust', 'hc1']``.
     subsets : dict[str, Series | None], optional
@@ -566,6 +691,13 @@ def spec_curve(
         ``None`` value means no transform.
     alpha : float, default 0.05
         Significance threshold.
+    fe : list of list of str, optional
+        Fixed-effect sets, one choice dimension like *controls*: each inner
+        list names the columns absorbed in that specification (``[]`` = none),
+        e.g. ``[[], ['firm'], ['firm', 'year']]``. Specifications with fixed
+        effects are estimated as Stata ``reghdfe`` (singletons dropped,
+        absorbed levels charged to the degrees of freedom, those nested in
+        the cluster not). Default: ``[[]]``.
 
     Returns
     -------
@@ -611,27 +743,89 @@ def spec_curve(
     # ---- defaults -------------------------------------------------------
     if controls is None:
         controls = [[]]
+    elif isinstance(controls, str) or (
+        len(controls) > 0 and all(isinstance(c, str) for c in controls)
+    ):
+        # A flat list of names has two plausible readings; neither is safe
+        # to guess, and the old code crashed on it with a bare TypeError.
+        flat = [controls] if isinstance(controls, str) else list(controls)
+        raise MethodIncompatibility(
+            "controls= takes a list of control *sets* (one per "
+            f"specification), not a flat list of column names: got {flat!r}.",
+            recovery_hint=(
+                f"All together in one specification: controls=[{flat!r}]; "
+                "each alone, plus none: controls="
+                f"{[[]] + [[c] for c in flat]!r}."
+            ),
+            diagnostics={"controls": flat},
+        )
+    else:
+        controls = [[c] if isinstance(c, str) else list(c) for c in controls]
     if se_types is None:
         se_types = ["nonrobust", "hc1"]
     if subsets is None:
         subsets = {"Full Sample": None}
     if y_transforms is None:
         y_transforms = {"Level": None}
+    if fe is None:
+        fe = [[]]
+    fe = [[f] if isinstance(f, str) else list(f) for f in fe]
+    named: Dict[str, Any] = {"y": y, "x": x, "cluster_var": cluster_var}
+    for i, ctrl_set in enumerate(controls):
+        ctrl_list = [ctrl_set] if isinstance(ctrl_set, str) else list(ctrl_set)
+        for j, col in enumerate(ctrl_list):
+            named[f"controls[{i}][{j}]"] = col
+    check_columns(data, named, function="spec_curve")
+    missing_fe = sorted({f for fs in fe for f in fs} - set(data.columns))
+    if missing_fe:
+        fe_named = {
+            f"fe[{i}][{j}]": f
+            for i, fs in enumerate(fe)
+            for j, f in enumerate(fs)
+            if f not in data.columns
+        }
+        raise ColumnNotFound.from_missing(
+            fe_named,
+            list(data.columns),
+            context="spec_curve",
+            extra_diagnostics={"missing": missing_fe},
+        )
+
+    se_types = [_SE_ALIASES.get(str(s).lower(), str(s).lower()) for s in se_types]
+    unknown = sorted({s for s in se_types if s not in _SE_TYPES})
+    if unknown:
+        # An unknown name used to fall through to HC1 (classical with fe=).
+        raise MethodIncompatibility(
+            f"spec_curve: unknown se_types {unknown}.",
+            diagnostics={"unknown": unknown, "allowed": sorted(_SE_TYPES)},
+            recovery_hint=(
+                "Use 'nonrobust' (or 'classical'), 'hc1' (or 'robust') or " "'cluster'."
+            ),
+        )
+    if "cluster" in se_types and not cluster_var:
+        # It used to be dropped without a word.
+        raise MethodIncompatibility(
+            "spec_curve: se_types includes 'cluster' but cluster_var is not set.",
+            recovery_hint="Pass cluster_var=<column>, or drop 'cluster'.",
+        )
 
     # Auto-add cluster SE type
     if cluster_var and "cluster" not in se_types:
         se_types = list(se_types) + ["cluster"]
 
-    # Remove 'cluster' if no cluster_var
-    if not cluster_var:
-        se_types = [s for s in se_types if s != "cluster"]
-
     # ---- enumerate all combinations -------------------------------------
     all_results = []
     spec_id = 0
 
-    for ctrl_set, se_type, (sub_label, sub_mask), (tf_label, tf_func) in product(
+    for (
+        ctrl_set,
+        fe_set,
+        se_type,
+        (sub_label, sub_mask),
+        (tf_label, tf_func),
+    ) in product(
         controls,
+        fe,
         se_types,
         subsets.items(),
         y_transforms.items(),
@@ -648,6 +842,7 @@ def spec_curve(
             model_type="OLS",
             transform_y=tf_func,
             transform_label=tf_label,
+            fe=fe_set,
         )
         if res is not None:
             res["spec_id"] = spec_id
@@ -667,7 +862,7 @@ def spec_curve(
 
     # ---- determine which choice dimensions vary -------------------------
     choice_dims = []
-    for col in ["controls", "se_type", "subset", "y_transform"]:
+    for col in ["controls", "fe", "se_type", "subset", "y_transform"]:
         if results_df[col].nunique() > 1:
             choice_dims.append(col)
     # Always show at least controls
@@ -676,7 +871,7 @@ def spec_curve(
 
     n_specs = len(results_df)
 
-    return SpecCurveResult(
+    out = SpecCurveResult(
         results_df=results_df,
         x=x,
         y=y,
@@ -686,3 +881,19 @@ def spec_curve(
         share_positive=float((results_df["estimate"] > 0).mean()),
         choice_dims=choice_dims,
     )
+    from ..core._design_guardrails import record_search
+
+    record_search(
+        out,
+        data,
+        y,
+        [
+            "sp.spec_curve|" + "|".join(str(r[c]) for c in _SPEC_KEY_COLUMNS)
+            for r in all_results
+        ],
+    )
+    return out
+
+
+#: The choice columns that identify one specification of the curve.
+_SPEC_KEY_COLUMNS = ("controls", "fe", "se_type", "subset", "y_transform")

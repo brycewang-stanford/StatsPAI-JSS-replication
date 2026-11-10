@@ -49,6 +49,7 @@ TESTS_ROOT = REPO_ROOT / "tests"
 DOCS_STATS = REPO_ROOT / "docs" / "stats.md"
 DOCS_INDEX = REPO_ROOT / "docs" / "index.md"
 DOCS_REFERENCE_INDEX = REPO_ROOT / "docs" / "reference" / "index.md"
+# README.md is the English edition (the default); README_CN.md is Chinese.
 README = REPO_ROOT / "README.md"
 README_CN = REPO_ROOT / "README_CN.md"
 
@@ -183,7 +184,7 @@ def render_table(stats: dict) -> str:
 # Loose floors we expect README.md to quote. The check passes as long as
 # the live count is at or above the floor and within ``DRIFT_TOLERANCE``
 # of it; otherwise the docs need refreshing.
-README_FLOOR = 1200  # registered-function floor quoted by the docs (1,200+)
+README_FLOOR = 1600  # registered-function floor quoted by the docs (1,600+)
 SUBMODULE_FLOOR = 80  # README.md says "80 submodules"
 DRIFT_TOLERANCE = 100  # bump the floor once we're > floor + tolerance
 # LOC is a vanity metric (docs/stats.md §5) that moves on every commit, so

@@ -104,6 +104,7 @@ MANUSCRIPT_INPUTS: list[tuple[str, str, str]] = [
     ("manuscript/tables/headline_parity.tex", "generate_headline_parity_table.py", TABULATED),
     ("manuscript/tables/track_b_monte_carlo.tex", "generate_track_b_tables.py", TABULATED),
     ("manuscript/tables/forest_seed_mc.tex", "generate_forest_seed_table.py", TABULATED),
+    ("manuscript/tables/dml_plr_designs.tex", "generate_dml_designs_table.py", TABULATED),
     ("manuscript/tables/track_c_perf.tex", "Track-C performance artifacts", TABULATED),
     ("manuscript/figures/track_c_loglog.pdf", "Track-C performance artifacts", TABULATED),
 ]
@@ -174,9 +175,12 @@ def _run(
     dt = time.time() - t0
     ok = proc.returncode == 0
     if not ok:
-        print(f"     FAILED ({dt:.1f}s). Last stderr lines:", flush=True)
-        for line in proc.stderr.strip().splitlines()[-12:]:
-            print(f"       {line}", flush=True)
+        # pytest reports on stdout, so a failing test step would otherwise
+        # print nothing here.
+        print(f"     FAILED ({dt:.1f}s). Last output lines:", flush=True)
+        for stream in (proc.stdout, proc.stderr):
+            for line in stream.strip().splitlines()[-12:]:
+                print(f"       {line}", flush=True)
     else:
         print(f"     ok ({dt:.1f}s)", flush=True)
     return label, dt, ok
@@ -208,7 +212,8 @@ def tier1() -> list[tuple[str, float, bool]]:
         cwd=REPO,
     ))
     for script in ["gen_appendix_parity.py", "generate_headline_parity_table.py",
-                   "generate_track_b_tables.py", "generate_forest_seed_table.py"]:
+                   "generate_track_b_tables.py", "generate_forest_seed_table.py",
+                   "generate_dml_designs_table.py"]:
         results.append(_run(script, [py, str(SCRIPTS / script)], cwd=PAPER))
     results.append(_run(
         "Track-C performance artifacts",
@@ -348,6 +353,12 @@ def recompute(group: str) -> list[tuple[str, float, bool]]:
             ("mechanism: forest size", [py, "forest_trees.py"], mech, False),
             ("mechanism: feols small-sample factor", [py, "feols_ssc.py"], mech, False),
             ("mechanism: RD draw-wise vs rdrobust", [py, "rd_drawwise_reference.py"], mech, True),
+            ("mechanism: SDID draw-wise vs synthdid",
+             [py, str(SCRIPTS / "sdid_drawwise_reference.py")], REPO, True),
+            ("mechanism: DML PLR stacking",
+             [py, str(SCRIPTS / "dml_plr_stacking_mechanism.py")], REPO, False),
+            ("mechanism: DML PLR on six designs",
+             [py, str(SCRIPTS / "dml_plr_designs.py")], REPO, False),
         ],
         "forest-seed": [
             ("forest seed MC, Python (reference fixture)",
@@ -453,7 +464,7 @@ def main() -> int:
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("w", encoding="utf-8") as fh:
             with contextlib.redirect_stdout(_Tee(sys.stdout, fh)):
-                print(f"Transcript: {path}")
+                print(f"Transcript: {path.name}")
                 return _run_tier(args.tier, clean=args.clean)
     return _run_tier(args.tier, clean=args.clean)
 
@@ -464,7 +475,11 @@ def _run_tier(tier: int, clean: bool = False) -> int:
     print("=" * 70)
     import statspai
 
-    print(f"  statspai {statspai.__version__} from {Path(statspai.__file__).parent}")
+    source = Path(statspai.__file__).resolve().parent
+    checkout = HERE.parents[1]
+    if source.is_relative_to(checkout):
+        source = source.relative_to(checkout)
+    print(f"  statspai {statspai.__version__} from {source}")
     started = time.time()
     if clean:
         _clean_inputs()

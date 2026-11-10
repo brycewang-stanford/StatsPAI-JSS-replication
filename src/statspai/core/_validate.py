@@ -165,3 +165,148 @@ def validate_fold_indices(
                     },
                 )
     return codes
+
+
+def require_binary_treatment(
+    values: Any, *, function: str, argument: str = "treat"
+) -> None:
+    """Refuse a treatment column that is not coded 0/1.
+
+    The two-group estimators and tables select ``== 1`` and ``== 0``. A
+    column with other codes (arm labels, a dose, three arms) used to leave
+    both groups empty or partly filled, and the output was a table of NaN
+    or an estimate for a subset, with nothing said.
+    """
+    import pandas as pd
+
+    observed = pd.unique(pd.Series(values).dropna())
+    try:
+        ok = len(observed) > 0 and all(v in (0, 1) for v in observed)
+    except TypeError:  # unhashable or uncomparable codes
+        ok = False
+    if ok:
+        return
+    shown = sorted(observed, key=repr)[:6]
+    raise MethodIncompatibility(
+        f"{function}: {argument} must be a binary treatment coded 0/1; found "
+        f"{len(observed)} distinct values, e.g. {shown}.",
+        recovery_hint=(
+            "For several arms, compare one arm with the control at a time on "
+            "the rows of those two arms, with the arm recoded to 1 and the "
+            "control to 0. For a dose, use an estimator for continuous "
+            "treatments."
+        ),
+        diagnostics={
+            "n_values": int(len(observed)),
+            "values": [repr(v) for v in shown],
+        },
+    )
+
+
+def treatment_as_float(
+    values: Any, *, function: str, argument: str = "treat"
+) -> np.ndarray:
+    """A treatment column as floats, or a named error when it holds labels.
+
+    ``np.asarray(labels, dtype=float)`` fails with ``could not convert
+    string to float: 'high'``, which names neither the function nor the
+    column nor the way out. Which label is the treated one is the
+    caller's to say, so the column is not recoded here.
+    """
+    import pandas as pd
+    from pandas.api.types import is_bool_dtype, is_numeric_dtype
+
+    column = pd.Series(values)
+    if is_bool_dtype(column) or is_numeric_dtype(column):
+        return np.asarray(column.to_numpy(dtype=float), dtype=float)
+    try:
+        return np.asarray(column.to_numpy(dtype=float), dtype=float)
+    except (TypeError, ValueError):
+        pass
+    levels = sorted(pd.unique(column.dropna()), key=repr)
+    shown = [repr(v) for v in levels[:6]]
+    if len(levels) == 2:
+        hint = (
+            f"Say which label is the treated one and recode, e.g. "
+            f"df[col] = (df[col] == {levels[1]!r}).astype(int)."
+        )
+    else:
+        hint = (
+            "Recode the treated arm to 1 and the control arm to 0; with "
+            "several arms, compare one arm with the control at a time."
+        )
+    raise MethodIncompatibility(
+        f"{function}: {argument} holds labels, not numbers "
+        f"({len(levels)} distinct: {', '.join(shown)}).",
+        recovery_hint=hint,
+        diagnostics={"n_values": int(len(levels)), "values": shown},
+    )
+
+
+def require_numeric_columns(
+    data: Any, columns: Any, *, function: str, argument: str = "x"
+) -> None:
+    """Refuse columns that hold labels where numbers are needed.
+
+    For the estimators that take a list of column names and build the
+    design themselves: a string or categorical column would otherwise
+    surface as ``could not convert string to float: 'a'`` from deep
+    inside, or be coerced to missing and reported as "no complete rows".
+    Columns absent from ``data`` are left to the caller's own check, and
+    a column of numbers stored as text passes. Nothing is expanded into
+    indicators here: which level is the base is the caller's to say.
+    """
+    import pandas as pd
+    from pandas.api.types import is_bool_dtype, is_numeric_dtype
+
+    names = [columns] if isinstance(columns, str) else list(columns or [])
+    bad = []
+    for name in names:
+        if name is None or name not in data.columns:
+            continue
+        column = data[name]
+        if is_bool_dtype(column) or is_numeric_dtype(column):
+            continue
+        try:
+            np.asarray(column.dropna().to_numpy(), dtype=float)
+        except (TypeError, ValueError):
+            bad.append(str(name))
+    if not bad:
+        return
+    example = pd.unique(data[bad[0]].dropna())[:3]
+    raise MethodIncompatibility(
+        f"{function}: {argument} column(s) {bad} hold labels, not numbers "
+        f"(e.g. {', '.join(repr(v) for v in example)}).",
+        recovery_hint=(
+            "Enter a categorical variable as indicator columns "
+            "(pd.get_dummies(df, columns=[...], drop_first=True, "
+            "dtype=float)) or leave it out."
+        ),
+        diagnostics={"non_numeric_columns": bad, "argument": argument},
+    )
+
+
+def warn_missing_weight_rows(data: Any, weights: Any, *, function: str) -> int:
+    """Warn that rows with a missing weight will be dropped; return the count.
+
+    Several estimators dropped such rows together with rows missing the
+    outcome or a covariate, without saying so, although their own error
+    messages say weights "must be finite" (2026-10-20 probe: ebalance,
+    match(sampling_weights=), finegray, cox, kaplan_meier, rmst).
+    """
+    import warnings
+
+    import pandas as pd
+
+    if not isinstance(weights, str) or not isinstance(data, pd.DataFrame):
+        return 0
+    if weights not in data.columns:
+        return 0
+    n = int(data[weights].isna().sum())
+    if n:
+        warnings.warn(
+            f"{function}: dropped {n} row(s) with a missing weight.",
+            UserWarning,
+            stacklevel=3,
+        )
+    return n

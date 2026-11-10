@@ -960,6 +960,13 @@ BASELINE_CARDS: Dict[str, Dict[str, Any]] = {
         "example": "sp.cate_eval(tau_hat, Y, T, X=X).summary()",
         "tags": ["causal"],
     },
+    "cate_gain_curve": {
+        "example": (
+            "sp.cate_gain_curve(test_df, cate='cate_hat', y='sales', "
+            "treat='discount')"
+        ),
+        "tags": ["causal", "cate", "evaluation"],
+    },
     "cate_group_plot": {
         "tags": ["causal"],
     },
@@ -1643,8 +1650,25 @@ BASELINE_CARDS: Dict[str, Dict[str, Any]] = {
     "kan_dlate": {
         "tags": ["causal"],
     },
+    "rmst": {
+        "example": (
+            'sp.rmst(df, duration="time", event="status", group="arm", tau=12, '
+            'weights="iptw")'
+        ),
+        "tags": ["survival", "causal", "rmst"],
+    },
+    "stteffects": {
+        "example": (
+            'sp.stteffects(df, duration="time", event="status", treat="arm", '
+            'covariates=["age"], method="ipwra")'
+        ),
+        "tags": ["survival", "causal", "treatment-effects"],
+    },
     "kaplan_meier": {
-        "example": 'sp.kaplan_meier(data=df, duration="time", event="status")',
+        "example": (
+            'sp.kaplan_meier(data=df, duration="time", event="status", '
+            'conf_type="log-log")'
+        ),
         "tags": ["survival"],
     },
     "kdensity": {
@@ -2342,6 +2366,10 @@ BASELINE_CARDS: Dict[str, Dict[str, Any]] = {
         "example": "sp.rdmc(df, y='score', x='running_var', cutoffs=[50, 70, 90])",
         "tags": ["causal"],
     },
+    "rdmcplot": {
+        "example": "sp.rdmcplot(df, y='y', x='score', cutoff_var='cutoff', p=1)",
+        "tags": ["causal", "plot"],
+    },
     "rdms": {
         "example": "sp.rdms(df, y='outcome', x1='dist_lat', x2='dist_lon')",
         "tags": ["causal"],
@@ -2659,6 +2687,19 @@ BASELINE_CARDS: Dict[str, Dict[str, Any]] = {
     "svytotal": {
         "tags": ["survey"],
     },
+    "switchback": {
+        "example": (
+            "sp.switchback(df, y='delivery_time', treat='d', m=2, "
+            "design='rand_points')"
+        ),
+        "reference": "bojinov2023design",
+        "tags": ["experimental", "causal"],
+    },
+    "switchback_design": {
+        "example": "sp.switchback_design(120, m=2, seed=0)",
+        "reference": "bojinov2023design",
+        "tags": ["experimental", "design"],
+    },
     "synth_compare": {
         "example": (
             "sp.synth_compare( df, outcome='gdp', unit='state', time='year', "
@@ -2739,6 +2780,14 @@ BASELINE_CARDS: Dict[str, Dict[str, Any]] = {
     "synth_sensitivity_plot": {
         "example": "sp.synth_sensitivity_plot(sens)",
         "tags": ["causal", "synth"],
+    },
+    "synth_ttest": {
+        "example": (
+            "sp.synth_ttest(df, outcome='gdp', unit='state', time='year', "
+            "treated_unit='California', treatment_time=1989, n_folds=3)"
+        ),
+        "reference": "chernozhukov2026debiasing",
+        "tags": ["causal", "synth", "inference"],
     },
     "synth_time_placebo": {
         "example": (

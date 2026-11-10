@@ -32,8 +32,11 @@ import pandas as pd
 from scipy import stats
 
 from .._aliases import accepts_aliases
+from .._input_validation import missing_named_columns
 from .._result_serialize import ResultProtocolMixin
-from ..exceptions import DataInsufficient, MethodIncompatibility
+from ..core._call_record import records_call
+from ..core._vcov_spec import accepts_vce
+from ..exceptions import ColumnNotFound, DataInsufficient, MethodIncompatibility
 from ._contdid import cont_did_cell, default_dose_grid, knots_by_quantile
 
 __all__ = ["ContinuousDoseResult", "cgs_continuous_did"]
@@ -126,7 +129,9 @@ class ContinuousDoseResult(ResultProtocolMixin):
         }
 
 
+@records_call("cgs_continuous_did")
 @accepts_aliases(id="unit")
+@accepts_vce(default=None)
 def cgs_continuous_did(
     data: pd.DataFrame,
     y: str,
@@ -142,6 +147,7 @@ def cgs_continuous_did(
     control_group: str = "nevertreated",
     curve_basis: str = "fitted",
     alpha: float = 0.05,
+    cluster: Optional[str] = None,
 ) -> ContinuousDoseResult:
     """ATT(d) and ACRT(d) for a continuous treatment.
 
@@ -191,6 +197,14 @@ def cgs_continuous_did(
         the gap is exactly the ratio of the two ranges. Use it only to
         reproduce output from that package.
     alpha : float, default 0.05
+
+    cluster : str, optional
+        Cluster for the overall ACRT standard error (e.g. a region when doses
+        or shocks are correlated within it). The unit-level influence
+        functions are summed within clusters; the cluster must be constant
+        within a unit. Without it the SE treats units as independent, which
+        understates it under within-cluster correlation (Web of Power, QJE
+        2023: 0.015 unclustered).
 
     Returns
     -------
@@ -244,12 +258,18 @@ def cgs_continuous_did(
             f"{context}: alpha must be in (0, 1).",
             diagnostics={"context": context, "alpha": alpha},
         )
-    for col in (y, dose, time, unit, cohort):
-        if col not in data.columns:
-            raise MethodIncompatibility(
-                f"{context}: column {col!r} not in data.",
-                diagnostics={"context": context, "columns": list(data.columns)},
-            )
+    missing = missing_named_columns(
+        {"y": y, "dose": dose, "time": time, "unit": unit, "cohort": cohort},
+        data.columns,
+    )
+    if missing:
+        raise ColumnNotFound.from_missing(
+            missing,
+            list(data.columns),
+            message=f"{context}: column {next(iter(missing.values()))!r} "
+            "not in data.",
+            extra_diagnostics={"context": context},
+        )
 
     df = data.copy()
     periods = sorted(df[time].unique())
@@ -354,7 +374,28 @@ def cgs_continuous_did(
     overall_att = float(np.sum(w * np.array([c["att_overall"] for c in cells])))
     overall_acrt = float(np.sum(w * np.array([c["acrt_overall"] for c in cells])))
     psi = np.sum([wi * c["_influence"] for wi, c in zip(w, cells)], axis=0)
-    se = float(np.sqrt(np.mean(psi**2) / n_units))
+    if cluster is None:
+        se = float(np.sqrt(np.mean(psi**2) / n_units))
+        n_clusters = None
+    else:
+        if cluster not in df.columns:
+            raise ColumnNotFound.from_missing(
+                {"cluster": cluster},
+                list(df.columns),
+                message=f"{context}: cluster column {cluster!r} not found.",
+                extra_diagnostics={"context": context},
+            )
+        per_unit = df.groupby(unit)[cluster].nunique(dropna=False)
+        if (per_unit > 1).any():
+            raise MethodIncompatibility(
+                f"{context}: cluster {cluster!r} varies within units.",
+                recovery_hint="Use a time-invariant cluster (e.g. the unit's region).",
+            )
+        unit_cl = df.drop_duplicates(subset=[unit]).set_index(unit)[cluster]
+        codes = pd.factorize(unit_cl.reindex(pos.index).to_numpy())[0]
+        n_clusters = int(codes.max()) + 1
+        S = np.bincount(codes, weights=psi, minlength=n_clusters)
+        se = float(np.sqrt(np.sum(S**2)) / n_units)
 
     detail = pd.DataFrame(
         [{k: v for k, v in c.items() if not k.startswith("_")} for c in cells]
@@ -378,6 +419,8 @@ def cgs_continuous_did(
             "cohorts": cohorts,
             "influence_function": psi,
             "cell_weights": w.tolist(),
+            "cluster": cluster,
+            "n_clusters": n_clusters,
         },
     )
 

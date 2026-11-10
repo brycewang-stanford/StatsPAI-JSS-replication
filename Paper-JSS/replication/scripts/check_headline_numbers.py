@@ -107,6 +107,94 @@ PERF = [("01_hdfe", "R"), ("02_csdid", "R"), ("03_scm", "R"),
         ("04_dml", "doubleml_py")]
 
 
+#: Modules a later release may change without touching the timed path,
+#: each with the reason. Anything not listed (and not release metadata or a
+#: Markdown/text file) keeps a version mismatch a failure.
+NOT_TIMED_MODULES = {
+    "src/statspai/_schema_enrich.py": "derives function-schema enums and field "
+    "metadata from docstrings; only function_schema() / dump_schemas call it",
+}
+RELEASE_METADATA = {
+    "src/statspai/CITATION.cff",
+    "src/statspai/schemas/index.json",
+    "src/statspai/__init__.py",  # only its __version__ line, checked below
+}
+
+
+def _estimators_identical(root: Path, measured: str, pinned: str) -> bool:
+    """True when the code a timing ran is the timed code of the pinned release.
+
+    A later release that changes only documentation or release metadata
+    (1.34.1 and 1.34.2 after 1.34.0) leaves every timed estimator unchanged,
+    so its timings are the earlier release's. Accepted only if both tags
+    exist and every change under src/ or rust/ between them is release
+    metadata (``__init__.py`` limited to its ``__version__`` line), a Markdown
+    or text file, or a module in :data:`NOT_TIMED_MODULES`. Anything else
+    keeps the version mismatch a failure.
+    """
+    import subprocess
+
+    def _git(*args: str) -> subprocess.CompletedProcess:
+        return subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True)
+
+    tags = (f"v{measured}", f"v{pinned}")
+    if any(_git("rev-parse", "--verify", "--quiet", f"{t}^{{commit}}").returncode != 0 for t in tags):
+        return False
+    names = _git("diff", "--name-only", tags[0], tags[1], "--", "src", "rust")
+    if names.returncode != 0:
+        return False
+    for path in names.stdout.split():
+        if path in RELEASE_METADATA or path in NOT_TIMED_MODULES:
+            continue
+        if path.endswith((".md", ".txt")):
+            continue
+        return False
+    init = _git("diff", "-U0", tags[0], tags[1], "--", "src/statspai/__init__.py").stdout
+    changed = [ln for ln in init.splitlines()
+               if ln[:1] in "+-" and not ln.startswith(("+++", "---"))]
+    return all(ln[1:].startswith("__version__ = ") for ln in changed)
+
+
+def _timed_path_status(root: Path) -> dict[str, tuple[bool, str]] | None:
+    """Per Track C module: do the committed timings still describe ``root``?
+
+    StatsPAI records, next to the timings, the hash of every source file that
+    ran inside the timed calls (``scripts/trace_perf_path.py``, record
+    ``tests/perf/results/_timed_path.json``). While those files are unchanged
+    the timings hold whatever the version number says. Returns ``None`` when
+    the checkout predates that record (tags up to v1.34.2); the caller then
+    falls back to the tag-diff rule of :func:`_estimators_identical`.
+    """
+    import subprocess
+
+    script = root / "scripts" / "trace_perf_path.py"
+    record = root / "tests" / "perf" / "results" / "_timed_path.json"
+    if not (script.exists() and record.exists()):
+        return None
+    proc = subprocess.run([sys.executable, str(script), "--check"],
+                          cwd=root, capture_output=True, text=True)
+    status: dict[str, tuple[bool, str]] = {}
+    for line in proc.stdout.splitlines():
+        head, _, rest = line.partition(":")
+        word, _, stem = head.partition(" ")
+        if word in ("OK", "STALE") and stem.strip():
+            status[stem.strip()] = (word == "OK", rest.strip())
+    return status
+
+
+def _head_is_tag(root: Path, tag: str) -> bool:
+    """True if ``root`` is checked out at ``tag``, or ``tag`` does not exist."""
+    import subprocess
+
+    def _rev(ref: str) -> str | None:
+        p = subprocess.run(["git", "-C", str(root), "rev-parse", "--verify", "--quiet", ref],
+                           capture_output=True, text=True)
+        return p.stdout.strip() if p.returncode == 0 else None
+
+    tagged = _rev(f"{tag}^{{commit}}")
+    return tagged is None or tagged == _rev("HEAD")
+
+
 def _perf_checks() -> list[str]:
     sys.path.insert(0, str(HERE))
     from _paths import release_version, statspai_root
@@ -115,13 +203,33 @@ def _perf_checks() -> list[str]:
     flat = _flatten_tex("06-performance.tex")
     out: list[str] = []
     pinned = release_version()
+    timed = _timed_path_status(statspai_root())
+    # The hash check is binding on the pinned release itself (or on a tree
+    # whose release has no tag yet: a release being cut).
+    at_pin = _head_is_tag(statspai_root(), f"v{pinned}")
     for est, ref in PERF:
         py = json.loads((results / f"{est}_py.json").read_text(encoding="utf-8"))
         rf = json.loads((results / f"{est}_{ref}.json").read_text(encoding="utf-8"))
         measured = (py.get("hardware") or {}).get("statspai_version")
-        if measured != pinned:
-            out.append(f"FAIL  Track C {est}: timings record StatsPAI "
-                       f"{measured or 'no version'}, manuscript pins {pinned}")
+        ok, why = (timed or {}).get(est, (False, "never traced"))
+        if timed is not None and ok:
+            print(f"PASS  Track C {est}: {why}")
+        elif timed is not None and at_pin:
+            out.append(f"FAIL  Track C {est}: timings no longer describe "
+                       f"the pinned release: {why}")
+        elif measured != pinned:
+            if timed is not None:
+                # A development tree past the pin: the paper describes
+                # v{pinned}, so the tag-diff rule below decides. Re-measure
+                # when the paper is re-anchored, not before.
+                print(f"NOTE  Track C {est}: this tree has moved past v{pinned} "
+                      f"({why}); re-measure at the next re-anchor")
+            if measured and _estimators_identical(statspai_root(), measured, pinned):
+                print(f"PASS  Track C {est}: timings record StatsPAI {measured}; "
+                      f"src/ and rust/ differ from v{pinned} only off the timed path")
+            else:
+                out.append(f"FAIL  Track C {est}: timings record StatsPAI "
+                           f"{measured or 'no version'}, manuscript pins {pinned}")
         n = max(r["n"] for r in py["rows"])
         t_sp = next(r for r in py["rows"] if r["n"] == n)["median_time_s"]
         t_ref = next(r for r in rf["rows"] if r["n"] == n)["median_time_s"]

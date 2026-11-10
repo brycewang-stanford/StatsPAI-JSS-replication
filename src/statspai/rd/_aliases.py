@@ -12,6 +12,7 @@ import inspect
 from typing import Any
 
 from .._aliases import accepts_aliases
+from ..core._call_record import records_call
 from ..core.results import CausalResult
 from .multi_score import MultiScoreRDResult, rd_multi_score
 from .rd2d import rd2d
@@ -87,6 +88,7 @@ def geographic_rd(*args: Any, **kwargs: Any) -> CausalResult:
     return rdms(*args, **kwargs)
 
 
+@records_call("boundary_rd")
 @accepts_aliases(treat="treatment")
 def boundary_rd(*args: Any, **kwargs: Any) -> CausalResult:
     """User-friendly alias for :func:`sp.rd2d` (boundary discontinuity design).
@@ -146,8 +148,8 @@ def multi_score_rd(*args: Any, **kwargs: Any) -> MultiScoreRDResult:
     ... )
     >>> res.n_obs
     800
-    >>> round(float(res.boundary_effect), 3)
-    0.137
+    >>> round(float(res.boundary_effect), 3)  # true jump is 0.8
+    0.76
     """
     return rd_multi_score(*args, **kwargs)
 

@@ -37,10 +37,11 @@ from typing import Optional
 
 import numpy as np
 import pandas as pd
-
 from sklearn.base import BaseEstimator, clone
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.linear_model import LogisticRegression
+
+from .._aliases import accepts_aliases
 from .._result_serialize import ResultProtocolMixin
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -306,6 +307,7 @@ def _fit_propensity(X: np.ndarray, T: np.ndarray) -> np.ndarray:
     return np.asarray(np.clip(p, 1e-3, 1 - 1e-3))
 
 
+@accepts_aliases(seed="random_state")
 def conformal_counterfactual(
     data: pd.DataFrame,
     y: str,
@@ -388,7 +390,15 @@ def conformal_counterfactual(
     else:
         m = clone(propensity_model)
         m.fit(X_all, T)
-        g = np.clip(m.predict_proba(X_all)[:, 1], 1e-3, 1 - 1e-3)
+        from ..core._learners import positive_class_proba
+
+        g = np.clip(
+            positive_class_proba(
+                m, X_all, context="conformal_counterfactual propensity_model"
+            ),
+            1e-3,
+            1 - 1e-3,
+        )
 
     # Per-arm split conformal with TBCR weights
     # For Y(1): calib set is treated, weight = 1/g (to push to marginal X dist)
@@ -462,6 +472,7 @@ def conformal_counterfactual(
     return _result
 
 
+@accepts_aliases(seed="random_state")
 def conformal_ite_interval(
     data: pd.DataFrame,
     y: str,

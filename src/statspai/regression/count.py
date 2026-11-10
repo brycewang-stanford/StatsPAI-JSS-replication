@@ -20,10 +20,16 @@ import pandas as pd
 from scipy import optimize, special, stats
 
 from .._aliases import accepts_aliases
+from ..core._call_record import records_call
 from ..core._vcov_spec import markout_clusters
 from ..core.results import EconometricResults
 from ..core.utils import parse_formula
-from ..exceptions import DataInsufficient, MethodIncompatibility, NumericalInstability
+from ..exceptions import (
+    ColumnNotFound,
+    DataInsufficient,
+    MethodIncompatibility,
+    NumericalInstability,
+)
 from ..output._lineage import records_provenance
 
 # ---------------------------------------------------------------------------
@@ -85,16 +91,11 @@ def _normalize_column_list(columns: Any, role: str) -> List[str]:
 def _require_columns(data: pd.DataFrame, columns: Sequence[str], role: str) -> None:
     missing = [column for column in columns if column not in data.columns]
     if missing:
-        raise MethodIncompatibility(
-            f"{role} references missing column(s): {missing}.",
-            recovery_hint="Check spelling or rename columns before fitting the "
-            "count model.",
-            diagnostics={
-                "role": role,
-                "missing_columns": missing,
-                "available_columns": [str(column) for column in data.columns],
-            },
-            alternative_functions=_COUNT_ALTERNATIVES,
+        raise ColumnNotFound.from_missing(
+            missing,
+            list(data.columns),
+            message=f"{role} references missing column(s): {missing}.",
+            extra_diagnostics={"role": role},
         )
 
 
@@ -139,6 +140,64 @@ def _positive_exposure(data: pd.DataFrame, exposure: str) -> np.ndarray:
     return values
 
 
+def _validate_count_inputs(
+    y: np.ndarray,
+    w: Optional[np.ndarray],
+    offset: np.ndarray,
+    function: str,
+    dep_var: str,
+    weights_name: Any,
+    offset_name: Any,
+) -> None:
+    """Refuse an outcome, weights or offset a count likelihood cannot use.
+
+    Negative counts, negative / missing weights, a missing offset and an
+    outcome that is zero everywhere used to end in NaN coefficients, a
+    ``ZeroDivisionError`` or ``LinAlgError: SVD did not converge``. Missing
+    weights and offsets are refused, as ``sp.glm`` and ``sp.regress`` do.
+    Non-integer outcomes are allowed (Poisson pseudo-likelihood).
+    """
+    if not np.isfinite(offset).all():
+        raise DataInsufficient(
+            f"{function}: offset column {offset_name!r} has missing or "
+            "infinite values in the estimation sample.",
+            recovery_hint="Drop or impute those rows before fitting.",
+            diagnostics={"n_bad": int((~np.isfinite(offset)).sum())},
+        )
+    if w is not None:
+        if not np.isfinite(w).all():
+            raise DataInsufficient(
+                f"{function}: weights column {weights_name!r} has missing or "
+                "infinite values in the estimation sample.",
+                recovery_hint="Drop or impute those rows before fitting.",
+                diagnostics={"n_bad": int((~np.isfinite(w)).sum())},
+            )
+        if (w < 0).any() or not (w > 0).any():
+            raise MethodIncompatibility(
+                f"{function}: weights must be non-negative with at least one "
+                "positive value.",
+                recovery_hint="Pass a column of non-negative weights.",
+                diagnostics={"n_negative": int((w < 0).sum())},
+            )
+    if (y < 0).any():
+        raise MethodIncompatibility(
+            f"{function}: the outcome '{dep_var}' has {int((y < 0).sum())} "
+            "negative value(s); a count model needs a non-negative outcome.",
+            recovery_hint="Check the outcome coding, or use sp.regress.",
+            diagnostics={"n_negative": int((y < 0).sum()), "y_min": float(y.min())},
+            alternative_functions=_COUNT_ALTERNATIVES,
+        )
+    used = y if w is None else y[w > 0]
+    if not (used > 0).any():
+        raise DataInsufficient(
+            f"{function}: the outcome '{dep_var}' is zero in every "
+            "observation; the log-mean has no finite maximum-likelihood "
+            "estimate.",
+            recovery_hint="Check the outcome and any sample restriction.",
+            diagnostics={"n_obs": int(len(y))},
+        )
+
+
 _PATSY_TOKENS = ("(", ":", "*", "**", "/")
 
 
@@ -151,6 +210,22 @@ def _needs_patsy(formula: str) -> bool:
     """
     rhs = formula.split("~", 1)[1].split("|", 1)[0] if "~" in formula else ""
     return any(tok in rhs for tok in _PATSY_TOKENS)
+
+
+class _DesignNames(list):
+    """Coefficient names that also carry the patsy design they came from."""
+
+    design_info: Any = None
+
+
+def _seen_factor_levels(var_names: Any, data: pd.DataFrame) -> Dict[str, Any]:
+    """Levels of each factor the fit saw, for ``predict()`` on new data."""
+    design_info = getattr(var_names, "design_info", None)
+    if design_info is None:
+        return {}
+    from ..postestimation._design import fitted_factor_levels
+
+    return fitted_factor_levels(design_info, data.columns)
 
 
 def _patsy_count_design(
@@ -169,7 +244,10 @@ def _patsy_count_design(
     if not add_constant and "-1" not in rhs.replace(" ", ""):
         rhs = rhs + " - 1"
     y_df, X_df = create_design_matrices(f"{lhs.strip()} ~ {rhs}", data)
-    var_names = ["_cons" if c == "Intercept" else str(c) for c in X_df.columns]
+    var_names = _DesignNames(
+        "_cons" if c == "Intercept" else str(c) for c in X_df.columns
+    )
+    var_names.design_info = getattr(X_df, "design_info", None)
     kept = data.loc[X_df.index] if len(X_df) != len(data) else data
     return (
         y_df.to_numpy(dtype=np.float64).ravel(),
@@ -179,6 +257,29 @@ def _patsy_count_design(
         list(fe_vars),
         kept,
     )
+
+
+def _complete_cases(data: pd.DataFrame, columns: Sequence[str]) -> pd.DataFrame:
+    """Rows with the outcome and every regressor observed (Stata's rule).
+
+    The plain-column path used to pass missing values straight into the
+    IRLS, which then failed with ``LinAlgError: SVD did not converge``; the
+    patsy path (``C()`` / ``I()`` / interactions) already dropped them. The
+    returned frame is what offsets, weights and cluster keys are read
+    from, so they stay aligned with the design.
+    """
+    cols = list(dict.fromkeys(columns))
+    observed = data[cols].notna().all(axis=1)
+    if bool(observed.all()):
+        return data
+    if not bool(observed.any()):
+        raise DataInsufficient(
+            "count regression: no row has the outcome and every regressor " "observed.",
+            recovery_hint="Check the columns for missing values: "
+            + ", ".join(map(str, cols)),
+            diagnostics={"columns": cols},
+        )
+    return data.loc[observed]
 
 
 def _parse_formula_or_xy(
@@ -191,14 +292,21 @@ def _parse_formula_or_xy(
     """Parse formula/data or y/x into arrays + variable names."""
     if formula is not None and data is not None:
         data = _require_count_dataframe(data, "count regression")
+        if "`" in formula:
+            from ..core.utils import backticks_to_q
+
+            formula = backticks_to_q(formula)
         parsed = parse_formula(formula)
         dep_var = parsed["dependent"]
         indep_vars = parsed["exogenous"]
         fe_vars = parsed.get("fixed_effects", [])
         has_constant = parsed["has_constant"]
-        if _needs_patsy(formula) and dep_var in data.columns:
+        from ..core.utils import unquote_name
+
+        if _needs_patsy(formula) and unquote_name(dep_var) in data.columns:
             return _patsy_count_design(formula, data, add_constant, fe_vars)
         _require_columns(data, [dep_var, *indep_vars], "formula")
+        data = _complete_cases(data, [dep_var, *indep_vars])
 
         y_arr = data[dep_var].values.astype(np.float64)
         X_cols = indep_vars
@@ -217,6 +325,7 @@ def _parse_formula_or_xy(
         dep_var = _require_column_name(y, "y")
         X_cols = _normalize_column_list(x, "x")
         _require_columns(data, [dep_var, *X_cols], "y/x")
+        data = _complete_cases(data, [dep_var, *X_cols])
         y_arr = data[dep_var].values.astype(np.float64)
         X_arr_parts = [data[v].values.astype(np.float64) for v in X_cols]
         if add_constant:
@@ -297,15 +406,27 @@ def _safe_exp(eta: np.ndarray, cap: float = 700.0) -> np.ndarray:
     return np.asarray(np.exp(np.clip(eta, -cap, cap)), dtype=np.float64)
 
 
+def _obs_weighted(values: np.ndarray, weights: Optional[np.ndarray]) -> np.ndarray:
+    """``values`` times the observation weights (unchanged without weights)."""
+    if weights is None:
+        return values
+    return np.asarray(values, dtype=np.float64) * np.asarray(weights, dtype=np.float64)
+
+
 def _sandwich_vcov(
     X: np.ndarray,
     mu: np.ndarray,
     residuals: np.ndarray,
     XtX_inv_bread: Optional[np.ndarray] = None,
+    weights: Optional[np.ndarray] = None,
 ) -> np.ndarray:
-    """Robust (HC0) sandwich variance-covariance."""
+    """Robust (HC0) sandwich variance-covariance.
+
+    ``weights`` are the observation weights of a weighted fit: they scale
+    the information (``w * mu``) and the score (``w * (y - mu)``).
+    """
     n, k = X.shape
-    W = mu  # Poisson weight
+    W = _obs_weighted(mu, weights)  # Poisson weight
     if XtX_inv_bread is None:
         XtWX = X.T @ (X * W[:, None])
         try:
@@ -319,7 +440,11 @@ def _sandwich_vcov(
     # GLM-weighted (X'WX)^{-1}. Byte-identical to the prior HC0 sandwich.
     from ..core._vcov import sandwich_vcov
 
-    return sandwich_vcov(XtWX_inv, X * residuals[:, None], correction="none")
+    return sandwich_vcov(
+        XtWX_inv,
+        X * _obs_weighted(residuals, weights)[:, None],
+        correction="none",
+    )
 
 
 def _cluster_vcov(
@@ -327,11 +452,15 @@ def _cluster_vcov(
     mu: np.ndarray,
     residuals: np.ndarray,
     cluster_arr: np.ndarray,
+    weights: Optional[np.ndarray] = None,
 ) -> np.ndarray:
     """Clustered sandwich variance-covariance."""
     from ..core._vcov import sandwich_vcov
+    from ._optim_helpers import require_two_clusters
 
-    W = mu
+    require_two_clusters(cluster_arr, "poisson / ppmlhdfe")
+    W = _obs_weighted(mu, weights)
+    residuals = _obs_weighted(residuals, weights)
     XtWX = X.T @ (X * W[:, None])
     try:
         XtWX_inv = np.linalg.inv(XtWX)
@@ -350,6 +479,7 @@ def _twoway_cluster_vcov(
     residuals: np.ndarray,
     c1_arr: np.ndarray,
     c2_arr: np.ndarray,
+    weights: Optional[np.ndarray] = None,
 ) -> np.ndarray:
     """Two-way cluster sandwich (Cameron-Gelbach-Miller 2011).
 
@@ -361,14 +491,14 @@ def _twoway_cluster_vcov(
     meat — the one-way ``cluster(a)`` path reduces to ``G/(G-1)`` and matches
     ``_cluster_vcov`` exactly).
     """
-    W = mu
+    W = _obs_weighted(mu, weights)
     XtWX = X.T @ (X * W[:, None])
     try:
         bread = np.linalg.inv(XtWX)
     except np.linalg.LinAlgError:
         bread = np.linalg.pinv(XtWX)
 
-    scores = X * residuals[:, None]
+    scores = X * _obs_weighted(residuals, weights)[:, None]
     k = X.shape[1]
 
     def _meat(codes: np.ndarray) -> np.ndarray:
@@ -378,6 +508,10 @@ def _twoway_cluster_vcov(
             m += np.outer(s, s)
         return m
 
+    from ._optim_helpers import require_two_clusters
+
+    require_two_clusters(c1_arr, "ppmlhdfe")
+    require_two_clusters(c2_arr, "ppmlhdfe")
     a_codes = pd.factorize(c1_arr)[0]
     b_codes = pd.factorize(c2_arr)[0]
     c12 = a_codes * (int(b_codes.max()) + 1) + b_codes
@@ -393,8 +527,13 @@ def _poisson_vcov(
     residuals: np.ndarray,
     robust: str,
     cluster_arr: Optional[np.ndarray],
+    weights: Optional[np.ndarray] = None,
 ) -> np.ndarray:
     """Variance-covariance for Poisson-family models.
+
+    ``weights`` are the observation weights the coefficients were fitted
+    with. Until 1.36.0 they were left out here, so a weighted fit paired
+    weighted coefficients with the unweighted covariance formula.
 
     ``robust`` is a canonical SE kind (see ``core._vcov_spec``):
 
@@ -409,9 +548,9 @@ def _poisson_vcov(
     """
     n, k = X.shape
     if cluster_arr is not None:
-        return _cluster_vcov(X, mu, residuals, cluster_arr)
+        return _cluster_vcov(X, mu, residuals, cluster_arr, weights=weights)
 
-    W = mu
+    W = _obs_weighted(mu, weights)
     XtWX = X.T @ (X * W[:, None])
     try:
         XtWX_inv = np.linalg.inv(XtWX)
@@ -422,7 +561,7 @@ def _poisson_vcov(
     if kind == "nonrobust":
         return XtWX_inv
     if kind in ("robust", "hc0", "hc1"):
-        vcov = _sandwich_vcov(X, mu, residuals, XtWX_inv)
+        vcov = _sandwich_vcov(X, mu, residuals, XtWX_inv, weights=weights)
         if kind == "robust":
             vcov = vcov * (n / (n - 1.0))
         elif kind == "hc1":
@@ -435,12 +574,16 @@ def _poisson_vcov(
     )
 
 
-def _poisson_loglik(y: np.ndarray, mu: np.ndarray) -> float:
-    """Poisson log-likelihood (up to constant)."""
-    # l = sum(y*log(mu) - mu - log(y!))
-    return float(
-        np.sum(y * np.log(np.maximum(mu, 1e-300)) - mu - special.gammaln(y + 1))
-    )
+def _poisson_loglik(
+    y: np.ndarray, mu: np.ndarray, weights: Optional[np.ndarray] = None
+) -> float:
+    """Poisson log-likelihood; the weighted sum when ``weights`` is given."""
+    return float(np.sum(_obs_weighted(_poisson_llobs(y, mu), weights)))
+
+
+def _poisson_llobs(y: np.ndarray, mu: np.ndarray) -> np.ndarray:
+    """Per-observation Poisson log-likelihood ``y log(mu) - mu - log(y!)``."""
+    return np.asarray(y * np.log(np.maximum(mu, 1e-300)) - mu - special.gammaln(y + 1))
 
 
 # ---------------------------------------------------------------------------
@@ -455,11 +598,20 @@ def _poisson_irls(
     weights: Optional[np.ndarray] = None,
     maxiter: int = 100,
     tol: float = 1e-8,
+    info: Optional[Dict[str, Any]] = None,
 ) -> Tuple[np.ndarray, np.ndarray, bool, int]:
     """
     Poisson regression via Iteratively Reweighted Least Squares.
 
     Returns (beta, mu, converged, n_iter).
+
+    The iteration stops when the coefficients stop moving (relative change
+    below ``tol``). Under (quasi-)separation they never do: a regressor that
+    picks out only zeros has no finite coefficient, the fit converges and the
+    coefficient keeps walking to minus infinity until the weights underflow.
+    So the iteration also stops when the deviance has been flat to machine
+    precision for two iterations; ``info['drifting']`` then holds the indices
+    of the coefficients that were still moving.
     """
     n, k = X.shape
     if offset is None:
@@ -467,33 +619,70 @@ def _poisson_irls(
     if weights is None:
         weights = np.ones(n)
 
-    # Initialize with log(y + 0.5)
-    y_init = np.where(y > 0, y, 0.5)
-    beta = np.linalg.lstsq(X, np.log(y_init) - offset, rcond=None)[0]
+    def _deviance(mu: np.ndarray) -> float:
+        with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
+            term = np.where(y > 0, y * np.log(y / mu), 0.0) - (y - mu)
+        return float(2.0 * np.sum(weights * term))
 
-    converged = False
-    for it in range(maxiter):
-        eta = X @ beta + offset
-        mu = _safe_exp(eta)
-
-        # Working variable and weights
+    def _wls(eta: np.ndarray, mu: np.ndarray) -> np.ndarray:
+        # Working variable and weights: (X'WX)^-1 X'Wz
         w = weights * mu
         z = eta + (y - mu) / mu - offset  # working response without offset
-
-        # Weighted least squares: (X'WX)^-1 X'Wz
         XtW = X.T * w[None, :]
         XtWX = XtW @ X
         XtWz = XtW @ z
         try:
-            beta_new = np.linalg.solve(XtWX, XtWz)
+            return np.asarray(np.linalg.solve(XtWX, XtWz), dtype=np.float64)
         except np.linalg.LinAlgError:
-            beta_new = np.linalg.lstsq(XtWX, XtWz, rcond=None)[0]
+            return np.asarray(
+                np.linalg.lstsq(XtWX, XtWz, rcond=None)[0], dtype=np.float64
+            )
+
+    # Start from the data, mu = y + 0.1, as glm.fit does. The start used
+    # before, a least-squares fit of log(y) with zeros set to 0.5, could put
+    # the first Newton step far enough out that exp() overflowed: counts in
+    # the thousands next to zeros were enough.
+    mu = y + 0.1
+    eta = np.log(mu)
+    beta = _wls(eta, mu)
+    eta = X @ beta + offset
+    mu = _safe_exp(eta)
+    dev = _deviance(mu)
+
+    converged = False
+    it = 0
+    n_flat = 0
+    for it in range(maxiter):
+        beta_new = _wls(eta, mu)
+        eta_new = X @ beta_new + offset
+        mu_new = _safe_exp(eta_new)
+        dev_new = _deviance(mu_new)
+
+        # The Poisson log-likelihood is concave, so a full step that raises
+        # the deviance has overshot; halve it until it does not.
+        halvings = 0
+        while (
+            not np.isfinite(dev_new) or dev_new > dev + 1e-10 * (abs(dev) + 1.0)
+        ) and halvings < 30:
+            beta_new = (beta_new + beta) / 2.0
+            eta_new = X @ beta_new + offset
+            mu_new = _safe_exp(eta_new)
+            dev_new = _deviance(mu_new)
+            halvings += 1
 
         # Check convergence on relative parameter change
-        delta = np.max(np.abs(beta_new - beta) / (np.abs(beta) + 1e-12))
-        beta = beta_new
+        step = np.abs(beta_new - beta) / (np.abs(beta) + 1e-12)
+        delta = np.max(step)
+        flat = abs(dev_new - dev) <= 1e-12 * (abs(dev_new) + 1.0)
+        n_flat = n_flat + 1 if flat else 0
+        beta, eta, mu, dev = beta_new, eta_new, mu_new, dev_new
         if delta < tol:
             converged = True
+            break
+        if n_flat >= 2:
+            converged = True
+            if info is not None:
+                info["drifting"] = np.flatnonzero(step >= tol)
             break
 
     eta = X @ beta + offset
@@ -506,34 +695,46 @@ def _poisson_irls(
 # ---------------------------------------------------------------------------
 
 
-def _nb2_loglik(y: np.ndarray, mu: np.ndarray, alpha: float) -> float:
-    """NB2 log-likelihood: Var(y) = mu + alpha * mu^2."""
+def _nb2_loglik(
+    y: np.ndarray, mu: np.ndarray, alpha: float, weights: Optional[np.ndarray] = None
+) -> float:
+    """NB2 log-likelihood: Var(y) = mu + alpha * mu^2 (weighted sum with weights)."""
+    return float(np.sum(_obs_weighted(_nb2_llobs(y, mu, alpha), weights)))
+
+
+def _nb2_llobs(y: np.ndarray, mu: np.ndarray, alpha: float) -> np.ndarray:
+    """Per-observation NB2 log-likelihood."""
     r = 1.0 / max(alpha, 1e-300)
-    # Sum lgamma(y + r) - lgamma(r) - lgamma(y+1)
+    # lgamma(y + r) - lgamma(r) - lgamma(y+1)
     # plus r*log(r/(r+mu)) + y*log(mu/(r+mu)).
-    ll = np.sum(
+    return np.asarray(
         special.gammaln(y + r)
         - special.gammaln(r)
         - special.gammaln(y + 1)
         + r * np.log(r / (r + mu))
         + y * np.log(np.maximum(mu, 1e-300) / (r + mu))
     )
-    return float(ll)
 
 
-def _nb1_loglik(y: np.ndarray, mu: np.ndarray, delta: float) -> float:
+def _nb1_loglik(
+    y: np.ndarray, mu: np.ndarray, delta: float, weights: Optional[np.ndarray] = None
+) -> float:
     """NB1 log-likelihood: Var(y) = mu + delta * mu  =>  Var = mu*(1+delta)."""
+    return float(np.sum(_obs_weighted(_nb1_llobs(y, mu, delta), weights)))
+
+
+def _nb1_llobs(y: np.ndarray, mu: np.ndarray, delta: float) -> np.ndarray:
+    """Per-observation NB1 log-likelihood."""
     # Parameterize as r = mu/delta  so Var = mu + delta*mu
     delta = max(delta, 1e-300)
     r = mu / delta
-    ll = np.sum(
+    return np.asarray(
         special.gammaln(y + r)
         - special.gammaln(r)
         - special.gammaln(y + 1)
         + r * np.log(r / (r + mu))
         + y * np.log(np.maximum(mu, 1e-300) / (r + mu))
     )
-    return float(ll)
 
 
 def _nb2_fit(
@@ -565,6 +766,7 @@ def _nb2_fit(
     alpha = max((pearson - 1) / (np.mean(mu)), 0.01)
 
     converged = False
+    ll_prev = -np.inf
     for outer in range(maxiter):
         # Given alpha, IRLS for beta with NB2 weights
         for inner in range(maxiter):
@@ -603,7 +805,14 @@ def _nb2_fit(
         )
         alpha_new = np.exp(res.x)
 
-        if abs(alpha_new - alpha) / (alpha + 1e-12) < tol:
+        # Where the likelihood is flat in the dispersion (data that are not
+        # overdispersed) the bounded search lands on a slightly different
+        # point each round and the dispersion never settles to ``tol``,
+        # though nothing is being gained: stop when the likelihood stops.
+        ll_new = -float(res.fun)
+        stalled = abs(ll_new - ll_prev) <= 1e-8 * (1.0 + abs(ll_new))
+        ll_prev = ll_new
+        if stalled or abs(alpha_new - alpha) / (alpha + 1e-12) < tol:
             converged = True
             alpha = alpha_new
             break
@@ -635,6 +844,7 @@ def _nb1_fit(
     delta = max(pearson - 1, 0.01)
 
     converged = False
+    ll_prev = -np.inf
     for outer in range(maxiter):
         for inner in range(maxiter):
             eta = X @ beta + offset
@@ -670,7 +880,10 @@ def _nb1_fit(
         )
         delta_new = np.exp(res.x)
 
-        if abs(delta_new - delta) / (delta + 1e-12) < tol:
+        ll_new = -float(res.fun)
+        stalled = abs(ll_new - ll_prev) <= 1e-8 * (1.0 + abs(ll_new))
+        ll_prev = ll_new
+        if stalled or abs(delta_new - delta) / (delta + 1e-12) < tol:
             converged = True
             delta = delta_new
             break
@@ -684,6 +897,212 @@ def _nb1_fit(
 # ---------------------------------------------------------------------------
 # PPML helpers: fixed-effect absorption via alternating projection
 # ---------------------------------------------------------------------------
+
+
+def _fe_codes(fe_idx: np.ndarray) -> Tuple[np.ndarray, int]:
+    """Dense 0..G-1 integer codes for one fixed-effect dimension."""
+    codes = pd.factorize(np.asarray(fe_idx))[0].astype(np.intp, copy=False)
+    return codes, int(codes.max()) + 1 if codes.size else 0
+
+
+def _fe_weighted_demean(
+    M: np.ndarray,
+    fe_indices_list: Sequence[np.ndarray],
+    w: np.ndarray,
+    maxiter: int = 500,
+    tol: float = 1e-10,
+) -> np.ndarray:
+    """``w``-weighted within-transform of ``M`` by alternating projections.
+
+    Each sweep subtracts the ``w``-weighted group mean of every column, one
+    fixed-effect dimension at a time, until the largest group mean removed
+    in a sweep is below ``tol``.  Groups within a dimension are disjoint, so
+    the per-dimension step is computed for all groups at once with
+    ``np.bincount`` -- O(n) per sweep instead of the O(n * G) of a
+    per-group boolean-mask loop, which made ``sp.ppmlhdfe`` thousands of
+    times slower than ``sp.fepois`` on panels with tens of thousands of
+    units.  With one dimension a single sweep is exact.
+    """
+    Md = np.array(M, dtype=float, copy=True)
+    squeeze = Md.ndim == 1
+    if squeeze:
+        Md = Md[:, None]
+    w = np.asarray(w, dtype=float)
+    if len(fe_indices_list) >= 2 and Md.shape[1] and np.all(w > 0):
+        # Several dimensions: the plain sweep converges linearly and, with
+        # five crossed effects on 10^5 rows, still had not reached ``tol``
+        # after 500 sweeps (seconds per call, and the result stopped short
+        # of the projection).  Reuse the shared accelerated kernel of
+        # ``sp.fast.fepois`` -- fused numba (or Rust) sweeps with
+        # Irons-Tuck extrapolation, stopping when a sweep moves no entry by
+        # more than ``tol`` times the column's scale.
+        from ..fast.fepois import _weighted_ap_demean
+
+        codes_list, counts_list = [], []
+        for fe_idx in fe_indices_list:
+            codes, G = _fe_codes(fe_idx)
+            codes_list.append(np.ascontiguousarray(codes, dtype=np.int64))
+            counts_list.append(np.bincount(codes, minlength=G))
+        out, _iters, _conv = _weighted_ap_demean(
+            np.asfortranarray(Md),
+            codes_list,
+            counts_list,
+            np.ascontiguousarray(w),
+            max_iter=max(int(maxiter), 10_000),
+            tol=float(tol),
+        )
+        out = np.asarray(out, dtype=float)
+        return out[:, 0] if squeeze else out
+    blocks = []
+    for fe_idx in fe_indices_list:
+        codes, G = _fe_codes(fe_idx)
+        wsum = np.bincount(codes, weights=w, minlength=G)
+        ok = wsum >= 1e-300
+        inv = np.zeros(G)
+        inv[ok] = 1.0 / wsum[ok]
+        blocks.append((codes, G, inv))
+    n_sweeps = 1 if len(blocks) == 1 else maxiter
+    for _ in range(n_sweeps):
+        max_change = 0.0
+        for codes, G, inv in blocks:
+            for c in range(Md.shape[1]):
+                means = np.bincount(codes, weights=w * Md[:, c], minlength=G) * inv
+                Md[:, c] -= means[codes]
+                if means.size:
+                    max_change = max(max_change, float(np.max(np.abs(means))))
+        if max_change < tol:
+            break
+    return Md[:, 0] if squeeze else Md
+
+
+def _drop_nested_fe(fe_indices_list: Sequence[np.ndarray]) -> List[np.ndarray]:
+    """Fixed-effect dimensions minus those nested in another one.
+
+    If every level of dimension B lies inside one level of A (``id`` inside
+    ``id x cohort`` in a stacked regression, or a duplicated dimension), A's
+    dummies are in B's span: the within-transform is the same without A,
+    but alternating projections over redundant dimensions converge far
+    more slowly.  Used for the numerical projection only; degree-of-freedom
+    bookkeeping keeps every dimension.
+    """
+    codes = [_fe_codes(fe)[0] for fe in fe_indices_list]
+    counts = [int(c.max()) + 1 if c.size else 0 for c in codes]
+    keep = [True] * len(codes)
+    for a in range(len(codes)):
+        for b in range(len(codes)):
+            if a == b or not keep[b] or not keep[a]:
+                continue
+            # A nested in B: each B level maps to a single A level.
+            pairs = np.unique(codes[b].astype(np.int64) * max(counts[a], 1) + codes[a])
+            if pairs.size == counts[b] and (counts[a] < counts[b] or a > b):
+                keep[a] = False
+                break
+    return [fe for fe, k in zip(fe_indices_list, keep) if k]
+
+
+def _normalise_ppml_separation(separation: Union[bool, str]) -> str:
+    """Map the public ``separation=`` spellings to 'drop' / 'warn' / 'none'."""
+    if separation is True:
+        return "drop"
+    if separation is False or separation is None:
+        return "none"
+    key = str(separation).strip().lower()
+    if key in {"drop", "default", "def", "fe simplex", "fe", "simplex", "on"}:
+        return "drop"
+    if key in {"warn", "check"}:
+        return "warn"
+    if key in {"none", "off", "false", "keep"}:
+        return "none"
+    raise MethodIncompatibility(
+        f"separation={separation!r} is not recognised.",
+        recovery_hint="Use True/'drop' (default), 'warn', or False.",
+        diagnostics={"separation": separation},
+    )
+
+
+def _ppml_separation_mask(
+    y: np.ndarray,
+    X: np.ndarray,
+    fe_indices_list: Optional[Sequence[np.ndarray]] = None,
+    maxiter: int = 100,
+    drop_singletons: bool = False,
+    separation: bool = True,
+) -> Tuple[np.ndarray, Dict[str, int]]:
+    """Observations PPML can keep after removing separated ones.
+
+    Implements the two cheap, exact rules that Stata ``ppmlhdfe`` applies
+    by default (``correia2020fast``; ``separation(fe simplex)``), iterated
+    to a fixed point because dropping rows under one rule can create
+    separation under the other:
+
+    * **fe** -- a fixed-effect group whose outcomes are all zero.  Its
+      effect diverges to minus infinity, the group contributes nothing to
+      the slope estimates, and keeping it only stalls IRLS.
+    * **simplex (single regressor)** -- a regressor that is zero on every
+      ``y > 0`` observation and one-signed on the ``y = 0`` ones: the
+      rows where it is non-zero are perfectly predicted zeros.
+
+    The general ReLU rule (separation by a linear combination of several
+    regressors) is not implemented; such cases still surface as
+    non-convergence.
+
+    With ``drop_singletons=True`` a third rule joins the fixed point, as in
+    Stata ``ppmlhdfe`` (and ``reghdfe``): an observation alone in its group
+    of any fixed-effect dimension.  Its fitted value equals its outcome, so
+    it carries no information about the slopes, but it inflates ``N`` and
+    the cluster count.  All three rules are monotone (removing rows never
+    undoes one), so the fixed point does not depend on their order; they
+    run singletons first, as Stata reports them.  ``separation=False``
+    applies the singleton rule alone.
+
+    Returns ``(keep, counts)`` where ``counts`` holds how many observations
+    each rule removed.
+    """
+    keep = np.isfinite(y)
+    counts = {"singleton": 0, "fe": 0, "simplex": 0}
+    fe_list = list(fe_indices_list or [])
+    codes_list = [_fe_codes(fe)[0] for fe in fe_list]
+    for _ in range(maxiter):
+        changed = False
+        if drop_singletons:
+            for codes in codes_list:
+                G = int(codes.max()) + 1 if codes.size else 0
+                nobs = np.bincount(codes[keep], minlength=G)
+                drop = keep & (nobs[codes] == 1)
+                if drop.any():
+                    counts["singleton"] += int(drop.sum())
+                    keep &= ~drop
+                    changed = True
+        if not separation:
+            if not changed:
+                break
+            continue
+        for codes in codes_list:
+            G = int(codes.max()) + 1 if codes.size else 0
+            ysum = np.bincount(codes[keep], weights=y[keep], minlength=G)
+            nobs = np.bincount(codes[keep], minlength=G)
+            dead = (ysum <= 0) & (nobs > 0)
+            if dead.any():
+                drop = keep & dead[codes]
+                counts["fe"] += int(drop.sum())
+                keep &= ~drop
+                changed = True
+        pos = keep & (y > 0)
+        zero = keep & (y == 0)
+        for j in range(X.shape[1]):
+            col = X[:, j]
+            nz = zero & (col != 0)
+            if not nz.any() or np.any(col[pos] != 0):
+                continue
+            vals = col[nz]
+            if np.all(vals > 0) or np.all(vals < 0):
+                counts["simplex"] += int(nz.sum())
+                keep &= ~nz
+                zero &= ~nz
+                changed = True
+        if not changed:
+            break
+    return keep, counts
 
 
 def _demean_poisson(
@@ -711,35 +1130,10 @@ def _demean_poisson(
     y_tilde, X_tilde : demeaned arrays
     """
     w = mu
-    n, k = X.shape
-
-    # Stack y and X for joint demeaning
-    Z = np.column_stack(
-        [y.reshape(-1, 1) / mu.reshape(-1, 1) * w.reshape(-1, 1), X * w[:, None]]
-    )  # weighted
-
-    # Actually we need to demean the working response and weighted X.
-    # Working response in IRLS: z_i = eta_i + (y_i - mu_i)/mu_i
-    # We demean each column of Z by subtracting weighted group means iteratively
-    Z_dm = Z.copy()
-    for _ in range(maxiter_demean):
-        max_change = 0.0
-        for fe_idx in fe_indices_list:
-            groups = np.unique(fe_idx)
-            for g in groups:
-                mask = fe_idx == g
-                w_g = w[mask]
-                w_sum = w_g.sum()
-                if w_sum < 1e-300:
-                    continue
-                group_mean = (Z_dm[mask] * w_g[:, None]).sum(axis=0) / w_sum
-                change = np.max(np.abs(group_mean))
-                if change > max_change:
-                    max_change = change
-                Z_dm[mask] -= group_mean[None, :]
-        if max_change < tol_demean:
-            break
-
+    Z = np.column_stack([y.reshape(-1, 1), X]) * w[:, None]
+    Z_dm = _fe_weighted_demean(
+        Z, fe_indices_list, w, maxiter=maxiter_demean, tol=tol_demean
+    )
     return Z_dm[:, 0], Z_dm[:, 1:]
 
 
@@ -776,13 +1170,14 @@ def _detect_separation(
     # Check FE groups
     if fe_indices_list:
         for fe_i, fe_idx in enumerate(fe_indices_list):
-            for g in np.unique(fe_idx):
-                mask = fe_idx == g
-                if np.all(y[mask] == 0):
-                    warnings_list.append(
-                        f"Separation: FE group {g} (FE dim {fe_i}) has "
-                        "all-zero outcomes"
-                    )
+            codes, G = _fe_codes(fe_idx)
+            ysum = np.bincount(codes, weights=np.abs(y), minlength=G)
+            n_dead = int((ysum == 0).sum())
+            if n_dead:
+                warnings_list.append(
+                    f"Separation: {n_dead} FE group(s) in FE dim {fe_i} have "
+                    "all-zero outcomes"
+                )
 
     return warnings_list
 
@@ -809,7 +1204,7 @@ def _ppml_hdfe_irls(
     Returns (beta, mu, converged, n_iter).
     """
     n, k = X.shape
-    fe_list = list(fe_indices_list or [])
+    fe_list = _drop_nested_fe(list(fe_indices_list or []))
     has_fe = len(fe_list) > 0
     if weights is None:
         weights = np.ones(n)
@@ -821,16 +1216,32 @@ def _ppml_hdfe_irls(
         # Initialize FE as group log-means
         eta = np.zeros(n)
         for fe_idx in fe_list:
-            for g in np.unique(fe_idx):
-                mask = fe_idx == g
-                gm = np.mean(y_init[mask])
-                eta[mask] += np.log(max(gm, 0.1))
+            codes, G = _fe_codes(fe_idx)
+            gm = np.bincount(codes, weights=y_init, minlength=G) / np.maximum(
+                np.bincount(codes, minlength=G), 1
+            )
+            eta += np.log(np.maximum(gm, 0.1))[codes]
         mu = _safe_exp(eta)
     else:
         beta = np.linalg.lstsq(X, np.log(y_init), rcond=None)[0]
         mu = _safe_exp(X @ beta)
 
     converged = False
+    # Tolerance schedule for the inner within-transform (ppmlhdfe's
+    # practice): early IRLS steps only need a rough projection, so the
+    # demeaning tolerance starts loose and tightens with the coefficient
+    # change; convergence is declared only on a step taken at the final
+    # tolerance, so the answer is the same as demeaning tightly throughout.
+    demean_tol_final = 1e-10
+    demean_tol = 1e-6 if len(fe_list) >= 2 else demean_tol_final
+    # Warm start of the within-transform.  For any weights, the projection
+    # removes everything in the span of the fixed effects, and the previous
+    # raw-minus-demeaned columns lie in that span; so projecting
+    # ``Zd_prev + (Z - Z_prev)`` gives the same answer as projecting ``Z``
+    # but starts next to it.  On a 7-way stacked PPML this cut the tight
+    # final projections from thousands of sweeps to a few dozen.
+    Z_prev: Optional[np.ndarray] = None
+    Zd_prev: Optional[np.ndarray] = None
     for it in range(maxiter):
         # Working variable and weights
         w = weights * mu
@@ -838,29 +1249,15 @@ def _ppml_hdfe_irls(
 
         if has_fe:
             # Demean z and X by FEs (weighted by w)
-            # Build the full z including current linear predictor component
-            z_full = X @ beta + z  # eta_X + working_residual
+            # Working variable on the full linear predictor (slopes and
+            # fixed effects); demeaning removes the fixed-effect part.
+            z_full = eta + z
 
             # Demean z_full and X
             Z = np.column_stack([z_full.reshape(-1, 1), X])
-            Z_dm = Z.copy()
-            for _ in range(500):
-                max_change = 0.0
-                for fe_idx in fe_list:
-                    # Vectorized group demeaning
-                    for g in np.unique(fe_idx):
-                        mask = fe_idx == g
-                        w_g = w[mask]
-                        w_sum = w_g.sum()
-                        if w_sum < 1e-300:
-                            continue
-                        group_mean = (Z_dm[mask] * w_g[:, None]).sum(axis=0) / w_sum
-                        change = np.max(np.abs(group_mean))
-                        if change > max_change:
-                            max_change = change
-                        Z_dm[mask] -= group_mean[None, :]
-                if max_change < 1e-10:
-                    break
+            Z_start = Z if Z_prev is None else Zd_prev + (Z - Z_prev)
+            Z_dm = _fe_weighted_demean(Z_start, fe_list, w, maxiter=500, tol=demean_tol)
+            Z_prev, Zd_prev = Z, Z_dm
 
             z_dm = Z_dm[:, 0]
             X_dm = Z_dm[:, 1:]
@@ -881,59 +1278,51 @@ def _ppml_hdfe_irls(
         except np.linalg.LinAlgError:
             beta_new = np.linalg.lstsq(XtWX, XtWz, rcond=None)[0]
 
-        # Update mu: need to recover FE contributions
+        # Update the linear predictor.  With absorbed effects this is the
+        # IRLS step of Correia, Guimaraes & Zylkin's ppmlhdfe: the fitted
+        # working variable is z minus the within residual, so the effects
+        # are never solved for separately.  (A Gauss-Seidel solve of the
+        # effects' score equations used to sit here; with nested or many
+        # crossed effects, e.g. unit x cohort and unit in a stacked
+        # regression, it needed thousands of sweeps per iteration.)
         if has_fe:
-            eta_X = X @ beta_new
-            # Solve the Poisson FOC for each FE block: at convergence,
-            # the score with respect to alpha_g must be
-            # Sigma_{i in g} w_i (y_i - mu_i) = 0 in EVERY FE dimension.
-            # With multiple FE dimensions (e.g. gravity's origin + dest
-            # + year), no closed-form per-dimension formula exists —
-            # we run a Gauss-Seidel inner loop, updating one FE
-            # dimension at a time (holding the others fixed) until the
-            # marginal sum-of-residuals score is zero in every block.
-            # The previous OLS-style mean(log y - X beta) recovery was
-            # both (a) the wrong functional form (OLS, not PPML) and
-            # (b) only kept the *last* FE dimension's contribution when
-            # multiple were absorbed (each loop iteration overwrote
-            # the previous eta_fe). This single bug produced both the
-            # HC1 SE inflation (finding #6) and the 3-way-FE
-            # non-convergence (finding #5) flagged on 2026-05-28.
-            eta_fe = np.zeros(n)
-            for _ in range(200):
-                max_score = 0.0
-                eta_total = eta_X + eta_fe
-                exp_total = _safe_exp(eta_total)
-                for fe_idx in fe_list:
-                    for g in np.unique(fe_idx):
-                        mask = fe_idx == g
-                        w_g = weights[mask]
-                        y_sum = float((w_g * y[mask]).sum())
-                        exp_sum = float((w_g * exp_total[mask]).sum())
-                        if y_sum > 0 and exp_sum > 0:
-                            delta = float(np.log(y_sum / exp_sum))
-                        elif exp_sum > 0:
-                            delta = float(np.log(max(y_sum, 0.5) / exp_sum))
-                        else:
-                            delta = 0.0
-                        eta_fe[mask] += delta
-                        # Update exp_total in place so the next FE block
-                        # uses the corrected mu.
-                        exp_total[mask] *= np.exp(delta)
-                        if abs(delta) > max_score:
-                            max_score = abs(delta)
-                if max_score < 1e-12:
-                    break
-
-            mu_new = _safe_exp(eta_X + eta_fe)
+            resid_w = z_dm - X_dm @ beta_new
+            eta = z_full - resid_w
+            mu_new = _safe_exp(eta)
         else:
             mu_new = _safe_exp(X @ beta_new)
 
-        delta = np.max(np.abs(beta_new - beta) / (np.abs(beta) + 1e-12))
+        delta = np.max(np.abs(beta_new - beta) / (np.abs(beta) + 1e-12)) if k else 0.0
+        if has_fe:
+            # The effects move too: also require the deviance to settle
+            # (ppmlhdfe's criterion), so beta cannot stop while mu drifts.
+            dev_new = float(
+                2.0
+                * np.sum(
+                    weights
+                    * (
+                        np.where(y > 0, y * np.log(np.maximum(y, 1e-300) / mu_new), 0.0)
+                        - (y - mu_new)
+                    )
+                )
+            )
+            dev_old = float(
+                2.0
+                * np.sum(
+                    weights
+                    * (
+                        np.where(y > 0, y * np.log(np.maximum(y, 1e-300) / mu), 0.0)
+                        - (y - mu)
+                    )
+                )
+            )
+            delta = max(delta, abs(dev_new - dev_old) / max(abs(dev_new), 0.1))
         beta = beta_new
         mu = mu_new
 
-        if delta < tol:
+        used_tol = demean_tol
+        demean_tol = float(np.clip(delta * 1e-3, demean_tol_final, demean_tol))
+        if delta < tol and used_tol <= demean_tol_final:
             converged = True
             break
 
@@ -946,23 +1335,10 @@ def _ppml_hdfe_irls(
     # ppmlhdfe / fixest::fepois (parity finding #6, 2026-05-28).
     if has_fe:
         w_final = weights * mu
-        X_dm_final = X.copy()
-        for _ in range(500):
-            max_change = 0.0
-            for fe_idx in fe_list:
-                for g in np.unique(fe_idx):
-                    mask = fe_idx == g
-                    w_g = w_final[mask]
-                    w_sum = w_g.sum()
-                    if w_sum < 1e-300:
-                        continue
-                    group_mean = (X_dm_final[mask] * w_g[:, None]).sum(axis=0) / w_sum
-                    change = float(np.max(np.abs(group_mean)))
-                    if change > max_change:
-                        max_change = change
-                    X_dm_final[mask] -= group_mean[None, :]
-            if max_change < 1e-10:
-                break
+        X_start = X if Zd_prev is None else Zd_prev[:, 1:]
+        X_dm_final = _fe_weighted_demean(
+            X_start, fe_list, w_final, maxiter=500, tol=1e-10
+        )
         return beta, mu, converged, it + 1, X_dm_final
 
     return beta, mu, converged, it + 1, None
@@ -973,25 +1349,40 @@ def _ppml_hdfe_irls(
 # ---------------------------------------------------------------------------
 
 
-def _overdispersion_test(y: np.ndarray, mu: np.ndarray) -> Tuple[float, float]:
+def _overdispersion_test(
+    y: np.ndarray, mu: np.ndarray, df_resid: Optional[int] = None
+) -> Tuple[float, float, float]:
     """
-    Cameron-Trivedi (1990) test for overdispersion.
+    Cameron-Trivedi regression-based test for overdispersion.
 
-    Regresses (y - mu)^2 - y on mu. Under H0 (equidispersion) the coefficient
-    on mu is zero.
+    Against ``Var(y | x) = mu + alpha * mu^2`` (the NB2 alternative) the
+    test is the t statistic on ``mu`` in the regression **without
+    intercept** of ``((y - mu)^2 - y) / mu`` on ``mu``; the coefficient
+    estimates ``alpha`` [@cameron2013regression]. It is the statistic of
+    ``AER::dispersiontest(trafo = 2)`` in R. The p-value is two-sided, from
+    the t distribution with ``n - 1`` degrees of freedom, as an OLS fit of
+    that regression reports it; ``dispersiontest`` gives the one-sided
+    normal p-value by default.
 
-    Returns (test_stat, p_value).
+    Before 1.39 the regression was of ``(y - mu)^2 - y`` on a constant and
+    ``mu``, tested on the slope. With the constant in, the slope picks up
+    only how the excess variance *changes* with the mean: counts with a
+    Pearson dispersion of 12 passed with p = 0.44.
+
+    Returns (t statistic, p-value, alpha).
     """
-    dep = (y - mu) ** 2 - y
-    X_test = np.column_stack([np.ones_like(mu), mu])
-    beta_test = np.linalg.lstsq(X_test, dep, rcond=None)[0]
-    resid_test = dep - X_test @ beta_test
-    se_test = np.sqrt(
-        np.sum(resid_test**2) / (len(y) - 2) * np.linalg.inv(X_test.T @ X_test)[1, 1]
-    )
-    t_stat = beta_test[1] / se_test
-    p_val = 2 * stats.t.sf(abs(t_stat), len(y) - 2)
-    return float(t_stat), float(p_val)
+    aux = ((y - mu) ** 2 - y) / mu
+    sxx = float(mu @ mu)
+    alpha_hat = float(mu @ aux) / sxx
+    resid = aux - alpha_hat * mu
+    n = len(y)
+    s2 = float(resid @ resid) / (n - 1)
+    se = np.sqrt(s2 / sxx)
+    if not np.isfinite(se) or se <= 0:
+        return float("nan"), float("nan"), alpha_hat
+    t_stat = alpha_hat / se
+    p_val = 2 * stats.t.sf(abs(t_stat), n - 1)
+    return float(t_stat), float(p_val), alpha_hat
 
 
 # ===========================================================================
@@ -999,6 +1390,7 @@ def _overdispersion_test(y: np.ndarray, mu: np.ndarray) -> Tuple[float, float]:
 # ===========================================================================
 
 
+@records_call("poisson")
 @accepts_aliases(vce="robust")
 @records_provenance("sp.poisson")
 @markout_clusters
@@ -1016,6 +1408,7 @@ def poisson(
     maxiter: int = 100,
     tol: float = 1e-8,
     alpha: float = 0.05,
+    weights_as: Optional[str] = None,
 ) -> EconometricResults:
     """
     Poisson regression via MLE (IRLS).
@@ -1031,11 +1424,25 @@ def poisson(
     x : list of str, optional
         Independent variable names (alternative to formula).
     robust : str, default "nonrobust"
-        Standard error type: "nonrobust", "robust"/"hc0", "hc1".
+        Standard error type: "nonrobust" (model-based), "robust" (Stata's
+        ``vce(robust)``: HC0 times ``N/(N-1)``), "hc0" (unscaled sandwich)
+        or "hc1" (sandwich times ``N/(N-K)``). To match Stata use "robust".
     cluster : str, optional
         Variable name for clustered standard errors.
     weights : str, optional
-        Frequency/analytic weight variable.
+        Observation weight column. Read as Stata reads a weight for the
+        variance requested: alone it is ``[iw=w]`` (``[fw=w]`` for integer
+        weights), a model-based variance that scales with the weights;
+        with ``robust=`` it is ``[pw=w]``; with ``cluster=`` it is
+        ``[pw=w], vce(cluster)``. The reported log-likelihood is the
+        weighted sum.
+    weights_as : {'frequency', 'sampling'}, optional
+        What the weights are. ``'frequency'`` is what ``weights=`` alone
+        already means. ``'sampling'`` (Stata ``[pw=]``) gives the same
+        coefficients with the robust variance, unless ``robust=`` or
+        ``cluster=`` asks for another. Saying which also silences the
+        warning about dispersed weights under the model-based variance.
+        ``'analytic'`` is refused.
     offset : str, optional
         Offset variable (log of exposure already computed).
     exposure : str, optional
@@ -1074,6 +1481,10 @@ def poisson(
     True
     """
     y_arr, X, var_names, dep_var, _, data = _parse_formula_or_xy(formula, data, y, x)
+    seen_levels = _seen_factor_levels(var_names, data)
+    from ..core._collinear import drop_collinear
+
+    X, var_names, collinear_omitted, _ = drop_collinear(X, var_names, "poisson")
     n, k = X.shape
 
     # Offset / exposure
@@ -1081,14 +1492,33 @@ def poisson(
     if offset is not None:
         offset_arr = data[offset].values.astype(np.float64)
     if exposure is not None:
-        offset_arr = np.log(_positive_exposure(data, exposure))
+        # offset + ln(exposure), as sp.glm; exposure= used to overwrite
+        # offset= when both were given.
+        offset_arr = offset_arr + np.log(_positive_exposure(data, exposure))
 
     # Weights
     w_arr = None
     if weights is not None:
         w_arr = data[weights].values.astype(np.float64)
+    _validate_count_inputs(
+        y_arr, w_arr, offset_arr, "poisson", dep_var, weights, offset
+    )
 
     # Standard-error request (Stata grammar)
+    from ..core._agent_summary import resolve_weights_as
+
+    weights_as = resolve_weights_as(
+        weights_as,
+        has_weights=weights is not None,
+        native="frequency",
+        entry="sp.poisson",
+    )
+    if (
+        weights_as == "sampling"
+        and cluster is None
+        and str(robust).lower() == "nonrobust"
+    ):
+        robust = "robust"
     from ..core._vcov_spec import parse_se_request
 
     _se = parse_se_request(
@@ -1105,24 +1535,43 @@ def poisson(
         cluster_arr = data[cluster].values
 
     # Fit
+    fit_info: Dict[str, Any] = {}
     beta, mu, converged, n_iter = _poisson_irls(
-        y_arr, X, offset=offset_arr, weights=w_arr, maxiter=maxiter, tol=tol
+        y_arr,
+        X,
+        offset=offset_arr,
+        weights=w_arr,
+        maxiter=maxiter,
+        tol=tol,
+        info=fit_info,
     )
     if not converged:
         warnings.warn(f"Poisson IRLS did not converge in {maxiter} iterations")
+    drifting = [str(var_names[j]) for j in fit_info.get("drifting", [])]
+    if drifting:
+        warnings.warn(
+            "Poisson: the fit has converged but the coefficient(s) on "
+            f"{drifting} have no finite estimate: the regressor(s) pick out "
+            "only zero outcomes (quasi-separation). The other coefficients "
+            "and their standard errors are the maximum-likelihood ones; do "
+            "not interpret the listed coefficient(s). sp.ppmlhdfe drops the "
+            "separated observations instead.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
 
     residuals = y_arr - mu
 
     # Variance-covariance
-    vcov = _poisson_vcov(X, mu, residuals, robust, cluster_arr)
+    vcov = _poisson_vcov(X, mu, residuals, robust, cluster_arr, weights=w_arr)
     se = np.sqrt(np.diag(vcov))
 
-    # Log-likelihood
-    ll = _poisson_loglik(y_arr, mu)
+    # Log-likelihood (the weighted sum under weights, as Stata reports)
+    ll = _poisson_loglik(y_arr, mu, w_arr)
 
     # Null model (intercept only)
-    mu_null = np.full(n, np.mean(y_arr))
-    ll_null = _poisson_loglik(y_arr, mu_null)
+    mu_null = np.full(n, np.average(y_arr, weights=w_arr))
+    ll_null = _poisson_loglik(y_arr, mu_null, w_arr)
 
     # LR chi2
     lr_chi2 = 2 * (ll - ll_null)
@@ -1147,7 +1596,7 @@ def poisson(
     pearson_chi2 = np.sum((y_arr - mu) ** 2 / mu)
 
     # Overdispersion test
-    od_stat, od_pval = _overdispersion_test(y_arr, mu)
+    od_stat, od_pval, od_alpha = _overdispersion_test(y_arr, mu)
 
     # IRR transform
     if irr:
@@ -1164,6 +1613,7 @@ def poisson(
     se_series = pd.Series(se_report, index=var_names)
 
     model_info = {
+        "omitted": collinear_omitted,
         "model_type": "Poisson",
         "family": "Poisson",
         "link": "log",
@@ -1182,10 +1632,33 @@ def poisson(
         "aic": aic,
         "bic": bic,
     }
+    if drifting:
+        model_info["separated_terms"] = drifting
     if formula is not None:
         model_info["formula"] = formula
     if cluster_arr is not None:
         model_info["n_clusters"] = int(len(np.unique(cluster_arr)))
+    if weights is not None:
+        from ..core._agent_summary import note_weight_diagnostics
+
+        note_weight_diagnostics(
+            model_info,
+            w_arr,
+            (
+                "cluster"
+                if cluster_arr is not None
+                else ("classical" if robust == "nonrobust" else "robust")
+            ),
+            entry="sp.poisson",
+            robust_option="robust='robust' (Stata [pw=])",
+            classical_reading="frequency weights (Stata [fw=])",
+            classical_assumption=(
+                "frequencies (each row standing for w identical observations)"
+            ),
+            cluster_keys=cluster_arr,
+            cluster=cluster,
+            weights_as=weights_as,
+        )
 
     data_info = {
         "nobs": n,
@@ -1200,10 +1673,15 @@ def poisson(
         "var_names": var_names,
         # Likelihood-based: z / chi2 inference, as Stata's poisson.
         "inference": "z",
+        # Unweighted per-observation log-likelihood (sp.vuong).
+        "llobs": _poisson_llobs(y_arr, mu),
         "offset": offset,
         "exposure": exposure,
         "weights": weights,
     }
+    if seen_levels:
+        # for predict(): which values of each factor the fit saw
+        data_info["factor_levels"] = seen_levels
 
     diagnostics = {
         "Log-Likelihood": ll,
@@ -1215,8 +1693,13 @@ def poisson(
         "BIC": bic,
         "Deviance": deviance,
         "Pearson chi2": pearson_chi2,
+        # Pearson chi2 over the residual degrees of freedom: 1 for a
+        # Poisson, and the `dispersion` a quasi-Poisson fit would report.
+        "Dispersion (Pearson chi2 / df)": float(pearson_chi2)
+        / max(len(y_arr) - len(beta), 1),
         "Overdispersion test (C-T)": od_stat,
         "Overdispersion p-value": od_pval,
+        "Overdispersion alpha (C-T)": od_alpha,
     }
 
     model_info["alpha"] = alpha
@@ -1229,6 +1712,7 @@ def poisson(
     )
 
 
+@records_call("nbreg")
 @accepts_aliases(vce="robust")
 @records_provenance("sp.nbreg")
 @markout_clusters
@@ -1247,6 +1731,7 @@ def nbreg(
     maxiter: int = 100,
     tol: float = 1e-8,
     alpha: float = 0.05,
+    weights_as: Optional[str] = None,
 ) -> EconometricResults:
     """
     Negative binomial regression (NB2 or NB1).
@@ -1262,15 +1747,28 @@ def nbreg(
     x : list of str, optional
         Independent variable names (alternative to formula).
     robust : str, default "nonrobust"
-        Standard error type: "nonrobust", "robust"/"hc0", "hc1".
+        Standard error type: "nonrobust" (model-based), "robust" (Stata's
+        ``vce(robust)``: HC0 times ``N/(N-1)``), "hc0" (unscaled sandwich)
+        or "hc1" (sandwich times ``N/(N-K)``). To match Stata use "robust".
     cluster : str, optional
         Variable name for clustered standard errors.
     weights : str, optional
-        Weight variable name.
+        Observation weight column. Alone it is a frequency weight (Stata
+        ``[fw=]`` / ``[iw=]``): the model-based variance scales with the
+        weights. For sampling weights say so with
+        ``weights_as='sampling'``.
+    weights_as : {'frequency', 'sampling'}, optional
+        What the weights are. ``'frequency'`` is what ``weights=`` alone
+        already means. ``'sampling'`` (Stata ``[pw=]``) gives the same
+        coefficients with the robust variance, unless ``robust=`` or
+        ``cluster=`` asks for another. Saying which also silences the
+        warning about dispersed weights under the model-based variance.
+        ``'analytic'`` is refused.
     offset : str, optional
         Offset variable (log of exposure).
     exposure : str, optional
-        Exposure variable (will be logged).
+        Exposure variable (will be logged). With ``offset=`` as well the
+        linear predictor carries ``offset + log(exposure)``.
     irr : bool, default False
         Report Incidence Rate Ratios.
     dispersion : str, default "mean"
@@ -1305,25 +1803,48 @@ def nbreg(
     y_arr, X, var_names, dep_var, formula_fe, data = _parse_formula_or_xy(
         formula, data, y, x
     )
+    seen_levels = _seen_factor_levels(var_names, data)
+    n_own = len(var_names)
     X, var_names, fe_level_counts = _append_fixed_effect_dummies(
         X, var_names, data, formula_fe
     )
+    from ..core._collinear import drop_collinear
+
+    X, var_names, collinear_omitted, _kept = drop_collinear(X, var_names, "nbreg")
     n, k = X.shape
-    n_fe_params = sum(max(v - 1, 0) for v in fe_level_counts.values())
+    # fixed-effect indicators that survive the collinearity scan
+    n_fe_params = sum(1 for j in _kept if j >= n_own)
 
     # Offset / exposure
     offset_arr = np.zeros(n)
     if offset is not None:
         offset_arr = data[offset].values.astype(np.float64)
     if exposure is not None:
-        offset_arr = np.log(_positive_exposure(data, exposure))
+        # offset + ln(exposure), as sp.glm; exposure= used to overwrite
+        # offset= when both were given.
+        offset_arr = offset_arr + np.log(_positive_exposure(data, exposure))
 
     w_arr = None
     if weights is not None:
         w_arr = data[weights].values.astype(np.float64)
+    _validate_count_inputs(y_arr, w_arr, offset_arr, "nbreg", dep_var, weights, offset)
 
     cluster_arr = None
     # Standard-error request (Stata grammar)
+    from ..core._agent_summary import resolve_weights_as
+
+    weights_as = resolve_weights_as(
+        weights_as,
+        has_weights=weights is not None,
+        native="frequency",
+        entry="sp.nbreg",
+    )
+    if (
+        weights_as == "sampling"
+        and cluster is None
+        and str(robust).lower() == "nonrobust"
+    ):
+        robust = "robust"
     from ..core._vcov_spec import parse_se_request
 
     _se = parse_se_request(
@@ -1335,8 +1856,18 @@ def nbreg(
     robust, cluster = _se.kind, _se.cluster
     if cluster is not None:
         cluster_arr = data[cluster].values
+        from ._optim_helpers import require_two_clusters
+
+        require_two_clusters(cluster_arr, "nbreg")
 
     # Fit
+    if str(dispersion).lower() not in ("mean", "constant"):
+        raise MethodIncompatibility(
+            f"nbreg: unknown dispersion={dispersion!r}. Choose 'mean' (NB2, "
+            "Var = mu + alpha mu^2) or 'constant' (NB1, Var = mu (1 + delta)).",
+            recovery_hint="Use dispersion='mean' or dispersion='constant'.",
+            diagnostics={"dispersion": dispersion, "valid": ["mean", "constant"]},
+        )
     is_nb2 = dispersion.lower() == "mean"
     if is_nb2:
         beta, mu, disp_param, converged, n_iter = _nb2_fit(
@@ -1396,17 +1927,19 @@ def nbreg(
     )
 
     # Log-likelihood
+    # Reported likelihoods are the weighted sums under weights (Stata's
+    # log pseudolikelihood); they were unweighted until 1.36.0.
     if is_nb2:
-        ll = _nb2_loglik(y_arr, mu, disp_param)
+        ll = _nb2_loglik(y_arr, mu, disp_param, w_arr)
     else:
-        ll = _nb1_loglik(y_arr, mu, disp_param)
+        ll = _nb1_loglik(y_arr, mu, disp_param, w_arr)
 
     # Null model
-    mu_null = np.full(n, np.mean(y_arr))
+    mu_null = np.full(n, np.average(y_arr, weights=w_arr))
     if is_nb2:
         # Optimize alpha for null model
         def neg_null_ll(log_a: float) -> float:
-            return -_nb2_loglik(y_arr, mu_null, float(np.exp(log_a)))
+            return -_nb2_loglik(y_arr, mu_null, float(np.exp(log_a)), w_arr)
 
         res_null = optimize.minimize_scalar(
             neg_null_ll, bounds=(np.log(1e-8), np.log(1e4)), method="bounded"
@@ -1415,7 +1948,7 @@ def nbreg(
     else:
 
         def neg_null_ll(log_a: float) -> float:
-            return -_nb1_loglik(y_arr, mu_null, float(np.exp(log_a)))
+            return -_nb1_loglik(y_arr, mu_null, float(np.exp(log_a)), w_arr)
 
         res_null = optimize.minimize_scalar(
             neg_null_ll, bounds=(np.log(1e-8), np.log(1e4)), method="bounded"
@@ -1423,7 +1956,7 @@ def nbreg(
         ll_null = -res_null.fun
 
     # Poisson ll for LR test of dispersion
-    ll_poisson = _poisson_loglik(y_arr, mu)
+    ll_poisson = _poisson_loglik(y_arr, mu, w_arr)
     lr_alpha = 2 * (ll - ll_poisson)
     # One-sided test (alpha >= 0), use chibar^2 (50:50 mixture of chi2_0 and chi2_1)
     lr_alpha_pvalue = 0.5 * stats.chi2.sf(max(lr_alpha, 0), 1)
@@ -1449,6 +1982,7 @@ def nbreg(
     se_series = pd.Series(se_report, index=var_names)
 
     model_info = {
+        "omitted": collinear_omitted,
         "model_type": f"NegBin ({nb_label})",
         "family": "Negative Binomial",
         "link": "log",
@@ -1482,6 +2016,27 @@ def nbreg(
         model_info["formula"] = formula
     if cluster_arr is not None:
         model_info["n_clusters"] = int(len(np.unique(cluster_arr)))
+    if weights is not None:
+        from ..core._agent_summary import note_weight_diagnostics
+
+        note_weight_diagnostics(
+            model_info,
+            w_arr,
+            (
+                "cluster"
+                if cluster_arr is not None
+                else ("classical" if robust == "nonrobust" else "robust")
+            ),
+            entry="sp.nbreg",
+            robust_option="robust='robust' (Stata [pw=])",
+            classical_reading="frequency weights (Stata [fw=])",
+            classical_assumption=(
+                "frequencies (each row standing for w identical observations)"
+            ),
+            cluster_keys=cluster_arr,
+            cluster=cluster,
+            weights_as=weights_as,
+        )
 
     data_info = {
         "nobs": n,
@@ -1496,7 +2051,14 @@ def nbreg(
         "var_names": var_names,
         # Likelihood-based: z / chi2 inference, as Stata's nbreg.
         "inference": "z",
+        # Unweighted per-observation log-likelihood (sp.vuong).
+        "llobs": (_nb2_llobs if is_nb2 else _nb1_llobs)(y_arr, mu, disp_param),
+        # Coefficients plus the dispersion, which is not in ``params``.
+        "n_params": k + 1,
     }
+    if seen_levels:
+        # for predict(): which values of each factor the fit saw
+        data_info["factor_levels"] = seen_levels
 
     diagnostics = {
         "Log-Likelihood": ll,
@@ -1524,6 +2086,7 @@ def nbreg(
     )
 
 
+@records_call("xtnbreg")
 @accepts_aliases(id="entity", vce="robust")
 def xtnbreg(
     formula: Optional[str] = None,
@@ -2038,6 +2601,125 @@ def _xtnbreg_hhg(
     )
 
 
+def _ppml_front_end(
+    formula: Optional[str],
+    data: pd.DataFrame,
+    y: Optional[str],
+    x: Optional[List[str]],
+    absorb: Optional[str],
+    cluster: Any,
+    weights: Optional[str],
+) -> Tuple[Optional[str], pd.DataFrame, Optional[str], Any]:
+    """Resolve interacted FE / cluster terms and mark out missing rows.
+
+    ``absorb="id + ind^year"`` (fixest) or ``"id + ind#year"`` (Stata) and
+    ``cluster="city^year"`` become integer group columns, so users need not
+    build ``groupby().ngroup()`` columns by hand.  A formula's ``| fe`` part
+    moves into ``absorb`` (unless ``absorb`` is given, which wins, as
+    documented).  Rows missing the outcome, a plain regressor, a fixed
+    effect, the cluster or the weight are dropped, as Stata's ``markout``
+    does -- they used to reach IRLS as NaN.
+    """
+    from ..core._group_terms import resolve_group_terms
+
+    if data is None or not hasattr(data, "columns"):
+        return formula, data, absorb, cluster
+    if formula is not None and "|" in formula:
+        head, fe_part = formula.split("|", 1)
+        formula = head.strip()
+        if absorb is None and fe_part.strip():
+            absorb = fe_part.strip()
+    from ..core.utils import backticks_to_q, unquote_name
+
+    if formula is not None and "`" in formula:
+        formula = backticks_to_q(formula)
+    # A fixed effect is a column name; a quoted one names the column.
+    fe_terms = (
+        [unquote_name(t) for t in absorb.split("+") if t.strip()] if absorb else []
+    )
+    data, fe_names = resolve_group_terms(data, fe_terms)
+    absorb = " + ".join(fe_names) if fe_names else None
+    if isinstance(cluster, str):
+        data, (cluster,) = resolve_group_terms(data, [cluster])
+        cl_names = [cluster]
+    elif isinstance(cluster, (list, tuple)):
+        data, cl_names = resolve_group_terms(data, list(cluster))
+        cluster = list(cl_names)
+    else:
+        cl_names = []
+
+    used: List[str] = list(fe_names) + list(cl_names)
+    if isinstance(weights, str):
+        used.append(weights)
+    if formula is not None and "~" in formula:
+        parsed = parse_formula(formula)
+        used.append(parsed["dependent"])
+        if not _needs_patsy(formula):
+            used.extend(parsed["exogenous"])
+    else:
+        if y is not None:
+            used.append(y)
+        if x is not None:
+            used.extend([x] if isinstance(x, str) else list(x))
+    used = [c for c in dict.fromkeys(used) if c in data.columns]
+    if used:
+        miss = data[used].isna().any(axis=1).to_numpy()
+        if miss.any():
+            data = data.loc[~miss]
+    return formula, data, absorb, cluster
+
+
+def _ppml_absorbed_columns(
+    X: np.ndarray,
+    fe_indices_list: Sequence[np.ndarray],
+    rtol: float = 1e-9,
+) -> List[int]:
+    """Indices of regressors collinear with the fixed effects / each other.
+
+    Each column is residualised on the absorbed fixed effects (unweighted
+    alternating projections) and then, in order, on the columns already
+    kept; a column whose remaining sum of squares is below ``rtol`` times
+    its own centred sum of squares is omitted -- ``reghdfe`` / Stata's
+    rule, which keeps the first of a collinear set.  A time-invariant
+    regressor under a unit fixed effect is the common case: Stata reports
+    it as ``(omitted)``, where the solver used to overflow and fail with
+    ``LinAlgError``.
+    """
+    n, k = X.shape
+    if k == 0:
+        return []
+    if fe_indices_list:
+        fe_indices_list = _drop_nested_fe(fe_indices_list)
+        Xd = _fe_weighted_demean(X, fe_indices_list, np.ones(n), maxiter=2000, tol=1e-9)
+    else:
+        Xd = np.asarray(X, dtype=float)
+    scale = np.sum((X - X.mean(axis=0)) ** 2, axis=0)
+    scale = np.where(scale > 0, scale, np.sum(X**2, axis=0))
+    omitted: List[int] = []
+    kept: List[int] = []
+    for j in range(k):
+        v = Xd[:, j]
+        if kept:
+            B = Xd[:, kept]
+            coef, *_ = np.linalg.lstsq(B, v, rcond=None)
+            v = v - B @ coef
+        if scale[j] <= 0 or float(v @ v) <= rtol * float(scale[j]):
+            omitted.append(j)
+        else:
+            kept.append(j)
+    return omitted
+
+
+def _drop_named_columns(
+    X: np.ndarray, var_names: List[str], omitted: Sequence[str]
+) -> Tuple[np.ndarray, List[str]]:
+    """Remove the ``omitted`` regressors from a design (extended vce paths)."""
+    if not omitted:
+        return X, var_names
+    live = [j for j, v in enumerate(var_names) if v not in set(omitted)]
+    return X[:, live], [var_names[j] for j in live]
+
+
 def _ppmlhdfe_design(
     formula: Optional[str],
     data: pd.DataFrame,
@@ -2075,19 +2757,7 @@ def _wfe_demean(
     tol: float = 1e-12,
 ) -> np.ndarray:
     """Weighted within-transform: alternating w-weighted FE projections of M."""
-    Md = M.astype(float, copy=True)
-    for _ in range(maxiter):
-        max_change = 0.0
-        for fe_idx in fe_indices_list:
-            for g in np.unique(fe_idx):
-                mask = fe_idx == g
-                wg = w[mask]
-                mean = (wg[:, None] * Md[mask]).sum(axis=0) / wg.sum()
-                Md[mask] -= mean
-                max_change = max(max_change, float(np.max(np.abs(mean))))
-        if max_change < tol:
-            break
-    return Md
+    return _fe_weighted_demean(M, fe_indices_list, w, maxiter=maxiter, tol=tol)
 
 
 def _ppmlhdfe_wild(
@@ -2136,6 +2806,7 @@ def _ppmlhdfe_wild(
         alpha=alpha,
     )
     y_arr, X, var_names, fe_list, data = _ppmlhdfe_design(formula, data, y, x, absorb)
+    X, var_names = _drop_named_columns(X, var_names, base.model_info.get("omitted", []))
     n, k = X.shape
     if k < 2 and not fe_list:
         raise MethodIncompatibility(
@@ -2241,6 +2912,7 @@ def _ppmlhdfe_cr(
         alpha=alpha,
     )
     y_arr, X, var_names, fe_list, data = _ppmlhdfe_design(formula, data, y, x, absorb)
+    X, var_names = _drop_named_columns(X, var_names, base.model_info.get("omitted", []))
     n = len(y_arr)
     blocks: List[np.ndarray] = [X]
     if fe_list:
@@ -2322,8 +2994,12 @@ def _ppmlhdfe_conley(
         )
     for c in (conley_lat, conley_lon):
         if c not in data.columns:
-            raise MethodIncompatibility(
-                f"ppmlhdfe(vce='conley'): coordinate column {c!r} not in data."
+            raise ColumnNotFound.from_missing(
+                {"conley_lat" if c == conley_lat else "conley_lon": c},
+                list(data.columns),
+                message=(
+                    f"ppmlhdfe(vce='conley'): coordinate column {c!r} not in data."
+                ),
             )
 
     base = ppmlhdfe(
@@ -2338,6 +3014,7 @@ def _ppmlhdfe_conley(
         alpha=alpha,
     )
     y_arr, X, var_names, fe_list, data = _ppmlhdfe_design(formula, data, y, x, absorb)
+    X, var_names = _drop_named_columns(X, var_names, base.model_info.get("omitted", []))
     n = len(y_arr)
     if data[[conley_lat, conley_lon]].isna().any().any() or len(data) != n:
         raise MethodIncompatibility(
@@ -2387,6 +3064,7 @@ def _ppmlhdfe_conley(
     return base
 
 
+@records_call("ppmlhdfe")
 @markout_clusters
 def ppmlhdfe(
     formula: Optional[str] = None,
@@ -2397,7 +3075,7 @@ def ppmlhdfe(
     robust: str = "robust",
     cluster: Optional[Union[str, List[str], Tuple[str, str]]] = None,
     weights: Optional[str] = None,
-    separation: bool = True,
+    separation: Union[bool, str] = True,
     maxiter: int = 1000,
     tol: float = 1e-8,
     alpha: float = 0.05,
@@ -2409,6 +3087,7 @@ def ppmlhdfe(
     conley_lon: Optional[str] = None,
     conley_cutoff: Optional[float] = None,
     ssc: str = "stata",
+    drop_singletons: bool = True,
 ) -> EconometricResults:
     """
     Pseudo-Poisson Maximum Likelihood with high-dimensional fixed effects.
@@ -2432,7 +3111,13 @@ def ppmlhdfe(
         Independent variable names (alternative to formula).
     absorb : str, optional
         Fixed effects to absorb, e.g. ``"origin + destination + year"``.
-        Overrides any FE specification in the formula.
+        Overrides any FE specification in the formula.  Interacted
+        effects are written ``"id + ind^year"`` (fixest) or
+        ``"id + ind#year"`` (Stata ``absorb(ind#year)``); both mean one
+        effect per observed level combination.  Regressors collinear
+        with the absorbed effects (e.g. a time-invariant variable under a
+        unit effect) are omitted with a warning and listed in
+        ``model_info['omitted']``, as Stata reports them.
     robust : str, default "robust"
         Default is robust SE (as in Stata's ppmlhdfe). Options:
         "robust"/"hc1" (sandwich with the ``ssc`` small-sample factor),
@@ -2455,12 +3140,33 @@ def ppmlhdfe(
         ``cluster=["a", "b"]`` requests two-way clustering
         (Cameron-Gelbach-Miller 2011 inclusion-exclusion with the single
         ``G_min/(G_min-1)`` small-sample factor — byte-identical to Stata
-        ``ppmlhdfe ..., cluster(a b)``).
+        ``ppmlhdfe ..., cluster(a b)``).  ``cluster="city^year"`` (or
+        ``"city#year"``) clusters on the level combination.
     weights : str, optional
         Weight variable name.
-    separation : bool, default True
-        If True, check for separation (perfect prediction of zeros) and
-        warn. Observations causing separation are not dropped automatically.
+    separation : {True, 'drop', 'warn', False}, default True
+        Handling of separated observations (outcomes perfectly predicted to
+        be zero, whose maximum-likelihood fitted value is exactly zero).
+        ``True`` / ``'drop'`` removes them before estimation with the
+        ``fe`` and single-regressor ``simplex`` rules Stata ``ppmlhdfe``
+        applies by default (``correia2020fast``), iterated to a fixed
+        point; the count is reported as ``model_info['n_separated']`` and a
+        warning is issued.  Slopes are unchanged by the removal (the rows
+        carry no information about them), but ``N``, the cluster count and
+        hence the ``G/(G-1)`` factor match Stata, and IRLS no longer chases
+        fixed effects towards minus infinity.  ``'warn'`` is the pre-1.33
+        behaviour (detect and warn, keep the rows); ``False`` skips the
+        check.  The general ReLU rule is not implemented.
+    drop_singletons : bool, default True
+        Drop observations that are alone in their group of any absorbed
+        fixed effect, iterated jointly with the separation rules to a
+        fixed point, as Stata ``ppmlhdfe`` does by default.  Slopes and
+        their robust / clustered variance are unchanged (a singleton is
+        fitted exactly and has a zero FE-residualised design row), but
+        ``N``, the cluster count, the small-sample factors and the pseudo
+        R-squared now equal Stata's.  The count is
+        ``model_info['n_singletons']``.  ``False`` keeps them, as R
+        ``fixest::fepois`` does by default (``fixef.rm = "perfect"``).
     maxiter : int, default 1000
         Maximum IRLS iterations.
     tol : float, default 1e-8
@@ -2559,6 +3265,66 @@ def ppmlhdfe(
         multiway=True,
     )
     cluster = _se.cluster
+    formula, data, absorb, cluster = _ppml_front_end(
+        formula, data, y, x, absorb, cluster, weights
+    )
+
+    # Singletons and separated observations are removed from `data`
+    # itself, so every SE path below (CRV1, CR2/CR3, wild, Conley) sees
+    # the same sample.
+    sep_mode = _normalise_ppml_separation(separation)
+    sep_counts = {"singleton": 0, "fe": 0, "simplex": 0}
+    n_before_sep = None
+    if sep_mode == "drop" or (drop_singletons and absorb):
+        _y0, _X0, _vn0, _fe0, _data0 = _ppmlhdfe_design(formula, data, y, x, absorb)
+        _keep, sep_counts = _ppml_separation_mask(
+            _y0,
+            _X0,
+            _fe0,
+            drop_singletons=bool(drop_singletons),
+            separation=(sep_mode == "drop"),
+        )
+        n_before_sep = int(len(_y0))
+        n_sep = n_before_sep - int(_keep.sum())
+        if n_sep:
+            if not _keep.any():
+                raise DataInsufficient(
+                    "ppmlhdfe: every observation is a singleton or "
+                    "separated (all-zero outcomes within each fixed-effect "
+                    "group).",
+                    recovery_hint="Check the outcome column; PPML needs "
+                    "positive outcomes within at least one group.",
+                    diagnostics={"n_dropped": n_sep, **sep_counts},
+                )
+            parts = []
+            if sep_counts["singleton"]:
+                parts.append(
+                    f"{sep_counts['singleton']} singleton(s) of a fixed effect"
+                )
+            if sep_counts["fe"]:
+                parts.append(f"{sep_counts['fe']} in all-zero fixed-effect groups")
+            if sep_counts["simplex"]:
+                parts.append(
+                    f"{sep_counts['simplex']} perfectly predicted by a "
+                    "single regressor"
+                )
+            warnings.warn(
+                f"ppmlhdfe: dropped {n_sep} observation(s) "
+                f"({'; '.join(parts)}), as Stata ppmlhdfe does by default. "
+                "Pass drop_singletons=False / separation='warn' to keep them.",
+                stacklevel=2,
+            )
+            data = _data0.iloc[np.flatnonzero(_keep)]
+        if sep_mode == "drop":
+            # The extended paths re-enter ppmlhdfe; the data is already clean.
+            separation = False
+        else:
+            separation = sep_mode == "warn"
+    elif sep_mode == "none":
+        separation = False
+    else:  # warn
+        separation = True
+
     if _se.kind in ("cr2", "cr3", "jackknife", "wild", "conley"):
         _vce = _se.kind
     else:
@@ -2654,6 +3420,27 @@ def ppmlhdfe(
         var_names = var_names[1:]
         k = X.shape[1]
 
+    # A regressor that is identically zero once separated rows are gone, or
+    # that the fixed effects absorb (a time-invariant variable under a unit
+    # effect), or that is collinear with earlier regressors is omitted, as
+    # Stata reports it, rather than handed to the solver as a singular
+    # X'WX (which overflowed and ended in LinAlgError).
+    omitted: List[str] = []
+    if k:
+        dead_cols = _ppml_absorbed_columns(X, fe_indices_list)
+        if dead_cols:
+            omitted = [var_names[j] for j in dead_cols]
+            warnings.warn(
+                f"ppmlhdfe: omitted regressor(s) {omitted} — collinear with "
+                "the absorbed fixed effects or other regressors (Stata "
+                "reports them as omitted).",
+                stacklevel=2,
+            )
+            live = [j for j in range(k) if j not in dead_cols]
+            X = X[:, live]
+            var_names = [var_names[j] for j in live]
+            k = X.shape[1]
+
     # Weights
     w_arr = None
     if weights is not None:
@@ -2715,11 +3502,11 @@ def ppmlhdfe(
     ssc_factor = 1.0
     if cluster_pair is not None:
         vcov = _twoway_cluster_vcov(
-            X_for_vcov, mu, residuals, cluster_pair[0], cluster_pair[1]
+            X_for_vcov, mu, residuals, cluster_pair[0], cluster_pair[1], weights=w_arr
         )
     elif cluster_arr is None and robust.lower() in ("robust", "hc1"):
         # Plain sandwich, then the documented small-sample convention.
-        vcov = _poisson_vcov(X_for_vcov, mu, residuals, "hc0", None)
+        vcov = _poisson_vcov(X_for_vcov, mu, residuals, "hc0", None, weights=w_arr)
         n_v, k_v = X_for_vcov.shape
         if ssc_key == "stata":
             ssc_factor = n_v / (n_v - 1.0)
@@ -2729,15 +3516,17 @@ def ppmlhdfe(
             ssc_factor = n_v / max(n_v - (k_v + k_fe_fixest), 1.0)
         vcov = vcov * ssc_factor
     else:
-        vcov = _poisson_vcov(X_for_vcov, mu, residuals, robust, cluster_arr)
+        vcov = _poisson_vcov(
+            X_for_vcov, mu, residuals, robust, cluster_arr, weights=w_arr
+        )
     se = np.sqrt(np.diag(vcov))
 
-    # Log-likelihood (Poisson quasi-likelihood)
-    ll = _poisson_loglik(y_arr, mu)
+    # Log-likelihood (Poisson quasi-likelihood; weighted under weights)
+    ll = _poisson_loglik(y_arr, mu, w_arr)
 
     # Null model
-    mu_null = np.full(n, np.mean(y_arr))
-    ll_null = _poisson_loglik(y_arr, mu_null)
+    mu_null = np.full(n, np.average(y_arr, weights=w_arr))
+    ll_null = _poisson_loglik(y_arr, mu_null, w_arr)
 
     lr_chi2 = 2 * (ll - ll_null)
     lr_pvalue = stats.chi2.sf(lr_chi2, max(k - 1, 1)) if k > 1 else np.nan
@@ -2785,6 +3574,15 @@ def ppmlhdfe(
         "absorbed_fe": fe_names if fe_names else None,
         "n_fe_levels": n_fe,
         "separation_warnings": sep_warnings,
+        "separation": sep_mode,
+        "n_separated": int(sep_counts["fe"] + sep_counts["simplex"]),
+        "n_singletons": int(sep_counts["singleton"]),
+        "n_separated_by_rule": {
+            "fe": int(sep_counts["fe"]),
+            "simplex": int(sep_counts["simplex"]),
+        },
+        "drop_singletons": bool(drop_singletons),
+        "omitted": list(omitted),
     }
 
     if cluster_arr is not None:
@@ -2796,6 +3594,28 @@ def ppmlhdfe(
         )
     else:
         n_cluster = None
+    if w_arr is not None:
+        from ..core._agent_summary import note_weight_diagnostics
+
+        _one_way = cluster_arr is not None and len(cluster_arr) == len(w_arr)
+        note_weight_diagnostics(
+            model_info,
+            w_arr,
+            (
+                "cluster"
+                if (cluster_arr is not None or cluster_pair is not None)
+                else ("robust" if robust.lower() in ("robust", "hc1") else "classical")
+            ),
+            entry="sp.ppmlhdfe",
+            robust_option="robust='robust' (the default) or cluster=",
+            classical_reading="frequency weights (Stata [fw=])",
+            classical_assumption=(
+                "frequencies (each row standing for w identical observations)"
+            ),
+            cluster_keys=cluster_arr if _one_way else None,
+            cluster=cluster,
+            offers_weights_as=False,
+        )
     data_info = {
         "nobs": n,
         "df_model": k,

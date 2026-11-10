@@ -35,7 +35,7 @@ JSS upload-blocking gaps: 0
 - `performance_modules`: `5`
 
 ### tier1_reproduction
-- `tier1_steps`: `31/31`
+- `tier1_steps`: `32/32`
 - `tier1_no_r_stata`: `True`
 - `tier1_live_external_call_count`: `0`
 
@@ -47,9 +47,9 @@ JSS upload-blocking gaps: 0
 - `verifier_missing_runtime_returns_skip`: `True`
 
 ### behavioural_agent_benchmark
-- `schema_files`: `1255`
-- `schema_parameters`: `9697`
-- `trace_tools`: `579`
+- `schema_files`: `1627`
+- `schema_parameters`: `14022`
+- `trace_tools`: `45`
 - `trace_bibtex_entry_count`: `2`
 - `protocol_arms`: `3`
 - `protocol_task_families`: `5`
@@ -59,15 +59,15 @@ JSS upload-blocking gaps: 0
 - `protocol_claimed_behavioural_result`: `False`
 
 ### full_registry_numeric_validation
-- `certified_validated_symbols`: `558`
+- `certified_validated_symbols`: `981`
 - `missing_validation_notes`: `0`
-- `api_stable_symbols`: `694`
-- `unbacked_auto_stable`: `601`
+- `api_stable_symbols`: `643`
+- `unbacked_auto_stable`: `570`
 
 ### final_tagged_release
 - `release_boundary_status`: `PASS`
 - `ready_for_final_publication`: `False`
-- `release_blocker_count`: `5`
+- `release_blocker_count`: `28`
 - `version_consistent`: `True`
 
 Failures: none

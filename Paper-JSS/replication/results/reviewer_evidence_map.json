@@ -5,10 +5,10 @@
       "failures": [],
       "id": "validation_scope",
       "metrics": {
-        "api_stable_symbols": 694,
-        "certified_validated_symbols": 558,
+        "api_stable_symbols": 643,
+        "certified_validated_symbols": 981,
         "claim_files_checked": 37,
-        "unbacked_auto_stable": 601,
+        "unbacked_auto_stable": 570,
         "unbacked_handwritten_stable": 0
       },
       "primary_evidence": [
@@ -74,8 +74,8 @@
       "metrics": {
         "active_sections": 10,
         "dangling_refs": 0,
-        "float_labels": 22,
-        "generated_artifacts": 12,
+        "float_labels": 23,
+        "generated_artifacts": 15,
         "missing_refs": 0
       },
       "primary_evidence": [
@@ -155,15 +155,15 @@
       "id": "archive_boundary",
       "metrics": {
         "active_external_present": 0,
-        "archive_file_count": 2964,
-        "archive_size_mib": 27.13,
-        "data_provenance_csv_files": 357,
+        "archive_file_count": 4830,
+        "archive_size_mib": 45.13,
+        "data_provenance_csv_files": 667,
         "data_provenance_forbidden_raw_members": 0,
         "data_provenance_high_risk_path_hits": 0,
-        "data_provenance_packaged_public_datasets": 9,
+        "data_provenance_packaged_public_datasets": 10,
         "data_provenance_public_original_extracts": 7,
-        "data_provenance_r_stata_fixture_csv": 91,
-        "data_provenance_scoped_data_files": 877,
+        "data_provenance_r_stata_fixture_csv": 94,
+        "data_provenance_scoped_data_files": 1465,
         "data_provenance_status": "PASS",
         "data_provenance_unknown_categories": 0,
         "jss_upload_blockers": 0,
@@ -212,34 +212,34 @@
         "manual_visual_spot_check_status": "PENDING_MANUAL_REVIEW",
         "missing_pdf_boundary_snippets": [],
         "official_sources_checked": "2026-08-09",
-        "page_count": 54,
-        "pdf_boundary_snippets": 18,
+        "page_count": 48,
+        "pdf_boundary_snippets": 12,
         "pdf_full_document_failures": 0,
-        "pdf_full_document_rendered_pages": 54,
+        "pdf_full_document_rendered_pages": 48,
         "pdf_render_failures": 0,
-        "pdf_render_max_dark_ratio": 0.02218,
+        "pdf_render_max_dark_ratio": 0.021981,
         "pdf_render_min_height": 1287,
-        "pdf_render_min_ink_ratio": 0.027374,
+        "pdf_render_min_ink_ratio": 0.052956,
         "pdf_render_min_width": 910,
         "pdf_render_sampled_pages": [
           1,
           2,
-          27,
-          54
+          24,
+          48
         ],
         "pdf_render_status": "PASS",
         "pdf_rendered_pages": 4,
         "pdf_stale_prose_hits": [],
-        "pdf_text_chars": 160008,
+        "pdf_text_chars": 141591,
         "pdf_visual_protocol_checklist_items": 12,
         "pdf_visual_protocol_claimed_manual_acceptance": false,
         "pdf_visual_protocol_jss_upload_blocking": false,
         "pdf_visual_protocol_manual_status": "PENDING_MANUAL_REVIEW",
-        "pdf_visual_protocol_page_count": 54,
-        "pdf_visual_protocol_page_inventory_count": 54,
-        "pdf_visual_protocol_page_inventory_float_markers": 75,
-        "pdf_visual_protocol_page_inventory_min_text_chars": 795,
-        "pdf_visual_protocol_page_inventory_text_pages": 54,
+        "pdf_visual_protocol_page_count": 48,
+        "pdf_visual_protocol_page_inventory_count": 48,
+        "pdf_visual_protocol_page_inventory_float_markers": 76,
+        "pdf_visual_protocol_page_inventory_min_text_chars": 1649,
+        "pdf_visual_protocol_page_inventory_text_pages": 48,
         "pdf_visual_protocol_recorded_by_protocol": false,
         "pdf_visual_protocol_status": "PASS"
       },
@@ -262,15 +262,15 @@
       "failures": [],
       "id": "agent_interface_boundary",
       "metrics": {
-        "parameter_total": 9697,
+        "parameter_total": 14022,
         "protocol_arms": 3,
         "protocol_claimed_behavioural_result": false,
         "protocol_scoring_dimensions": 6,
         "protocol_task_families": 5,
         "protocol_validity_controls": 6,
-        "schema_files": 1255,
+        "schema_files": 1627,
         "trace_bibtex_entry_count": 2,
-        "trace_tools": 579
+        "trace_tools": 45
       },
       "primary_evidence": [
         "replication/results/agent_interface_audit.md",
@@ -287,8 +287,8 @@
       "failures": [],
       "id": "limitations_crosswalk",
       "metrics": {
-        "api_stable_symbols": 694,
-        "certified_validated_symbols": 558,
+        "api_stable_symbols": 643,
+        "certified_validated_symbols": 981,
         "documented_nonblocking_risk_count": 6,
         "documented_nonblocking_risk_ids": [
           "final_tagged_release_cut_pending",
@@ -298,18 +298,18 @@
           "compact_text_may_feel_terse",
           "agent_interface_value_boundary"
         ],
-        "pdf_pages": 54,
+        "pdf_pages": 48,
         "pdf_visual_protocol_checklist_items": 12,
         "pdf_visual_protocol_manual_status": "PENDING_MANUAL_REVIEW",
-        "pdf_visual_protocol_page_inventory_count": 54,
-        "pdf_visual_protocol_page_inventory_text_pages": 54,
+        "pdf_visual_protocol_page_inventory_count": 48,
+        "pdf_visual_protocol_page_inventory_text_pages": 48,
         "pdf_visual_protocol_status": "PASS",
-        "symbols_with_limitations": 21,
-        "unbacked_auto_stable": 601
+        "symbols_with_limitations": 29,
+        "unbacked_auto_stable": 570
       },
       "primary_evidence": [
         "manuscript/sections/09-discussion-compact.tex",
-        "REVIEWER-HARDENING-AUDIT.md",
+        "RELEASE-CHECKLIST.md",
         "replication/results/submission_risk_ledger.md",
         "replication/results/pdf_visual_check_protocol.md",
         "replication/results/validation_evidence_audit.md"
@@ -350,12 +350,12 @@
         "documented_nonblocking_risk_count": 6,
         "documented_nonblocking_risk_details": [
           {
-            "evidence": "5 final-release pending paths; source snapshot remains explicitly labelled",
+            "evidence": "28 final-release pending paths; source snapshot remains explicitly labelled",
             "next_action": "commit or intentionally exclude all hand-edited source and Paper-JSS paths; move accepted [Unreleased] changes into a dated CHANGELOG release entry; align pyproject.toml, src/statspai/__init__.py, and schema bundle versions; tag the exact package-source commit used by the JSS archive; re-run make submission-ready after the tag so manifests record a clean release snapshot",
             "risk": "final_tagged_release_cut_pending"
           },
           {
-            "evidence": "558/1255 registry symbols are certified/validated; missing evidence paths=0",
+            "evidence": "981/1627 registry symbols are certified/validated; missing evidence paths=0",
             "next_action": "Keep the validated-core framing and do not promote API-stable breadth without attached evidence notes.",
             "risk": "registry_breadth_denominator_disclosed"
           },
@@ -370,12 +370,12 @@
             "risk": "methodological_t4_row_disclosed"
           },
           {
-            "evidence": "active PDF has 54 pages; PDF-visible evidence-map routing present; packaged PDF visual-check protocol present; page inventory covers 54/54 pages",
+            "evidence": "active PDF has 48 pages; PDF-visible evidence routing incomplete; packaged PDF visual-check protocol present; page inventory covers 48/48 pages",
             "next_action": "Keep additional reviewer evidence in replication/results and reviewer_evidence_map rather than expanding main.pdf; perform the final full-document human visual spot-check using pdf_visual_check_protocol.md and the PDF render audit before JSS upload.",
             "risk": "compact_text_may_feel_terse"
           },
           {
-            "evidence": "1255 schemas, 9697 documented parameters, and 579 trace tools audited without behavioural benchmark claims",
+            "evidence": "1627 schemas, 14022 documented parameters, and 45 trace tools audited without behavioural benchmark claims",
             "next_action": "Keep the agent section mechanical and contractual unless a behavioural benchmark is actually run and packaged; keep the deferred benchmark protocol labelled as protocol rather than a completed behavioural result.",
             "risk": "agent_interface_value_boundary"
           }
@@ -391,24 +391,27 @@
         ],
         "final_tagged_cut_breakdown": {
           "generated_status_counts": {
-            "M": 20
+            "??": 3,
+            "M": 50
           },
           "hand_edited_status_counts": {
-            "M": 5
+            "??": 4,
+            "M": 24
           },
           "package_code_paths": 0,
           "package_docs_paths": 0,
-          "paper_manuscript_paths": 0,
-          "paper_other_paths": 3,
-          "paper_replication_paths": 2,
-          "validation_test_paths": 0
+          "paper_manuscript_paths": 13,
+          "paper_other_paths": 4,
+          "paper_replication_paths": 10,
+          "validation_test_paths": 1
         },
         "final_tagged_cut_check_ids": [
           "clean_combined_worktree",
+          "source_paths_finalized",
           "paper_paths_finalized"
         ],
         "final_tagged_cut_identity_ok": true,
-        "final_tagged_cut_pending_items": 2,
+        "final_tagged_cut_pending_items": 3,
         "final_tagged_cut_runbook": {
           "requirements": [
             "commit or intentionally exclude all hand-edited source and Paper-JSS paths",
@@ -444,9 +447,9 @@
           "strict_release_command": "python Paper-JSS/replication/scripts/source_snapshot_manifest.py --strict-release"
         },
         "final_tagged_cut_runbook_step_count": 5,
-        "paper_release_pending_paths": 5,
+        "paper_release_pending_paths": 27,
         "ready_for_final_publication": false,
-        "source_release_pending_paths": 0,
+        "source_release_pending_paths": 1,
         "strict_release_command": "python Paper-JSS/replication/scripts/source_snapshot_manifest.py --strict-release"
       },
       "primary_evidence": [
@@ -577,7 +580,7 @@
     "archive_evidence_paths_missing": 0,
     "archive_evidence_paths_resolved": 40,
     "archive_evidence_present": true,
-    "archive_file_count": 2964,
+    "archive_file_count": 4830,
     "card_count": 13,
     "card_identity_ok": true,
     "card_ids": [
@@ -598,12 +601,12 @@
     "documented_nonblocking_risk_count": 6,
     "documented_nonblocking_risk_details": [
       {
-        "evidence": "5 final-release pending paths; source snapshot remains explicitly labelled",
+        "evidence": "28 final-release pending paths; source snapshot remains explicitly labelled",
         "next_action": "commit or intentionally exclude all hand-edited source and Paper-JSS paths; move accepted [Unreleased] changes into a dated CHANGELOG release entry; align pyproject.toml, src/statspai/__init__.py, and schema bundle versions; tag the exact package-source commit used by the JSS archive; re-run make submission-ready after the tag so manifests record a clean release snapshot",
         "risk": "final_tagged_release_cut_pending"
       },
       {
-        "evidence": "558/1255 registry symbols are certified/validated; missing evidence paths=0",
+        "evidence": "981/1627 registry symbols are certified/validated; missing evidence paths=0",
         "next_action": "Keep the validated-core framing and do not promote API-stable breadth without attached evidence notes.",
         "risk": "registry_breadth_denominator_disclosed"
       },
@@ -618,12 +621,12 @@
         "risk": "methodological_t4_row_disclosed"
       },
       {
-        "evidence": "active PDF has 54 pages; PDF-visible evidence-map routing present; packaged PDF visual-check protocol present; page inventory covers 54/54 pages",
+        "evidence": "active PDF has 48 pages; PDF-visible evidence routing incomplete; packaged PDF visual-check protocol present; page inventory covers 48/48 pages",
         "next_action": "Keep additional reviewer evidence in replication/results and reviewer_evidence_map rather than expanding main.pdf; perform the final full-document human visual spot-check using pdf_visual_check_protocol.md and the PDF render audit before JSS upload.",
         "risk": "compact_text_may_feel_terse"
       },
       {
-        "evidence": "1255 schemas, 9697 documented parameters, and 579 trace tools audited without behavioural benchmark claims",
+        "evidence": "1627 schemas, 14022 documented parameters, and 45 trace tools audited without behavioural benchmark claims",
         "next_action": "Keep the agent section mechanical and contractual unless a behavioural benchmark is actually run and packaged; keep the deferred benchmark protocol labelled as protocol rather than a completed behavioural result.",
         "risk": "agent_interface_value_boundary"
       }
@@ -661,17 +664,17 @@
     ],
     "failed_cards": 0,
     "failed_routes": 0,
-    "final_tagged_cut_pending_items": 2,
+    "final_tagged_cut_pending_items": 3,
     "final_tagged_cut_runbook_step_count": 5,
     "jss_upload_blockers": 0,
     "missing_pdf_boundary_snippets": 0,
     "pass_cards": 13,
     "pdf_full_document_failure_count": 0,
-    "pdf_full_document_rendered_page_count": 54,
-    "pdf_pages": 54,
+    "pdf_full_document_rendered_page_count": 48,
+    "pdf_pages": 48,
     "pdf_render_failure_count": 0,
     "pdf_render_status": "PASS",
-    "pdf_text_chars": 160008,
+    "pdf_text_chars": 141591,
     "pdf_visual_protocol_checklist_items": 12,
     "pdf_visual_protocol_manual_status": "PENDING_MANUAL_REVIEW",
     "pdf_visual_protocol_status": "PASS",

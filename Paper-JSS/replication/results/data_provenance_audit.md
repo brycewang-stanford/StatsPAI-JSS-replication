@@ -6,16 +6,16 @@ Prospective JSS archive data/result members, using the same include/exclude rule
 
 ## Summary
 
-- Prospective archive files: `2959`
-- Scoped data/result files: `877`
-- CSV files: `357`
-- JSON files: `519`
+- Prospective archive files: `4826`
+- Scoped data/result files: `1465`
+- CSV files: `667`
+- JSON files: `797`
 - Lockfiles: `1`
-- Packaged public dataset CSVs: `9`
+- Packaged public dataset CSVs: `10`
 - Public original-data extract CSVs: `7`
-- Same-byte R/Stata fixture CSVs: `91`
-- Reference fixture CSVs: `250`
-- Generated result JSON files: `336`
+- Same-byte R/Stata fixture CSVs: `94`
+- Reference fixture CSVs: `552`
+- Generated result JSON files: `343`
 - Forbidden raw-data members: `0`
 - High-risk private/credential path hits: `0`
 - CSV parse failures: `0`
@@ -35,17 +35,18 @@ Prospective JSS archive data/result members, using the same include/exclude rule
 | `environment_or_fixture_lock` | 2 |
 | `generated_monte_carlo_result_json` | 3 |
 | `generated_original_parity_result_json` | 26 |
-| `generated_paper_audit_or_example_json` | 34 |
-| `generated_performance_result_json` | 9 |
+| `generated_paper_audit_or_example_json` | 36 |
+| `generated_performance_result_json` | 10 |
 | `generated_r_parity_result_json` | 179 |
+| `generated_replication_result_csv` | 4 |
 | `generated_stata_result_json` | 85 |
-| `other_generated_or_schema_json` | 11 |
-| `packaged_public_dataset_csv` | 9 |
+| `other_generated_or_schema_json` | 26 |
+| `packaged_public_dataset_csv` | 10 |
 | `public_original_extract_csv` | 7 |
-| `reference_fixture_csv` | 250 |
-| `reference_result_json` | 161 |
+| `reference_fixture_csv` | 552 |
+| `reference_result_json` | 421 |
 | `runtime_schema_bundle_json` | 5 |
-| `same_byte_r_stata_fixture_csv` | 91 |
+| `same_byte_r_stata_fixture_csv` | 94 |
 | `schema_bundle_json` | 5 |
 
 ## Public Source Rows
@@ -58,6 +59,7 @@ Prospective JSS archive data/result members, using the same include/exclude rule
 | `src/statspai/datasets/data/lalonde_matchit.csv` | `packaged_public_dataset_csv` | 614 | 11 | Dehejia-Wahba/MatchIt Lalonde extract used by matching examples. |
 | `src/statspai/datasets/data/lee_2008_senate.csv` | `packaged_public_dataset_csv` | 1390 | 2 | Public Lee-style RD Senate extract used for redistribution-safe RD. |
 | `src/statspai/datasets/data/nhefs.csv` | `packaged_public_dataset_csv` | 1629 | 67 | Public NHEFS extract from the causaldata/What If g-methods canon. |
+| `src/statspai/datasets/data/nsw_psid_dw.csv` | `packaged_public_dataset_csv` | 2675 | 10 | Dehejia-Wahba NSW treated sample with the PSID-1 comparison group, returned by sp.datasets.nsw_dw(simulated=False). |
 | `src/statspai/datasets/data/sasp_panel.csv` | `packaged_public_dataset_csv` | 1787 | 31 | Survey of Adult Service Providers session panel from Cunningham and Kendall's work, redistributed with Causal Inference: The Mixtape; loaded by sp.datasets.sasp_panel(). |
 | `src/statspai/datasets/data/texas_prison.csv` | `packaged_public_dataset_csv` | 816 | 24 | Texas 1993 prison-capacity expansion panel used in chapter 10 of Causal Inference: The Mixtape; loaded by sp.datasets.texas_prison(). |
 | `src/statspai/datasets/data/thornton_hiv.csv` | `packaged_public_dataset_csv` | 4820 | 17 | Thornton (2008) HIV-incentive experiment extract redistributed with Causal Inference: The Mixtape; loaded by sp.datasets.thornton_hiv(). |
@@ -73,16 +75,16 @@ Prospective JSS archive data/result members, using the same include/exclude rule
 
 | Path | Bytes |
 |---|---:|
-| `src/statspai/schemas/functions.json` | 2074934 |
-| `schemas/functions.json` | 2074934 |
-| `src/statspai/schemas/agent_cards.json` | 1916278 |
-| `schemas/agent_cards.json` | 1916278 |
+| `src/statspai/schemas/agent_cards.json` | 6546853 |
+| `schemas/agent_cards.json` | 6546853 |
+| `src/statspai/schemas/functions.json` | 2820364 |
+| `schemas/functions.json` | 2820364 |
+| `src/statspai/schemas/tools.json` | 2135639 |
+| `schemas/tools.json` | 2135639 |
 | `tests/reference_parity/_fixtures/spatial_survey_R.json` | 1770980 |
 | `tests/reference_parity/_fixtures/grf_family_R.json` | 1462468 |
-| `src/statspai/schemas/tools.json` | 1233468 |
-| `schemas/tools.json` | 1233468 |
+| `Paper-JSS/replication/results/dml_plr_designs.json` | 1265659 |
 | `tests/reference_parity/_fixtures/grf_family_stat_data.csv` | 1084216 |
-| `tests/reference_parity/_fixtures/did_synth_scpi_R.json` | 835308 |
 
 Failures: none
 

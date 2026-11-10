@@ -47,7 +47,9 @@ import pandas as pd
 from scipy import stats
 
 from .._aliases import accepts_aliases
+from .._input_validation import check_columns
 from .._result_serialize import ResultProtocolMixin
+from ..core._call_record import records_call
 from ..core.results import SummaryText, _to_jsonable
 from ..exceptions import DataInsufficient, MethodIncompatibility
 
@@ -437,7 +439,11 @@ class SpatialDiDResult(ResultProtocolMixin):
     def to_json(self, indent: Optional[int] = None, **kwargs: Any) -> str:
         return json.dumps(self.to_dict(**kwargs), indent=indent, default=_to_jsonable)
 
-    def to_markdown(self, path: Optional[str] = None, **kwargs: Any) -> str:
+    # Own layout without the base class's digits= / fmt= precision options;
+    # passing them raises TypeError rather than being ignored.
+    def to_markdown(  # type: ignore[override]
+        self, path: Optional[str] = None, **kwargs: Any
+    ) -> str:
         md = str(self.tidy(**kwargs).to_markdown(index=False, floatfmt=".4f"))
         if path is not None:
             Path(path).write_text(md, encoding="utf-8")
@@ -1145,6 +1151,7 @@ def _spatial_diagnostics(
     return diagnostics
 
 
+@records_call("spatial_did")
 @accepts_aliases(id="unit", vce="se_type")
 def spatial_did(
     data: pd.DataFrame,
@@ -1343,13 +1350,20 @@ def spatial_did(
         if c is not None and c not in {y, treat, unit, time, *cov, *extra_keep}
     ]
     keep = [y, treat, unit, time] + cov + extra_keep + coord_keep
-    missing_cols = [c for c in keep if c not in data.columns]
-    if missing_cols:
-        raise MethodIncompatibility(
-            f"Columns not found in data: {missing_cols}",
-            recovery_hint="Check y/treat/unit/time/covariate/coordinate column names.",
-            diagnostics={"missing_columns": missing_cols},
-        )
+    check_columns(
+        data,
+        {
+            "y": y,
+            "treat": treat,
+            "unit": unit,
+            "time": time,
+            "covariates": cov,
+            "cluster": cluster,
+            "lat": lat,
+            "lon": lon,
+        },
+        function="spatial_did",
+    )
     df = data[keep].dropna().sort_values([unit, time]).reset_index(drop=True)
     if df.empty:
         raise DataInsufficient(

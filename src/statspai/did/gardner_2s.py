@@ -47,7 +47,7 @@ Butts, K. and Gardner, J. (2022).  "did2s: Two-Stage Difference-in-Differences."
 from __future__ import annotations
 
 import warnings
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
@@ -55,11 +55,84 @@ from scipy import sparse
 from scipy import stats as sp_stats
 
 from .._aliases import accepts_aliases
+from .._input_validation import check_columns
 from ..core._bootstrap import bootstrap_se as _bootstrap_se
+from ..core._call_record import records_call
+from ..core._covariates import expands_categorical_covariates as _expands_categorical
+from ..core._vcov_spec import cluster_from_vce
 from ..core.results import CausalResult
-from ..exceptions import DataInsufficient, MethodIncompatibility
+from ..exceptions import ColumnNotFound, DataInsufficient, MethodIncompatibility
+from ._arg_roles import check_unit_is_not_treatment as _check_unit_is_not_treatment
+from ._core import calendar_time_aware as _calendar_time_aware
+from ._validate import duplicate_unit_period_rows as _duplicate_unit_period_rows
+from ._validate import require_constant_cohort as _require_constant_cohort
+from ._validate import warn_few_treated_clusters as _warn_few_treated_clusters
 
 __all__ = ["gardner_did", "did_2stage"]
+
+
+def _drop_unidentified_cells(
+    df: pd.DataFrame, group: str, time: str, first_treat: str
+) -> Tuple[pd.DataFrame, Optional[Dict[str, object]]]:
+    """Drop treated rows whose unit or period effect Stage 1 cannot identify.
+
+    Stage 1 is fitted on untreated rows only. A period in which every unit is
+    already treated has no period effect there, and a unit that is treated in
+    all of its rows has no unit effect; the imputed ``Y(0)`` for those cells
+    would come from the minimum-norm solution, not from the data. They are
+    removed, so the estimand is the ATT over the remaining treated cells.
+    Returns the frame untouched and ``None`` when every cell is identified.
+    """
+    ft = pd.to_numeric(df[first_treat], errors="coerce").to_numpy(dtype=float)
+    t_arr = df[time].to_numpy(dtype=float)
+    treated = np.isfinite(ft) & (ft > 0) & (t_arr >= ft)
+    if not treated.any() or treated.all():
+        return df, None
+    unit_ok = df[group].isin(df.loc[~treated, group].unique()).to_numpy()
+    time_ok = df[time].isin(df.loc[~treated, time].unique()).to_numpy()
+    bad = treated & ~(unit_ok & time_ok)
+    if not bad.any():
+        return df, None
+    periods = sorted(pd.unique(df.loc[treated & ~time_ok, time]).tolist())
+    n_units = int(df.loc[treated & ~unit_ok, group].nunique())
+    n_bad, n_treated = int(bad.sum()), int(treated.sum())
+    if n_bad == n_treated:
+        raise DataInsufficient(
+            "gardner_did: no treated observation has both its unit and its "
+            "period among the untreated observations, so no effect is "
+            "identified.",
+            recovery_hint=(
+                "Keep pre-treatment periods for the treated units and at "
+                "least one not-yet-treated or never-treated comparison in "
+                "each post-treatment period."
+            ),
+            diagnostics={"periods_without_untreated": periods},
+        )
+    reasons = []
+    if periods:
+        reasons.append(
+            f"period(s) {periods} have no untreated observation, so their "
+            "period effect is not identified"
+        )
+    if n_units:
+        reasons.append(
+            f"{n_units} unit(s) are treated in every row, so their unit "
+            "effect is not identified"
+        )
+    warnings.warn(
+        f"gardner_did: dropped {n_bad} of {n_treated} treated observations: "
+        + "; ".join(reasons)
+        + ". The estimand is the ATT over the remaining treated cells.",
+        UserWarning,
+        stacklevel=4,
+    )
+    info: Dict[str, object] = {
+        "n_dropped": n_bad,
+        "n_treated_before": n_treated,
+        "periods_without_untreated": periods,
+        "n_always_treated_units": n_units,
+    }
+    return df.loc[~bad].reset_index(drop=True), info
 
 
 def _gardner_cluster_bootstrap(
@@ -109,19 +182,23 @@ def _gardner_cluster_bootstrap(
             parts.append(sub)
         bd = pd.concat(parts, ignore_index=True)
         try:
-            r = gardner_did(
-                bd,
-                y=y,
-                group=group,
-                time=time,
-                first_treat=first_treat,
-                controls=ctrl,
-                event_study=event_study,
-                horizon=horizon,
-                cluster="__bcl",
-                vce="none",
-                weights=weights,
-            )
+            with warnings.catch_warnings():
+                # Already reported once for the observed sample.
+                warnings.filterwarnings("ignore", message="gardner_did: dropped")
+                warnings.filterwarnings("ignore", message="gardner_did: .* rows share")
+                r = gardner_did(
+                    bd,
+                    y=y,
+                    group=group,
+                    time=time,
+                    first_treat=first_treat,
+                    controls=ctrl,
+                    event_study=event_study,
+                    horizon=horizon,
+                    cluster="__bcl",
+                    vce="none",
+                    weights=weights,
+                )
         except Exception:
             continue  # replicate stays NaN; bootstrap_se tracks the failure
         if np.isfinite(r.estimate):
@@ -334,13 +411,24 @@ def _sparse_normal_solve(
     return out[:, 0] if B.ndim == 1 else out
 
 
-@accepts_aliases(_strict=True, id="group", unit="group", covariates="controls")
+@records_call("gardner_did")
+@accepts_aliases(
+    _strict=True,
+    id="group",
+    unit="group",
+    covariates="controls",
+    cohort="first_treat",
+    g="first_treat",
+    seed="boot_seed",
+)
+@_expands_categorical("controls")
+@_calendar_time_aware(time="time", cohort="first_treat")
 def gardner_did(
     data: pd.DataFrame,
     y: str,
-    group: str,
-    time: str,
-    first_treat: str,
+    group: Optional[str] = None,
+    time: Optional[str] = None,
+    first_treat: Optional[str] = None,
     controls: Optional[List[str]] = None,
     event_study: bool = False,
     horizon: Optional[List[int]] = None,
@@ -350,6 +438,10 @@ def gardner_did(
     n_boot: int = 199,
     boot_seed: int = 0,
     weights: Optional[str] = None,
+    *,
+    treat: Optional[str] = None,
+    fe: Optional[Sequence[str]] = None,
+    second_stage: Optional[Sequence[str]] = None,
 ) -> CausalResult:
     """Gardner (2022) two-stage DID estimator.
 
@@ -403,6 +495,31 @@ def gardner_did(
         ``did2s(weights=)`` and Stata ``did2s [aw=]``. In event-study mode
         the overall ATT is the weight-share average of the post-treatment
         coefficients.
+    treat : str, optional
+        A 0/1 column marking the treated observations, in place of
+        ``first_treat``: the ``treatment`` argument of R ``did2s`` and
+        Stata ``did2s``. Stage 1 is fitted on the rows where it is 0. With
+        it, ``group`` and ``time`` are needed only as the default fixed
+        effects and the default cluster.
+    fe : sequence of str, optional
+        The fixed effects of Stage 1, replacing the default
+        ``[group, time]``. Each entry is a column, or ``'a#b'`` for the
+        cell of two columns, as in ``sp.did_imputation(fe=)``:
+        ``fe=['county', 'region#year']`` is unit effects with
+        region-by-year effects.
+    second_stage : sequence of str, optional
+        The regressors of Stage 2, replacing the treatment dummy. A
+        numeric column enters as it is; ``'i.x'`` or ``'ib0.x'`` enters
+        one indicator per level of ``x`` other than the base, as in Stata.
+        There is no intercept. The coefficients are in ``.detail``;
+        ``.estimate`` is the coefficient when there is one regressor and
+        NaN when there are several, since no single number summarises
+        them.
+
+        ``treat``, ``fe`` and ``second_stage`` select the general form of
+        the estimator. It has the analytic variance only, and
+        ``event_study`` does not apply: an event study is
+        ``second_stage=['ib<k>.<relative time>']``.
 
     Returns
     -------
@@ -458,6 +575,9 @@ def gardner_did(
     >>> round(res.estimate, 2)  # true ATT = 2.0
     2.03
     """
+    vce, cluster = cluster_from_vce(
+        vce, cluster, function="gardner_did", native="analytic"
+    )
     if vce not in ("analytic", "stage2", "bootstrap", "none"):
         raise ValueError(
             "vce must be 'analytic', 'stage2', 'bootstrap', or 'none'; " f"got {vce!r}"
@@ -471,25 +591,69 @@ def gardner_did(
         )
     if controls is None:
         controls = []
+    if treat is not None or fe is not None or second_stage is not None:
+        return _general_form(
+            data,
+            y,
+            group=group,
+            time=time,
+            first_treat=first_treat,
+            controls=list(controls),
+            event_study=event_study,
+            cluster=cluster,
+            alpha=alpha,
+            vce=vce,
+            weights=weights,
+            treat=treat,
+            fe=fe,
+            second_stage=second_stage,
+        )
+    if group is None or time is None or first_treat is None:
+        raise MethodIncompatibility(
+            "gardner_did needs group=, time= and first_treat= (or treat=, "
+            "a 0/1 column marking the treated observations).",
+            recovery_hint="Pass the unit, period and first-treatment-period "
+            "columns.",
+        )
     df = data.copy()
-    required = [y, group, time, first_treat] + list(controls)
-    if weights is not None:
-        required.append(weights)
-    for col in required:
-        if col not in df.columns:
-            raise ValueError(f"Column '{col}' not found in data")
+    check_columns(
+        df,
+        {
+            "y": y,
+            "group": group,
+            "time": time,
+            "first_treat": first_treat,
+            "controls": list(controls),
+            "weights": weights,
+        },
+        function="sp.gardner_did",
+    )
 
     df[y] = pd.to_numeric(df[y], errors="coerce")
-    subset = [y, group, time, first_treat]
+    # A missing first-treatment period means never treated, as in the other
+    # staggered estimators; such rows are comparisons, not unusable rows.
+    subset = [y, group, time]
     if weights is not None:
         df[weights] = pd.to_numeric(df[weights], errors="coerce")
         subset.append(weights)
     df = df.dropna(subset=subset).reset_index(drop=True)
+    # group= is the unit id: a 0/1 treatment column passed there is refused
+    # (cohort varies within it) or flagged (did/_arg_roles.py).
+    _check_unit_is_not_treatment(
+        df, unit=group, time=time, cohort=first_treat, function="gardner_did"
+    )
+    _require_constant_cohort(df, unit=group, cohort=first_treat, function="gardner_did")
+    _duplicate_unit_period_rows(df, unit=group, time=time, function="gardner_did")
+    df, unidentified = _drop_unidentified_cells(df, group, time, first_treat)
 
     if cluster is None:
         cluster = group
     elif cluster not in df.columns:
-        raise ValueError(f"cluster column '{cluster}' not found")
+        raise ColumnNotFound.from_missing(
+            {"cluster": cluster},
+            list(df.columns),
+            message=f"cluster column '{cluster}' not found",
+        )
 
     n = len(df)
     if weights is not None:
@@ -508,6 +672,10 @@ def gardner_did(
     t_arr = df[time].to_numpy(dtype=float)
     treated_now = np.isfinite(ft) & (ft > 0) & (t_arr >= ft)
     df["_D"] = treated_now.astype(float)
+    if vce != "none":
+        _warn_few_treated_clusters(
+            df, treated_rows=treated_now, cluster=cluster, function="gardner_did"
+        )
 
     # ── Stage 1: FE + covariate regression on untreated rows ────── #
     untreated_mask = ~treated_now
@@ -731,12 +899,15 @@ def gardner_did(
         "vce": vce,
         "se_convention": se_convention,
         "weights": weights,
+        # Recorded for sp.validation_scope, which reads the configuration.
+        "covariates": "set" if controls else "none",
         "n_obs": n,
         "n_units": n_units,
         "n_treated_units": n_treated_units,
         "n_clusters": n_clusters,
         "alpha": alpha,
         "stage1_n": int(untreated_mask.sum()),
+        "unidentified_cells": unidentified,
         "vcov": V,
         "cell_labels": supported_names if V is not None else None,
         "event_study": (
@@ -756,6 +927,11 @@ def gardner_did(
             "arXiv:2207.05943. Butts & Gardner (2022), The R Journal."
         ),
     }
+
+    if vce == "bootstrap":
+        # The only stochastic step; recorded so the result card can say
+        # whether the SE is reproducible.
+        model_info["boot_seed"] = boot_seed
 
     _result = CausalResult(
         method="Gardner 2022 two-stage DID (did2s)",
@@ -793,6 +969,89 @@ def gardner_did(
     except Exception:  # pragma: no cover
         pass
     return _result
+
+
+def _general_form(
+    data: pd.DataFrame,
+    y: str,
+    *,
+    group: Optional[str],
+    time: Optional[str],
+    first_treat: Optional[str],
+    controls: List[str],
+    event_study: bool,
+    cluster: Optional[str],
+    alpha: float,
+    vce: str,
+    weights: Optional[str],
+    treat: Optional[str],
+    fe: Optional[Sequence[str]],
+    second_stage: Optional[Sequence[str]],
+) -> CausalResult:
+    """Validate the general-form arguments and hand over to ``did2s_general``."""
+    from ._did2s_general import did2s_general
+
+    if vce not in ("analytic", "none"):
+        raise MethodIncompatibility(
+            f"gardner_did: vce={vce!r} is not available with treat=, fe= or "
+            "second_stage=; the general form has the analytic did2s "
+            "variance.",
+            recovery_hint="Use vce='analytic'.",
+        )
+    if event_study:
+        raise MethodIncompatibility(
+            "gardner_did: event_study=True builds the event-time indicators "
+            "from first_treat and does not combine with treat=, fe= or "
+            "second_stage=.",
+            recovery_hint="Pass the event study as the second stage, "
+            "second_stage=['ib<k>.<relative-time column>'], with <k> the "
+            "level to leave out.",
+        )
+    work = data
+    if treat is None:
+        if first_treat is None or time is None:
+            raise MethodIncompatibility(
+                "gardner_did: pass treat= (a 0/1 column marking the treated "
+                "observations), or first_treat= with time=.",
+            )
+        check_columns(
+            data,
+            {"first_treat": first_treat, "time": time},
+            function="sp.gardner_did",
+        )
+        ft = pd.to_numeric(data[first_treat], errors="coerce").to_numpy(float)
+        tt = pd.to_numeric(data[time], errors="coerce").to_numpy(float)
+        treat = "_gardner_treated"
+        work = data.assign(
+            **{treat: (np.isfinite(ft) & (ft > 0) & (tt >= ft)).astype(float)}
+        )
+    if fe is None:
+        if group is None or time is None:
+            raise MethodIncompatibility(
+                "gardner_did: without fe= the first stage has unit and "
+                "period effects, so group= and time= are needed.",
+                recovery_hint="Pass group= and time=, or list the fixed "
+                "effects in fe=.",
+            )
+        fe = [group, time]
+    if cluster is None:
+        cluster = group
+    if cluster is None:
+        raise MethodIncompatibility(
+            "gardner_did: pass cluster= (or group=, the default cluster).",
+        )
+    return did2s_general(
+        work,
+        y,
+        treat=treat,
+        fe=list(fe),
+        controls=controls,
+        second_stage=second_stage,
+        cluster=cluster,
+        weights=weights,
+        alpha=alpha,
+        vce=vce,
+    )
 
 
 # Convenience alias aligned with the R package ``did2s``.

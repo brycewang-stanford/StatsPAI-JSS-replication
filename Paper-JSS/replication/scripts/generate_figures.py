@@ -50,15 +50,20 @@ def _save(fig: plt.Figure, stem: str) -> None:
 
 
 def basque_gap() -> None:
-    df = sp.datasets.basque_terrorism()
+    # Section 4.2 draws the listing's fit: the ADH specification on the
+    # original Synth::basque bytes (row 1 of the specification table).
+    df = pd.read_csv(STATSPAI_ROOT / "tests" / "orig_parity" / "data" / "03_basque_original.csv")
     fit = sp.synth(
         df,
         outcome="gdppc",
         unit="region",
         time="year",
-        treated_unit="Basque Country",
+        treated_unit="Basque Country (Pais Vasco)",
         treatment_time=1970,
         method="classic",
+        special_predictors=[("gdppc", year, "mean") for year in range(1955, 1970)],
+        n_random_starts=0,
+        placebo=False,
     )
     gap = _as_frame(fit.model_info["gap_table"])
     fig, ax = plt.subplots(figsize=(TEXT_WIDTH_IN, 0.52 * TEXT_WIDTH_IN))
@@ -132,13 +137,15 @@ def basque_placebo() -> None:
 
 
 def mpdta_event_study() -> None:
-    df = sp.datasets.mpdta()
+    # The case study of Section 4.3 runs on the original did::mpdta bytes.
+    df = pd.read_csv(STATSPAI_ROOT / "tests" / "orig_parity" / "data" / "02_mpdta_original.csv")
     fit = sp.callaway_santanna(
         df,
         y="lemp",
         g="first_treat",
         t="year",
         i="countyreal",
+        control_group="nevertreated",
         estimator="reg",
     )
     es = fit.model_info["event_study"].copy()

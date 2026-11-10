@@ -6,15 +6,15 @@ Repeated cross-sections. Until now ``panel=False`` accepted only
 
 The (g, t) loop now hands each two-period sub-sample to the matching
 Sant'Anna-Zhao estimator in :mod:`statspai.did._rcs`, which is what R
-``did::att_gt(panel = FALSE)`` does (confirmed from ``did:::compute.att_gt``):
+``did::att_gt(panel = FALSE)`` does (the ``att_gt`` help page and black-box
+runs):
 
     est_method = "dr"   ->  DRDID::drdid_rc
     est_method = "ipw"  ->  DRDID::std_ipw_did_rc
     est_method = "reg"  ->  DRDID::reg_did_rc
 
-Reference generation (R 4.5.2, did 2.3.0), on the package's own ``mpdta`` so
-the never-treated group survives (see the integer-column trap noted in
-``test_aggte_mpdta_parity.py``)::
+Reference generation (R 4.5.2, did 2.5.1, DRDID 1.3.0), on the locked
+``mpdta`` CSV::
 
     a <- att_gt(yname="lemp", tname="year", idname="countyreal",
                 gname="first.treat", data=mpdta, control_group=<cg>,
@@ -22,9 +22,19 @@ the never-treated group survives (see the integer-column trap noted in
                 bstrap=FALSE, cband=FALSE)
     aggte(a, type="simple", bstrap=FALSE, cband=FALSE)
 
-Point estimates are pinned tightly; standard errors carry a ~0.15% gap from
-small differences in how the aggregation denominator is formed, so they use a
-1% relative tolerance.
+Point estimates and standard errors are both pinned at 1e-8. For
+``est_method = "dr"`` the R standard error is reproduced with
+``variance_convention='reference'``; StatsPAI's default ``'delta'`` carries
+the pre-period comparison-regression estimation effect with the sign of
+Sant'Anna and Zhao (2020, Appendix B), a documented divergence (T4; Monte
+Carlo evidence in ``_fixtures/_drdid_rc_pre_regression_mc.py``).
+
+``mpdta`` is a panel, so under ``panel=False`` the county id repeats across
+years. On such data did 2.3.0 reported aggregate standard errors 0.003% to
+0.08% away from the values below while every ATT(g, t) cell and its standard
+error agreed. These tests carried a 1% tolerance for that. did 2.5.0 reworked
+the aggregation of the influence function on the observation-level paths, and
+did 2.5.1 returns what StatsPAI already computed, to 1e-9 or better.
 
 References
 ----------
@@ -42,6 +52,7 @@ import hashlib
 import pathlib
 import warnings
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -56,14 +67,14 @@ _MPDTA = (
 )
 _MPDTA_SHA256 = "1b789c34e12ff490b2f432217a1f70af334117523eb44d20eb842ed92a574661"
 
-# (est_method, control_group) -> (simple ATT, SE) from R did 2.3.0
+# (est_method, control_group) -> (simple ATT, SE) from R did 2.5.1
 R_RCS = {
-    ("dr", "nevertreated"): (-0.0417517721, 0.0460680525),
-    ("dr", "notyettreated"): (-0.0413516293, 0.0474594680),
-    ("ipw", "nevertreated"): (-0.0417770822, 0.1672310175),
-    ("ipw", "notyettreated"): (-0.0413894098, 0.1710682403),
-    ("reg", "nevertreated"): (-0.0419686124, 0.1497787162),
-    ("reg", "notyettreated"): (-0.0413747698, 0.1502463356),
+    ("dr", "nevertreated"): (-0.041751772061081, 0.0460317504889275),
+    ("dr", "notyettreated"): (-0.0413516292999427, 0.0474329482129552),
+    ("ipw", "nevertreated"): (-0.0417770821895978, 0.167226232158267),
+    ("ipw", "notyettreated"): (-0.0413894097517419, 0.171058030727509),
+    ("reg", "nevertreated"): (-0.041968612421581, 0.149762154610337),
+    ("reg", "notyettreated"): (-0.0413747697923552, 0.150232773334959),
 }
 
 
@@ -111,11 +122,12 @@ def test_rcs_simple_att_matches_r_did(mpdta, key):
 def test_rcs_simple_se_matches_r_did(mpdta, key):
     estimator, control_group = key
     _, se_r = R_RCS[key]
-    fit = _rcs_fit(mpdta, estimator, control_group, x=["lpop"])
+    kw = {"variance_convention": "reference"} if estimator == "dr" else {}
+    fit = _rcs_fit(mpdta, estimator, control_group, x=["lpop"], **kw)
     agg = sp.aggte(fit, type="simple", bstrap=False)
     assert agg.se == pytest.approx(
-        se_r, rel=0.01
-    ), f"{estimator}/{control_group}: SE {agg.se:.8f} vs R {se_r:.8f}"
+        se_r, rel=1e-8
+    ), f"{estimator}/{control_group}: SE {agg.se:.12f} vs R {se_r:.12f}"
 
 
 @pytest.mark.parametrize("estimator", ["dr", "ipw", "reg"])
@@ -173,16 +185,78 @@ def test_unconditional_reg_rcs_matches_the_panel_simple_att(mpdta):
     assert agg.estimate == pytest.approx(-0.0399512752, abs=1e-6)
 
 
-def test_clustervars_under_rcs_requires_the_bootstrap(mpdta):
-    """RCS now clusters, but only with the multiplier bootstrap.
+def test_clustervars_under_rcs_give_clustered_analytic_ses(mpdta):
+    """RCS clusters with the analytic SEs too (Stata csdid, cluster()).
 
-    The analytic per-cell SEs cannot express within-cluster dependence,
-    so reporting them under clustervars would understate uncertainty.
+    The cluster is the state (the first two digits of the county FIPS
+    code). This test used to cluster on the cohort, which is made of whole
+    cohort x period cells: every clustered SE was about 1e-16, and "differs
+    from the unclustered SE" passed on that. Such a cluster is now refused.
     """
-    with pytest.raises(MethodIncompatibility, match="requires bstrap=True"):
-        _rcs_fit(
-            mpdta,
-            "dr",
-            "nevertreated",
-            clustervars=["countyreal", "first_treat"],
+    by_state = mpdta.assign(state=mpdta["countyreal"] // 1000)
+    r = _rcs_fit(
+        by_state,
+        "dr",
+        "nevertreated",
+        clustervars=["countyreal", "state"],
+    )
+    plain = _rcs_fit(mpdta, "dr", "nevertreated")
+    assert r.model_info["se_method"] == "analytic"
+    np.testing.assert_allclose(r.detail["att"], plain.detail["att"])
+    assert not np.allclose(r.detail["se"], plain.detail["se"])
+    # mpdta is a balanced panel, so summing the row-level influence
+    # functions within state gives the panel estimator's state-clustered
+    # SEs: the same sums, in another order.
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        panel = sp.callaway_santanna(
+            by_state,
+            y="lemp",
+            g="first_treat",
+            t="year",
+            i="countyreal",
+            base_period="varying",
+            estimator="dr",
+            control_group="nevertreated",
+            clustervars=["countyreal", "state"],
         )
+    np.testing.assert_allclose(r.detail["se"], panel.detail["se"], rtol=1e-8)
+
+    with pytest.raises(
+        MethodIncompatibility, match="constant within every cohort x period cell"
+    ):
+        _rcs_fit(mpdta, "dr", "nevertreated", clustervars=["countyreal", "first_treat"])
+
+
+@pytest.mark.parametrize("control_group", ["nevertreated", "notyettreated"])
+def test_rcs_dr_default_uses_the_delta_method_influence_function(mpdta, control_group):
+    """The default DR standard errors are those of ``_rcs.drdid_rc`` with
+    the paper's influence function, cell by cell; the ATT(g, t) do not
+    depend on the convention."""
+    from statspai.did._rcs import drdid_rc
+
+    delta = _rcs_fit(mpdta, "dr", control_group, x=["lpop"])
+    ref = _rcs_fit(
+        mpdta, "dr", control_group, x=["lpop"], variance_convention="reference"
+    )
+    assert delta.model_info["variance_convention"] == "delta"
+    np.testing.assert_allclose(delta.detail["att"], ref.detail["att"], rtol=1e-12)
+    np.testing.assert_allclose(delta.estimate, ref.estimate, rtol=1e-12)
+
+    # Cell (2007, 2006) of the varying base period: rows of cohort 2007 and
+    # of the comparison group in 2005 and 2006.
+    g = mpdta["first_treat"].to_numpy()
+    t = mpdta["year"].to_numpy()
+    comp = (g == 0) if control_group == "nevertreated" else ((g == 0) | (g > 2006))
+    rows = ((g == 2007) | comp) & np.isin(t, [2005, 2006])
+    sub = mpdta.loc[rows]
+    res = drdid_rc(
+        sub["lemp"].to_numpy(),
+        (sub["year"] == 2006).to_numpy(float),
+        (sub["first_treat"] == 2007).to_numpy(float),
+        sub[["lpop"]].to_numpy(),
+        variance_convention="delta",
+    )
+    cell = delta.detail.query("group == 2007 and time == 2006").iloc[0]
+    assert cell["att"] == pytest.approx(res.att, rel=1e-12)
+    assert cell["se"] == pytest.approx(res.se, rel=1e-12)

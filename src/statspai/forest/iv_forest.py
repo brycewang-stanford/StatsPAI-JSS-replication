@@ -124,6 +124,8 @@ class IVForestResult(GRFFamilyForest):
         if newdata is None:
             pred, var = self.cate, self.cate_variance
         else:
+            if estimate_variance:
+                self._require_little_bags()
             p, v = self._engine.predict(
                 self._new_X(newdata), estimate_variance=bool(estimate_variance)
             )
@@ -295,6 +297,7 @@ def _compliance_forest(
     _strict=True,
     n_trees="n_estimators",
     min_leaf="min_samples_leaf",
+    seed="random_state",
 )
 def iv_forest(
     data: Optional[pd.DataFrame] = None,

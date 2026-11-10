@@ -2,8 +2,9 @@
 Survey estimation routines: means, totals, and GLM with design-corrected
 variance estimation (linearisation / Taylor series).
 
-Implements the same variance formulas as R ``survey::svymean``,
-``survey::svytotal``, and ``survey::svyglm``.
+The variances are the standard design-based (linearisation) ones; the
+parity tests compare them with the outputs of R ``survey::svymean``,
+``survey::svytotal`` and ``survey::svyglm``.
 """
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ import numpy as np
 import pandas as pd
 from scipy import stats as sp_stats
 
+from .._input_validation import check_columns
 from .._result_serialize import ResultProtocolMixin
 from ..exceptions import DataInsufficient, MethodIncompatibility
 
@@ -39,6 +41,16 @@ class SurveyResult(ResultProtocolMixin):
     deff: pd.Series  # design effect
     dof: float  # degrees of freedom
     alpha: float = 0.05
+
+    @property
+    def params(self) -> pd.Series:
+        """The estimates, under the name every other result uses."""
+        return self.estimate
+
+    @property
+    def std_errors(self) -> pd.Series:
+        """The standard errors, under the name every other result uses."""
+        return self.std_error
 
     @property
     def t_values(self) -> pd.Series:
@@ -75,10 +87,12 @@ class SurveyResult(ResultProtocolMixin):
 def _resolve_vars(
     variables: Union[str, List[str]],
     data: pd.DataFrame,
+    function: Optional[str] = None,
 ) -> tuple[List[str], np.ndarray]:
     """Return (var_names, values_matrix)."""
     if isinstance(variables, str):
         variables = [variables]
+    check_columns(data, {"variables": list(variables)}, function=function)
     vals = data[variables].values.astype(np.float64)
     return variables, vals
 
@@ -87,8 +101,10 @@ def _design_vcov(scores: np.ndarray, design: "SurveyDesign") -> np.ndarray:
     """
     First-stage Taylor-linearisation (ultimate-cluster) covariance.
 
-    Mirrors R ``survey:::onestage`` / ``onestrat`` for a single-stage
-    design: within stratum *h* with ``n_h`` sampled PSUs, PSU score totals
+    The with-replacement ultimate-cluster estimator (the default variance
+    of R ``survey::svydesign`` and Stata ``svy``, which the parity tests
+    compare against): within stratum *h* with ``n_h`` sampled PSUs, PSU
+    score totals
     ``t_hj`` are centred at their stratum mean and
 
         V = sum_h (1 - f_hj) * n_h / (n_h - 1) * sum_j d_hj d_hj'
@@ -197,8 +213,7 @@ def _domain_mask(design: "SurveyDesign", subpop: Any) -> Optional[np.ndarray]:
     if subpop is None:
         return None
     if isinstance(subpop, str):
-        if subpop not in design.data.columns:
-            raise MethodIncompatibility(f"subpop={subpop!r} is not a column in data")
+        check_columns(design.data, {"subpop": subpop})
         col = design.data[subpop]
         mask = col.notna().to_numpy() & (col.fillna(0).to_numpy() != 0)
     else:
@@ -290,13 +305,18 @@ def svymean(
     """
     Survey-weighted mean with design-corrected standard errors.
 
-    Uses Taylor-series linearisation identical to R ``survey::svymean``.
+    Uses Taylor-series linearisation; matches R ``survey::svymean`` output.
 
     Parameters
     ----------
     variables : str or list of str
         Column name(s) in the design's data.
-    design : SurveyDesign
+    design : SurveyDesign or ReplicateDesign
+        The design from :func:`sp.svydesign` (linearisation) or
+        :func:`sp.svrepdesign` / :func:`sp.as_svrepdesign` (replicate
+        weights: the statistic is recomputed with every replicate's
+        weights, as R ``svymean`` on a ``svrepdesign``; DEFF is then not
+        computed).
     alpha : float
         CIs use the t distribution with the design df (#PSU - #strata), as
         Stata ``svy:`` and R ``confint(..., df = degf(design))``; R's
@@ -342,7 +362,11 @@ def svymean(
     >>> list(res.estimate.index)
     ['income']
     """
-    var_names, vals = _resolve_vars(variables, design.data)
+    if getattr(design, "is_replicate_design", False):
+        from ._replicate_stats import rep_mean_total
+
+        return rep_mean_total(variables, design, alpha, subpop, total=False)
+    var_names, vals = _resolve_vars(variables, design.data, "sp.svymean")
     dom = _domain_mask(design, subpop)
     w = design.weights if dom is None else design.weights * dom
     vals_d = vals if dom is None else np.where(dom[:, None], vals, 0.0)
@@ -391,7 +415,12 @@ def svytotal(
     Parameters
     ----------
     variables : str or list of str
-    design : SurveyDesign
+    design : SurveyDesign or ReplicateDesign
+        The design from :func:`sp.svydesign` (linearisation) or
+        :func:`sp.svrepdesign` / :func:`sp.as_svrepdesign` (replicate
+        weights: the statistic is recomputed with every replicate's
+        weights, as R ``svymean`` on a ``svrepdesign``; DEFF is then not
+        computed).
     alpha : float
         CIs use the t distribution with the design df (#PSU - #strata), as
         Stata ``svy:`` and R ``confint(..., df = degf(design))``; R's
@@ -437,7 +466,11 @@ def svytotal(
     >>> list(res.estimate.index)
     ['income']
     """
-    var_names, vals = _resolve_vars(variables, design.data)
+    if getattr(design, "is_replicate_design", False):
+        from ._replicate_stats import rep_mean_total
+
+        return rep_mean_total(variables, design, alpha, subpop, total=True)
+    var_names, vals = _resolve_vars(variables, design.data, "sp.svytotal")
     dom = _domain_mask(design, subpop)
     w = design.weights if dom is None else design.weights * dom
     vals_d = vals if dom is None else np.where(dom[:, None], vals, 0.0)
@@ -488,12 +521,18 @@ def svyglm(
     ----------
     formula : str
         ``"y ~ x1 + x2"`` style formula.
-    design : SurveyDesign
+    design : SurveyDesign or ReplicateDesign
+        The design from :func:`sp.svydesign` (sandwich over strata / PSUs)
+        or :func:`sp.svrepdesign` / :func:`sp.as_svrepdesign` (the model is
+        refitted with every replicate's weights, as R ``svyglm`` on a
+        ``svrepdesign``; df are the design's, the rank of the replicate
+        weights minus one).
     family : str
         ``"gaussian"``, ``"binomial"`` (logistic), or ``"poisson"``.
         Canonical links; the sandwich is ``A^{-1} B A^{-1}`` with
         ``A = X' diag(w V(mu)) X`` and ``B`` the design covariance of the
-        score totals ``w (y - mu) x`` (R ``survey:::svy.varcoef``).
+        score totals ``w (y - mu) x`` (the linearisation sandwich of a
+        design-weighted estimating equation).
     alpha : float
     dof : {"design", "residual"}
         Degrees of freedom for t statistics, p-values and CIs.
@@ -540,11 +579,20 @@ def svyglm(
     """
     from patsy import dmatrices
 
-    from ..core.utils import _coerce_string_extension_dtypes
+    from ..core.utils import (
+        _coerce_string_extension_dtypes,
+        formula_eval_env,
+        r_formula_idioms,
+    )
 
     # pandas >= 3.0 string columns are StringDtype, which patsy cannot sniff.
-    _data = _coerce_string_extension_dtypes(design.data)
-    y_df, X_df = dmatrices(formula, data=_data, return_type="dataframe")
+    _data = _coerce_string_extension_dtypes(design.data, r_formula_idioms(formula))
+    y_df, X_df = dmatrices(
+        r_formula_idioms(formula),
+        data=_data,
+        eval_env=formula_eval_env(),
+        return_type="dataframe",
+    )
     # Rows patsy kept (complete cases), intersected with the domain; the
     # rest of the design contributes zero scores but keeps its PSUs.
     pos = _data.index.get_indexer(X_df.index)
@@ -557,7 +605,23 @@ def svyglm(
     X = X_df.values
     w = design.weights[pos]
     var_names = list(X_df.columns)
+    # A dependent regressor (all the dummies of a category next to the
+    # constant) made the bread singular: least squares picked the minimum
+    # norm solution and the sandwich returned nan or a wrong standard error.
+    from ..core._collinear import drop_collinear
+
+    X, var_names, _omitted, _ = drop_collinear(
+        np.asarray(X, dtype=float),
+        var_names,
+        "svyglm",
+        formula=r_formula_idioms(formula),
+        design_info=getattr(X_df, "design_info", None),
+    )
     n, k = X.shape
+    if getattr(design, "is_replicate_design", False):
+        from ._replicate_stats import rep_glm
+
+        return rep_glm(y, X, var_names, pos, design, family, alpha, dof, dom)
 
     if family == "gaussian":
         params, working_residuals = _wls_fit(y, X, w)
@@ -569,7 +633,7 @@ def svyglm(
             f"Unknown family: {family}. Use 'gaussian', 'binomial', or 'poisson'."
         )
 
-    # Sandwich (R survey:::svy.varcoef): bread = (X' diag(w V(mu)) X)^{-1},
+    # Linearisation sandwich: bread = (X' diag(w V(mu)) X)^{-1},
     # score contributions z_i = w_i (y_i - mu_i) x_i (canonical link).
     scores_used = w[:, None] * working_residuals[:, None] * X
     scores = np.zeros((design.n, k))

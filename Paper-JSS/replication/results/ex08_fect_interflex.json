@@ -132,10 +132,10 @@
     {
       "label": "kernel ME at the midpoint, adaptive bandwidth (R convention)",
       "statistic": "kernel_me_3",
-      "statspai": 3.341083868916167,
+      "statspai": 3.3410838689161633,
       "r": 3.34108386891616,
       "stata": null,
-      "rel_r": 1.9937656189133205e-15,
+      "rel_r": 9.304239554928828e-16,
       "rel_stata": null
     },
     {

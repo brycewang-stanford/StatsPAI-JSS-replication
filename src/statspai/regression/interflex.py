@@ -21,11 +21,12 @@ treatment ``D`` on ``Y`` across a moderator ``X``, estimated three ways.
   kernel weights ``phi((X - x)/h(x))``, where ``h(x)`` adapts the
   bandwidth to the moderator's density exactly as ``interflex`` does
   (``h(x) = bw * sqrt(geometric mean density / density(x))``, with the
-  density from R's ``stats::density`` algorithm, ported here).
+  Gaussian kernel density of :mod:`statspai.core._binned_kde`, which
+  agrees with R's ``density()`` as a black box).
 
 Every convention -- R's type-7 quantiles and right-closed ``cut`` for
 the bins, the bin medians as centring points, HC1 covariances, the
-linear-binning-plus-FFT density estimate, the adaptive bandwidth, the
+linear-binning density estimate, the adaptive bandwidth, the
 zero-weight guard -- follows the R package so that Track A module 87
 can compare the two implementations on identical bytes.
 
@@ -44,6 +45,9 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 
+from .._input_validation import check_columns
+from ..core._binned_kde import binned_gaussian_kde
+from ..core._call_record import records_call
 from ..core.results import CausalResult
 from ..exceptions import DataInsufficient, MethodIncompatibility
 
@@ -58,54 +62,20 @@ __all__ = ["interflex", "interflex_plot"]
 def r_density(
     x: np.ndarray, n_user: int = 512, cut: float = 3.0, bw: Optional[float] = None
 ) -> Tuple[np.ndarray, np.ndarray, float]:
-    """Port of ``stats::density.default`` (Gaussian kernel, ``bw.nrd0``).
+    """Gaussian kernel density of ``x`` on ``n_user`` equispaced points.
 
-    Linear binning of the sample onto ``n`` grid points over
-    ``[min - 3bw - 4bw, max + 3bw + 4bw]``, circular convolution with the
-    Gaussian kernel by FFT, and linear interpolation back to the
-    ``n_user`` output points. Returns ``(x_grid, y, bw)``.
+    Silverman's rule-of-thumb bandwidth (unless ``bw`` is given) and the
+    linearly binned estimator of :mod:`statspai.core._binned_kde`, read on
+    ``[min(x) - cut*bw, max(x) + cut*bw]``. This is the density that R
+    ``interflex`` uses for its adaptive bandwidth (R's default ``density()``
+    call); the agreement with R is checked as a black box in
+    ``tests/reference_parity/test_binned_kde_blackbox.py``.
+
+    Returns
+    -------
+    (points, density, bw)
     """
-    x = np.asarray(x, dtype=float)
-    nx = x.size
-    if bw is None:
-        sd = float(np.std(x, ddof=1))
-        iqr = float(np.subtract(*np.percentile(x, [75, 25])))
-        lo = min(sd, iqr / 1.34)
-        if not lo:
-            lo = sd or abs(x[0]) or 1.0
-        bw = 0.9 * lo * nx ** (-0.2)
-    n = 512 if n_user <= 512 else int(2 ** np.ceil(np.log2(n_user)))
-    frm = x.min() - cut * bw
-    to = x.max() + cut * bw
-    lo = frm - 4.0 * bw
-    up = to + 4.0 * bw
-    # BinDist: linear binning with unit total mass onto n points, padded to 2n.
-    weights = np.full(nx, 1.0 / nx)
-    y = np.zeros(2 * n)
-    xdelta = (up - lo) / (n - 1)
-    xpos = (x - lo) / xdelta
-    ix = np.floor(xpos).astype(int)
-    fx = xpos - ix
-    for xi, fi, wi in zip(ix, fx, weights):
-        if 0 <= xi <= n - 2:
-            y[xi] += wi * (1 - fi)
-            y[xi + 1] += wi * fi
-        elif xi == -1:
-            y[0] += wi * fi
-        elif xi == n - 1:
-            y[xi] += wi * (1 - fi)
-    # R >= 4.4 (old.coords = FALSE): the kernel grid uses the binning
-    # spacing (up - lo)/(n - 1), i.e. 2n points from 0 to (2n-1)/(n-1)*(up-lo).
-    kords = np.linspace(0.0, (2 * n - 1) / (n - 1) * (up - lo), 2 * n)
-    kords[n + 1 : 2 * n] = -kords[n - 1 : 0 : -1]
-    kords = stats.norm.pdf(kords, scale=bw)
-    # numpy's ifft carries the 1/(2n) that R applies as "/ length(y)".
-    conv = np.fft.ifft(np.fft.fft(y) * np.conj(np.fft.fft(kords)))
-    dens = np.maximum(0.0, np.real(conv)[:n])
-    xords = np.linspace(lo, up, n)
-    xout = np.linspace(frm, to, n_user)
-    yout = np.interp(xout, xords, dens)
-    return xout, yout, float(bw)
+    return binned_gaussian_kde(np.asarray(x, dtype=float), bw=bw, n=n_user, cut=cut)
 
 
 def l_kurtosis(x: np.ndarray) -> float:
@@ -367,6 +337,7 @@ def _kernel_cv(
 # ----------------------------------------------------------------------
 
 
+@records_call("interflex")
 def interflex(
     data: pd.DataFrame,
     y: str,
@@ -515,24 +486,31 @@ def interflex(
     if cv and bw is not None:
         raise MethodIncompatibility("cv=True chooses bw; do not pass bw= as well")
     if estimator == "kernel" and not cv and (bw is None or float(bw) <= 0):
-        raise ValueError(
+        raise MethodIncompatibility(
             "estimator='kernel' needs a positive bandwidth bw= (or cv=True to "
-            "cross-validate it)"
+            "cross-validate it)",
+            recovery_hint="Pass bw= (in units of the moderator), or cv=True.",
+            diagnostics={"estimator": estimator, "bw": bw},
         )
     metric = str(metric).lower()
     if metric not in {"mse", "mae"}:
         raise ValueError("metric must be 'mse' or 'mae'")
     if vce == "bootstrap" and estimator != "kernel":
-        raise ValueError(
+        raise MethodIncompatibility(
             "vce='bootstrap' is available for estimator='kernel'; the linear "
-            "and binning estimators report delta-method SEs"
+            "and binning estimators report delta-method SEs",
+            recovery_hint="Use estimator='kernel' with vce='bootstrap', or keep "
+            "the default vce for the linear and binning estimators.",
+            diagnostics={"estimator": estimator, "vce": vce},
         )
     cov_type = "homoscedastic" if vce == "homoscedastic" else "robust"
     zc = list(z) if z else []
     cols = [y, d, x, *zc] + ([weights] if weights else [])
-    for c in cols:
-        if c not in data.columns:
-            raise ValueError(f"column {c!r} not in data")
+    check_columns(
+        data,
+        {"y": y, "d": d, "x": x, "z": zc, "weights": weights or None},
+        function="interflex",
+    )
     df = data[cols].dropna().reset_index(drop=True)
     Y = df[y].to_numpy(dtype=float)
     D = df[d].to_numpy(dtype=float)

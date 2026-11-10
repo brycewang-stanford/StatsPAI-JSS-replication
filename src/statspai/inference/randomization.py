@@ -7,7 +7,7 @@ Increasingly required by top journals (Young 2019, QJE).
 
 This module provides both the original ``ri_test`` for quick usage and
 the enhanced ``fisher_exact`` with FisherResult class for richer output
-including Hodges-Lehmann confidence intervals and plotting.
+including test-inversion confidence intervals and plotting.
 
 References
 ----------
@@ -25,7 +25,7 @@ Hodges, J.L. and Lehmann, E.L. (1963).
 """
 
 import warnings
-from typing import Any, Callable, Dict, List, Optional, Tuple, cast
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union, cast
 
 import numpy as np
 import pandas as pd
@@ -34,6 +34,8 @@ from scipy import stats
 from .._aliases import accepts_aliases
 from .._result_serialize import ResultProtocolMixin
 from ..core.results import CausalResult
+from ..exceptions import DataInsufficient, MethodIncompatibility
+from .basic_tests import _check_alpha
 
 StatFn = Callable[[np.ndarray, np.ndarray], float]
 Permuter = Callable[[], np.ndarray]
@@ -89,7 +91,10 @@ class FisherResult(ResultProtocolMixin):
     p_one_sided : float
         One-sided (greater) permutation p-value.
     ci : tuple of float
-        Confidence interval from Hodges-Lehmann inversion.
+        For ``statistic='ate'`` the confidence interval for a constant
+        effect, by inversion of the test. For the other statistics the
+        central ``1 - alpha`` range of the null distribution of the
+        statistic, which is not an interval for the effect.
     perm_dist : np.ndarray
         Full permutation distribution of the test statistic.
     statistic_type : str
@@ -130,7 +135,9 @@ class FisherResult(ResultProtocolMixin):
         n_perm: int,
         n_obs: int,
         n_treated: int,
+        alpha: float = 0.05,
     ) -> None:
+        self.alpha = alpha
         self.statistic = statistic
         self.p_value = p_value
         self.p_one_sided = p_one_sided
@@ -141,6 +148,13 @@ class FisherResult(ResultProtocolMixin):
         self.n_obs = n_obs
         self.n_treated = n_treated
 
+    def _ci_label(self) -> str:
+        """What ``ci`` holds: an interval for the effect only for 'ate'."""
+        level = f"{100 * (1 - self.alpha):g}%"
+        if self.statistic_type == "ate":
+            return f"{level} CI (test inversion)"
+        return f"Null distribution, central {level}"
+
     def summary(self) -> str:
         """Return a formatted summary string."""
         lines = [
@@ -150,7 +164,7 @@ class FisherResult(ResultProtocolMixin):
             f"  Test statistic ({self.statistic_type}):  {self.statistic:.6f}",
             f"  Two-sided p-value:           {self.p_value:.4f}",
             f"  One-sided p-value (greater):  {self.p_one_sided:.4f}",
-            f"  95% CI (Hodges-Lehmann):      [{self.ci[0]:.4f}, {self.ci[1]:.4f}]",
+            f"  {self._ci_label()}:  [{self.ci[0]:.4f}, {self.ci[1]:.4f}]",
             "-" * 60,
             f"  Permutations:  {self.n_perm:,}",
             f"  N (total):     {self.n_obs:,}",
@@ -252,7 +266,7 @@ class FisherResult(ResultProtocolMixin):
                     f'<td style="{right_style}">{self.p_one_sided:.4f}</td></tr>'
                 ),
                 (
-                    f'<tr><td style="{cell_style}"><b>95% CI</b></td>'
+                    f'<tr><td style="{cell_style}"><b>{self._ci_label()}</b></td>'
                     f'<td style="{right_style}">'
                     f"[{self.ci[0]:.4f}, {self.ci[1]:.4f}]</td></tr>"
                 ),
@@ -298,8 +312,9 @@ def fisher_exact(
     """
     Fisher's exact randomization test with enhanced features.
 
-    Computes a permutation-based p-value and Hodges-Lehmann confidence
-    interval for the treatment effect under the sharp null hypothesis.
+    Computes a permutation-based p-value under the sharp null hypothesis
+    and, for the difference in means, the confidence interval for a
+    constant effect obtained by inverting the test.
 
     Parameters
     ----------
@@ -314,6 +329,7 @@ def fisher_exact(
         - ``'ate'``: Average treatment effect (difference in means).
         - ``'ks'``: Kolmogorov-Smirnov statistic.
         - ``'rank_sum'``: Wilcoxon rank-sum statistic.
+        - ``'t'``: studentized difference in means (unequal variances).
     controls : list of str, optional
         Control variables for covariate-adjusted inference.
         When provided, the test statistic is computed on residuals
@@ -331,7 +347,7 @@ def fisher_exact(
     seed : int, optional
         Random seed for reproducibility.
     alpha : float, default 0.05
-        Significance level for the Hodges-Lehmann confidence interval.
+        Significance level for the test-inversion confidence interval.
 
     Returns
     -------
@@ -363,18 +379,35 @@ def fisher_exact(
     assignment is the only source of randomness. The p-value is the
     proportion of permuted statistics at least as extreme as observed.
 
-    The Hodges-Lehmann CI is constructed by inverting the permutation
-    test: find the set of tau_0 values for which the test of
-    Y - tau_0 * D does not reject at level alpha.
+    The confidence interval inverts the permutation test: it is the set of
+    tau_0 for which the test of ``Y - tau_0 * D`` does not reject at level
+    alpha. It is computed on the same assignments as the p-value (the
+    difference in means is linear in the outcome, so no new draws are
+    needed) and each end is found by bisection; with ``controls`` the
+    shifted outcome is residualized, as the null requires. An end is
+    infinite, with a warning, when no hypothesised effect is rejected,
+    which happens when the design has too few assignments for ``alpha``.
+    Through 1.38.0 the ends were read off a 101-point grid spanning six
+    standard deviations of the outcome, each point tested on its own 500
+    draws, and with ``controls`` the unresidualized ``tau_0 * D`` was
+    subtracted from the residualized outcome.
+    For ``statistic='t'``, ``'ks'`` and ``'rank_sum'`` the interval is the
+    same inversion, in outcome units: the statistic is recomputed on
+    ``Y - tau_0 * D`` for a stored set of assignments. Through 1.38.0 those
+    statistics returned the 2.5% and 97.5% percentiles of the null
+    distribution of the statistic, which is not an interval for the effect.
 
     For stratified experiments, treatment is permuted within strata.
     For cluster-randomized experiments, treatment is permuted at
-    the cluster level.
+    the cluster level; with both ``cluster`` and ``stratify`` whole
+    clusters are permuted within their stratum (the treatment and the
+    stratum must then be constant within clusters).
 
     See Young (2019, *QJE*) for why randomization p-values should
     accompany asymptotic p-values in experimental papers.
     """
     rng = np.random.default_rng(seed)
+    _check_alpha(alpha, "fisher_exact")
 
     # Prepare data
     keep_cols = [y, treatment]
@@ -390,14 +423,53 @@ def fisher_exact(
     Y = df[y].values.astype(float)
     D = df[treatment].values.astype(float)
     n = len(Y)
+    if not np.all(np.isin(D, (0.0, 1.0))):
+        raise MethodIncompatibility(
+            f"fisher_exact compares treated and control units and needs a "
+            f"binary 0/1 treatment; {treatment!r} takes other values.",
+            recovery_hint="Recode the treatment to 0/1, or use sp.ri_test "
+            "with stat='ols' for a multi-valued or continuous treatment.",
+            diagnostics={"n_distinct": int(np.unique(D).size)},
+        )
     n_treated = int(D.sum())
+    if n_treated == 0 or n_treated == n:
+        raise DataInsufficient(
+            f"fisher_exact: {treatment!r} has {n_treated} treated and "
+            f"{n - n_treated} control units on the complete rows; the test "
+            "needs both arms.",
+            diagnostics={"n_treated": n_treated, "n_control": n - n_treated},
+        )
+    if cluster is not None:
+        cl_codes = pd.factorize(df[cluster])[0]
+        for name, values in ((treatment, D), (stratify, None)):
+            if name is None:
+                continue
+            if values is None:
+                values = pd.factorize(df[name])[0].astype(float)
+            first = np.zeros(int(cl_codes.max()) + 1)
+            first[cl_codes[::-1]] = values[::-1]
+            if not np.array_equal(values, first[cl_codes]):
+                raise MethodIncompatibility(
+                    f"fisher_exact: {name!r} varies within {cluster!r} "
+                    "clusters, but the permutation assigns one treatment "
+                    "per cluster"
+                    + ("." if name == treatment else " within its stratum."),
+                    recovery_hint="Pass cluster-level variables, or permute "
+                    "at the row level (no cluster=).",
+                    diagnostics={"cluster": cluster},
+                )
 
-    # Covariate adjustment: residualize Y on controls
+    # Covariate adjustment: residualize Y on controls. Under the sharp null
+    # of a constant effect tau_0 the fixed quantity is Y - tau_0 * D, whose
+    # residual is resid(Y) - tau_0 * resid(D); the interval needs the second
+    # residual too.
+    D_shift = D
     if controls:
         X_ctrl = df[controls].values.astype(float)
         X_ctrl = np.column_stack([np.ones(n), X_ctrl])
         beta_ctrl = np.linalg.lstsq(X_ctrl, Y, rcond=None)[0]
         Y = Y - X_ctrl @ beta_ctrl
+        D_shift = D - X_ctrl @ np.linalg.lstsq(X_ctrl, D, rcond=None)[0]
 
     # Select test statistic function
     stat_fn = _get_stat_fn(statistic)
@@ -408,7 +480,7 @@ def fisher_exact(
     # Build the permutation function
     perm_fn: Permuter
     if cluster is not None:
-        perm_fn = _make_cluster_permuter(df, treatment, cluster, rng)
+        perm_fn = _make_cluster_permuter(df, treatment, cluster, rng, stratify)
     elif stratify is not None:
         perm_fn = _make_stratified_permuter(df, treatment, stratify, rng)
     else:
@@ -425,33 +497,62 @@ def fisher_exact(
     assignments = _enumerate_assignments(
         D,
         clusters=df[cluster].values if cluster is not None else None,
-        strata=(
-            df[stratify].values if (stratify is not None and cluster is None) else None
-        ),
+        strata=df[stratify].values if stratify is not None else None,
         max_count=n_perm,
     )
+    # ``shift_stats`` is the same difference in means applied to ``D_shift``:
+    # with it the statistic of every assignment at any hypothesised effect is
+    # ``perm_stats - tau_0 * shift_stats``, so the interval is inverted on
+    # the very draws that gave the p-value.
+    want_ci = statistic == "ate"
+    # The other statistics are not linear in the outcome: their interval is
+    # inverted on stored assignments (at most ``_MAX_DRAW_CELLS / n`` rows).
+    draws: Optional[np.ndarray] = None
     if assignments is not None:
         perm_stats = np.array([stat_fn(Y, a) for a in assignments])
+        shift_stats = (
+            np.array([stat_fn(D_shift, a) for a in assignments]) if want_ci else None
+        )
+        if not want_ci:
+            draws = np.asarray(assignments, dtype=float)
     else:
         perm_stats = np.zeros(n_perm)
+        shift_stats = np.zeros(n_perm) if want_ci else None
+        if not want_ci:
+            draws = np.empty((min(n_perm, max(_MAX_DRAW_CELLS // n, 99)), n))
         for b in range(n_perm):
             D_perm = perm_fn()
             perm_stats[b] = stat_fn(Y, D_perm)
+            if shift_stats is not None:
+                shift_stats[b] = stat_fn(D_shift, D_perm)
+            if draws is not None and b < draws.shape[0]:
+                draws[b] = D_perm
 
     # P-values
     p_two_sided = _share_at_least(perm_stats, obs_stat, two_sided=True)
     p_one_sided = _share_at_least(perm_stats, obs_stat, two_sided=False)
 
-    # Hodges-Lehmann confidence interval (only for ATE)
-    if statistic == "ate":
-        ci = _hodges_lehmann_ci(
-            Y, D, stat_fn, perm_fn, n_perm, alpha, rng, assignments=assignments
+    # Confidence interval by test inversion (only for ATE)
+    if shift_stats is not None:
+        ci = _invert_constant_effect(
+            perm_stats, shift_stats, obs_stat, float(stat_fn(D_shift, D)), alpha
         )
+        if not np.all(np.isfinite(ci)):
+            warnings.warn(
+                "fisher_exact: the randomization test cannot reject at level "
+                f"{alpha:g} however large the hypothesised effect "
+                f"({perm_stats.size} assignments; the smallest attainable "
+                "two-sided p-value is above alpha), so the confidence "
+                "interval is unbounded.",
+                UserWarning,
+                stacklevel=2,
+            )
     else:
-        # For non-ATE statistics, use percentile CI from permutation dist
-        ci = (
-            float(np.percentile(perm_stats, 100 * alpha / 2)),
-            float(np.percentile(perm_stats, 100 * (1 - alpha / 2))),
+        # Same inversion for the statistics that are not linear in the
+        # outcome, on the stored assignments.
+        assert draws is not None
+        ci = _invert_constant_effect_generic(
+            Y, D, D_shift, draws[: min(draws.shape[0], n_perm)], statistic, alpha
         )
 
     _result = FisherResult(
@@ -464,6 +565,7 @@ def fisher_exact(
         n_perm=int(perm_stats.size),
         n_obs=n,
         n_treated=n_treated,
+        alpha=alpha,
     )
     try:
         from ..output._lineage import attach_provenance as _attach_prov
@@ -499,6 +601,10 @@ def ri_test(
     cluster: Optional[str] = None,
     seed: Optional[int] = None,
     alpha: float = 0.05,
+    strata: Optional[str] = None,
+    covariates: Optional[List[str]] = None,
+    absorb: Optional[Union[str, List[str]]] = None,
+    interact: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Randomization inference p-value.
@@ -512,12 +618,34 @@ def ri_test(
     y : str
         Outcome variable.
     treat : str
-        Binary treatment indicator (0/1).
+        Treatment. ``'diff_means'`` / ``'t'`` / ``'ks'`` need a binary 0/1
+        indicator; ``'ols'`` / ``'ols_t'`` and callables also take a
+        continuous one (an exposure or dose), whose observed values are
+        permuted. Under ``cluster`` it must be constant within clusters
+        (the permuted unit is the cluster); a treatment that switches on
+        within a cluster, such as ``exposure x post``, is passed as
+        ``treat='exposure', interact='post'``.
     stat : str or callable, default 'diff_means'
         Test statistic:
         - ``'diff_means'``: difference in means (Y_bar_1 - Y_bar_0)
         - ``'ks'``: Kolmogorov-Smirnov statistic
-        - ``'t'``: t-statistic
+        - ``'t'``: the difference in means divided by its unequal-variance
+          (Neyman) standard error. Unlike ``'diff_means'``, the test based
+          on it also has the right size in large samples for the weak null
+          of a zero *average* effect when effects vary across units
+        - ``'rank_sum'``: Wilcoxon rank sum of the treated outcomes
+          (mid-ranks), centred at its null mean ``n_1 (n + 1) / 2``
+        - ``'lin'``: coefficient on the treatment in the regression of
+          ``y`` on the treatment, the centred ``covariates`` and their
+          interactions with the treatment (:func:`sp.lm_lin`)
+        - ``'lin_t'``: that coefficient divided by its HC2 standard error,
+          the covariate-adjusted statistic with the same large-sample
+          guarantee as ``'t'``
+        - ``'ols'``: coefficient on the treatment in the OLS regression of
+          ``y`` on the treatment, ``covariates`` and (with ``strata``)
+          stratum fixed effects -- the regression-adjusted statistic of
+          stratified experiments (R ``ri2::conduct_ri(y ~ Z + x + block)``)
+        - ``'ols_t'``: its t-statistic (HC1, or CR1 by ``cluster``)
         - A callable ``f(Y, D) -> float`` for custom statistics.
     n_perms : int, default 1000
         Number of random permutations. Use 10000+ for publications. When
@@ -530,6 +658,30 @@ def ri_test(
     seed : int, optional
         Random seed.
     alpha : float, default 0.05
+    strata : str, optional
+        Randomization strata (blocks): treatment is re-randomized *within*
+        each stratum, keeping its number of treated units (or clusters,
+        with ``cluster``). Permuting across strata when the experiment
+        assigned within them tests the wrong null distribution and loses
+        power (UCT, QJE 2016: education p 0.70 unstratified against 0.17).
+    covariates : list of str, optional
+        Controls for ``stat='ols'`` / ``'ols_t'`` / ``'lin'`` / ``'lin_t'``.
+    absorb : str or list of str, optional
+        Fixed effects for ``stat='ols'`` / ``'ols_t'``, as ``reghdfe``'s
+        ``absorb()`` (column names, ``"a^b"`` for combinations; singletons
+        dropped). They are swept out by the ``sp.hdfe_ols`` absorber
+        (Frisch-Waugh-Lovell). Under ``cluster`` the regressor of any
+        permutation is ``R v`` with ``R`` the swept cluster indicators
+        (times ``interact``) and ``v`` the permuted cluster values, so only
+        ``G`` columns are swept once and each permutation is a small matrix
+        product -- the statistic equals the ``sp.hdfe_ols`` coefficient
+        (or its cluster t) refitted on the permuted treatment. Without
+        ``cluster`` every permutation re-sweeps the regressor.
+    interact : str, optional
+        For ``stat='ols'`` / ``'ols_t'``: the regressor is
+        ``treat * data[interact]`` while ``treat`` is what is permuted --
+        the intensity DiD ``exposure x post`` with exposure permuted across
+        clusters.
 
     Returns
     -------
@@ -574,9 +726,22 @@ def ri_test(
     """
     rng = np.random.default_rng(seed)
 
-    df = data[[y, treat]].copy()
+    covariates = list(covariates or [])
+    fe_terms = [absorb] if isinstance(absorb, str) else list(absorb or [])
+    fe_cols = [c for t in fe_terms for c in t.split("^")]
+    regress_stat = isinstance(stat, str) and stat in ("ols", "ols_t")
+    if (fe_terms or interact) and not regress_stat:
+        raise MethodIncompatibility(
+            "absorb= and interact= are used by stat='ols' / 'ols_t' only.",
+            recovery_hint="Pass stat='ols' (coefficient) or 'ols_t' (its t).",
+        )
+    extra = list(dict.fromkeys(fe_cols + ([interact] if interact else [])))
+    extra = [c for c in extra if c not in (y, treat, *covariates)]
+    df = data[[y, treat] + covariates + extra].copy()
     if cluster:
         df["_cluster"] = data[cluster].values
+    if strata:
+        df["_strata"] = data[strata].values
     n_before = len(df)
     df = df.dropna()
     n_dropped = n_before - len(df)
@@ -594,9 +759,66 @@ def ri_test(
             stacklevel=2,
         )
 
+    if fe_terms:
+        from ..panel.hdfe import Absorber, _factorize_multi
+
+        fe_mat = np.column_stack(
+            [
+                _factorize_multi([df[c].to_numpy() for c in t.split("^")])[0]
+                for t in fe_terms
+            ]
+            + ([pd.factorize(df["_strata"])[0]] if strata else [])
+        )
+        absorber = Absorber(fe_mat, drop_singletons=True, tol=1e-8)
+        df = df.iloc[np.flatnonzero(absorber.keep_mask)]
+
     Y = df[y].values.astype(float)
     D = df[treat].values.astype(float)
     n = len(Y)
+    st = df["_strata"].values if strata else None
+    binary = bool(np.all(np.isin(D, (0.0, 1.0))))
+    if (
+        not binary
+        and isinstance(stat, str)
+        and stat in ("diff_means", "t", "ks", "rank_sum", "lin", "lin_t")
+    ):
+        raise MethodIncompatibility(
+            f"stat={stat!r} compares treated and control units and needs a "
+            f"binary 0/1 treatment; {treat!r} takes other values.",
+            recovery_hint="For a continuous treatment use stat='ols' / 'ols_t' "
+            "(with absorb= for fixed effects) or a callable.",
+            diagnostics={"n_distinct": int(np.unique(D).size)},
+        )
+    if cluster:
+        cl_codes_chk = pd.factorize(df["_cluster"])[0]
+        first = np.zeros(int(cl_codes_chk.max()) + 1)
+        first[cl_codes_chk[::-1]] = D[::-1]
+        if not np.allclose(D, first[cl_codes_chk], rtol=0, atol=0):
+            raise MethodIncompatibility(
+                f"{treat!r} varies within {cluster!r} clusters, but the "
+                "permutation assigns one value per cluster.",
+                recovery_hint="Pass the cluster-level variable as treat= and the "
+                "within-cluster pattern as interact= (e.g. treat='exposure', "
+                "interact='post'), or permute at the row level (no cluster=).",
+                diagnostics={"cluster": cluster},
+            )
+    lin_stat = isinstance(stat, str) and stat in ("lin", "lin_t")
+    if covariates and not (regress_stat or lin_stat):
+        raise MethodIncompatibility(
+            "covariates= is used by stat='ols' / 'ols_t' / 'lin' / 'lin_t' only.",
+            recovery_hint="Pass one of those statistics with covariates.",
+        )
+    if lin_stat and not covariates:
+        raise MethodIncompatibility(
+            f"stat={stat!r} needs covariates=.",
+            recovery_hint="Without covariates use stat='diff_means' or 't'.",
+        )
+    if lin_stat and cluster:
+        raise MethodIncompatibility(
+            f"stat={stat!r} uses the HC2 variance of independently assigned "
+            "units and is not available with cluster=.",
+            recovery_hint="Use stat='ols_t' (CR1) with cluster=.",
+        )
 
     # Select test statistic function
     stat_fn: StatFn
@@ -616,9 +838,35 @@ def ri_test(
             return float(stats.ks_2samp(y_[d_ == 1], y_[d_ == 0]).statistic)
 
         stat_fn = ks_stat
+    elif stat == "rank_sum":
+        stat_fn = _rank_sum_stat
+    elif stat in ("lin", "lin_t"):
+        stat_fn = _lin_stat_factory(
+            df[covariates].to_numpy(dtype=float), t_stat=stat == "lin_t"
+        )
+    elif stat in ("ols", "ols_t") and (fe_terms or interact):
+        stat_fn = _absorbed_ols_stat_factory(
+            df,
+            y,
+            covariates,
+            absorber if fe_terms else None,
+            df[interact].to_numpy(dtype=float) if interact else None,
+            df["_cluster"].values if cluster else None,
+            None if fe_terms else st,
+            t_stat=stat == "ols_t",
+        )
+    elif stat in ("ols", "ols_t"):
+        stat_fn = _ols_stat_factory(
+            df,
+            covariates,
+            st,
+            df["_cluster"].values if cluster else None,
+            t_stat=stat == "ols_t",
+        )
     else:
         raise ValueError(
-            f"Unknown stat: '{stat}'. Use 'diff_means', 't', 'ks', or callable."
+            f"Unknown stat: '{stat}'. Use 'diff_means', 't', 'ks', 'rank_sum', "
+            "'lin', 'lin_t', 'ols', 'ols_t' or a callable."
         )
 
     # Observed statistic
@@ -628,25 +876,46 @@ def ri_test(
     # distinct assignments than ``n_perms`` (the ri2 / randomizr rule),
     # otherwise ``n_perms`` random re-randomizations.
     cl = df["_cluster"].values if cluster else None
-    assignments = _enumerate_assignments(D, clusters=cl, max_count=n_perms)
+    assignments = _enumerate_assignments(D, clusters=cl, strata=st, max_count=n_perms)
     if assignments is not None:
         perm_stats = np.array([stat_fn(Y, a) for a in assignments])
     elif cluster:
         perm_stats = np.zeros(n_perms)
-        # Cluster-level permutation
+        # Cluster-level permutation (within strata when given)
         unique_cl = np.unique(cl)
         # Get treatment per cluster (first obs)
         cl_treat = np.array([D[cl == c][0] for c in unique_cl])
+        cl_rows = [np.flatnonzero(cl == c) for c in unique_cl]
+        if st is not None:
+            cl_st = np.array([st[r[0]] for r in cl_rows])
+            groups = [np.flatnonzero(cl_st == s_) for s_ in np.unique(cl_st)]
+        else:
+            groups = [np.arange(unique_cl.size)]
         for b in range(n_perms):
-            cl_perm = rng.permutation(cl_treat)
+            cl_perm = cl_treat.copy()
+            for gidx in groups:
+                cl_perm[gidx] = rng.permutation(cl_treat[gidx])
+            on_values = getattr(stat_fn, "on_cluster_values", None)
+            if on_values is not None:
+                # the statistic needs only the cluster-level values (in
+                # np.unique order); skip expanding them to rows
+                perm_stats[b] = on_values(cl_perm)
+                continue
             D_perm = np.zeros(n)
-            for i, c in enumerate(unique_cl):
-                D_perm[cl == c] = cl_perm[i]
+            for i, rows in enumerate(cl_rows):
+                D_perm[rows] = cl_perm[i]
             perm_stats[b] = stat_fn(Y, D_perm)
     else:
         perm_stats = np.zeros(n_perms)
+        groups = (
+            [np.flatnonzero(st == s_) for s_ in np.unique(st)]
+            if st is not None
+            else [np.arange(n)]
+        )
         for b in range(n_perms):
-            D_perm = rng.permutation(D)
+            D_perm = D.copy()
+            for gidx in groups:
+                D_perm[gidx] = rng.permutation(D[gidx])
             perm_stats[b] = stat_fn(Y, D_perm)
 
     # P-values (ties with the observed statistic count as extreme; the
@@ -669,6 +938,212 @@ def ri_test(
 # ======================================================================
 
 
+def _ols_stat_factory(
+    df: pd.DataFrame,
+    covariates: List[str],
+    strata: Optional[np.ndarray],
+    clusters: Optional[np.ndarray],
+    t_stat: bool,
+    vce: str = "robust",
+) -> StatFn:
+    """Treatment coefficient (or its t) after partialling out the controls.
+
+    By Frisch-Waugh-Lovell only ``M_W d`` changes across permutations, so the
+    projection onto the controls ``W`` (intercept, covariates, stratum
+    dummies) is factored once.
+
+    The t uses CR1 with ``clusters``, otherwise HC1 (``vce='robust'``) or
+    the classical OLS variance ``s^2 / d~'d~`` with ``s^2 = e'e / (n - k)``
+    (``vce='classical'``, Stata ``regress`` without options).
+    """
+    if vce not in ("robust", "classical"):
+        raise ValueError(f"vce must be 'robust' or 'classical', got {vce!r}")
+    if vce == "classical" and clusters is not None:
+        raise ValueError("the classical variance does not take clusters")
+    n = len(df)
+    parts = [np.ones((n, 1))]
+    if covariates:
+        parts.append(df[covariates].to_numpy(dtype=float))
+    if strata is not None:
+        parts.append(
+            pd.get_dummies(pd.Series(strata), drop_first=True, dtype=float).to_numpy()
+        )
+    Wm = np.column_stack(parts)
+    Q, _ = np.linalg.qr(Wm)
+    k = int(np.linalg.matrix_rank(Wm)) + 1
+    cl_codes = None if clusters is None else pd.factorize(clusters)[0]
+
+    def fn(y_: np.ndarray, d_: np.ndarray) -> float:
+        dt = d_ - Q @ (Q.T @ d_)
+        yt = y_ - Q @ (Q.T @ y_)
+        dd = float(dt @ dt)
+        if dd <= 0:
+            return 0.0
+        b = float(dt @ yt) / dd
+        if not t_stat:
+            return b
+        e = yt - b * dt
+        if vce == "classical":
+            var = float(e @ e) / (n - k) / dd
+        elif cl_codes is None:
+            var = (n / (n - k)) * float(np.sum((dt * e) ** 2)) / dd**2
+        else:
+            G = int(cl_codes.max()) + 1
+            sc = np.bincount(cl_codes, weights=dt * e, minlength=G)
+            var = (G / (G - 1)) * ((n - 1) / (n - k)) * float(sc @ sc) / dd**2
+        return b / np.sqrt(var) if var > 0 else 0.0
+
+    return fn
+
+
+def _absorbed_ols_stat_factory(
+    df: pd.DataFrame,
+    y: str,
+    covariates: List[str],
+    absorber: Any,
+    interact: Optional[np.ndarray],
+    clusters: Optional[np.ndarray],
+    strata: Optional[np.ndarray],
+    t_stat: bool,
+) -> StatFn:
+    """``ols`` / ``ols_t`` with absorbed fixed effects and an interaction.
+
+    The regressor is ``M (d * s)`` with ``M`` the FE sweep (then the
+    covariates partialled out) and ``s`` the interaction (or 1). Under
+    cluster permutation ``d`` is ``v[cluster]``, so the regressor is
+    ``R v`` with ``R = M [1_g * s]``: ``G`` columns are swept once, and
+    ``b = v'a / v'Bv`` with ``a = R'y~``, ``B = R'R``; the cluster scores are
+    ``A_g v - b v'B_g v`` from per-cluster blocks. Without clusters each call
+    sweeps its regressor.
+    """
+    n = len(df)
+    s = np.ones(n) if interact is None else interact
+
+    def sweep(A: np.ndarray) -> np.ndarray:
+        return absorber.demean(A, copy=True, already_masked=True) if absorber else A
+
+    parts = [] if absorber is not None else [np.ones((n, 1))]
+    if covariates:
+        parts.append(df[covariates].to_numpy(dtype=float))
+    if strata is not None:
+        parts.append(
+            pd.get_dummies(pd.Series(strata), drop_first=True, dtype=float).to_numpy()
+        )
+    W = (
+        sweep(np.column_stack(parts))
+        if parts and absorber is not None
+        else (np.column_stack(parts) if parts else np.empty((n, 0)))
+    )
+    if W.shape[1]:
+        Q, _ = np.linalg.qr(W)
+    else:
+        Q = np.empty((n, 0))
+
+    def resid(A: np.ndarray) -> np.ndarray:
+        return A - Q @ (Q.T @ A) if Q.shape[1] else A
+
+    k = Q.shape[1] + 1
+    # sorted codes: the permutation loop hands over values in np.unique order
+    cl_codes = None if clusters is None else np.unique(clusters, return_inverse=True)[1]
+    y_raw = df[y].to_numpy(dtype=float)
+    key = None
+    if cl_codes is not None:
+        key = _sweep_key(y_raw, s, absorber, cl_codes, parts)
+        hit = _SWEEP_CACHE.get(key)
+        if hit is not None:
+            return _cluster_stat(*hit, t_stat=t_stat)
+    yt = resid(sweep(y_raw))
+
+    def finish(dt: np.ndarray) -> float:
+        dd = float(dt @ dt)
+        if dd <= 0:
+            return 0.0
+        b = float(dt @ yt) / dd
+        if not t_stat:
+            return b
+        e = yt - b * dt
+        if cl_codes is None:
+            var = (n / (n - k)) * float(np.sum((dt * e) ** 2)) / dd**2
+        else:
+            G = int(cl_codes.max()) + 1
+            sc = np.bincount(cl_codes, weights=dt * e, minlength=G)
+            var = (G / (G - 1)) * ((n - 1) / (n - k)) * float(sc @ sc) / dd**2
+        return b / np.sqrt(var) if var > 0 else 0.0
+
+    if cl_codes is None:
+        return lambda y_, d_: finish(resid(sweep(np.asarray(d_, float) * s)))
+
+    G = int(cl_codes.max()) + 1
+    first_row = np.full(G, -1)
+    first_row[cl_codes[::-1]] = np.arange(n)[::-1]
+    R = np.zeros((n, G))
+    R[np.arange(n), cl_codes] = s
+    R = resid(sweep(R))
+    a = R.T @ yt
+    B = R.T @ R
+    if G > 400:  # per-cluster G x G blocks would not fit; sweep-free matvec
+        return lambda y_, d_: finish(R @ np.asarray(d_, float)[first_row])
+    order = np.argsort(cl_codes, kind="stable")
+    bounds = np.searchsorted(cl_codes[order], np.arange(G + 1))
+    Ag = np.zeros((G, G))
+    Bg = np.zeros((G, G, G))
+    for g in range(G):
+        rows = order[bounds[g] : bounds[g + 1]]
+        rg = R[rows]
+        Ag[g] = rg.T @ yt[rows]
+        Bg[g] = rg.T @ rg
+    blocks = (a, B, Ag, Bg, first_row, n, k)
+    _SWEEP_CACHE.clear()  # one entry: the ols / ols_t pair on the same design
+    _SWEEP_CACHE[key] = blocks
+    return _cluster_stat(*blocks, t_stat=t_stat)
+
+
+#: The swept cluster blocks of the last design, so ``stat='ols'`` followed by
+#: ``stat='ols_t'`` on the same data sweeps the ``G`` columns once.
+_SWEEP_CACHE: Dict[Any, tuple] = {}
+
+
+def _sweep_key(y: Any, s: Any, absorber: Any, cl_codes: Any, parts: Any) -> str:
+    """Fingerprint of everything the swept cluster blocks depend on."""
+    import hashlib
+
+    h = hashlib.blake2b(digest_size=16)
+    arrays = [y, s, cl_codes] + list(parts)
+    if absorber is not None:
+        arrays += list(absorber.fe_codes)
+        h.update(repr((absorber.tol, absorber.n_kept)).encode())
+    for arr in arrays:
+        arr = np.ascontiguousarray(arr)
+        h.update(repr((arr.dtype.str, arr.shape)).encode())
+        h.update(arr.tobytes())
+    return h.hexdigest()
+
+
+def _cluster_stat(
+    a: Any, B: Any, Ag: Any, Bg: Any, first_row: Any, n: Any, k: Any, *, t_stat: bool
+) -> StatFn:
+    """The statistic from the swept cluster blocks, for row- or cluster-level input."""
+    G = B.shape[0]
+
+    def on_values(v: np.ndarray) -> float:
+        v = np.asarray(v, float)
+        den = float(v @ B @ v)
+        if den <= 0:
+            return 0.0
+        b = float(v @ a) / den
+        if not t_stat:
+            return b
+        sc = Ag @ v - b * np.einsum("i,gij,j->g", v, Bg, v)
+        var = (G / (G - 1)) * ((n - 1) / (n - k)) * float(sc @ sc) / den**2
+        return b / np.sqrt(var) if var > 0 else 0.0
+
+    def fast(y_: np.ndarray, d_: np.ndarray) -> float:
+        return on_values(np.asarray(d_, float)[first_row])
+
+    fast.on_cluster_values = on_values  # type: ignore[attr-defined]
+    return fast
+
+
 def _t_stat(y: np.ndarray, d: np.ndarray) -> float:
     """Two-sample t-statistic."""
     y1, y0 = y[d == 1], y[d == 0]
@@ -678,6 +1153,34 @@ def _t_stat(y: np.ndarray, d: np.ndarray) -> float:
     mean_diff = np.mean(y1) - np.mean(y0)
     se = np.sqrt(np.var(y1, ddof=1) / n1 + np.var(y0, ddof=1) / n0)
     return mean_diff / se if se > 0 else 0.0
+
+
+def _rank_sum_stat(y: np.ndarray, d: np.ndarray) -> float:
+    """Wilcoxon rank sum of the treated (mid-ranks) minus its null mean."""
+    ranks = stats.rankdata(y)
+    n1 = float(np.sum(d == 1))
+    return float(np.sum(ranks[d == 1]) - n1 * (len(y) + 1) / 2.0)
+
+
+def _lin_stat_factory(X: np.ndarray, t_stat: bool) -> StatFn:
+    """Lin's (2013) interacted-regression estimate, or its HC2 t-ratio."""
+    Xc = X - X.mean(axis=0)
+    n = Xc.shape[0]
+    ones = np.ones((n, 1))
+
+    def fn(y_: np.ndarray, d_: np.ndarray) -> float:
+        design = np.column_stack([ones, d_, Xc, Xc * d_[:, None]])
+        gram_inv = np.linalg.pinv(design.T @ design)
+        beta = gram_inv @ (design.T @ y_)
+        if not t_stat:
+            return float(beta[1])
+        resid = y_ - design @ beta
+        lev = np.einsum("ij,jk,ik->i", design, gram_inv, design)
+        w = resid**2 / np.clip(1.0 - lev, 1e-12, None)
+        var = float((gram_inv @ ((design.T * w) @ design) @ gram_inv)[1, 1])
+        return float(beta[1] / np.sqrt(var)) if var > 0 else 0.0
+
+    return fn
 
 
 def _get_stat_fn(statistic: str) -> StatFn:
@@ -700,9 +1203,11 @@ def _get_stat_fn(statistic: str) -> StatFn:
             return float(stats.ranksums(y[d == 1], y[d == 0]).statistic)
 
         return rank_sum_stat
+    elif statistic == "t":
+        return _t_stat
     else:
         raise ValueError(
-            f"Unknown statistic: '{statistic}'. " f"Use 'ate', 'ks', or 'rank_sum'."
+            f"Unknown statistic: '{statistic}'. Use 'ate', 't', 'ks', or 'rank_sum'."
         )
 
 
@@ -735,7 +1240,11 @@ def _enumerate_assignments(
         unit_D = np.array([D[inv == g][0] for g in range(n_units)])
         if not all(np.all(D[inv == g] == unit_D[g]) for g in range(n_units)):
             return None  # treatment varies within a cluster
-        blocks = [np.arange(n_units)]
+        if strata is not None:
+            cl_strata = np.array([strata[inv == g][0] for g in range(n_units)])
+            blocks = [np.where(cl_strata == s_)[0] for s_ in np.unique(cl_strata)]
+        else:
+            blocks = [np.arange(n_units)]
     else:
         inv = None
         unit_D = D
@@ -764,17 +1273,33 @@ def _make_cluster_permuter(
     treatment: str,
     cluster: str,
     rng: np.random.Generator,
+    stratify: Optional[str] = None,
 ) -> Permuter:
-    """Create a function that permutes treatment at the cluster level."""
+    """Create a function that permutes treatment at the cluster level.
+
+    With ``stratify`` (constant within clusters) the cluster treatments are
+    permuted within each stratum, which keeps every stratum's number of
+    treated clusters.
+    """
     cl = df[cluster].values
     D = df[treatment].values.astype(float)
     unique_cl = np.unique(cl)
     n = len(D)
     # Get treatment per cluster (first obs)
     cl_treat = np.array([D[cl == c][0] for c in unique_cl])
+    groups: Optional[List[np.ndarray]] = None
+    if stratify is not None:
+        st = df[stratify].values
+        cl_st = np.array([st[cl == c][0] for c in unique_cl])
+        groups = [np.flatnonzero(cl_st == s_) for s_ in np.unique(cl_st)]
 
     def permute() -> np.ndarray:
-        cl_perm = rng.permutation(cl_treat)
+        if groups is None:
+            cl_perm = rng.permutation(cl_treat)
+        else:
+            cl_perm = cl_treat.copy()
+            for gidx in groups:
+                cl_perm[gidx] = rng.permutation(cl_treat[gidx])
         D_perm = np.zeros(n)
         for i, c in enumerate(unique_cl):
             D_perm[cl == c] = cl_perm[i]
@@ -808,66 +1333,168 @@ def _make_stratified_permuter(
     return permute
 
 
-def _hodges_lehmann_ci(
+def _invert_constant_effect(
+    perm_stats: np.ndarray,
+    shift_stats: np.ndarray,
+    obs_stat: float,
+    obs_shift: float,
+    alpha: float,
+) -> Tuple[float, float]:
+    """Confidence interval for a constant effect by inverting the test.
+
+    The sharp null ``Y_i(1) - Y_i(0) = tau_0`` is tested on ``Y - tau_0 D``.
+    The difference in means is linear in the outcome, so under assignment
+    ``b`` it equals ``perm_stats[b] - tau_0 * shift_stats[b]`` and the
+    observed one ``obs_stat - tau_0 * obs_shift``: the p-value at any
+    ``tau_0`` comes from the stored draws, with no new permutations. Each
+    end of the interval is bracketed by stepping away from the point
+    estimate and then bisected, so it is exact for the assignments used
+    (all of them when the design was enumerated) up to floating point.
+    An end is infinite when the test never rejects in that direction.
+    """
+    perm = np.asarray(perm_stats, dtype=float)
+    shift = np.asarray(shift_stats, dtype=float)
+
+    def pval(tau0: float) -> float:
+        return _share_at_least(
+            perm - tau0 * shift, obs_stat - tau0 * obs_shift, two_sided=True
+        )
+
+    if obs_shift == 0 or not np.isfinite(obs_stat):
+        return (float("nan"), float("nan"))
+    center = obs_stat / obs_shift  # the observed statistic is zero here
+    scale = float(np.std(perm)) / abs(obs_shift)
+    if not np.isfinite(scale) or scale <= 0:
+        scale = max(abs(center), 1.0)
+
+    def end(sign: float) -> float:
+        inside, step = center, scale
+        for _ in range(200):
+            outside = inside + sign * step
+            if pval(outside) < alpha:
+                break
+            inside, step = outside, step * 2.0
+        else:
+            return sign * float("inf")
+        for _ in range(200):
+            mid = 0.5 * (inside + outside)
+            if mid == inside or mid == outside:
+                break
+            if pval(mid) < alpha:
+                outside = mid
+            else:
+                inside = mid
+        return float(inside)
+
+    return (end(-1.0), end(1.0))
+
+
+#: Cap on ``rows * n`` of the assignments stored to invert a statistic that
+#: is not linear in the outcome.
+_MAX_DRAW_CELLS = 20_000_000
+
+
+def _stat_all(A: np.ndarray, y: np.ndarray, statistic: str) -> np.ndarray:
+    """``statistic`` of ``y`` under every assignment (row) of ``A``.
+
+    Vectorised versions of the functions :func:`_get_stat_fn` returns, with
+    the same definitions (``scipy.stats.ranksums`` and ``ks_2samp``
+    statistics, the Welch ``t``).
+    """
+    n = A.shape[1]
+    n1 = A.sum(axis=1)
+    n0 = n - n1
+    s1 = A @ y
+    s0 = y.sum() - s1
+    if statistic == "ate":
+        out: np.ndarray = s1 / n1 - s0 / n0
+        return out
+    if statistic == "t":
+        q1 = A @ (y * y)
+        q0 = float(y @ y) - q1
+        with np.errstate(divide="ignore", invalid="ignore"):
+            v1 = (q1 - s1 * s1 / n1) / (n1 - 1.0)
+            v0 = (q0 - s0 * s0 / n0) / (n0 - 1.0)
+            se = np.sqrt(np.clip(v1, 0.0, None) / n1 + np.clip(v0, 0.0, None) / n0)
+            out = (s1 / n1 - s0 / n0) / se
+        out = np.where((n1 < 2) | (n0 < 2) | ~(se > 0), 0.0, out)
+        return out
+    if statistic == "rank_sum":
+        ranks = stats.rankdata(y)
+        out = (A @ ranks - n1 * (n + 1) / 2.0) / np.sqrt(n0 * n1 * (n + 1) / 12.0)
+        return out
+    if statistic == "ks":
+        order = np.argsort(y, kind="stable")
+        ys = y[order]
+        As = A[:, order]
+        gap = np.cumsum(As, axis=1) / n1[:, None] - np.cumsum(1.0 - As, axis=1) / (
+            n0[:, None]
+        )
+        # The ECDFs are compared at distinct outcome values only.
+        last = np.r_[ys[1:] != ys[:-1], True]
+        out = np.abs(gap[:, last]).max(axis=1)
+        return out
+    raise MethodIncompatibility(f"Unknown statistic: {statistic!r}.")
+
+
+def _invert_constant_effect_generic(
     Y: np.ndarray,
     D: np.ndarray,
-    stat_fn: StatFn,
-    perm_fn: Permuter,
-    n_perm: int,
+    D_shift: np.ndarray,
+    draws: np.ndarray,
+    statistic: str,
     alpha: float,
-    rng: np.random.Generator,
-    n_grid: int = 101,
-    assignments: Optional[np.ndarray] = None,
 ) -> Tuple[float, float]:
+    """:func:`_invert_constant_effect` for a statistic that is not linear.
+
+    The test of ``tau_0`` is the randomization test applied to
+    ``Y - tau_0 * D_shift``, with any ``statistic``; the interval is in
+    outcome units. The statistic has to be recomputed at every ``tau_0``,
+    which is done for all stored assignments at once. Ends are bracketed
+    from the difference-in-means estimate and bisected; an end is infinite
+    when the test never rejects in that direction, and the interval is
+    ``(nan, nan)`` when the estimate itself is rejected.
     """
-    Hodges-Lehmann confidence interval by inverting the permutation test.
+    obs_row = D[None, :]
 
-    For each candidate tau_0, test the sharp null Y_i(1) - Y_i(0) = tau_0
-    by computing the permutation test on Y - tau_0 * D. The CI is the
-    set of tau_0 values for which the test does not reject.
+    def pval(tau0: float) -> float:
+        y_adj = Y - tau0 * D_shift
+        return _share_at_least(
+            _stat_all(draws, y_adj, statistic),
+            float(_stat_all(obs_row, y_adj, statistic)[0]),
+            two_sided=True,
+        )
 
-    Uses a coarse grid search followed by refinement.
-    """
-    # Observed ATE for centering the grid
-    ate_obs = float(np.mean(Y[D == 1]) - np.mean(Y[D == 0]))
-    y_std = float(np.std(Y)) if np.std(Y) > 0 else 1.0
+    shift = float(_stat_all(obs_row, D_shift, "ate")[0])
+    if shift == 0:
+        return (float("nan"), float("nan"))
+    center = float(_stat_all(obs_row, Y, "ate")[0]) / shift
+    if pval(center) < alpha:
+        return (float("nan"), float("nan"))
+    scale = float(np.std(_stat_all(draws, Y, "ate"))) / abs(shift)
+    if not np.isfinite(scale) or scale <= 0:
+        scale = max(abs(center), 1.0)
 
-    # Coarse grid: search over a wide range
-    grid_half = max(3 * y_std, abs(ate_obs) * 3)
-    tau_grid = np.linspace(ate_obs - grid_half, ate_obs + grid_half, n_grid)
+    def end(sign: float) -> float:
+        inside, step = center, scale
+        for _ in range(60):
+            outside = inside + sign * step
+            if pval(outside) < alpha:
+                break
+            inside, step = outside, step * 2.0
+        else:
+            return sign * float("inf")
+        for _ in range(50):
+            mid = 0.5 * (inside + outside)
+            if mid == inside or mid == outside:
+                break
+            if pval(mid) < alpha:
+                outside = mid
+            else:
+                inside = mid
+        return float(inside)
 
-    # Use fewer permutations for the grid search
-    n_perm_grid = min(n_perm, 500)
-
-    p_values = np.zeros(n_grid)
-    for i, tau_0 in enumerate(tau_grid):
-        # Adjust outcome: Y_adj = Y - tau_0 * D
-        Y_adj = Y - tau_0 * D
-        obs_adj = float(stat_fn(Y_adj, D))
-
-        # Quick permutation test (exact over the enumerated assignments when
-        # the design was enumerated)
-        if assignments is not None:
-            # The interval is only built for the difference in means, which
-            # is linear in the assignment: evaluate every assignment at once.
-            n1 = assignments.sum(axis=1)
-            t_perm_all = (assignments @ Y_adj) / n1 - ((1.0 - assignments) @ Y_adj) / (
-                assignments.shape[1] - n1
-            )
-            p_values[i] = _share_at_least(t_perm_all, obs_adj, two_sided=True)
-            continue
-        t_perm_mc = np.empty(n_perm_grid)
-        for b in range(n_perm_grid):
-            t_perm_mc[b] = stat_fn(Y_adj, perm_fn())
-        p_values[i] = _share_at_least(t_perm_mc, obs_adj, two_sided=True)
-
-    # CI = set of tau_0 where p >= alpha
-    in_ci = tau_grid[p_values >= alpha]
-    if len(in_ci) == 0:
-        # If no values are in CI, return point estimate +/- small margin
-        return (ate_obs, ate_obs)
-
-    return (float(in_ci[0]), float(in_ci[-1]))
+    return (end(-1.0), end(1.0))
 
 
 # ======================================================================

@@ -27,9 +27,10 @@ import pandas as pd
 from scipy import stats
 
 from .._aliases import accepts_aliases
-from .._input_validation import require_columns
+from .._input_validation import missing_named_columns, require_columns
+from ..core._covariates import expands_categorical_covariates as _expands_categorical
 from ..core.results import CausalResult
-from ..exceptions import DataInsufficient
+from ..exceptions import ColumnNotFound, DataInsufficient
 
 # sklearn is imported lazily inside ``overlap_weighted_did`` /
 # ``dl_propensity_score`` so ``import statspai`` does not pull
@@ -40,6 +41,7 @@ from ..exceptions import DataInsufficient
 __all__ = ["overlap_weighted_did", "dl_propensity_score"]
 
 
+@_expands_categorical("covariates")
 def overlap_weighted_did(
     data: pd.DataFrame,
     *,
@@ -49,6 +51,7 @@ def overlap_weighted_did(
     covariates: Optional[Sequence[str]] = None,
     ps_model: Any = "logit",
     alpha: float = 0.05,
+    id: Optional[str] = None,
 ) -> CausalResult:
     """Overlap-weighted 2x2 DID.
 
@@ -65,12 +68,22 @@ def overlap_weighted_did(
         How to estimate e(X) = P(treat=1 | X). ``'dl'`` uses
         :func:`dl_propensity_score`.
     alpha : float, default 0.05
+    id : str, optional
+        Unit identifier. Give it for a panel, where the same units appear
+        in both periods: the bootstrap then resamples units and keeps a
+        unit's two observations together. Leave it out for repeated
+        cross-sections.
 
     Returns
     -------
     CausalResult
-        ``estimand = 'ATT (overlap)'``. Uses a sandwich-style
-        bootstrap-ready SE derived from weighted residuals.
+        ``estimand = 'ATT (overlap)'``. The SE is a bootstrap of the
+        weighted cell means with the propensity weights held fixed. Without
+        ``id`` the rows are resampled independently, which is right for
+        repeated cross-sections and conservative on a panel: about 1.9
+        times the sampling standard deviation in a simulation with a unit
+        effect of the size of the noise. With ``id`` the unit effect
+        differences out of the bootstrap as it does out of the estimate.
 
     References
     ----------
@@ -103,12 +116,22 @@ def overlap_weighted_did(
     >>> res.estimand
     'ATT (overlap)'
     """
-    cols = {y, treat, time}
-    if covariates:
-        cols |= set(covariates)
-    missing = cols - set(data.columns)
+    missing = missing_named_columns(
+        {
+            "y": y,
+            "treat": treat,
+            "time": time,
+            "id": id,
+            "covariates": None if not covariates else list(covariates),
+        },
+        data.columns,
+    )
     if missing:
-        raise ValueError(f"Missing columns: {missing}")
+        raise ColumnNotFound.from_missing(
+            missing,
+            list(data.columns),
+            message=f"Missing columns: {set(missing.values())}",
+        )
     # Drop incomplete rows up front: an all-NaN / partially-missing outcome
     # otherwise collapses the weighted cell means to a silent 0.0 (the
     # groupby's NaN-sum), returning estimate=0.0 with no warning.
@@ -154,8 +177,10 @@ def overlap_weighted_did(
         elif ps_model == "dl":
             e = dl_propensity_score(df, treatment=treat, covariates=list(covariates))
         else:
+            from ..core._learners import positive_class_proba
+
             ps_model.fit(X, T)
-            e = ps_model.predict_proba(X)[:, 1]
+            e = positive_class_proba(ps_model, X, context="overlap_did(ps_model=)")
         e = np.clip(e, 0.02, 0.98)
         w = e * (1.0 - e)  # Overlap weight
     else:
@@ -175,19 +200,49 @@ def overlap_weighted_did(
             "Need all 4 (treat, time) cells populated for 2x2 DID; " f"missing {exc}."
         ) from exc
 
-    # Cluster-on-unit bootstrap SE (simple: resample rows with weights).
+    # Bootstrap SE with the weights held fixed. A draw is a vector of row
+    # multiplicities: rows drawn independently, or (with ``id``) units
+    # drawn and every row of a drawn unit carried along.
     rng = np.random.default_rng(0)
     n_boot = 200
+    n_rows = len(df)
+    yv = df[y].to_numpy(dtype=float)
+    wv = df["_w"].to_numpy(dtype=float)
+    tv = df[treat].to_numpy()
+    pv = df[time].to_numpy()
+    cells = [(tv == a) & (pv == b) for a, b in ((1, 1), (1, 0), (0, 1), (0, 0))]
+    signs = (1.0, -1.0, -1.0, 1.0)
+    if id is not None:
+        unit_codes, uniques = pd.factorize(df[id])
+        n_units = len(uniques)
     boots = np.empty(n_boot)
     for b in range(n_boot):
-        idx = rng.integers(0, len(df), size=len(df))
-        sub = df.iloc[idx]
-        gb = sub.groupby([treat, time])
-        try:
-            m = gb.apply(lambda g: np.sum(g[y] * g["_w"]) / g["_w"].sum())
-            boots[b] = (m.loc[(1, 1)] - m.loc[(1, 0)]) - (m.loc[(0, 1)] - m.loc[(0, 0)])
-        except KeyError:
-            boots[b] = np.nan
+        if id is None:
+            mult = np.bincount(rng.integers(0, n_rows, size=n_rows), minlength=n_rows)
+        else:
+            drawn = np.bincount(
+                rng.integers(0, n_units, size=n_units), minlength=n_units
+            )
+            mult = drawn[unit_codes]
+        mw = mult * wv
+        val = 0.0
+        for sign, cell in zip(signs, cells):
+            denom = mw[cell].sum()
+            if denom <= 0:
+                val = np.nan
+                break
+            val += sign * float(np.sum(mw[cell] * yv[cell]) / denom)
+        boots[b] = val
+    n_boot_failed = int(np.isnan(boots).sum())
+    if n_boot_failed:
+        from ..core._fallback import warn_fallback
+
+        warn_fallback(
+            f"{n_boot_failed} of {n_boot} overlap_weighted_did bootstrap draws "
+            "(an empty treatment-by-period cell)",
+            None,
+            "the standard error uses the remaining draws",
+        )
     boots = boots[~np.isnan(boots)]
     se = float(boots.std(ddof=1)) if boots.size > 10 else float("nan")
     z = stats.norm.ppf(1 - alpha / 2)
@@ -205,6 +260,7 @@ def overlap_weighted_did(
         model_info={
             "ps_model": str(ps_model),
             "mean_overlap_weight": float(w.mean()),
+            "bootstrap": "units" if id is not None else "rows",
             "reference": (
                 "Li, Morgan, Zaslavsky (JASA 2018); " "Econ Letters 2025 overlap DID"
             ),
@@ -212,7 +268,7 @@ def overlap_weighted_did(
     )
 
 
-@accepts_aliases(treat="treatment")
+@accepts_aliases(treat="treatment", seed="random_state")
 def dl_propensity_score(
     data: pd.DataFrame,
     *,

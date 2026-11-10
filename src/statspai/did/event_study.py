@@ -28,15 +28,21 @@ Trends." *American Economic Review: Insights*, 4(3), 305-322. [@roth2022pretest]
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
+import warnings
+from typing import Any, Dict, List, Literal, Optional, Sequence, Tuple, Union
 
 import numpy as np
 import pandas as pd
 from scipy import stats as sp_stats
 
 from .._aliases import accepts_aliases
+from .._input_validation import check_columns
+from ..core._call_record import records_call
+from ..core._covariates import expands_categorical_covariates as _expands_categorical
+from ..core._vcov_spec import accepts_vce
 from ..core.results import CausalResult
 from ..exceptions import MethodIncompatibility
+from . import _crit
 from ._core import fe_dof_not_nested as _fe_dof_not_nested
 
 RefPeriodSpec = Union[int, Tuple[str, int], Sequence[int]]
@@ -220,11 +226,16 @@ def _build_bins(
     return out
 
 
-@accepts_aliases(_strict=True, id="unit", controls="covariates")
+@records_call("event_study")
+@accepts_aliases(
+    _strict=True, id="unit", controls="covariates", first_treat="treat_time"
+)
+@accepts_vce(default="cluster")
+@_expands_categorical("covariates")
 def event_study(
     data: pd.DataFrame,
     y: str,
-    treat_time: str,
+    treat_time: Union[str, float],
     time: str,
     unit: str,
     window: Tuple[int, int] = (-4, 4),
@@ -235,6 +246,10 @@ def event_study(
     weights: Optional[str] = None,
     bin_width: Optional[int] = None,
     expose_pre_vcov: bool = True,
+    intensity: Optional[str] = None,
+    absorb: Optional[Union[str, List[str]]] = None,
+    parity: Optional[Literal["r", "stata"]] = None,
+    crit_dist: Optional[Literal["t", "normal"]] = None,
 ) -> CausalResult:
     """
     Traditional OLS event study with entity and time fixed effects.
@@ -249,10 +264,11 @@ def event_study(
         Panel data in long format.
     y : str
         Outcome variable.
-    treat_time : str
+    treat_time : str or number
         Column with each unit's treatment time (period when treatment
         starts).  Units never treated should have ``NaN`` or a value
-        outside the data range.
+        outside the data range. A number is a common adoption date for
+        every unit (the design of an ``intensity`` event study).
     time : str
         Calendar time column (integer or datetime coercible to integer).
     unit : str
@@ -291,6 +307,18 @@ def event_study(
     weights : str, optional
         Column name for analytical weights (e.g. population weights).
         Equivalent to Stata's ``[aweight=...]``.
+    intensity : str, optional
+        Continuous treatment intensity (dose, exposure). The event-time
+        regressors become ``intensity x 1[t - treat_time = k]`` instead of
+        indicators, so each coefficient is the effect per unit of intensity
+        at event time ``k`` -- the "exposure x period" event study of a
+        common shock with heterogeneous exposure. Rows with zero intensity
+        are the comparison group. Estimated with ``sp.hdfe_ols`` (reghdfe's
+        singleton, dof and cluster conventions).
+    absorb : str or list of str, optional
+        Fixed effects absorbed besides ``unit`` and ``time``, in
+        ``sp.hdfe_ols`` syntax (``"occ"``, ``"city^time"``). Also routes the
+        fit through ``sp.hdfe_ols``.
     expose_pre_vcov : bool, default True
         Whether to publish the pre-period covariance matrix into
         ``model_info['vcv_pre']``. With ``True`` (the default since 1.31),
@@ -304,6 +332,28 @@ def event_study(
         of the event-time coefficients is always available in
         ``model_info['vcov']`` / ``['vcov_full']`` regardless of this flag,
         and :func:`honest_did` reads it through :func:`event_study_vcov`.
+    parity : {'stata', 'r'}, optional
+        Critical-value convention for the p-values and confidence
+        intervals (the coefficients and standard errors do not change).
+        ``None`` (default) uses the normal distribution. ``'stata'``
+        (``reghdfe ..., vce(cluster)`` followed by ``invttail(e(df_r), .)``
+        or ``lincom``) and ``'r'`` (``fixest::feols`` with ``cluster =``)
+        both use Student t with ``G - 1`` degrees of freedom, ``G`` the
+        number of clusters; on the castle-doctrine and divorce panels the
+        intervals then equal Stata's and fixest's to 1e-13. The headline
+        ATT interval follows the same rule. The pre-trend test is a
+        cluster F(q, G-1) test under every setting, as Stata's ``test``.
+        The convention used is in ``model_info['conventions']``.
+    crit_dist : {'t', 'normal'}, optional
+        The same choice named by convention rather than by program.
+        ``'t'``: Student t with ``G - 1`` degrees of freedom (every fit
+        here is cluster-robust), the critical values of ``parity='stata'``
+        / ``'r'``. ``'normal'``: the normal distribution. ``None``
+        (default) is ``'normal'`` in this release and warns
+        (``FutureWarning``): the default becomes ``'t'`` in 1.41, as in
+        Stata and fixest. Pass either value to silence the warning.
+        Coefficients, SEs and the pre-trend F test do not depend on it.
+        ``'normal'`` together with ``parity=`` raises. See MIGRATION.md.
 
     Returns
     -------
@@ -341,6 +391,24 @@ def event_study(
     >>> bool(result.model_info['pretrend_test']['pvalue'] >= 0)
     True
     """
+    parity = _crit.check_parity(parity, "event_study")
+    crit_arg = _crit.check_crit_dist(
+        crit_dist, parity, function="event_study", legacy="normal"
+    )
+    check_columns(
+        data,
+        {
+            "y": y,
+            "treat_time": treat_time if isinstance(treat_time, str) else None,
+            "time": time,
+            "unit": unit,
+            "covariates": None if covariates is None else list(covariates),
+            "cluster": cluster,
+            "weights": weights,
+            "intensity": intensity,
+        },
+        function="sp.event_study",
+    )
     df = data.copy()
     min_lag, max_lag = int(window[0]), int(window[1])
     if min_lag > max_lag:
@@ -397,7 +465,10 @@ def event_study(
     est_bins = sorted(b for b in bins_members if b not in set(ref_bins))
 
     # --- Compute relative time ---
-    df["__treat_time__"] = df[treat_time]
+    if isinstance(treat_time, str):
+        df["__treat_time__"] = df[treat_time]
+    else:
+        df["__treat_time__"] = float(treat_time)
     df["__time__"] = df[time]
     df["__unit__"] = df[unit]
 
@@ -417,6 +488,38 @@ def event_study(
     else:
         df["__time_num__"] = df["__time__"].astype(float)
         df["__treat_time_num__"] = df["__treat_time__"].astype(float)
+
+    # A treatment time that is not finite, or earlier than the first period
+    # in the data, marks a never-treated unit: the documented contract
+    # ("NaN or a value outside the data range"), and the 0-for-never coding
+    # of csdid / R did when the calendar starts later.
+    #
+    # correctness fix (2026-10): such a value used to go through the
+    # relative-time arithmetic. Far below the range it was harmless (every
+    # period fell in the last bin and the unit fixed effect absorbed it);
+    # within ``max_lag`` of the first period, e.g. 0 with periods 1..8, the
+    # never-treated units were spread over the post-treatment dummies.
+    tt = df["__treat_time_num__"].astype(float)
+    t_first = float(df["__time_num__"].min())
+    coded_never = tt.notna() & (~np.isfinite(tt) | (tt < t_first))
+    n_coded_never_units = int(df.loc[coded_never, "__unit__"].nunique())
+    df["__treat_time_num__"] = tt.mask(coded_never)
+    at_start = df["__treat_time_num__"] == t_first
+    n_at_start_units = int(df.loc[at_start, "__unit__"].nunique())
+    if n_at_start_units and isinstance(treat_time, str):
+        from ..exceptions import AssumptionWarning
+
+        warnings.warn(
+            f"event_study: {n_at_start_units} unit(s) have {treat_time!r} equal "
+            f"to the first period in the data ({df.loc[at_start, '__treat_time__'].iloc[0]!r}) "
+            "and are taken as treated in every period. They have no "
+            "pre-treatment observation, and their post-treatment periods "
+            "enter the event-time dummies. If that value is a code for "
+            "never-treated units, recode it to NaN: left as it is, it "
+            "assigns the control group to the treated bins.",
+            AssumptionWarning,
+            stacklevel=2,
+        )
 
     # Relative time
     df["__rel_time__"] = df["__time_num__"] - df["__treat_time_num__"]
@@ -447,6 +550,8 @@ def event_study(
             df["__rel_time_binned__"].between(start, end, inclusive="both")
         )
         df.loc[mask, col] = 1.0
+        if intensity is not None:
+            df[col] = df[col] * df[intensity]
         dummy_cols.append(col)
 
     # --- Build OLS with entity + time FE via demeaning ---
@@ -457,7 +562,46 @@ def event_study(
     dropna_cols = all_y_x_cols + ["__unit__", "__time_num__"]
     if weights is not None:
         dropna_cols.append(weights)
+    absorb_terms = (
+        [t.strip() for t in absorb.split("+") if t.strip()]
+        if isinstance(absorb, str)
+        else list(absorb or [])
+    )
+    dropna_cols += [c for t in absorb_terms for c in t.split("^")]
+    if intensity is not None:
+        dropna_cols.append(intensity)
     df_clean = df.dropna(subset=dropna_cols).copy()
+    cluster_var = cluster or unit
+
+    # An event time no treated unit is observed at cannot be estimated.
+    #
+    # correctness fix (2026-10): its all-zero dummy used to stay in the
+    # regression, come back with coefficient 0 and SE 0, and be averaged
+    # into the headline ATT as an estimated zero effect. With window
+    # (-4, 4) and exposure observed to +3 the ATT of a 2.0 effect was 1.56.
+    empty_bins = [
+        b for b, col in zip(est_bins, dummy_cols) if not (df_clean[col] != 0).any()
+    ]
+    if empty_bins:
+        if len(empty_bins) == len(est_bins):
+            raise MethodIncompatibility(
+                "event_study: no treated observation falls in any event time "
+                f"of window=({min_lag}, {max_lag}).",
+                recovery_hint="Check treat_time and the window.",
+                diagnostics={"window": (min_lag, max_lag)},
+            )
+        keep = [b not in set(empty_bins) for b in est_bins]
+        dummy_cols = [c for c, k in zip(dummy_cols, keep) if k]
+        est_bins = [b for b, k in zip(est_bins, keep) if k]
+        rel_periods = [b[0] for b in est_bins]
+        warnings.warn(
+            "event_study: no treated observation at event time(s) "
+            f"{[b[0] if b[0] == b[1] else b for b in empty_bins]}; they are "
+            "left out of the table and of the average. Narrow `window` to "
+            "the exposure the data cover.",
+            UserWarning,
+            stacklevel=2,
+        )
 
     # Prepare weights array (before demeaning)
     if weights is not None:
@@ -469,56 +613,48 @@ def event_study(
     else:
         w_arr = None
 
-    Y, X_mat, col_names = _demean_twfe(
-        df_clean,
-        y,
-        dummy_cols + cov_cols,
-        "__unit__",
-        "__time_num__",
-        w=w_arr,
-    )
-
-    n, k = X_mat.shape
-
-    # --- OLS (possibly weighted) ---
-    if w_arr is not None:
-        sqrt_w = np.sqrt(w_arr)
-        Xw = X_mat * sqrt_w[:, np.newaxis]
-        Yw = Y * sqrt_w
+    if intensity is not None or absorb_terms:
+        beta, se, vcov, n, cluster_ids = _hdfe_event_fit(
+            df_clean, y, dummy_cols, cov_cols, absorb_terms, cluster_var, weights
+        )
     else:
-        Xw = X_mat
-        Yw = Y
-
-    try:
-        XtX_inv = np.linalg.inv(Xw.T @ Xw)
-    except np.linalg.LinAlgError:
-        XtX_inv = np.linalg.pinv(Xw.T @ Xw)
-
-    beta = XtX_inv @ Xw.T @ Yw
-    resid = Y - X_mat @ beta  # residuals in original scale
-
-    # --- Standard errors (clustered by default) ---
-    cluster_var = cluster or unit
-    cluster_ids = df_clean[cluster_var].values
-    # Small-sample K follows the fixest / reghdfe "nested" rule: the
-    # absorbed unit and time effects count unless nested in the cluster
-    # (unit effects are, under the default cluster=unit; time effects are
-    # not). This is what makes the default output match both
-    # fixest::feols and reghdfe at machine precision (parity module 85).
-    k_fe = _fe_dof_not_nested(df_clean, ["__unit__", "__time_num__"], cluster_var)
-    se, vcov = _cluster_se(Xw, resid, XtX_inv, cluster_ids, w=w_arr, k_fe=k_fe)
+        beta, se, vcov, n, cluster_ids = _twfe_event_fit(
+            df_clean, y, dummy_cols, cov_cols, cluster_var, w_arr
+        )
 
     # --- Build event study table ---
     def _bin_label(start: int, end: int) -> str:
         """Unambiguous bin label: a point period prints as-is."""
         return str(start) if start == end else f"[{start}, {end}]"
 
+    # Critical values: normal by default (t from 1.41); under
+    # parity='stata' / 'r' or crit_dist='t' the t(G - 1) of reghdfe and
+    # fixest with cluster-robust SEs (every fit here clusters, on
+    # ``cluster`` or on the unit).
+    n_clusters = len(np.unique(cluster_ids))
+    crit_dist, crit_df = _crit.crit_spec(
+        parity,
+        clustered=True,
+        n_clusters=n_clusters,
+        df_resid=None,
+        crit_dist=crit_arg,
+    )
+    if parity is None and crit_arg is None:
+        _crit.warn_default_change(
+            "sp.event_study",
+            old=(crit_dist, crit_df),
+            new=_crit.t_spec_or_none(
+                clustered=True, n_clusters=n_clusters, df_resid=None
+            ),
+            legacy="normal",
+        )
+    t_crit = _crit.crit_value(alpha, crit_dist, crit_df)
+
     es_rows = []
     for i, b in enumerate(est_bins):
         k_val = b[0]
         coef = float(beta[i])
         se_i = float(se[i])
-        t_crit = sp_stats.norm.ppf(1 - alpha / 2)
         es_rows.append(
             {
                 "relative_time": k_val,
@@ -536,7 +672,9 @@ def event_study(
                 "ci_lower": coef - t_crit * se_i,
                 "ci_upper": coef + t_crit * se_i,
                 "pvalue": (
-                    float(2 * sp_stats.norm.sf(abs(coef / se_i))) if se_i > 0 else 1.0
+                    _crit.two_sided_p(coef / se_i, crit_dist, crit_df)
+                    if se_i > 0
+                    else 1.0
                 ),
             }
         )
@@ -594,7 +732,6 @@ def event_study(
     # panel errors the reported pre-trend p-value was inconsistent with the
     # (cluster-robust) SEs printed next to it.
     pre_indices = [i for i, k_val in enumerate(rel_periods) if k_val < 0]
-    n_clusters = len(np.unique(cluster_ids))
     pretrend_result = _joint_wald_test(beta, vcov_event, pre_indices, n_clusters)
 
     # --- Overall ATT (average of post-treatment coefficients) ---
@@ -619,17 +756,21 @@ def event_study(
         att_se = float(np.sqrt(att_var)) if att_var > 0 else 0.0
     else:
         att_se = 0.0
-    att_p = float(2 * sp_stats.norm.sf(abs(att / att_se))) if att_se > 0 else 1.0
+    att_p = _crit.two_sided_p(att / att_se, crit_dist, crit_df) if att_se > 0 else 1.0
 
     _result = CausalResult(
-        method="OLS Event Study (TWFE)",
+        method=(
+            "Intensity event study (HDFE)"
+            if intensity is not None
+            else "OLS Event Study (HDFE)" if absorb_terms else "OLS Event Study (TWFE)"
+        ),
         estimand="ATT",
         estimate=att,
         se=att_se,
         pvalue=att_p,
         ci=(
-            att - sp_stats.norm.ppf(1 - alpha / 2) * att_se,
-            att + sp_stats.norm.ppf(1 - alpha / 2) * att_se,
+            att - t_crit * att_se,
+            att + t_crit * att_se,
         ),
         alpha=alpha,
         n_obs=n,
@@ -638,6 +779,9 @@ def event_study(
             "model_type": "DID Event Study",
             "event_study": event_study_df,
             "pretrend_test": pretrend_result,
+            "empty_event_times": [b[0] for b in empty_bins],
+            "n_units_coded_never_treated": n_coded_never_units,
+            "n_units_treated_from_first_period": n_at_start_units,
             # Full cluster-robust covariance of the event-time coefficients
             # (covariate block excluded). Exposed for inspection: nothing
             # downstream reads these two keys to change a result, so they are
@@ -663,6 +807,14 @@ def event_study(
             "n_clusters": n_clusters,
             "cluster_var": cluster_var,
             "weights": weights,
+            # The specification that was fitted, recorded for
+            # sp.validation_scope (which reads, never infers, it).
+            "n_adoption_dates": int(df["__treat_time_num__"].dropna().nunique()),
+            "covariates": list(covariates) if covariates else [],
+            "intensity": intensity,
+            "absorb": absorb,
+            "cluster_level": "unit" if cluster_var == unit else "other",
+            "conventions": _crit.conventions(parity, crit_dist, crit_df),
         },
     )
     try:
@@ -687,6 +839,10 @@ def event_study(
                 "cluster": cluster,
                 "alpha": alpha,
                 "weights": weights,
+                "intensity": intensity,
+                "absorb": absorb_terms or None,
+                **({"parity": parity} if parity is not None else {}),
+                **({"crit_dist": crit_arg} if crit_arg is not None else {}),
             },
             data=data,
             overwrite=False,
@@ -696,9 +852,212 @@ def event_study(
     return _result
 
 
+def _twfe_event_fit(df_clean, y, dummy_cols, cov_cols, cluster_var, w_arr):
+    """Unit + time FE by the event-study demeaning (the historical path)."""
+    Y, X_mat, col_names = _demean_twfe(
+        df_clean,
+        y,
+        dummy_cols + cov_cols,
+        "__unit__",
+        "__time_num__",
+        w=w_arr,
+    )
+    n, k = X_mat.shape
+    # --- OLS (possibly weighted) ---
+    if w_arr is not None:
+        sqrt_w = np.sqrt(w_arr)
+        Xw = X_mat * sqrt_w[:, np.newaxis]
+        Yw = Y * sqrt_w
+    else:
+        Xw = X_mat
+        Yw = Y
+
+    try:
+        XtX_inv = np.linalg.inv(Xw.T @ Xw)
+    except np.linalg.LinAlgError:
+        XtX_inv = np.linalg.pinv(Xw.T @ Xw)
+
+    beta = XtX_inv @ Xw.T @ Yw
+    resid = Y - X_mat @ beta  # residuals in original scale
+
+    # --- Standard errors (clustered by default) ---
+    cluster_ids = df_clean[cluster_var].values
+    # Small-sample K follows the fixest / reghdfe "nested" rule: the
+    # absorbed unit and time effects count unless nested in the cluster
+    # (unit effects are, under the default cluster=unit; time effects are
+    # not). This is what makes the default output match both
+    # fixest::feols and reghdfe at machine precision (parity module 85).
+    k_fe = _fe_dof_not_nested(df_clean, ["__unit__", "__time_num__"], cluster_var)
+    se, vcov = _cluster_se(Xw, resid, XtX_inv, cluster_ids, w=w_arr, k_fe=k_fe)
+    return beta, se, vcov, n, cluster_ids
+
+
+def _hdfe_event_fit(
+    df_clean, y, dummy_cols, cov_cols, absorb_terms, cluster_var, weights
+):
+    """Event-time regressors on ``sp.hdfe_ols`` (intensity / extra FEs)."""
+    from ..exceptions import MethodIncompatibility as _MI
+    from ..panel.feols import feols as _hdfe_ols
+
+    safe = {c: f"__es{i}__" for i, c in enumerate(dummy_cols)}
+    work = df_clean.rename(columns=safe)
+    regs = list(safe.values()) + list(cov_cols)
+    fe = ["__unit__", "__time_num__"] + list(absorb_terms)
+    fit = _hdfe_ols(
+        f"{y} ~ {' + '.join(regs)} | {' + '.join(fe)}",
+        work,
+        cluster=cluster_var,
+        weights=weights,
+    )
+    beta = fit.params.to_numpy(dtype=float)
+    if np.isnan(beta[: len(dummy_cols)]).any():
+        dropped = [c for c, b in zip(dummy_cols, beta) if np.isnan(b)]
+        raise _MI(
+            f"event_study: event-time regressors {dropped} are collinear with "
+            "the absorbed fixed effects.",
+            recovery_hint="Widen the window or drop an absorbed effect that "
+            "varies only with event time.",
+            diagnostics={"dropped": dropped},
+        )
+    keep = fit.absorber.keep_mask
+    cluster_ids = df_clean[cluster_var].to_numpy()[keep]
+    return (
+        beta,
+        fit.std_errors.to_numpy(dtype=float),
+        np.asarray(fit.vcov, dtype=float),
+        int(fit.n_obs),
+        cluster_ids,
+    )
+
+
 # ====================================================================== #
 #  Internal helpers
 # ====================================================================== #
+
+
+# The group helpers below add in the order the per-group loops they replace
+# did, so results are unchanged to the last bit: ``np.bincount`` accumulates
+# sequentially like ``arr[mask].sum(axis=0)``, and a row sum of a 2-D array
+# uses the pairwise scheme of ``vec[mask].sum()``. Rank-deficient designs
+# amplify rounding in the scores without bound, so "equal to 1e-15" in the
+# sums is not enough to keep their reported numbers.
+
+
+def _group_codes(ids: np.ndarray) -> Tuple[np.ndarray, int, Optional[np.ndarray]]:
+    """Integer codes for ``ids`` with ``np.unique`` semantics.
+
+    Returns ``(codes, n_groups, missing)``. ``missing`` flags the groups whose
+    label is a missing value, when there are any: ``np.unique`` counts them as
+    groups, but no row ever compares equal to one, so they contribute nothing
+    to a group sum.
+    """
+    uniq, codes = np.unique(ids, return_inverse=True)
+    codes = np.asarray(codes).reshape(-1)
+    missing: Optional[np.ndarray] = None
+    if uniq.dtype.kind in "fc":
+        flags = np.isnan(uniq)
+        if flags.any():
+            missing = flags
+    return codes, len(uniq), missing
+
+
+def _unsortable(labels: np.ndarray) -> bool:
+    """Object labels with a missing value: ``np.unique`` cannot order them,
+    so what it returns is not a partition of the rows."""
+    return labels.dtype.kind == "O" and bool(pd.isna(labels).any())
+
+
+def _sums_by_code(mat: np.ndarray, codes: np.ndarray, n_groups: int) -> np.ndarray:
+    out = np.empty((n_groups, mat.shape[1]))
+    for j in range(mat.shape[1]):
+        out[:, j] = np.bincount(codes, weights=mat[:, j], minlength=n_groups)
+    return out
+
+
+def _group_sums(mat: np.ndarray, ids: np.ndarray) -> np.ndarray:
+    """Column sums of ``mat`` within each distinct value of ``ids``."""
+    ids = np.asarray(ids)
+    if _unsortable(ids):
+        return np.vstack([mat[ids == c].sum(axis=0) for c in np.unique(ids)])
+    codes, n_groups, missing = _group_codes(ids)
+    out = _sums_by_code(mat, codes, n_groups)
+    if missing is not None:
+        out[missing] = 0.0
+    return out
+
+
+def _pairwise_totals(vec: np.ndarray, codes: np.ndarray, n_groups: int) -> np.ndarray:
+    """``vec[codes == g].sum()`` for every group, in numpy's pairwise order."""
+    order = np.argsort(codes, kind="stable")
+    sizes = np.bincount(codes, minlength=n_groups)
+    starts = np.cumsum(sizes) - sizes
+    out = np.zeros(n_groups)
+    for m in np.unique(sizes):
+        if m == 0:
+            continue
+        groups = np.flatnonzero(sizes == m)
+        rows = order[starts[groups][:, None] + np.arange(m)[None, :]]
+        out[groups] = vec[rows].sum(axis=1)
+    return out
+
+
+def _outer_sum(scores: np.ndarray) -> np.ndarray:
+    """``sum_g outer(scores[g], scores[g])``, accumulated in row order."""
+    k = scores.shape[1]
+    total = np.zeros(k * k)
+    step = max(1, 2_000_000 // max(k * k, 1))
+    for a in range(0, scores.shape[0], step):
+        blk = scores[a : a + step]
+        prod = (blk[:, :, None] * blk[:, None, :]).reshape(len(blk), k * k)
+        total = np.vstack([total, prod]).sum(axis=0)
+    return total.reshape(k, k)
+
+
+def _group_means(
+    mat: np.ndarray, ids: np.ndarray, w: Optional[np.ndarray] = None
+) -> np.ndarray:
+    """Row-aligned (weighted) group means of every column of ``mat``.
+
+    A group whose weights sum to zero falls back to its unweighted mean.
+    """
+    codes, n_groups, missing = _group_codes(ids)
+    counts = np.bincount(codes, minlength=n_groups)
+    means = _sums_by_code(mat, codes, n_groups) / counts[:, None]
+    if w is not None:
+        ws = _pairwise_totals(w, codes, n_groups)
+        pos = ws > 0
+        wsum = _sums_by_code(w[:, np.newaxis] * mat, codes, n_groups)
+        means[pos] = wsum[pos] / ws[pos, None]
+    out: np.ndarray = means[codes]
+    if missing is not None:
+        out[missing[codes]] = 0.0
+    return out
+
+
+def _one_sweep_is_exact(
+    units: np.ndarray, times: np.ndarray, w: Optional[np.ndarray]
+) -> bool:
+    """Whether unit means then time means are the two-way projection.
+
+    True when every unit is observed exactly once in every period and the
+    weights, if any, are constant within each unit: the unit-demeaned data
+    are then orthogonal to the unit effects after the time sweep too.
+    """
+    u_codes, u_lev = pd.factorize(units)
+    t_codes, t_lev = pd.factorize(times)
+    n_u, n_t = len(u_lev), len(t_lev)
+    if len(units) != n_u * n_t:
+        return False
+    if np.unique(u_codes * n_t + t_codes).size != len(units):
+        return False
+    if w is None:
+        return True
+    w = np.asarray(w, dtype=float)
+    lo = np.full(n_u, np.inf)
+    hi = np.full(n_u, -np.inf)
+    np.minimum.at(lo, u_codes, w)
+    np.maximum.at(hi, u_codes, w)
+    return bool(np.all(lo == hi))
 
 
 def _demean_twfe(
@@ -716,37 +1075,44 @@ def _demean_twfe(
     cols = [y_col] + x_cols
     data_mat = df[cols].values.astype(np.float64)
 
-    # Entity means
-    unit_ids = df[unit_col].values
-    unique_units = np.unique(unit_ids)
-    for u in unique_units:
-        mask = unit_ids == u
-        if w is not None:
-            wm = w[mask]
-            ws = wm.sum()
-            if ws > 0:
-                wmean = (wm[:, np.newaxis] * data_mat[mask]).sum(axis=0) / ws
-            else:
-                wmean = data_mat[mask].mean(axis=0)
-            data_mat[mask] -= wmean
-        else:
-            data_mat[mask] -= data_mat[mask].mean(axis=0)
+    if _one_sweep_is_exact(df[unit_col].values, df[time_col].values, w):
+        # Entity means, then time means on the entity-demeaned data: one
+        # sweep each, in that order (the historical definition of this path,
+        # kept so balanced-panel results do not move in the last bit).
+        for ids in (df[unit_col].values, df[time_col].values):
+            data_mat -= _group_means(data_mat, ids, w)
+    else:
+        # ⚠️ correctness fix (2026-10-15): one sweep of each set of means is
+        # the two-way projection only on a balanced panel with weights that
+        # are constant within a unit. On an unbalanced panel, or with weights
+        # that vary over time, it left part of the fixed effects in the data
+        # (event-time coefficients off by up to 0.035 and 0.15 against
+        # fixest::feols on tests/reference_parity/
+        # test_event_study_options_R_parity.py). The exact weighted
+        # projection is the one sp.sun_abraham uses.
+        from ._sa_within import TwoWayFE
 
-    # Time means (on already entity-demeaned data)
-    time_ids = df[time_col].values
-    unique_times = np.unique(time_ids)
-    for t in unique_times:
-        mask = time_ids == t
-        if w is not None:
-            wm = w[mask]
-            ws = wm.sum()
-            if ws > 0:
-                wmean = (wm[:, np.newaxis] * data_mat[mask]).sum(axis=0) / ws
-            else:
-                wmean = data_mat[mask].mean(axis=0)
-            data_mat[mask] -= wmean
-        else:
-            data_mat[mask] -= data_mat[mask].mean(axis=0)
+        # Rows of zero weight carry no information and the projection
+        # cannot divide by a unit's zero weight mass; they enter the fit
+        # and the cluster scores multiplied by sqrt(w) = 0, so they are
+        # left at zero.
+        keep = (
+            np.ones(len(df), dtype=bool)
+            if w is None
+            else np.asarray(w, dtype=float) > 0
+        )
+        u_codes, u_lev = pd.factorize(df[unit_col].values[keep])
+        t_codes, t_lev = pd.factorize(df[time_col].values[keep])
+        proj = TwoWayFE(
+            u_codes.astype(np.int64),
+            t_codes.astype(np.int64),
+            len(u_lev),
+            len(t_lev),
+            np.ones(int(keep.sum())) if w is None else np.asarray(w, float)[keep],
+        )
+        out = np.zeros_like(data_mat)
+        out[keep] = proj.demean(data_mat[keep])
+        data_mat = out
 
     Y = data_mat[:, 0]
     X = data_mat[:, 1:]
@@ -782,17 +1148,10 @@ def _cluster_se(
         effects, so the off-diagonal terms are large).
     """
     n, k = X.shape
-    unique_clusters = np.unique(cluster_ids)
-    G = len(unique_clusters)
-
-    meat = np.zeros((k, k))
-    for c in unique_clusters:
-        mask = cluster_ids == c
-        if w is not None:
-            score_c = (X[mask] * (np.sqrt(w[mask]) * resid[mask])[:, None]).sum(axis=0)
-        else:
-            score_c = (X[mask] * resid[mask, None]).sum(axis=0)
-        meat += np.outer(score_c, score_c)
+    scores = X * ((np.sqrt(w) * resid) if w is not None else resid)[:, None]
+    cluster_scores = _group_sums(scores, cluster_ids)
+    G = cluster_scores.shape[0]
+    meat = _outer_sum(cluster_scores)
 
     correction = (G / (G - 1)) * ((n - 1) / max(n - k - k_fe, 1))
     vcov = correction * XtX_inv @ meat @ XtX_inv

@@ -28,6 +28,7 @@ import pandas as pd
 
 from ._aliases import accepts_aliases
 from ._result_serialize import ResultProtocolMixin
+from .core._call_record import records_call
 from .exceptions import MethodIncompatibility
 
 __all__ = [
@@ -278,7 +279,7 @@ class AutoDIDResult(ResultProtocolMixin):
         )
 
 
-@accepts_aliases(id="i", time="t")
+@accepts_aliases(id="i", time="t", cohort="g", first_treat="g")
 def auto_did(
     data: pd.DataFrame,
     y: str,
@@ -389,6 +390,10 @@ def auto_did(
             i=i,
             covariates=x_list or None,
             alpha=alpha,
+            # Pin today's default: no FutureWarning users cannot act on.
+            # Switch with sun_abraham's default (planned 1.41).
+            aggregation="event_time",
+            crit_dist="normal",
         ),
         # did_imputation is the BJS name in statspai; keep the mapping
         # explicit here so the leaderboard label stays 'bjs'.
@@ -602,6 +607,7 @@ def _se(result: Any, name: str) -> Optional[float]:
     return None
 
 
+@records_call("auto_iv")
 @accepts_aliases(vce="robust")
 def auto_iv(
     data: pd.DataFrame,

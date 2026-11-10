@@ -25,6 +25,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 import pandas as pd
 
 from ._aliases import accepts_aliases
+from .core._covariates import expands_categorical_covariates as _expands_categorical
 from .core.results import CausalResult
 from .dml.oof import OOFPredictions
 from .exceptions import MethodIncompatibility
@@ -164,6 +165,7 @@ def rdd(
 # ---------------------------------------------------------------------------
 
 
+@accepts_aliases(covariates="X")
 def frontdoor(
     data: pd.DataFrame,
     y: str,
@@ -213,6 +215,7 @@ def frontdoor(
 # ---------------------------------------------------------------------------
 
 
+@accepts_aliases(covariates="X")
 def xlearner(
     data: pd.DataFrame,
     y: str,
@@ -277,6 +280,7 @@ def xlearner(
 # ---------------------------------------------------------------------------
 
 
+@accepts_aliases(covariates="X")
 def conformal_ite(
     data: pd.DataFrame,
     y: str,
@@ -359,6 +363,8 @@ def psm(
     >>> result = sp.psm(df, y='log_wage', d='union',
     ...                 X=['education', 'experience', 'tenure'],
     ...                 method='stratify')
+    >>> round(float(result.estimate), 3)
+    0.192
     """
     from .matching.match import match as _match
 
@@ -389,6 +395,7 @@ def psm(
 # ---------------------------------------------------------------------------
 
 
+@accepts_aliases(covariates="X")
 def partial_identification(
     data: pd.DataFrame,
     y: str,
@@ -610,6 +617,7 @@ def _transplant_signature(wrapper: Any, target: Any) -> None:
     wrapper.__signature__ = inspect.signature(target)
 
 
+@accepts_aliases(seed="random_state")
 def conditional_lr_ci(*args: Any, **kwargs: Any) -> Any:
     """Moreira (2003) CLR confidence set — re-export of
     :func:`statspai.iv.weak_iv_ci.conditional_lr_ci`.
@@ -763,6 +771,8 @@ def causal_discovery(
     ``method='pc'``       → :func:`statspai.causal_discovery.pc_algorithm`
     ``method='ges'``      → :func:`statspai.causal_discovery.ges`
     ``method='lingam'``   → :func:`statspai.causal_discovery.lingam`
+    ``method='fci'``      → :func:`statspai.causal_discovery.fci` (latent
+    confounders allowed; returns a partial ancestral graph)
 
     The four backends have slightly different signatures — notably,
     ``ges`` and ``lingam`` do not accept a ``variables`` kwarg — so this
@@ -797,12 +807,12 @@ def causal_discovery(
     _cd = importlib.import_module("statspai.causal_discovery")
 
     method = _require_string_option(method, "method", "causal_discovery")
-    valid = {"notears", "pc", "ges", "lingam"}
+    valid = {"notears", "pc", "ges", "lingam", "fci"}
     if method not in valid:
         raise MethodIncompatibility(
             f"Unknown causal_discovery method {method!r}. "
             f"Expected one of: {sorted(valid)}.",
-            recovery_hint="Choose one of: notears, pc, ges, lingam.",
+            recovery_hint="Choose one of: notears, pc, fci, ges, lingam.",
             diagnostics={
                 "function": "causal_discovery",
                 "method": method,
@@ -822,10 +832,13 @@ def causal_discovery(
         return _cd.pc_algorithm(data=data, **kwargs)
     if method == "ges":
         return _cd.ges(data=data, **kwargs)
+    if method == "fci":
+        return _cd.fci(data, **kwargs)
     # method == "lingam"
     return _cd.lingam(data=data, **kwargs)
 
 
+@accepts_aliases(covariates="X")
 def mediation(
     data: pd.DataFrame,
     y: str,
@@ -947,6 +960,7 @@ def evalue_rr(
     )
 
 
+@_expands_categorical("covariates", "X")
 def policy_tree(
     data: pd.DataFrame,
     y: str,
@@ -1088,6 +1102,7 @@ def policy_tree(
 
 
 @accepts_aliases(_strict=True, controls="covariates", weights="sample_weight")
+@_expands_categorical("covariates", "X")
 def dml(
     data: pd.DataFrame,
     y: str,
@@ -1102,6 +1117,7 @@ def dml(
     external_predictions: Optional["OOFPredictions"] = None,
     store_oof: bool = False,
     observation_ids: Optional[Sequence[str]] = None,
+    design: Optional[Any] = None,
     **kwargs: Any,
 ) -> CausalResult:
     """Double/Debiased Machine Learning — article-facing alias.
@@ -1125,7 +1141,10 @@ def dml(
     alignment. Its ``caller_declared`` records are auditable declarations, not
     proof that nuisance training avoided data leakage. ``store_oof=True`` keeps
     every repeat for ``get_oof()`` and ``get_residuals()``; ordinary result
-    serialization omits these individual-level records. Retained internal fits
+    serialization omits these individual-level records. ``design=`` takes a
+    :func:`sp.svydesign` survey design (weights, strata, PSUs, fpc): weighted
+    score, folds over PSUs, survey linearisation SE (see
+    :func:`statspai.dml.dml`). Retained internal fits
     require at least 10 rows per treatment arm in every training fold, and
     otherwise raise ``DataInsufficient`` instead of using the legacy subgroup-mean
     fallback. For retained calls, internal explicit fold_indices require n_rep=1;
@@ -1206,10 +1225,10 @@ def dml(
             kwargs.setdefault("ml_g", model_y)
         if model_d is not None:
             kwargs.setdefault("ml_m", model_d)
-        if store_oof or external_predictions is not None:
+        if store_oof or external_predictions is not None or design is not None:
             raise MethodIncompatibility(
                 "dml with several treatments does not support store_oof / "
-                "external_predictions."
+                "external_predictions / design=."
             )
         return dml_multi_treatment(
             data, y, treats, list(cov_multi), dict(kwargs, model=model)
@@ -1272,5 +1291,6 @@ def dml(
         external_predictions=external_predictions,
         store_oof=store_oof,
         observation_ids=observation_ids,
+        design=design,
         **kwargs,
     )

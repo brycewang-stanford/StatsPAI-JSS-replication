@@ -75,6 +75,7 @@ DEFAULT_EXCLUDE: Set[str] = {
     "pwcorr",
     "winsor",
     "read_data",
+    "write_data",
 }
 
 # Max length for a tool description sent to the agent.  MCP / Anthropic
@@ -98,6 +99,8 @@ def _is_agent_safe(name: str, spec: Any) -> bool:
     * anything flagged by spec metadata (tags contains 'internal')
     * classes (PascalCase names that resolve to a type, not a function);
       agents call functions, not constructors directly
+    * registered aliases (``spec.alias_of`` set): the canonical entry is
+      listed once; the alias stays callable through ``tools/call``
     """
     if not name or name.startswith("_"):
         return False
@@ -105,6 +108,9 @@ def _is_agent_safe(name: str, spec: Any) -> bool:
         return False
     tags = getattr(spec, "tags", []) or []
     if any(str(t).lower() == "internal" for t in tags):
+        return False
+    alias_of = getattr(spec, "alias_of", None)
+    if isinstance(alias_of, str) and alias_of:
         return False
     # Heuristic: PascalCase → class, which shouldn't be a tool.  Verify
     # against statspai to avoid false positives on SCREAMING names.
@@ -253,7 +259,7 @@ def auto_tool_manifest(
     categories: Optional[Iterable[str]] = None,
     exclude: Optional[Iterable[str]] = None,
     *,
-    max_tools: int = 640,
+    max_tools: int = 760,
     warn_on_truncate: bool = True,
 ) -> List[Dict[str, Any]]:
     """Return MCP tool specs for every agent-safe registered function.
@@ -265,7 +271,7 @@ def auto_tool_manifest(
         :data:`DEFAULT_WHITELIST`.
     exclude : iterable of str, optional
         Extra names to skip in addition to :data:`DEFAULT_EXCLUDE`.
-    max_tools : int, default 640
+    max_tools : int, default 760
         Cap on output size.  Keeps the manifest under Anthropic/OpenAI
         tool-list payload limits while giving headroom above the current
         eligible-tool count (so no agent-safe estimator — e.g. the

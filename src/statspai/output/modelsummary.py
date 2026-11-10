@@ -49,10 +49,13 @@ Migration notes
 from __future__ import annotations
 
 import warnings
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Sequence, Union
 
 import numpy as np
 import pandas as pd
+
+from .._aliases import accepts_aliases
+from ._format import unwrap_single_sequence
 
 _DEPRECATION_MSG = (
     "modelsummary() is now a thin wrapper over sp.regtable() and will "
@@ -108,6 +111,7 @@ def _translate_stats(stats: Optional[List[str]]) -> Optional[List[str]]:
     return out
 
 
+@accepts_aliases(_strict=True, model_labels="model_names")
 def modelsummary(
     *models: Any,
     model_names: Optional[List[str]] = None,
@@ -134,6 +138,51 @@ def modelsummary(
     the exact mapping to regtable. Like the R function, a single list
     (or tuple) of fitted models is accepted in place of positional
     arguments: ``sp.modelsummary([m1, m2])`` == ``sp.modelsummary(m1, m2)``.
+
+    Parameters
+    ----------
+    *models
+        Fitted model results, one table column each (or one list of them).
+    model_names : list of str, optional
+        Column header labels; defaults to ``(1), (2), ...``. Passed to
+        regtable's ``model_labels``.
+    stars : bool or dict, default True
+        Append significance stars. A dict such as
+        ``{"*": 0.10, "**": 0.05, "***": 0.01}`` sets the thresholds; only
+        its values are used, the symbols stay ``*`` / ``**`` / ``***``.
+    se_type : str, default 'parentheses'
+        Kept for compatibility: the standard error is always shown in
+        parentheses. ``'brackets'`` and ``'none'`` warn and fall back to
+        it; use ``show_ci=True`` for ``[lo, hi]`` intervals.
+    show_ci : bool, default False
+        Show the confidence interval beneath each coefficient instead of
+        the standard error.
+    stats : list of str, optional
+        Summary rows. R spellings are translated (``nobs`` -> ``N``,
+        ``r_squared`` -> ``r2``, ``adj_r_squared`` -> ``adj_r2``,
+        ``f_stat`` -> ``F``); ``method`` / ``bandwidth`` / ``estimand``
+        have no regtable equivalent and are dropped.
+    output : str, default 'text'
+        ``'text'``, ``'latex'``, ``'html'`` or ``'markdown'`` return the
+        rendered string; ``'dataframe'`` returns a DataFrame; a path ending
+        in ``.tex``, ``.html``, ``.md``, ``.txt``, ``.csv``, ``.xlsx`` or
+        ``.docx`` writes that file and returns a confirmation string. Any
+        other value raises ``MethodIncompatibility``.
+    title : str, default ''
+        Table title / caption.
+    notes : list of str, optional
+        Notes printed beneath the table.
+    fmt : str or int, optional
+        Numeric format for coefficients and standard errors, as in
+        :func:`statspai.regtable`.
+    digits : int, optional
+        Number of decimals; ``digits=3`` is ``fmt="%.3f"``.
+    coef_map : dict, optional
+        Rename and reorder coefficients ``{"raw_name": "Label"}``; only the
+        listed coefficients are shown, as in R ``modelsummary``.
+    add_rows : dict, optional
+        Extra rows beneath the coefficients, ``{"Row label": [cell per
+        model]}``.
 
     Examples
     --------
@@ -165,8 +214,7 @@ def modelsummary(
     # R's modelsummary takes a *list* of models; accept that calling
     # convention too so `sp.modelsummary([m1, m2])` and
     # `sp.modelsummary(m1, m2)` are equivalent.
-    if len(models) == 1 and isinstance(models[0], (list, tuple)):
-        models = tuple(models[0])
+    models = unwrap_single_sequence(models)
 
     if len(models) == 0:
         raise ValueError("At least one model required.")
@@ -239,23 +287,73 @@ def modelsummary(
     table = regtable(list(models), **kwargs)
 
     # ── output dispatch ──────────────────────────────────────────────
-    out = output.lower()
-    if out == "dataframe":
-        return table.to_dataframe()
-    if out == "latex":
-        return table.to_latex()
-    if out == "html":
-        return table.to_html()
-    if out == "markdown":
-        return table.to_markdown()
-    if output.lower().endswith(".xlsx"):
+    return _dispatch_output(table, output)
+
+
+#: File extensions ``output=`` writes to, as R ``modelsummary`` does.
+_FILE_RENDERERS = {
+    ".tex": "to_latex",
+    ".html": "to_html",
+    ".htm": "to_html",
+    ".md": "to_markdown",
+    ".markdown": "to_markdown",
+    ".txt": "to_text",
+    ".csv": None,  # via to_dataframe()
+}
+
+
+def _dispatch_output(table: Any, output: str) -> Union[str, pd.DataFrame]:
+    """Render or write ``table`` according to ``output=``.
+
+    Keywords return the rendering; a path writes the file and returns a
+    confirmation. ``output="x.tex"`` / ``".html"`` / ``".md"`` used to fall
+    through to the text renderer and write nothing, and a misspelt keyword
+    silently returned text.
+    """
+    from pathlib import Path
+
+    from ..exceptions import MethodIncompatibility
+
+    out = str(output).lower()
+    keywords = {
+        "text": "to_text",
+        "dataframe": None,
+        "data.frame": None,
+        "latex": "to_latex",
+        "tex": "to_latex",
+        "html": "to_html",
+        "markdown": "to_markdown",
+        "md": "to_markdown",
+    }
+    if out in keywords:
+        method = keywords[out]
+        return table.to_dataframe() if method is None else getattr(table, method)()
+    suffix = Path(out).suffix
+    if suffix == ".xlsx":
         table.to_excel(output)
         return f"Table exported to: {output}"
-    if output.lower().endswith(".docx"):
+    if suffix == ".docx":
         table.to_word(output)
         return f"Table exported to: {output}"
-    # default: text
-    return table.to_text()
+    if suffix in _FILE_RENDERERS:
+        method = _FILE_RENDERERS[suffix]
+        if method is None:
+            # pandas writes the CSV itself: its line terminator is already
+            # os.linesep, which a text-mode write turned into "\r\r\n" on
+            # Windows.
+            table.to_dataframe().to_csv(output, encoding="utf-8")
+        else:
+            Path(output).write_text(str(getattr(table, method)()), encoding="utf-8")
+        return f"Table exported to: {output}"
+    raise MethodIncompatibility(
+        f"output={output!r} is neither a format keyword nor a file path "
+        "with a known extension.",
+        recovery_hint=(
+            "Use 'text', 'latex', 'html', 'markdown' or 'dataframe', or a "
+            "path ending in .tex, .html, .md, .txt, .csv, .docx or .xlsx."
+        ),
+        diagnostics={"output": output},
+    )
 
 
 # ======================================================================
@@ -272,6 +370,7 @@ def coefplot(
     colors: Optional[List[str]] = None,
     title: Optional[str] = None,
     alpha: float = 0.05,
+    drop: Optional[Sequence[str]] = None,
 ) -> Any:
     """
     Forest plot comparing coefficients across models.
@@ -289,10 +388,20 @@ def coefplot(
     title : str, optional
     alpha : float
         Significance level for CIs.
+    drop : sequence of str, optional
+        Coefficients to leave out, as Stata ``coefplot, drop(_cons)``:
+        ``drop=["Intercept"]``. Like Stata's ``coefplot``, the intercept is
+        plotted unless dropped.
 
     Returns
     -------
     (fig, ax)
+
+    Notes
+    -----
+    Coefficients of models on different scales (OLS slopes, logit
+    log-odds, Poisson log-rates) are not comparable on one axis; a
+    ``UserWarning`` names the scales when the models mix them.
 
     Examples
     --------
@@ -335,13 +444,22 @@ def coefplot(
     z_crit = sp_stats.norm.ppf(1 - alpha / 2)
 
     coef_data = [_extract_coefs(m) for m in models]
+    _warn_mixed_scales(models, model_names)
 
-    # Variables to plot
+    # Variables to plot. A bare string is one name (set("Intercept") would
+    # be a set of letters, and the intercept stayed in the plot).
+    if isinstance(variables, str):
+        variables = [variables]
+    if isinstance(drop, str):
+        drop = [drop]
     if variables is None:
         all_v: set = set()
         for cd in coef_data:
             all_v.update(cd.keys())
         variables = sorted(all_v)
+    if drop:
+        dropped = set(drop)
+        variables = [v for v in variables if v not in dropped]
 
     if ax is None:
         fig, ax = plt.subplots(figsize=figsize)
@@ -396,6 +514,42 @@ def coefplot(
     fig.tight_layout()
 
     return fig, ax
+
+
+def _coef_scale(model: Any) -> str:
+    """The scale a model's coefficients live on, for the mixed-axis warning."""
+    mi = getattr(model, "model_info", {}) or {}
+    if not isinstance(mi, dict):
+        return "linear"
+    link = str(mi.get("link") or "").lower()
+    family = str(mi.get("family") or "").lower()
+    mtype = str(mi.get("model_type") or "").lower()
+    text = " ".join((link, family, mtype))
+    if "logit" in text or (family == "binomial" and link in ("", "logit")):
+        return "log-odds (logit)"
+    if "probit" in text:
+        return "probit index"
+    if "poisson" in text or "negative binomial" in text or "negbin" in text:
+        return "log rate (count model)"
+    if link == "log":
+        return "log link"
+    if "cox" in text:
+        return "log hazard ratio"
+    return "linear"
+
+
+def _warn_mixed_scales(models: Sequence[Any], names: Sequence[str]) -> None:
+    scales = {name: _coef_scale(m) for m, name in zip(models, names)}
+    if len(set(scales.values())) > 1:
+        detail = ", ".join(f"{n}: {sc}" for n, sc in scales.items())
+        warnings.warn(
+            "coefplot puts coefficients on different scales on one axis "
+            f"({detail}); they are not comparable. Plot them separately, or "
+            "convert to a common scale (e.g. sp.margins / average marginal "
+            "effects) first.",
+            UserWarning,
+            stacklevel=3,
+        )
 
 
 def _coefplot_tikz_escape(s: str) -> str:

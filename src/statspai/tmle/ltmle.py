@@ -63,8 +63,11 @@ import pandas as pd
 from scipy import stats
 from scipy.special import expit, logit
 
+from .._input_validation import missing_named_columns
 from .._result_serialize import ResultProtocolMixin
+from ..core._learners import clone_learner, positive_class_proba
 from ..exceptions import (
+    ColumnNotFound,
     ConvergenceWarning,
     DataInsufficient,
     MethodIncompatibility,
@@ -143,6 +146,14 @@ class LTMLEResult(ResultProtocolMixin):
     regime_control: Sequence[int]
     detail: Dict[str, Any] = field(default_factory=dict)
 
+    @staticmethod
+    def _regime_label(regime: Any) -> str:
+        """Compact label of a regime: its treatment values, or 'dynamic'."""
+        try:
+            return ",".join(str(int(a)) for a in regime)
+        except (TypeError, ValueError):
+            return "dynamic regime"
+
     def summary(self) -> str:  # pragma: no cover
         lo, hi = self.ci
         return (
@@ -150,9 +161,11 @@ class LTMLEResult(ResultProtocolMixin):
             "-----------------\n"
             f"  K (time points) : {self.K}\n"
             f"  N               : {self.n_obs}\n"
-            f"  E[Y(1,...,1)]   : {self.psi_treated:.4f}\n"
-            f"  E[Y(0,...,0)]   : {self.psi_control:.4f}\n"
-            f"  ATE             : {self.ate:.4f}  (SE={self.se:.4f})\n"
+            f"  E[Y({self._regime_label(self.regime_treated)})] : "
+            f"{self.psi_treated:.4f}\n"
+            f"  E[Y({self._regime_label(self.regime_control)})] : "
+            f"{self.psi_control:.4f}\n"
+            f"  Difference      : {self.ate:.4f}  (SE={self.se:.4f})\n"
             f"  95% CI          : [{lo:.4f}, {hi:.4f}]\n"
             f"  p-value         : {self.pvalue:.4f}"
         )
@@ -209,20 +222,23 @@ def _fit_linear(X: np.ndarray, y: np.ndarray) -> Any:
     return lr
 
 
-def _logit_fit(X: np.ndarray, y: np.ndarray) -> np.ndarray:
+def _logit_fit(
+    X: np.ndarray, y: np.ndarray, sw: Optional[np.ndarray] = None
+) -> np.ndarray:
     """Unpenalised (quasi-)binomial logistic MLE by Newton-Raphson.
 
     ``y`` may be fractional in [0, 1]: the quasi-binomial score equations
     are the binomial ones, so this is R's
     ``glm(family = quasibinomial())`` fit. Rank-deficient designs are
     handled with a pseudo-inverse step (R drops aliased columns; the
-    fitted values agree).
+    fitted values agree). ``sw`` are prior (observation) weights.
     """
+    sw = np.ones(len(y)) if sw is None else sw
     beta = np.zeros(X.shape[1])
     for _ in range(100):
         mu = expit(X @ beta)
-        W = mu * (1 - mu)
-        grad = X.T @ (y - mu)
+        W = sw * mu * (1 - mu)
+        grad = X.T @ (sw * (y - mu))
         info = (X * W[:, None]).T @ X
         step = np.linalg.lstsq(info, grad, rcond=None)[0]
         beta = beta + step
@@ -238,11 +254,33 @@ def _logit_fit(X: np.ndarray, y: np.ndarray) -> np.ndarray:
     return beta
 
 
-def _logit_fit_predict(X: np.ndarray, y: np.ndarray, rows: np.ndarray) -> np.ndarray:
-    """Fit on ``rows`` and return fitted probabilities for every unit."""
+def _logit_fit_predict(
+    X: np.ndarray,
+    y: np.ndarray,
+    rows: np.ndarray,
+    sw: Optional[np.ndarray] = None,
+    learner: Any = None,
+    weighted: bool = False,
+) -> np.ndarray:
+    """Fit on ``rows`` and return fitted probabilities for every unit.
+
+    ``X`` carries a leading constant column, dropped for a ``learner``.
+    """
     if np.all(y[rows] == y[rows][0]):
         return np.full(len(y), float(y[rows][0]))
-    return expit(X @ _logit_fit(X[rows], y[rows]))
+    if learner is not None:
+        m = _clone_learner(learner)
+        kw = {"sample_weight": sw[rows]} if (weighted and sw is not None) else {}
+        m.fit(X[rows][:, 1:], y[rows], **kw)
+        return positive_class_proba(m, X[:, 1:], context="ltmle g_learner")
+    _ret: np.ndarray = expit(
+        X @ _logit_fit(X[rows], y[rows], None if sw is None else sw[rows])
+    )
+    return _ret
+
+
+def _clone_learner(learner: Any) -> Any:
+    return clone_learner(learner)
 
 
 def _fluctuate(q_next: np.ndarray, off: np.ndarray, w: np.ndarray) -> float:
@@ -285,6 +323,10 @@ def ltmle(
     propensity_bounds: Tuple[float, float] = (0.01, 1.0),
     outcome_type: str = "auto",
     alpha: float = 0.05,
+    weights: Optional[str] = None,
+    q_learner: Any = None,
+    g_learner: Any = None,
+    design: Any = None,
 ) -> LTMLEResult:
     """
     Longitudinal TMLE for static regime contrasts.
@@ -328,6 +370,39 @@ def ltmle(
     outcome_type : {"auto", "binary", "continuous"}
         ``auto`` detects from unique values of ``y``.
     alpha : float, default 0.05
+    weights : str, optional
+        Column of observation (sampling) weights, R ``ltmle``'s
+        ``observation.weights``: they weight every treatment, censoring
+        and outcome regression, the targeting fluctuations (as
+        ``weight / prod g``), the plug-in mean and the influence curve.
+        Estimates and the influence-curve standard error equal R
+        ``ltmle`` 1.3-0 (``tests/reference_parity/test_ltmle_weights_parity.py``).
+    q_learner : regressor, optional
+        Learner for the sequential outcome regressions in place of the
+        main-terms logistic (quasi-binomial) model, e.g.
+        ``sp.SuperLearner()`` (R ltmle's ``SL.library`` for Q). It sees the
+        history and current treatment (no constant column) and the
+        pseudo-outcome on ``[0, 1]``; predictions are bounded to
+        ``[1e-4, 0.9999]`` as before. Must accept ``sample_weight`` when
+        ``weights`` is given.
+    g_learner : classifier, optional
+        Learner with ``predict_proba`` for the treatment and censoring
+        models, e.g. ``sp.SuperLearner(task='classification')``.
+    design : SurveyDesign, optional
+        A complex survey design from :func:`sp.svydesign` declared on
+        ``data`` (same rows). Its weights are the observation weights
+        (as ``weights=``) and the standard error of the difference is the
+        Taylor-linearisation variance of the influence-curve rows over
+        strata / PSUs / fpc (R ``survey::svyrecvar`` of ``IC / n``), with t
+        intervals on the design df (#PSU - #strata). Not with
+        ``weights=``. Equals R ``ltmle`` + ``svyrecvar``
+        (``tests/reference_parity/test_ltmle_design_parity.py``).
+        A replicate-weight design (:func:`sp.svrepdesign`) is accepted
+        too: the estimator is refitted with every replicate's weights
+        and the replicate variance replaces the linearisation (R
+        ``svrepdesign`` / Stata ``svy brr`` / ``svy jackknife``).
+
+        .. versionadded:: 1.40.0
 
     Returns
     -------
@@ -384,6 +459,11 @@ def ltmle(
     >>> bool(np.isfinite(res.ate))
     True
     """
+    if design is not None and getattr(design, "is_replicate_design", False):
+        _args = dict(locals())
+        from ..survey._replicate_refit import replicate_refit
+
+        return replicate_refit(ltmle, _args, design, function="sp.ltmle")
     if not isinstance(data, pd.DataFrame):
         raise _ltmle_error(
             "ltmle data must be a pandas DataFrame.",
@@ -445,16 +525,24 @@ def ltmle(
         )
     propensity_bounds = (p_lo, p_hi)
 
-    required = [y] + treatments + baseline + censoring
-    for block in covariates_time:
-        required.extend(block)
-    missing = set(required) - set(data.columns)
-    if missing:
-        raise _ltmle_error(
-            f"Missing columns: {missing}",
-            diagnostics={"missing_columns": sorted(str(col) for col in missing)},
-            recovery_hint="Pass LTMLE column names present in the DataFrame.",
+    named: Dict[str, Any] = {
+        "y": y,
+        "treatments": list(treatments),
+        "baseline": list(baseline),
+        "censoring": list(censoring),
+    }
+    for k, block in enumerate(covariates_time):
+        named[f"covariates_time[{k}]"] = list(block)
+    absent = missing_named_columns(named, data.columns)
+    if absent:
+        missing = sorted({str(col) for col in absent.values()})
+        err = ColumnNotFound.from_missing(
+            absent,
+            list(data.columns),
+            message=f"sp.ltmle: Missing columns: {missing}",
         )
+        err.alternative_functions = list(_LTMLE_ALTERNATIVES)
+        raise err
 
     if regime_treated is None:
         regime_treated = [1] * K
@@ -475,6 +563,11 @@ def ltmle(
             recovery_hint="Pass a static regime with one value per time point.",
         )
 
+    svy: Any = None
+    if design is not None:
+        from ..survey.linearization import check_design
+
+        svy = check_design(design, data, function="ltmle", weights=weights)
     df = data.copy().reset_index(drop=True)
     n = len(df)
     if n < 2:
@@ -521,6 +614,26 @@ def ltmle(
         y_min, y_range = 0.0, 1.0
     Y_scaled = (Y_raw - y_min) / y_range
 
+    if weights is not None:
+        if weights not in df.columns:
+            raise ColumnNotFound.from_missing(
+                {"weights": weights},
+                list(df.columns),
+                message=f"sp.ltmle: weights column {weights!r} not found",
+            )
+        obs_w = df[weights].to_numpy(dtype=float)
+        if not np.all(np.isfinite(obs_w)) or np.any(obs_w <= 0):
+            raise _ltmle_error(
+                f"ltmle: weights={weights!r} must be finite and strictly positive.",
+                diagnostics={"weights": weights},
+                recovery_hint="Drop rows with zero or missing weight first.",
+            )
+    elif svy is not None:
+        obs_w = np.asarray(svy.weights, dtype=float)
+    else:
+        obs_w = np.ones(n)
+    weighted = weights is not None or svy is not None
+
     def _hist_cols(k: int) -> List[str]:
         cols = list(baseline)
         for j in range(k):
@@ -544,11 +657,15 @@ def ltmle(
         H = df[_hist_cols(k)].to_numpy(dtype=float)
         X_k = np.column_stack([np.ones(n), H])
         fit_rows = uncens_before[:, k]
-        prob_a1.append(_logit_fit_predict(X_k, A_obs[:, k], fit_rows))
+        prob_a1.append(
+            _logit_fit_predict(X_k, A_obs[:, k], fit_rows, obs_w, g_learner, weighted)
+        )
         if censoring:
             X_c = np.column_stack([X_k, A_obs[:, k]])
             c_k = (df[censoring[k]].to_numpy(dtype=float) == 1).astype(float)
-            prob_c1.append(_logit_fit_predict(X_c, c_k, fit_rows))
+            prob_c1.append(
+                _logit_fit_predict(X_c, c_k, fit_rows, obs_w, g_learner, weighted)
+            )
         else:
             prob_c1.append(np.ones(n))
     propensities = prob_a1
@@ -617,12 +734,20 @@ def ltmle(
                 pos = 1 + (cols + [treatments[k]]).index(treatments[j])
                 X_reg[:, pos] = regime_mat[:, j]
             fit_rows = uncens[:, k] & np.isfinite(Q_next)
-            beta = _logit_fit(X_obs[fit_rows], Q_next[fit_rows])
-            q_pred = np.clip(expit(X_reg @ beta), 1e-4, 0.9999)
+            if q_learner is None:
+                beta = _logit_fit(X_obs[fit_rows], Q_next[fit_rows], obs_w[fit_rows])
+                q_pred = np.clip(expit(X_reg @ beta), 1e-4, 0.9999)
+            else:
+                qm = _clone_learner(q_learner)
+                kw = {"sample_weight": obs_w[fit_rows]} if weighted else {}
+                qm.fit(X_obs[fit_rows][:, 1:], Q_next[fit_rows], **kw)
+                q_pred = np.clip(
+                    np.asarray(qm.predict(X_reg[:, 1:]), dtype=float), 1e-4, 0.9999
+                )
             off = logit(q_pred)
 
             subs = uncens[:, k] & follow[:, k]
-            w = np.where(subs, 1.0 / cum_g[:, k], 0.0)
+            w = np.where(subs, obs_w / cum_g[:, k], 0.0)
             try:
                 eps = _fluctuate(Q_next[subs], off[subs], w[subs])
             except (np.linalg.LinAlgError, FloatingPointError, ValueError) as exc:
@@ -637,13 +762,13 @@ def ltmle(
                 )
             q_star = expit(off + eps)
             ic = ic + np.where(
-                subs, (np.nan_to_num(Q_next) - q_star) / cum_g[:, k], 0.0
+                subs, obs_w * (np.nan_to_num(Q_next) - q_star) / cum_g[:, k], 0.0
             )
             eps_list.append(float(eps))
             Q_next = q_star
 
-        psi_scaled = float(np.mean(Q_next))
-        ic = ic + (Q_next - psi_scaled)
+        psi_scaled = float(np.sum(obs_w * Q_next) / np.sum(obs_w))
+        ic = (ic + obs_w * (Q_next - psi_scaled)) / float(np.mean(obs_w))
         return (
             y_min + y_range * psi_scaled,
             y_range * ic,
@@ -655,11 +780,32 @@ def ltmle(
     psi0, ic0, eps0, fail0 = _run_regime(regime_control)
     ate = psi1 - psi0
     diff_ic = ic1 - ic0
-    se = float(np.std(diff_ic, ddof=1) / np.sqrt(n))
-    z_stat = ate / se if se > 0 else 0.0
-    pval = float(2 * stats.norm.sf(abs(z_stat)))
-    crit = float(stats.norm.ppf(1 - alpha / 2))
-    ci = (ate - crit * se, ate + crit * se)
+    svy_detail: Dict[str, Any] = {}
+    if svy is None:
+        se = float(np.std(diff_ic, ddof=1) / np.sqrt(n))
+        z_stat = ate / se if se > 0 else 0.0
+        pval = float(2 * stats.norm.sf(abs(z_stat)))
+        crit = float(stats.norm.ppf(1 - alpha / 2))
+        ci = (ate - crit * se, ate + crit * se)
+    else:
+        from ..survey.linearization import (
+            design_df,
+            design_inference,
+            design_info,
+            design_vcov,
+        )
+
+        # theta_hat - theta ~= mean(IC): the contributions are IC / n
+        V = design_vcov(np.column_stack([diff_ic, ic1, ic0]) / n, svy)
+        se = float(np.sqrt(max(V[0, 0], 0.0)))
+        svy_df = design_df(svy)
+        ci, pval = design_inference(ate, se, svy_df, alpha)
+        svy_detail = {
+            "survey_design": design_info(svy, svy_df),
+            "se_psi_treated": float(np.sqrt(max(V[1, 1], 0.0))),
+            "se_psi_control": float(np.sqrt(max(V[2, 2], 0.0))),
+            "inference": "survey linearisation of the influence curve, t(df)",
+        }
 
     def _serialise_regime(r: Regime) -> Any:
         return "dynamic-callable" if callable(r) else tuple(r)
@@ -685,6 +831,7 @@ def ltmle(
             # steps where the binary fluctuation failed (eps forced to 0).
             "epsilons": {"treated": eps1, "control": eps0},
             "targeting_failures": {"treated": fail1, "control": fail0},
+            **svy_detail,
         },
     )
     try:

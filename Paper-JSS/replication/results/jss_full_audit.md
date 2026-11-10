@@ -2,81 +2,81 @@
 
 Status: PASS
 Original-data parity rows: 35
-Track A modules: 89 (machine=80, iterative=7, moderate=1, methodological/T4=1)
+Track A modules: 89 (machine=82, iterative=5, moderate=1, methodological/T4=1)
 Track B materialized nominal rows: 13 (coverage range 0.883-0.968)
 Track C modules: 4
-Stability audit: 558 registry certified/validated symbols; 0 hand-written stable symbols still unbacked; 601 stable auto-registered symbols still unbacked
-API-stable denominator: 317 class-like / 284 function-like auto-unbacked symbols; top categories=agent:17, assimilation:1, bartik:3, bayes:9, bridge:1, causal:226
-Evidence paths: 541 unique registry evidence paths; missing=0
-Submission package: 27.13 MiB (28.44 MB decimal), 2964 files, within 50 MB=True; registry evidence files=541; ASCII-normalized source files=999; ASCII data suffixes=.csv,.json,.lock
-Data provenance audit: PASS (scoped_files=877; csv=357; public_datasets=9; original_extracts=7; r_stata_csv=91; forbidden_raw=0; private_path_hits=0; unknown=0)
-Source snapshot: version=1.32.0, package_commit=23da3621, paper_commit=a7088b0, clean=False, unreleased_changes=True, version_consistent=True, final_publication_gate_ready=False, gate_blocker_paths=5
+Stability audit: 981 registry certified/validated symbols; 0 hand-written stable symbols still unbacked; 570 stable auto-registered symbols still unbacked
+API-stable denominator: 406 class-like / 164 function-like auto-unbacked symbols; top categories=agent:13, assimilation:1, bartik:2, bayes:18, bridge:1, causal:167
+Evidence paths: 780 unique registry evidence paths; missing=0
+Submission package: 45.13 MiB (47.33 MB decimal), 4830 files, within 50 MB=True; registry evidence files=780; ASCII-normalized source files=1048; ASCII data suffixes=.csv,.json,.lock
+Data provenance audit: PASS (scoped_files=1465; csv=667; public_datasets=10; original_extracts=7; r_stata_csv=94; forbidden_raw=0; private_path_hits=0; unknown=0)
+Source snapshot: version=1.40.2, package_commit=25a9407ee, paper_commit=2914195, clean=False, unreleased_changes=True, version_consistent=True, final_publication_gate_ready=False, gate_blocker_paths=28
 Claim linter: PASS (37 files checked; historical_drift_files=10)
 Schema bundle check: PASS
-Validation evidence audit: PASS (558 certified/validated, missing_notes=0, certified_without_grade=0, validated_without_grade=0, supplemental_only=0)
+Validation evidence audit: PASS (981 certified/validated, missing_notes=0, certified_without_grade=0, validated_without_grade=0, supplemental_only=0)
 Methodological/T4 ledger: PASS (1/1 classified, uncategorized=0, metadata_guard_failures=0, non_circular_native_guards=1, non_circular_guard_failures=0, reference_disagreement_guards=1, reference_disagreement_guard_failures=0)
 Stata bridge audit: PASS (85 frozen modules; 85 R-joined; Py-Stata-only=none; repro_report=85)
 Stata rerun protocol: PASS (modules=85; r_joined=85; repro_report=85; non_reproduced=0; checklist_items=8; requires_license=True; claimed_live_rerun=False; upload_blocking=False)
-Agent interface audit: PASS (1255 schemas; 9697 params; trace_tools=579; trace_citations=callaway2021difference,rambachan2023more; trace_bibtex=2 from paper.bib; trace_stale_handle_error=True; trace_stale_handle_hint=True)
+Agent interface audit: PASS (1627 schemas; 14022 params; trace_tools=45; trace_citations=callaway2021difference,rambachan2023more; trace_bibtex=2 from paper.bib; trace_stale_handle_error=True; trace_stale_handle_hint=True)
 Agent benchmark protocol: PASS (arms=3; task_families=5; scoring_dimensions=6; validity_controls=6; jss_upload_blocking=False; claimed_behavioural_result=False)
 Experiment triage: PASS (items=8; pass=8; failed=0; upload_blocking=0; classes={'deferred_to_separate_benchmark': 1, 'external_runtime_documented': 1, 'implemented': 3, 'implemented_with_boundary': 1, 'not_a_jss_claim': 1, 'post_upload_release_work': 1})
-Release boundary audit: PASS (version=1.32.0, final_publication_gate_ready=False, gate_blocker_paths=5, checked_files=9)
+Release boundary audit: PASS (version=1.40.2, final_publication_gate_ready=False, gate_blocker_paths=28, checked_files=9)
 JSS house-style audit: PASS (checks=7; active_sections=9; draft_markers=0; marketing_hits=0; overconfidence_hits=0; defensive_tone_hits=0; anchor_failures=0)
-Bibliography metadata audit: PASS (active_cites=73; bib_entries=74; reserved=1; doi_entries=61; no_doi_manual=13/13; missing=0; duplicates=0; field_failures=0)
-Submission risk ledger: PASS (upload_blockers=0; final_tagged_cut_pending_items=2; final_tagged_cut_identity=confirmed; nonblocking_risks=6; nonblocking_risk_identity=confirmed; active_external_present=0; legacy_sections_present=0)
-Reviewer evidence map: PASS (cards=13; routes=5; pass_cards=13; failed_cards=0; failed_routes=0; upload_blockers=0; archive_files=2964)
-Editor screening checklist: PASS (items=11; pass_items=11; failed_items=0; upload_blockers=0; archive_files=2964)
-Reproduction environment audit: PASS (docker=python:3.10.20-slim-bookworm; requirements=23; requirements_version=True; make_targets=68; paper_readme_commands=26; manuscript_readme_commands=7; tier1_no_r_stata=True; tier1_live_external=0; renv=True; stata_env=True; seeded_rng=15; unseeded_rng=0)
-PDF render audit: PASS (renderer=pdftoppm; pages=4/54; full_scan=54/54; full_failures=0; sampled=1,2,27,54; min_width=910; min_height=1287; min_ink_ratio=0.027374; max_dark_ratio=0.02218; failures=0)
-PDF visual check protocol: PASS (pages=54; checklist_items=12; page_inventory=54/54; manual_visual_check_status=PENDING_MANUAL_REVIEW; claimed_manual_acceptance=False; jss_upload_blocking=False)
-Manuscript artifact audit: PASS (sections=10; table_inputs=9; figures=3; artifacts=12; hash_mismatches=0; float_labels=22; narrative_refs=22; missing_refs=0; dangling_refs=0; worked_example_scripts=7; worked_example_mentions=7; worked_example_labels=7; compact_sections=10; compact_coverage=10; compact_missing_anchors=0)
-JSS formal compliance audit: PASS (checks=23; passed=23; pending=0; archive=True; pages=54; official_sources_checked=2026-08-09)
+Bibliography metadata audit: PASS (active_cites=101; bib_entries=102; reserved=1; doi_entries=86; no_doi_manual=16/16; missing=0; duplicates=0; field_failures=0)
+Submission risk ledger: PASS (upload_blockers=0; final_tagged_cut_pending_items=3; final_tagged_cut_identity=confirmed; nonblocking_risks=6; nonblocking_risk_identity=confirmed; active_external_present=0; legacy_sections_present=0)
+Reviewer evidence map: PASS (cards=13; routes=5; pass_cards=13; failed_cards=0; failed_routes=0; upload_blockers=0; archive_files=4830)
+Editor screening checklist: PASS (items=11; pass_items=11; failed_items=0; upload_blockers=0; archive_files=4830)
+Reproduction environment audit: PASS (docker=python:3.10.20-slim-bookworm; requirements=23; requirements_version=True; make_targets=70; paper_readme_commands=26; manuscript_readme_commands=7; tier1_no_r_stata=True; tier1_live_external=0; renv=True; stata_env=True; seeded_rng=16; unseeded_rng=0)
+PDF render audit: PASS (renderer=pdftoppm; pages=4/48; full_scan=48/48; full_failures=0; sampled=1,2,24,48; min_width=910; min_height=1287; min_ink_ratio=0.052956; max_dark_ratio=0.021981; failures=0)
+PDF visual check protocol: PASS (pages=48; checklist_items=12; page_inventory=48/48; manual_visual_check_status=PENDING_MANUAL_REVIEW; claimed_manual_acceptance=False; jss_upload_blocking=False)
+Manuscript artifact audit: PASS (sections=10; table_inputs=12; figures=3; artifacts=15; hash_mismatches=0; float_labels=23; narrative_refs=23; missing_refs=0; dangling_refs=0; worked_example_scripts=7; worked_example_mentions=7; worked_example_labels=7; compact_sections=10; compact_coverage=10; compact_missing_anchors=0)
+JSS formal compliance audit: PASS (checks=23; passed=23; pending=0; archive=True; pages=48; official_sources_checked=2026-08-09)
 
 ## Step Results
 
-- orig_parity_compare: rc=0 in 0.0s (`<STATSPAI_ROOT>/.venv/bin/python tests/orig_parity/compare_orig.py`)
-- r_stata_parity_compare: rc=0 in 0.0s (`<STATSPAI_ROOT>/.venv/bin/python tests/r_parity/compare.py`)
-- python_parity_reproduce: rc=0 in 0.0s (`<STATSPAI_ROOT>/.venv/bin/python tests/r_parity/verify_reproduce_py.py --no-report`)
-- methodological_gap_ledger: rc=0 in 0.0s (`<STATSPAI_ROOT>/.venv/bin/python Paper-JSS/replication/scripts/methodological_gap_ledger.py`)
-- stata_bridge_audit: rc=0 in 0.0s (`<STATSPAI_ROOT>/.venv/bin/python Paper-JSS/replication/scripts/stata_bridge_audit.py`)
-- reproduction_environment_audit: rc=0 in 0.0s (`<STATSPAI_ROOT>/.venv/bin/python Paper-JSS/replication/scripts/reproduction_environment_audit.py`)
-- stata_rerun_protocol: rc=0 in 0.0s (`<STATSPAI_ROOT>/.venv/bin/python Paper-JSS/replication/scripts/stata_rerun_protocol.py`)
-- jss_reproduction_environment_contract: rc=0 in 0.0s (`<STATSPAI_ROOT>/.venv/bin/python -m pytest -q tests/test_jss_reproduction_environment.py -o addopts=`)
-- jss_optional_io_engine_import: rc=0 in 0.0s (`<STATSPAI_ROOT>/.venv/bin/python -c import pyarrow`)
-- jss_rddensity_io_contract: rc=0 in 0.0s (`<STATSPAI_ROOT>/.venv/bin/python -m pytest -q tests/test_rddensity_io.py -o addopts=`)
-- performance_compare: rc=0 in 0.0s (`<STATSPAI_ROOT>/.venv/bin/python tests/perf/compare_perf.py`)
-- manuscript_artifact_audit: rc=0 in 0.0s (`<STATSPAI_ROOT>/.venv/bin/python Paper-JSS/replication/scripts/manuscript_artifact_audit.py`)
-- data_provenance_audit: rc=0 in 0.0s (`<STATSPAI_ROOT>/.venv/bin/python Paper-JSS/replication/scripts/data_provenance_audit.py`)
-- schema_bundle_check: rc=0 in 0.0s (`<STATSPAI_ROOT>/.venv/bin/python scripts/dump_schemas.py --check`)
-- replacement_table_check: rc=0 in 0.0s (`<STATSPAI_ROOT>/.venv/bin/python Paper-JSS/replication/scripts/build_replacement_table.py --check`)
-- schema_quality: rc=0 in 0.0s (`<STATSPAI_ROOT>/.venv/bin/python scripts/schema_quality.py`)
-- agent_interface_audit: rc=0 in 0.0s (`<STATSPAI_ROOT>/.venv/bin/python Paper-JSS/replication/scripts/agent_interface_audit.py`)
-- agent_benchmark_protocol: rc=0 in 0.0s (`<STATSPAI_ROOT>/.venv/bin/python Paper-JSS/replication/scripts/agent_benchmark_protocol.py`)
-- jss_style_guard: rc=0 in 0.0s (`<STATSPAI_ROOT>/.venv/bin/python Paper-JSS/replication/scripts/verify_jss_style.py`)
-- listings_execute_audit: rc=0 in 0.0s (`<STATSPAI_ROOT>/.venv/bin/python Paper-JSS/replication/scripts/listings_execute_audit.py`)
-- claim_linter: rc=0 in 0.0s (`<STATSPAI_ROOT>/.venv/bin/python Paper-JSS/replication/scripts/validate_claims.py`)
-- validation_evidence_audit: rc=0 in 0.0s (`<STATSPAI_ROOT>/.venv/bin/python Paper-JSS/replication/scripts/validation_evidence_audit.py`)
-- stability_audit_json: rc=0 in 0.0s (`<STATSPAI_ROOT>/.venv/bin/python scripts/stability_audit.py --json`)
-- stability_audit_check: rc=0 in 0.0s (`<STATSPAI_ROOT>/.venv/bin/python scripts/stability_audit.py --check`)
-- jss_validation_api: rc=0 in 0.0s (`<STATSPAI_ROOT>/.venv/bin/python -m pytest -q tests/test_jss_validation_api.py -o addopts=`)
-- jss_release_manifest_contract: rc=0 in 0.0s (`<STATSPAI_ROOT>/.venv/bin/python -m pytest -q tests/test_jss_release_manifest.py -k not test_submission_package_verifier_pins_page_and_claim_guards -o addopts=`)
-- source_snapshot_manifest: rc=0 in 0.0s (`<STATSPAI_ROOT>/.venv/bin/python Paper-JSS/replication/scripts/source_snapshot_manifest.py`)
-- release_boundary_audit: rc=0 in 0.0s (`<STATSPAI_ROOT>/.venv/bin/python Paper-JSS/replication/scripts/release_boundary_audit.py`)
-- experiment_triage: rc=0 in 0.0s (`<STATSPAI_ROOT>/.venv/bin/python Paper-JSS/replication/scripts/experiment_triage.py`)
-- pdf_render_audit: rc=0 in 0.0s (`<STATSPAI_ROOT>/.venv/bin/python Paper-JSS/replication/scripts/pdf_render_audit.py`)
-- pdf_visual_check_protocol: rc=0 in 0.0s (`<STATSPAI_ROOT>/.venv/bin/python Paper-JSS/replication/scripts/pdf_visual_check_protocol.py`)
-- jss_formal_compliance_audit: rc=0 in 0.0s (`<STATSPAI_ROOT>/.venv/bin/python Paper-JSS/replication/scripts/jss_formal_compliance_audit.py`)
-- jss_house_style_audit: rc=0 in 0.0s (`<STATSPAI_ROOT>/.venv/bin/python Paper-JSS/replication/scripts/jss_house_style_audit.py`)
-- bibliography_metadata_audit: rc=0 in 0.0s (`<STATSPAI_ROOT>/.venv/bin/python Paper-JSS/replication/scripts/bibliography_metadata_audit.py`)
-- submission_risk_ledger: rc=0 in 0.0s (`<STATSPAI_ROOT>/.venv/bin/python Paper-JSS/replication/scripts/submission_risk_ledger.py`)
-- reviewer_evidence_map: rc=0 in 0.0s (`<STATSPAI_ROOT>/.venv/bin/python Paper-JSS/replication/scripts/reviewer_evidence_map.py`)
-- editor_screening_checklist: rc=0 in 0.0s (`<STATSPAI_ROOT>/.venv/bin/python Paper-JSS/replication/scripts/editor_screening_checklist.py`)
+- orig_parity_compare: rc=0 in 0.0s (`python tests/orig_parity/compare_orig.py`)
+- r_stata_parity_compare: rc=0 in 0.0s (`python tests/r_parity/compare.py`)
+- python_parity_reproduce: rc=0 in 0.0s (`python tests/r_parity/verify_reproduce_py.py --no-report`)
+- methodological_gap_ledger: rc=0 in 0.0s (`python Paper-JSS/replication/scripts/methodological_gap_ledger.py`)
+- stata_bridge_audit: rc=0 in 0.0s (`python Paper-JSS/replication/scripts/stata_bridge_audit.py`)
+- reproduction_environment_audit: rc=0 in 0.0s (`python Paper-JSS/replication/scripts/reproduction_environment_audit.py`)
+- stata_rerun_protocol: rc=0 in 0.0s (`python Paper-JSS/replication/scripts/stata_rerun_protocol.py`)
+- jss_reproduction_environment_contract: rc=0 in 0.0s (`python -m pytest -q tests/test_jss_reproduction_environment.py -o addopts=`)
+- jss_optional_io_engine_import: rc=0 in 0.0s (`python -c import pyarrow`)
+- jss_rddensity_io_contract: rc=0 in 0.0s (`python -m pytest -q tests/test_rddensity_io.py -o addopts=`)
+- performance_compare: rc=0 in 0.0s (`python tests/perf/compare_perf.py`)
+- manuscript_artifact_audit: rc=0 in 0.0s (`python Paper-JSS/replication/scripts/manuscript_artifact_audit.py`)
+- data_provenance_audit: rc=0 in 0.0s (`python Paper-JSS/replication/scripts/data_provenance_audit.py`)
+- schema_bundle_check: rc=0 in 0.0s (`python scripts/dump_schemas.py --check`)
+- replacement_table_check: rc=0 in 0.0s (`python Paper-JSS/replication/scripts/build_replacement_table.py --check`)
+- schema_quality: rc=0 in 0.0s (`python scripts/schema_quality.py`)
+- agent_interface_audit: rc=0 in 0.0s (`python Paper-JSS/replication/scripts/agent_interface_audit.py`)
+- agent_benchmark_protocol: rc=0 in 0.0s (`python Paper-JSS/replication/scripts/agent_benchmark_protocol.py`)
+- jss_style_guard: rc=0 in 0.0s (`python Paper-JSS/replication/scripts/verify_jss_style.py`)
+- listings_execute_audit: rc=0 in 0.0s (`python Paper-JSS/replication/scripts/listings_execute_audit.py`)
+- claim_linter: rc=0 in 0.0s (`python Paper-JSS/replication/scripts/validate_claims.py`)
+- validation_evidence_audit: rc=0 in 0.0s (`python Paper-JSS/replication/scripts/validation_evidence_audit.py`)
+- stability_audit_json: rc=0 in 0.0s (`python scripts/stability_audit.py --json`)
+- stability_audit_check: rc=0 in 0.0s (`python scripts/stability_audit.py --check`)
+- jss_validation_api: rc=0 in 0.0s (`python -m pytest -q tests/test_jss_validation_api.py -o addopts=`)
+- jss_release_manifest_contract: rc=0 in 0.0s (`python -m pytest -q tests/test_jss_release_manifest.py -k not test_submission_package_verifier_pins_page_and_claim_guards -o addopts=`)
+- source_snapshot_manifest: rc=0 in 0.0s (`python Paper-JSS/replication/scripts/source_snapshot_manifest.py`)
+- release_boundary_audit: rc=0 in 0.0s (`python Paper-JSS/replication/scripts/release_boundary_audit.py`)
+- experiment_triage: rc=0 in 0.0s (`python Paper-JSS/replication/scripts/experiment_triage.py`)
+- pdf_render_audit: rc=0 in 0.0s (`python Paper-JSS/replication/scripts/pdf_render_audit.py`)
+- pdf_visual_check_protocol: rc=0 in 0.0s (`python Paper-JSS/replication/scripts/pdf_visual_check_protocol.py`)
+- jss_formal_compliance_audit: rc=0 in 0.0s (`python Paper-JSS/replication/scripts/jss_formal_compliance_audit.py`)
+- jss_house_style_audit: rc=0 in 0.0s (`python Paper-JSS/replication/scripts/jss_house_style_audit.py`)
+- bibliography_metadata_audit: rc=0 in 0.0s (`python Paper-JSS/replication/scripts/bibliography_metadata_audit.py`)
+- submission_risk_ledger: rc=0 in 0.0s (`python Paper-JSS/replication/scripts/submission_risk_ledger.py`)
+- reviewer_evidence_map: rc=0 in 0.0s (`python Paper-JSS/replication/scripts/reviewer_evidence_map.py`)
+- editor_screening_checklist: rc=0 in 0.0s (`python Paper-JSS/replication/scripts/editor_screening_checklist.py`)
 
 ## Working-Tree Size Hotspots Checked by Packager
 
-- .git: 0.0 MiB
-- manuscript: 9.05 MiB
+- .git: 216.46 MiB
+- manuscript: 9.04 MiB
 - references: 22.3 MiB
-- replication: 2.76 MiB
+- replication: 4.7 MiB
 
 Machine-readable detail: `replication/results/jss_full_audit.json`

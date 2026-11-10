@@ -37,9 +37,13 @@ import pandas as pd
 from scipy import stats
 
 from ..core._bootstrap import bootstrap_se as _bootstrap_se
+from ..core._call_record import records_call
+from ..core._vcov_spec import accepts_vce
 from ..core.results import CausalResult
 
 
+@records_call("cohort_anchored_event_study")
+@accepts_vce(default="cluster")
 def cohort_anchored_event_study(
     data: pd.DataFrame,
     y: str,
@@ -120,6 +124,8 @@ def cohort_anchored_event_study(
     rel_times = list(range(-leads, lags + 1))
     rows = []
     cohort_weights = []
+    failed_cells: list = []
+    cell_errors: list = []
     for c in cohorts:
         cohort_units = df.loc[df[treat] == c, id].unique()
         # Control = never-treated units only (clean comparison)
@@ -156,10 +162,21 @@ def cohort_anchored_event_study(
                         "n": int(len(sub)),
                     }
                 )
-            except Exception:
+            except Exception as exc:
+                failed_cells.append((c, k))
+                cell_errors.append(exc)
                 continue
         cohort_weights.append((c, int((df[treat] == c).sum())))
 
+    from ..core._fallback import warn_dropped
+
+    warn_dropped(
+        "cohort-by-event-time cells (cohort, rel_time)",
+        failed_cells,
+        len(cohorts) * len(rel_times),
+        "the event-study path aggregates the remaining cells only",
+        errors=cell_errors,
+    )
     if not rows:
         raise ValueError("No cohort-time cells could be estimated.")
     cohort_atts = pd.DataFrame(rows)

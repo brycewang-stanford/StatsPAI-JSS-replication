@@ -158,6 +158,39 @@ def _partial_out(
     return x - np.asarray(design @ coef, dtype=float)
 
 
+#: A lead is treated as unidentified when, after the fixed effects and the
+#: leads nearer to treatment are partialled out, less than this share of its
+#: indicator's sum of squares is left. Exact collinearity leaves the
+#: rounding error of the sparse solves (1e-12 or less on the designs
+#: checked); an identified lead on the same designs keeps more than 1e-3.
+_LEAD_RANK_TOL = 1e-8
+
+
+def _unidentified_leads(
+    leads: List[int], lead_matrix: np.ndarray, lead_resid: np.ndarray
+) -> List[int]:
+    """Leads whose indicator is spanned by the Y(0) design and nearer leads.
+
+    The leads are taken from the one nearest to treatment outwards, the
+    order in which Stata's ``did_imputation`` lists them and therefore the
+    order in which its regression omits collinear ones.
+    """
+    order = sorted(range(len(leads)), key=lambda j: -leads[j])
+    basis: List[np.ndarray] = []
+    out: List[int] = []
+    for j in order:
+        total = float(lead_matrix[:, j] @ lead_matrix[:, j])
+        r = lead_resid[:, j].copy()
+        for q in basis:
+            r -= (q @ r) * q
+        left = float(r @ r)
+        if total <= 0 or left <= _LEAD_RANK_TOL * total:
+            out.append(leads[j])
+        else:
+            basis.append(r / np.sqrt(left))
+    return sorted(out)
+
+
 def bjs_pretrend_path(
     *,
     design_untreated: sparse.csr_matrix,
@@ -168,6 +201,8 @@ def bjs_pretrend_path(
     leads: List[int],
     alpha: float = 0.05,
     weights_untreated: Optional[np.ndarray] = None,
+    unit_untreated: Optional[np.ndarray] = None,
+    time_untreated: Optional[np.ndarray] = None,
 ) -> Tuple[pd.DataFrame, Dict[str, float]]:
     """Pre-trend coefficients under the BJS / Stata ``did_imputation`` rule.
 
@@ -209,6 +244,17 @@ def bjs_pretrend_path(
         Negative relative times to estimate, e.g. ``[-3, -2, -1]``.
     alpha
         Two-sided level for the reported confidence intervals.
+    unit_untreated, time_untreated
+        Unit and period identifiers of the untreated rows. Stata
+        ``did_imputation`` runs the auxiliary regression through ``reghdfe``,
+        which drops singleton groups of the absorbed unit and time effects
+        before counting observations and clusters for its dof adjustment.
+        A singleton fits its own fixed effect exactly, so the coefficients
+        and the meat do not change, but ``N`` and ``G`` in the adjustment
+        do: on mpdta with ``pretrends(3)`` the 125 counties first treated in
+        2004 have one untreated year each, and leaving them in made the lead
+        variances 0.1% too small. Without the identifiers no singletons are
+        removed.
 
     Returns
     -------
@@ -310,6 +356,26 @@ def bjs_pretrend_path(
     )
     y_resid = _partial_out(y_u, design_untreated, col_norms, scale)
 
+    unidentified = _unidentified_leads(leads, lead_matrix, lead_resid)
+    if unidentified:
+        kept = [k for k in leads if k not in unidentified]
+        raise MethodIncompatibility(
+            "pretrend_method='bjs': the lead coefficient(s) at relative time "
+            f"{unidentified} are not identified. Once the fixed effects and "
+            "the nearer leads are partialled out nothing is left of their "
+            "indicators, which happens when a lead is observed for a single "
+            "cohort only or when no reference period remains. Stata's "
+            "did_imputation omits such leads; returning numbers for them "
+            "would also corrupt the leads that are identified.",
+            recovery_hint=(
+                f"Request pretrends={-min(kept)}, the longest run of "
+                "identified leads."
+                if kept and kept == list(range(min(kept), 0))
+                else "Request fewer leads via pretrends=k or horizon=."
+            ),
+            diagnostics={"unidentified_leads": unidentified, "identified": kept},
+        )
+
     gram = lead_resid.T @ lead_resid
     try:
         gram_inv = np.linalg.inv(gram)
@@ -323,25 +389,31 @@ def bjs_pretrend_path(
     resid = y_resid - lead_resid @ beta
 
     cluster = np.asarray(cluster_untreated)
-    meat = np.zeros((len(leads), len(leads)), dtype=float)
-    _, cluster_codes = np.unique(cluster, return_inverse=True)
+    cluster_labels, cluster_codes = np.unique(cluster, return_inverse=True)
     n_clusters = int(cluster_codes.max()) + 1
-    for g in range(n_clusters):
-        idx = np.flatnonzero(cluster_codes == g)
-        score = lead_resid[idx].T @ resid[idx]
-        meat += np.outer(score, score)
+    # Per-cluster sums of x_i e_i (one row per cluster): the meat, and --
+    # through the bread -- each lead's cluster score.
+    xe = np.zeros((n_clusters, len(leads)), dtype=float)
+    np.add.at(xe, cluster_codes, lead_resid * resid[:, None])
+    meat = xe.T @ xe
 
     # Degrees of freedom: G/(G-1) * (n-1)/(n-p) with p counting every
     # non-intercept column except the absorbed unit effects.  Validated to
     # 1e-14 relative against Stata did_imputation on two non-staggered
     # designs; see tests/test_did_pretrend_conventions.py.
     n_params = design_untreated.shape[1] - 1 - max(n_unit_columns, 0) + len(leads)
-    denom = max(n_obs - n_params, 1)
-    adjust = (
-        (n_clusters / (n_clusters - 1)) * ((n_obs - 1) / denom)
-        if n_clusters > 1
-        else 1.0
-    )
+    n_eff, g_eff = n_obs, n_clusters
+    if unit_untreated is not None and time_untreated is not None:
+        keep = _non_singleton_rows(unit_untreated, time_untreated)
+        if not keep.all():
+            n_eff = int(keep.sum())
+            g_eff = int(np.unique(cluster_codes[keep]).size)
+            # A period left with no observation loses its column too.
+            t_all = np.unique(np.asarray(time_untreated))
+            t_kept = np.unique(np.asarray(time_untreated)[keep])
+            n_params -= int(t_all.size - t_kept.size)
+    denom = max(n_eff - n_params, 1)
+    adjust = (g_eff / (g_eff - 1)) * ((n_eff - 1) / denom) if g_eff > 1 else 1.0
     vcov = gram_inv @ meat @ gram_inv * adjust
     se = np.sqrt(np.clip(np.diag(vcov), 0.0, None))
 
@@ -364,6 +436,14 @@ def bjs_pretrend_path(
     # Joint covariance of the lead coefficients, for callers that assemble
     # an event-study covariance (sp.event_study_vcov / honest_did).
     frame.attrs["vcov"] = vcov
+    # Each lead's per-cluster score, scaled so that scores' scores = vcov:
+    # Stata did_imputation's pre_eps (the Frisch-Waugh weight of the lead
+    # times the auxiliary residual, summed by cluster, times sqrt of the dof
+    # adjustment). Its e(V) stacks these beside the horizons' scores, which
+    # gives the lead-horizon cross-covariance.
+    frame.attrs["scores"] = pd.DataFrame(
+        xe @ gram_inv * np.sqrt(adjust), index=cluster_labels, columns=leads
+    )
 
     joint: Dict[str, float] = {}
     try:
@@ -378,6 +458,20 @@ def bjs_pretrend_path(
             "method": "wald-cluster (BJS pretrends auxiliary regression)",
         }
     return frame, joint
+
+
+def _non_singleton_rows(unit: np.ndarray, time: np.ndarray) -> np.ndarray:
+    """Rows ``reghdfe`` keeps: iteratively drop singletons of either effect."""
+    _, u = np.unique(np.asarray(unit), return_inverse=True)
+    _, t = np.unique(np.asarray(time), return_inverse=True)
+    keep = np.ones(u.size, dtype=bool)
+    while True:
+        cu = np.bincount(u[keep], minlength=int(u.max()) + 1)
+        ct = np.bincount(t[keep], minlength=int(t.max()) + 1)
+        drop = keep & ((cu[u] == 1) | (ct[t] == 1))
+        if not drop.any():
+            return keep
+        keep &= ~drop
 
 
 def symmetric_pretrend_scale(

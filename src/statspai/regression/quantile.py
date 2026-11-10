@@ -20,7 +20,7 @@ Chernozhukov, V. and Hansen, C. (2005).
 """
 
 import warnings
-from typing import List, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -28,14 +28,64 @@ from scipy import stats
 from scipy.optimize import linprog
 
 from .._aliases import accepts_formula_first
-from ..core.results import CausalResult
-from ..exceptions import MethodIncompatibility
+from .._input_validation import check_columns, missing_named_columns
+from ..core._call_record import records_call
+from ..core.results import CausalResult, EconometricResults
+from ..exceptions import ColumnNotFound, MethodIncompatibility
 
 
 def _as_float_array(value: object) -> np.ndarray:
     return np.asarray(value, dtype=float)
 
 
+class QuantileRegressionResult(CausalResult):
+    """``sp.qreg`` result: a ``CausalResult`` whose coefficient accessors
+    cover every regressor.
+
+    ``estimate`` / ``se`` / ``ci`` stay the first regressor's (the headline
+    of the causal-result interface), but ``params``, ``std_errors``,
+    ``tvalues``, ``pvalues``, ``vcov()`` and ``conf_int()`` report the whole
+    coefficient table, as Stata's ``qreg`` and ``sp.regress`` do. Through
+    1.32 they held the first regressor alone (top-5 replication list), so a
+    regression table of a ``qreg`` fit showed one row.
+    """
+
+    def _coef_table(self) -> pd.DataFrame:
+        return self.detail.set_index("variable")
+
+    @property
+    def params(self) -> pd.Series:
+        return self._coef_table()["coefficient"].rename(None)
+
+    @property
+    def std_errors(self) -> pd.Series:
+        return self._coef_table()["se"].rename(None)
+
+    @property
+    def tvalues(self) -> pd.Series:
+        return self._coef_table()["t"].rename(None)
+
+    @property
+    def pvalues(self) -> pd.Series:
+        return self._coef_table()["pvalue"].rename(None)
+
+    def vcov(self) -> pd.DataFrame:
+        names = list(self._coef_table().index)
+        V = self.model_info.get("vcov")
+        if isinstance(V, pd.DataFrame):
+            return V.loc[names, names]
+        # vce='powell' stores SEs only; its sandwich is not kept.
+        se = self.std_errors.to_numpy()
+        return pd.DataFrame(np.diag(se**2), index=names, columns=names)
+
+    def conf_int(self, alpha: Optional[float] = None) -> pd.DataFrame:
+        a = self.alpha if alpha is None else alpha
+        crit = stats.t.ppf(1 - a / 2, self.model_info["df_inference"])
+        b, se = self.params, self.std_errors
+        return pd.DataFrame({0: b - crit * se, 1: b + crit * se})
+
+
+@records_call("qreg")
 @accepts_formula_first()
 def qreg(
     data: pd.DataFrame,
@@ -47,6 +97,7 @@ def qreg(
     vce: Optional[str] = None,
     cluster: Optional[str] = None,
     kernel_scale: str = "mad",
+    weights: Optional[object] = None,
 ) -> CausalResult:
     """
     Quantile regression at a single quantile.
@@ -67,7 +118,7 @@ def qreg(
     alpha : float, default 0.05
         Also sets the Hall-Sheather bandwidth's ``z_{1-alpha/2}``, as
         Stata's ``level()`` does.
-    vce : {None, 'iid', 'robust', 'nid', 'powell'}, optional
+    vce : {None, 'iid', 'robust', 'nid', 'kernel', 'ker', 'cluster', 'powell'}, optional
         Standard errors (all use the Hall-Sheather bandwidth ``h`` and the
         quantile fits at ``tau +/- h``):
 
@@ -97,6 +148,11 @@ def qreg(
           implementation and the reference (full covariance matrix within
           1e-13 at four quantiles).
 
+        * ``'ker'`` -- R ``quantreg::summary.rq(se="ker")``: Powell's
+          sandwich with a Gaussian kernel, ``H = (sum f_i x_i x_i')^{-1}``,
+          ``f_i = phi(u_i / c) / c`` and ``c = [Phi^-1(tau + h) -
+          Phi^-1(tau - h)] min(sd(u), IQR(u) / 1.34)``.
+
         Every choice reports t(N - k) p-values and intervals, as Stata
         ``qreg`` / ``qreg2`` and R ``quantreg::summary.rq`` do (normal
         before 1.32).
@@ -107,6 +163,17 @@ def qreg(
         The ``kappa`` of the ``'kernel'`` / ``'cluster'`` bandwidth: the
         median absolute deviation of the residuals (``qreg2`` default) or
         Silverman's ``min(sd, IQR/1.34)`` (``qreg2, silverman``).
+
+    weights : str or array-like, optional
+        Sampling weights: the fit minimises ``sum w_i rho_tau(y_i -
+        x_i'b)``. The covariance follows ``quantreg``: every formula above
+        is applied to the rescaled data ``(w_i y_i, w_i x_i)``, which for
+        the sandwich kinds is the weighted bread ``sum w_i f_i x_i x_i'``
+        around the meat ``sum w_i^2 x_i x_i'``. With weights and no
+        ``vce``, the default is ``'robust'`` rather than ``'iid'``: an iid
+        sparsity has no meaning for a weighted sample (Stata ``qreg``
+        switches to ``vce(robust)`` under ``pweight`` for the same reason).
+        Weights must be positive; rows with a missing weight are dropped.
 
     Returns
     -------
@@ -140,18 +207,33 @@ def qreg(
 
     See Koenker & Bassett (1978, *Econometrica*).
     """
+    if isinstance(quantile, (list, tuple, np.ndarray)):
+        raise MethodIncompatibility(
+            "qreg fits one quantile; quantile= was given several.",
+            recovery_hint=(
+                "sp.sqreg(data, y, x, quantiles=[...]) fits them together, "
+                "or call sp.qreg once per quantile."
+            ),
+        )
     if not (0 < quantile < 1):
         raise MethodIncompatibility(f"quantile must be in (0, 1), got {quantile}")
 
     # Parse inputs
     if formula is not None:
         y_name, x_names = _parse_formula(formula)
+        if any(name not in data for name in [y_name] + x_names):
+            # transformed, categorical or interaction terms: built as columns
+            from ..core.utils import formula_to_columns
+
+            data, y_name, x_names = formula_to_columns(formula, data)
     elif y is not None and x is not None:
         y_name, x_names = y, x
     else:
         raise MethodIncompatibility("Provide either formula or (y, x)")
 
     kind, cluster = _parse_qreg_vce(vce, cluster)
+    if weights is not None and vce is None and cluster is None:
+        kind = "robust"
     if kernel_scale not in ("mad", "silverman"):
         raise MethodIncompatibility(
             f"qreg: kernel_scale must be 'mad' or 'silverman'; got "
@@ -159,22 +241,59 @@ def qreg(
             diagnostics={"kernel_scale": kernel_scale},
         )
     cols = [y_name] + x_names + ([cluster] if cluster is not None else [])
-    missing_cols = [c for c in cols if c not in data]
-    if missing_cols:
-        raise MethodIncompatibility(
-            f"qreg: columns not found in data: {missing_cols}",
-            diagnostics={"missing": missing_cols},
+    named = missing_named_columns(
+        {"y": y_name, "x": list(x_names), "cluster": cluster}, data.columns
+    )
+    if named:
+        raise ColumnNotFound.from_missing(
+            named,
+            list(data.columns),
+            context="qreg",
+            extra_diagnostics={"missing": list(named.values())},
         )
-    df = data[list(dict.fromkeys(cols))].dropna()
+    df = data[list(dict.fromkeys(cols))]
+    w_obs: Optional[np.ndarray] = None
+    if weights is not None:
+        if isinstance(weights, str):
+            check_columns(
+                data,
+                {"weights": weights},
+                function="qreg",
+                extra_diagnostics={"weights": weights},
+            )
+            w_all = data[weights].to_numpy(dtype=float)
+        else:
+            w_all = np.asarray(weights, dtype=float).ravel()
+            if w_all.shape[0] != len(data):
+                raise MethodIncompatibility(
+                    f"qreg: weights has {w_all.shape[0]} entries for "
+                    f"{len(data)} rows.",
+                )
+        df = df.assign(**{"__qreg_w__": w_all})
+    df = df.dropna()
     if len(df) == 0:
         raise MethodIncompatibility(
             "qreg: no complete rows after dropping missing values.",
             diagnostics={"columns": cols},
         )
+    from ..core._collinear import drop_collinear_names
+
+    x_names, collinear_omitted = drop_collinear_names(df, x_names, "qreg")
     Y = df[y_name].values.astype(float)
     X = np.column_stack(
         [np.ones(len(df))] + [df[v].values.astype(float) for v in x_names]
     )
+    if weights is not None:
+        w_obs = df["__qreg_w__"].to_numpy(dtype=float)
+        if not np.all(np.isfinite(w_obs)) or np.any(w_obs <= 0):
+            raise MethodIncompatibility(
+                "qreg: weights must be finite and strictly positive.",
+                recovery_hint="Drop the rows with a zero or negative weight.",
+            )
+        # quantreg's rq.wfit: the weighted check loss is the unweighted
+        # one on (w y, w x), and summary.rq works on the same rescaling
+        Y = Y * w_obs
+        X = X * w_obs[:, None]
     n, k = X.shape
     var_names = ["const"] + x_names
 
@@ -186,6 +305,9 @@ def qreg(
     if kind == "powell":
         se = _qreg_se(Y, X, beta, resid, quantile)
         bandwidth = None
+    elif kind == "ker":
+        vcov, bandwidth = _quantreg_ker_vcov(X, resid, quantile)
+        se = _as_float_array(np.sqrt(np.maximum(np.diag(vcov), 0.0)))
     elif kind in ("kernel", "cluster"):
         groups = pd.factorize(df[cluster])[0] if kind == "cluster" else np.arange(n)
         n_clusters = int(groups.max()) + 1
@@ -231,8 +353,10 @@ def qreg(
     ci = (main_coef - t_crit * main_se, main_coef + t_crit * main_se)
 
     model_info = {
+        "omitted": collinear_omitted,
         "quantile": quantile,
-        "pseudo_r2": _pseudo_r2(Y, resid, quantile),
+        "pseudo_r2": _pseudo_r2(Y, resid, quantile, w_obs),
+        "weighted": w_obs is not None,
         "n_obs": n,
         "vce": kind,
         "bandwidth": bandwidth,
@@ -252,7 +376,7 @@ def qreg(
         if kind == "cluster":
             model_info.update({"cluster": cluster, "n_clusters": n_clusters})
 
-    return CausalResult(
+    return QuantileRegressionResult(
         method=f"Quantile Regression (tau={quantile})",
         estimand=f"Q({quantile}) {x_names[0]}",
         estimate=main_coef,
@@ -273,11 +397,17 @@ def sqreg(
     x: List[str],
     quantiles: Optional[List[float]] = None,
     alpha: float = 0.05,
-) -> pd.DataFrame:
+    reps: Optional[int] = None,
+    seed: Optional[int] = None,
+    cluster: Optional[str] = None,
+) -> "pd.DataFrame | EconometricResults":
     """
     Simultaneous quantile regression at multiple quantiles.
 
-    Equivalent to Stata's ``sqreg y x, quantiles(10 25 50 75 90)``.
+    Equivalent to Stata's ``sqreg y x, quantiles(10 25 50 75 90)``. With
+    ``reps`` the covariance is Stata's: one bootstrap across all quantiles
+    jointly, so coefficients can be compared across quantiles
+    (``sp.test(r, "q25:x = q75:x")``, Stata ``test [q25]x = [q75]x``).
 
     Parameters
     ----------
@@ -287,11 +417,23 @@ def sqreg(
     quantiles : list of float, optional
         Default: [0.1, 0.25, 0.5, 0.75, 0.9].
     alpha : float, default 0.05
+    reps : int, optional
+        Bootstrap replications for the joint covariance (Stata ``sqreg``
+        always bootstraps, ``reps(20)`` by default). Without ``reps`` each
+        quantile keeps its own analytic ``qreg`` SE and the return value is
+        the table below.
+    seed : int, optional
+        Bootstrap seed.
+    cluster : str, optional
+        Resample clusters instead of observations.
 
     Returns
     -------
-    pd.DataFrame
-        Rows: variables. Columns: quantiles with coefficients and SEs.
+    pd.DataFrame or EconometricResults
+        Without ``reps``: rows are variables, columns the coefficient and SE
+        at each quantile. With ``reps``: an ``EconometricResults`` whose
+        coefficients are named ``q<100 tau>:<variable>`` (``q25:x``), with
+        the bootstrap covariance across quantiles in ``vcov()``.
 
     Examples
     --------
@@ -303,6 +445,11 @@ def sqreg(
     """
     if quantiles is None:
         quantiles = [0.1, 0.25, 0.5, 0.75, 0.9]
+
+    if reps is not None:
+        return _sqreg_bootstrap(
+            data, y, list(x), list(quantiles), alpha, int(reps), seed, cluster
+        )
 
     results = {}
     for q in quantiles:
@@ -333,8 +480,35 @@ def sqreg(
 
 
 def _qreg_fit(Y: np.ndarray, X: np.ndarray, tau: float) -> np.ndarray:
-    """Solve quantile regression via linear programming (interior point)."""
+    """Solve quantile regression by linear programming.
+
+    The dual LP [@koenker2005quantile] -- ``max y'a`` subject to
+    ``X'a = (1 - tau) X'1``, ``0 <= a <= 1`` -- has ``k`` equality rows
+    instead of ``n``; HiGHS' interior point with crossover returns its
+    vertex, and ``b(tau)`` is the vector of equality multipliers. It is the
+    same solution as the primal LP (to 1e-15, ties included) and 5-8x
+    faster (n = 20,000, k = 11: 0.5 s vs 3.8 s), which matters because every
+    ``qreg`` SE refits at ``tau +/- h``. The primal LP is the fallback.
+    """
     n, k = X.shape
+    if n >= _FN_MIN_N:
+        beta_fn = _qreg_frisch_newton(Y, X, tau)
+        if beta_fn is not None:
+            return beta_fn
+    try:
+        dual = linprog(
+            -Y,
+            A_eq=X.T,
+            b_eq=(1.0 - tau) * X.sum(axis=0),
+            bounds=(0.0, 1.0),
+            method="highs-ipm",
+        )
+        if dual.success and dual.eqlin is not None:
+            beta = -np.asarray(dual.eqlin.marginals, dtype=float)
+            if np.all(np.isfinite(beta)):
+                return _as_float_array(beta)
+    except Exception:  # pragma: no cover - solver-dependent; primal below
+        pass
 
     # Reformulate as LP:
     # min tau * 1'u + (1-tau) * 1'v
@@ -386,6 +560,130 @@ def _qreg_fit(Y: np.ndarray, X: np.ndarray, tau: float) -> np.ndarray:
     return _qreg_irls(Y, X, tau)
 
 
+# Below this many rows HiGHS answers in milliseconds and the interior
+# point has nothing to add.
+_FN_MIN_N = 5000
+
+
+def _qreg_frisch_newton(
+    Y: np.ndarray, X: np.ndarray, tau: float, max_iter: int = 80
+) -> Optional[np.ndarray]:
+    """Quantile regression by an interior point, finished at the vertex.
+
+    The same dual LP as :func:`_qreg_fit`, solved by the primal-dual
+    log-barrier method with Mehrotra's predictor-corrector
+    [@portnoy1997gaussian]: every iteration is one weighted cross-product
+    ``X' diag(q) X``, so the cost is linear in ``n`` (HiGHS grows like
+    ``n^1.6`` here: 10 s per fit at n = 200,000).
+
+    An interior point stops near the solution, not on it. The exact
+    solution interpolates ``k`` observations, so the ``k`` rows the iterate
+    all but fits are solved for exactly, and the result is returned only
+    if it passes the subgradient condition strictly -- which proves it is
+    the unique minimiser, the vertex HiGHS returns. Otherwise (ties in the
+    data, a flat objective, a rank-deficient basis) ``None`` sends the
+    caller to HiGHS.
+    """
+    n, k = X.shape
+    if not 0.0 < tau < 1.0 or n <= k:
+        return None
+    try:
+        beta0 = np.linalg.lstsq(X, Y, rcond=None)[0]
+    except np.linalg.LinAlgError:
+        return None
+    r = Y - X @ beta0
+    scale = float(np.abs(r).mean())
+    if not np.isfinite(scale) or scale <= 0.0:
+        return None
+    # dual variables: a in (0, 1) with slack s = 1 - a; r = w - z
+    x = np.full(n, 1.0 - tau)
+    s = np.full(n, tau)
+    floor = 1e-3 * scale
+    w = np.maximum(r, 0.0) + floor
+    z = np.maximum(-r, 0.0) + floor
+    yd = -beta0
+    b = (1.0 - tau) * X.sum(axis=0)
+    c = -Y
+
+    def _step(v: np.ndarray, dv: np.ndarray) -> float:
+        neg = dv < 0
+        if not neg.any():
+            return 1.0
+        return float(min(1.0, 0.99995 * np.min(-v[neg] / dv[neg])))
+
+    with np.errstate(over="ignore", divide="ignore", invalid="ignore"):
+        for _ in range(max_iter):
+            gap = float(x @ z + s @ w)
+            if gap <= 1e-13 * n * scale:
+                break
+            mu = gap / (2 * n)
+            rp = b - X.T @ x
+            rd = c - X @ yd - z + w
+            q = 1.0 / (z / x + w / s)
+            XtQ = X.T * q
+            M = XtQ @ X
+            try:
+                chol = np.linalg.cholesky(M)
+            except np.linalg.LinAlgError:
+                return None
+
+            def _solve(xi1: np.ndarray, xi2: np.ndarray) -> Tuple[Any, ...]:
+                t = xi1 / x - xi2 / s - rd
+                rhs = rp - XtQ @ t
+                dy = np.linalg.solve(chol.T, np.linalg.solve(chol, rhs))
+                dx = q * (X @ dy + t)
+                dz = (xi1 - z * dx) / x
+                dw = (xi2 + w * dx) / s
+                return dy, dx, dz, dw
+
+            dy, dx, dz, dw = _solve(-x * z, -s * w)
+            ap = min(_step(x, dx), _step(s, -dx))
+            ad = min(_step(z, dz), _step(w, dw))
+            mu_aff = float(
+                (x + ap * dx) @ (z + ad * dz) + (s - ap * dx) @ (w + ad * dw)
+            ) / (2 * n)
+            sigma = (mu_aff / mu) ** 3
+            dy, dx, dz, dw = _solve(
+                sigma * mu - x * z - dx * dz, sigma * mu - s * w + dx * dw
+            )
+            ap = min(_step(x, dx), _step(s, -dx))
+            ad = min(_step(z, dz), _step(w, dw))
+            x = x + ap * dx
+            s = s - ap * dx
+            yd = yd + ad * dy
+            z = z + ad * dz
+            w = w + ad * dw
+            if not (np.all(np.isfinite(yd)) and np.all(x > 0) and np.all(s > 0)):
+                return None
+
+    # the k rows the iterate interpolates, then the exact vertex
+    res = np.abs(Y - X @ (-yd))
+    h = np.argpartition(res, k - 1)[:k]
+    Xh = X[h]
+    try:
+        beta = np.linalg.solve(Xh, Y[h])
+    except np.linalg.LinAlgError:
+        return None
+    if not np.all(np.isfinite(beta)):
+        return None
+    r = Y - X @ beta
+    out = np.ones(n, dtype=bool)
+    out[h] = False
+    # every other residual must have a definite sign ...
+    if np.min(np.abs(r[out])) <= 1e-9 * scale:
+        return None
+    # ... and the subgradient must lie strictly inside its box
+    psi = tau - (r[out] < 0)
+    try:
+        g = np.linalg.solve(Xh.T, X[out].T @ psi)
+    except np.linalg.LinAlgError:
+        return None
+    margin = 1e-9
+    if not (np.all(g > -tau + margin) and np.all(g < 1.0 - tau - margin)):
+        return None
+    return _as_float_array(beta)
+
+
 def _qreg_irls(
     Y: np.ndarray,
     X: np.ndarray,
@@ -413,7 +711,7 @@ def _qreg_irls(
     return _as_float_array(beta)
 
 
-_QREG_KINDS = ("iid", "robust", "nid", "powell", "kernel", "cluster")
+_QREG_KINDS = ("iid", "robust", "nid", "powell", "kernel", "ker", "cluster")
 
 
 def _parse_qreg_vce(
@@ -524,6 +822,33 @@ def _pss_vcov(
     return (V + V.T) / 2, c
 
 
+def _quantreg_ker_vcov(
+    X: np.ndarray, resid: np.ndarray, tau: float
+) -> Tuple[np.ndarray, float]:
+    """Powell's kernel sandwich as ``quantreg::summary.rq(se="ker")``.
+
+    Gaussian kernel; bandwidth ``c = [Phi^-1(tau + h) - Phi^-1(tau - h)]
+    min(sd(u), IQR(u) / 1.34)`` with Hall-Sheather ``h`` at the 95% level
+    and R's default (type 7) quartiles. Returns ``(V, c)``.
+    """
+    n = X.shape[0]
+    h = _hall_sheather(n, tau, 0.05)
+    if tau + h > 1 or tau - h < 0:
+        raise MethodIncompatibility(
+            f"qreg: the bandwidth h={h:.4g} puts tau +/- h outside (0, 1); "
+            "too few observations for this quantile.",
+            diagnostics={"tau": tau, "bandwidth": h, "n": n},
+        )
+    q75, q25 = np.quantile(resid, [0.75, 0.25])
+    c = float(stats.norm.ppf(tau + h) - stats.norm.ppf(tau - h)) * min(
+        float(np.std(resid, ddof=1)), float(q75 - q25) / 1.34
+    )
+    f = stats.norm.pdf(resid / c) / c
+    H = np.linalg.inv((X * f[:, None]).T @ X)
+    V = tau * (1 - tau) * H @ (X.T @ X) @ H
+    return (V + V.T) / 2, c
+
+
 def _hall_sheather(n: int, tau: float, alpha: float) -> float:
     """Hall-Sheather (1988) bandwidth, as Stata qreg and quantreg use it."""
     x0 = stats.norm.ppf(tau)
@@ -609,13 +934,29 @@ def _qreg_se(
     return _as_float_array(np.sqrt(np.maximum(np.diag(vcov), 1e-20)))
 
 
-def _pseudo_r2(Y: np.ndarray, resid: np.ndarray, tau: float) -> float:
-    """Koenker-Machado (1999) pseudo R² for quantile regression."""
+def _pseudo_r2(
+    Y: np.ndarray,
+    resid: np.ndarray,
+    tau: float,
+    w: Optional[np.ndarray] = None,
+) -> float:
+    """Koenker-Machado (1999) pseudo R² for quantile regression.
+
+    With weights, ``Y`` and ``resid`` arrive already multiplied by ``w``;
+    the null model is the weighted ``tau`` quantile of the outcome.
+    """
 
     def rho(u: np.ndarray) -> np.ndarray:
         return _as_float_array(u * (tau - (u < 0)))
 
     obj_full = np.sum(rho(resid))
+    if w is not None:
+        y = Y / w
+        order = np.argsort(y)
+        cum = np.cumsum(w[order]) / np.sum(w)
+        q = y[order][min(int(np.searchsorted(cum, tau)), len(y) - 1)]
+        obj_null = np.sum(w * rho(y - q))
+        return float(1 - obj_full / obj_null) if obj_null > 0 else 0.0
     obj_null = np.sum(rho(Y - np.quantile(Y, tau)))
     return float(1 - obj_full / obj_null) if obj_null > 0 else 0.0
 
@@ -643,3 +984,48 @@ CausalResult._CITATIONS["qreg"] = (
     "  publisher={Wiley}\n"
     "}"
 )
+
+
+def _quantile_label(q: float) -> str:
+    """Stata's equation name for a quantile: 0.25 -> 'q25', 0.125 -> 'q12.5'."""
+    v = round(100 * q, 6)
+    return f"q{int(v)}" if v == int(v) else f"q{v:g}"
+
+
+def _sqreg_bootstrap(
+    data: pd.DataFrame,
+    y: str,
+    x: List[str],
+    quantiles: List[float],
+    alpha: float,
+    reps: int,
+    seed: Optional[int],
+    cluster: Optional[str],
+) -> "EconometricResults":
+    """Stata ``sqreg ..., reps()``: all quantiles bootstrapped jointly."""
+    from ..inference.bootstrap import bootstrap
+
+    cols = [y] + list(x) + ([cluster] if cluster else [])
+    df = data[cols].dropna().reset_index(drop=True)
+    names = ["_cons"] + list(x)
+
+    def stat(d: pd.DataFrame) -> pd.Series:
+        Y = d[y].to_numpy(dtype=float)
+        X = np.column_stack([np.ones(len(d))] + [d[v].to_numpy(float) for v in x])
+        out = {}
+        for q in quantiles:
+            b = _qreg_fit(Y, X, q)
+            for name, val in zip(names, b):
+                out[f"{_quantile_label(q)}:{name}"] = val
+        return pd.Series(out)
+
+    res = bootstrap(df, stat, n_boot=reps, cluster=cluster, alpha=alpha, seed=seed)
+    res.model_info.update(
+        {
+            "model_type": "Simultaneous quantile regression",
+            "quantiles": list(quantiles),
+            "method": f"sqreg, bootstrap ({res.model_info['n_boot']} reps)"
+            + (f", cluster({cluster})" if cluster else ""),
+        }
+    )
+    return res

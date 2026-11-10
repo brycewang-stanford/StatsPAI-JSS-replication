@@ -24,7 +24,8 @@ import numpy as np
 import pandas as pd
 
 from .._result_serialize import ResultProtocolMixin
-from ..exceptions import MethodIncompatibility
+from ..exceptions import DataInsufficient, MethodIncompatibility
+from .var import _consecutive_rows, _require_independent_series
 
 
 class CointegrationResult(ResultProtocolMixin):
@@ -69,7 +70,9 @@ class CointegrationResult(ResultProtocolMixin):
         n_obs: int,
         n_vars: int,
         lags: int,
+        pvalue: Optional[float] = None,
     ) -> None:
+        self.pvalue = pvalue
         self.test_type = test_type
         self.test_stats = test_stats
         self.critical_values = critical_values
@@ -79,6 +82,25 @@ class CointegrationResult(ResultProtocolMixin):
         self.n_obs = n_obs
         self.n_vars = n_vars
         self.lags = lags
+        # set by johansen(): observations entering the statistics, the level
+        # of the critical values, the deterministic case, the variable names
+        self.n_used: Optional[int] = None
+        self.alpha: float = 0.05
+        self.trend: Optional[str] = None
+        self.var_names: list[str] = []
+
+    def __repr__(self) -> str:
+        if self.test_type == "Engle-Granger":
+            p = "" if self.pvalue is None else f", pvalue={self.pvalue:.4g}"
+            return (
+                f"CointegrationResult(Engle-Granger: statistic="
+                f"{self.test_stats:.4f}{p}, lags={self.lags}, "
+                f"cointegrated={bool(self.rank)})"
+            )
+        return (
+            f"CointegrationResult({self.test_type}: rank={self.rank}, "
+            f"n_vars={self.n_vars}, lags={self.lags})"
+        )
 
     def summary(self) -> str:
         lines = [
@@ -87,9 +109,16 @@ class CointegrationResult(ResultProtocolMixin):
             f"Variables: {self.n_vars}   Lags: {self.lags}   N: {self.n_obs}",
             "",
         ]
+        n_used = self.n_used
+        if n_used is not None:
+            # the statistics are scaled by the observations left after
+            # differencing and lagging, not by the length of the series
+            lines[2] += f"   Used: {n_used}"
 
         if self.test_type == "Engle-Granger":
             lines.append(f"ADF test statistic: {self.test_stats:.4f}")
+            if self.pvalue is not None:
+                lines.append(f"MacKinnon p-value: {self.pvalue:.4f}")
             lines.append(
                 f"Critical values (1%, 5%, 10%): "
                 f"{self.critical_values[0]:.3f}, "
@@ -100,9 +129,15 @@ class CointegrationResult(ResultProtocolMixin):
             conclusion = "Cointegrated" if reject else "Not cointegrated"
             lines.append(f"Conclusion: {conclusion} at 5%")
         else:
+            # the trace test's null is rank <= r, the maximum-eigenvalue
+            # test's is rank = r
+            maxeig = "maxeig" in self.test_type
+            label = "Max-eig stat" if maxeig else "Trace stat"
+            rel = "r = " if maxeig else "r <= "
+            level = self.alpha
+            cv_label = f"{100 * level:g}% CV"
             lines.append(
-                f"{'H0: rank':>12s} {'Trace stat':>12s}"
-                f" {'5% CV':>10s} {'Reject':>8s}"
+                f"{'H0: rank':>12s} {label:>12s}" f" {cv_label:>10s} {'Reject':>8s}"
             )
             lines.append("-" * 50)
             for i in range(self.n_vars):
@@ -112,7 +147,7 @@ class CointegrationResult(ResultProtocolMixin):
                 )
                 reject = ts > cv if np.isfinite(ts) and np.isfinite(cv) else False
                 lines.append(
-                    f"{'r <= ' + str(i):>12s} {ts:>12.4f}"
+                    f"{rel + str(i):>12s} {ts:>12.4f}"
                     f" {cv:>10.3f} {'Yes' if reject else 'No':>8s}"
                 )
 
@@ -168,7 +203,11 @@ def engle_granger(
         (1%, 5%, 10%) MacKinnon (2010) response-surface critical values for
         ``N = len(variables)`` series and ``T = n - 1`` (the ``egranger``
         convention); ``eigenvectors`` holds the step-1 coefficients
-        (constant, regressors, trend terms).
+        (constant, regressors, trend terms); ``pvalue`` is MacKinnon's
+        (1994) asymptotic p-value, the one statsmodels' ``coint`` reports,
+        or None with more than six series, which his surfaces do not
+        cover. The decision in ``rank`` uses the finite-sample critical
+        value, so near a boundary it can disagree with ``pvalue < alpha``.
 
     Examples
     --------
@@ -191,7 +230,7 @@ def engle_granger(
 
     References
     ----------
-    [@engle1987integration]
+    [@engle1987integration], [@mackinnon1994approximate]
     """
     from ._critvals import mackinnon_cv
 
@@ -212,7 +251,7 @@ def engle_granger(
             "engle_granger needs 2..12 variables (MacKinnon 2010 tables)"
         )
 
-    Z = data[list(variables)].dropna().to_numpy(dtype=float)
+    Z = _consecutive_rows(data[list(variables)], "engle_granger").to_numpy(dtype=float)
     y = Z[:, 0]
     X = Z[:, 1:]
     n = len(y)
@@ -227,6 +266,17 @@ def engle_granger(
     X_const = np.column_stack([det[0], X] + det[1:])
     beta = np.linalg.lstsq(X_const, y, rcond=None)[0]
     residuals = y - X_const @ beta
+    # A first variable that is an exact linear function of the others
+    # leaves residuals of rounding size (root mean square below 1e-10 of
+    # that of the series); a unit-root statistic of those means nothing.
+    if not float(residuals @ residuals) > 1e-20 * float(y @ y):
+        raise DataInsufficient(
+            f"engle_granger: {variables[0]!r} is an exact linear function "
+            "of the other variables and the deterministic terms, so the "
+            "first-step residuals are rounding error.",
+            recovery_hint="Cointegration is a question about distinct "
+            "series; drop the redundant one.",
+        )
 
     # Step 2: ADF on residuals, no deterministic terms
     if lags is None:
@@ -238,6 +288,16 @@ def engle_granger(
     dy = np.diff(residuals)
     y_lag = residuals[:-1]
     T = len(dy)
+    # the regression of T - lags differences on the lagged residual and
+    # ``lags`` lagged differences needs residual degrees of freedom
+    if T - lags <= lags + 1:
+        raise DataInsufficient(
+            f"engle_granger: lags={lags} leaves {max(T - lags, 0)} "
+            f"observation(s) for {lags + 1} coefficient(s) in the residual "
+            f"unit-root regression ({n} observations).",
+            recovery_hint="Use fewer lags or a longer series.",
+            diagnostics={"n_obs": int(n), "lags": int(lags)},
+        )
     max_lag = min(lags, T - 2)
 
     Y_adf = dy[max_lag:]
@@ -257,6 +317,13 @@ def engle_granger(
     cvs = [mackinnon_cv(trend, k, lvl, n - 1) for lvl in (1, 5, 10)]
     reject = adf_stat < cvs[(1, 5, 10).index(level_pct)]
 
+    # MacKinnon (1994) asymptotic p-value. His surfaces stop at six series.
+    pvalue: Optional[float] = None
+    if k <= 6:
+        from statsmodels.tsa.adfvalues import mackinnonp
+
+        pvalue = float(mackinnonp(adf_stat, regression=trend, N=k))
+
     _result = CointegrationResult(
         test_type="Engle-Granger",
         test_stats=adf_stat,
@@ -267,6 +334,7 @@ def engle_granger(
         n_obs=n,
         n_vars=k,
         lags=max_lag,
+        pvalue=pvalue,
     )
     try:
         from ..output._lineage import attach_provenance as _attach_prov
@@ -300,6 +368,60 @@ _JOHANSEN_TREND_ALIASES = {
     "ct": "ct",
     "trend": "ct",
 }
+
+
+def _johansen_residuals(
+    Y: np.ndarray, lags: int, case: str
+) -> tuple[np.ndarray, np.ndarray, int]:
+    """Differences and lagged levels with the short-run dynamics and the
+    unrestricted deterministic terms partialled out (``R0``, ``R1``), and
+    the number of observations they hold.
+
+    Restricted deterministic terms (``'rc'``, ``'rt'``) are the last
+    column of ``R1``.
+    """
+    T, k = Y.shape
+    dY = np.diff(Y, axis=0)  # (T-1) x k
+    Y_lag = Y[:-1]  # (T-1) x k
+
+    T_eff = T - 1 - lags
+    if T_eff < k + 1:
+        raise DataInsufficient(
+            "johansen: too few observations for the number of lags.",
+            recovery_hint="Use fewer lags or a longer sample.",
+        )
+
+    dY_trim = dY[lags:]  # T_eff x k
+    Y_lag_trim = Y_lag[lags:]  # T_eff x k
+    # time index of the effective sample; any origin gives the same
+    # statistics (a shift is absorbed by the constant)
+    tt = np.arange(lags + 2, T + 1, dtype=float)
+
+    lag_blocks: list[np.ndarray] = [
+        dY[lags - j : T - 1 - j] for j in range(1, lags + 1)
+    ]
+    Z = np.hstack(lag_blocks) if lag_blocks else np.empty((T_eff, 0))
+
+    # Deterministic terms: unrestricted ones enter Z (concentrated out),
+    # restricted ones are appended to the lagged levels.
+    if case in ("c", "rt", "ct"):
+        Z = np.column_stack([Z, np.ones(T_eff)])
+    if case == "ct":
+        Z = np.column_stack([Z, tt])
+    if case == "rc":
+        Y_lag_trim = np.column_stack([Y_lag_trim, np.ones(T_eff)])
+    elif case == "rt":
+        Y_lag_trim = np.column_stack([Y_lag_trim, tt])
+
+    if Z.shape[1] > 0:
+        coefs0 = np.linalg.lstsq(Z, dY_trim, rcond=None)[0]
+        coefs1 = np.linalg.lstsq(Z, Y_lag_trim, rcond=None)[0]
+        R0 = dY_trim - Z @ coefs0
+        R1 = Y_lag_trim - Z @ coefs1
+    else:
+        R0 = dY_trim
+        R1 = Y_lag_trim
+    return R0, R1, T_eff
 
 
 def johansen(
@@ -390,46 +512,14 @@ def johansen(
     if variables is None:
         variables = data.select_dtypes(include=[np.number]).columns.tolist()
 
-    Y = data[variables].dropna().values.astype(float)
+    Y = _consecutive_rows(data[variables], "johansen").values.astype(float)
     T, k = Y.shape
+    # A series that is a linear combination of the others (or constant)
+    # makes the moment matrices singular: the eigenvalue problem has no
+    # solution to report.
+    _require_independent_series(Y, variables, "johansen", constant=case != "n")
 
-    dY = np.diff(Y, axis=0)  # (T-1) x k
-    Y_lag = Y[:-1]  # (T-1) x k
-
-    T_eff = T - 1 - lags
-    if T_eff < k + 1:
-        raise ValueError("Too few observations for the number of lags")
-
-    dY_trim = dY[lags:]  # T_eff x k
-    Y_lag_trim = Y_lag[lags:]  # T_eff x k
-    # time index of the effective sample; any origin gives the same
-    # statistics (a shift is absorbed by the constant)
-    tt = np.arange(lags + 2, T + 1, dtype=float)
-
-    lag_blocks: list[np.ndarray] = [
-        dY[lags - j : T - 1 - j] for j in range(1, lags + 1)
-    ]
-    Z = np.hstack(lag_blocks) if lag_blocks else np.empty((T_eff, 0))
-
-    # Deterministic terms: unrestricted ones enter Z (concentrated out),
-    # restricted ones are appended to the lagged levels.
-    if case in ("c", "rt", "ct"):
-        Z = np.column_stack([Z, np.ones(T_eff)])
-    if case == "ct":
-        Z = np.column_stack([Z, tt])
-    if case == "rc":
-        Y_lag_trim = np.column_stack([Y_lag_trim, np.ones(T_eff)])
-    elif case == "rt":
-        Y_lag_trim = np.column_stack([Y_lag_trim, tt])
-
-    if Z.shape[1] > 0:
-        coefs0 = np.linalg.lstsq(Z, dY_trim, rcond=None)[0]
-        coefs1 = np.linalg.lstsq(Z, Y_lag_trim, rcond=None)[0]
-        R0 = dY_trim - Z @ coefs0
-        R1 = Y_lag_trim - Z @ coefs1
-    else:
-        R0 = dY_trim
-        R1 = Y_lag_trim
+    R0, R1, T_eff = _johansen_residuals(Y, lags, case)
 
     S00 = R0.T @ R0 / T_eff
     S11 = R1.T @ R1 / T_eff
@@ -490,6 +580,10 @@ def johansen(
         n_vars=k,
         lags=lags,
     )
+    _result.n_used = int(T_eff)
+    _result.alpha = float(alpha_key)
+    _result.trend = case
+    _result.var_names = [str(v) for v in variables]
     try:
         from ..output._lineage import attach_provenance as _attach_prov
 

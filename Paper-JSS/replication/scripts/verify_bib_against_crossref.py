@@ -85,6 +85,49 @@ KNOWN_BENIGN: dict[str, tuple[str, str]] = {
         "Academic article page gives the print issue as Biometrika 107(1), "
         "93-105, March 2020, which is the year the entry prints.",
     ),
+    "barrett2026datatable": (
+        "year 2026 is not among the registry",
+        "The CRAN DOI names the package as a whole and Crossref dates it to "
+        "its first release. The entry cites the pinned version, data.table 1.18.2.1, "
+        "which CRAN published on 2026-01-27.",
+    ),
+    "greifer2026weightit": (
+        "year 2026 is not among the registry",
+        "The CRAN DOI names the package as a whole and Crossref dates it to "
+        "its first release. The entry cites the pinned version, WeightIt 1.7.0, "
+        "which CRAN published on 2026-04-22.",
+    ),
+    "koenker2025quantreg": (
+        "year 2025 is not among the registry",
+        "The CRAN DOI names the package as a whole and Crossref dates it to "
+        "its first release. The entry cites the pinned version, quantreg 6.1, "
+        "which CRAN published on 2025-03-10.",
+    ),
+    "kolesar2022shiftsharese": (
+        "year 2022 is not among the registry",
+        "The CRAN DOI names the package as a whole and Crossref dates it to "
+        "its first release. The entry cites the pinned version, ShiftShareSE 1.1.0, "
+        "which CRAN published on 2022-04-24.",
+    ),
+    "pustejovsky2026clubsandwich": (
+        "year 2026 is not among the registry",
+        "The CRAN DOI names the package as a whole and Crossref dates it to "
+        "its first release. The entry cites the pinned version, clubSandwich 0.6.2, "
+        "which CRAN published on 2026-02-02.",
+    ),
+    "ushey2026renv": (
+        "year 2026 is not among the registry",
+        "The CRAN DOI names the package as a whole and Crossref dates it to "
+        "its first release. The entry cites the pinned version, renv 1.2.4, "
+        "which CRAN published on 2026-08-03.",
+    ),
+    "zhang2024didmultiplegt": (
+        "first author",
+        "The CRAN DOI describes the current DIDmultiplegt release, whose "
+        "author list begins with Quispe. The entry cites the archived 0.1.4 "
+        "that module 81 pins; its CRAN DESCRIPTION lists Zhang, de "
+        "Chaisemartin, and Ciccia.",
+    ),
 }
 
 _ENTRY = re.compile(r"@(\w+)\s*\{\s*([^,]+),(.*?)\n\}", re.S)

@@ -24,13 +24,18 @@ from __future__ import annotations
 
 import warnings
 from dataclasses import dataclass
-from typing import Callable, List, Optional
+from typing import TYPE_CHECKING, Any, Callable, List, Optional, Tuple, Union
 
 import numpy as np
 import pandas as pd
 from scipy import stats as sp_stats
 
 from .._result_serialize import ResultProtocolMixin
+from ..exceptions import DataInsufficient, MethodIncompatibility
+from .basic_tests import _check_alpha
+
+if TYPE_CHECKING:  # pragma: no cover
+    from ..core.results import EconometricResults
 
 
 @dataclass
@@ -77,7 +82,8 @@ class BootstrapResult(ResultProtocolMixin):
             "Bootstrap Inference",
             f"  Estimate:   {self.estimate:.6f}",
             f"  Std. Error: {self.se:.6f}",
-            f"  CI ({1 - self.alpha:.0%}):    [{self.ci_lower:.6f}, {self.ci_upper:.6f}]  ({self.ci_method})",
+            f"  CI ({1 - self.alpha:.0%}):    [{self.ci_lower:.6f}, "
+            f"{self.ci_upper:.6f}]  ({self.ci_method})",
             f"  p-value:    {self.pvalue:.4f}",
             f"  Replications: {self.n_boot}",
         ]
@@ -85,6 +91,36 @@ class BootstrapResult(ResultProtocolMixin):
 
     def __repr__(self) -> str:
         return self.summary()
+
+
+def _too_few_replicates(n_valid: int, n_boot: int) -> str:
+    """Why a bootstrap with fewer than 10 usable replicates is refused."""
+    if n_valid == n_boot:
+        return (
+            f"bootstrap: {n_boot} replications were requested; at least 10 "
+            "are needed for a standard error. Raise the number of "
+            "replications (a few hundred is usual)."
+        )
+    return (
+        f"Only {n_valid}/{n_boot} bootstrap replications succeeded; at least "
+        "10 are needed. Check that your statistic function handles "
+        "resampled data."
+    )
+
+
+def _estimate_and_se(value: Any) -> Tuple[float, float]:
+    """Read ``(estimate, se)`` from what a studentized statistic returned."""
+    try:
+        est, se = value
+        return float(est), float(se)
+    except (TypeError, ValueError):
+        raise MethodIncompatibility(
+            "bootstrap(ci_method='studentized'): the statistic must return "
+            "the pair (estimate, standard error); got "
+            f"{type(value).__name__}.",
+            recovery_hint="e.g. lambda d: (fit(d).params['x'], "
+            "fit(d).std_errors['x'])",
+        ) from None
 
 
 def bootstrap(
@@ -97,7 +133,8 @@ def bootstrap(
     alpha: float = 0.05,
     seed: Optional[int] = None,
     null_value: float = 0.0,
-) -> BootstrapResult:
+    idcluster: Optional[str] = None,
+) -> Union[BootstrapResult, "EconometricResults"]:
     """
     General-purpose bootstrap inference.
 
@@ -106,8 +143,14 @@ def bootstrap(
     data : pd.DataFrame
         Input data.
     statistic : callable
-        A function ``f(df) -> float`` that computes the statistic of
-        interest on a (possibly resampled) DataFrame.
+        A function of a (possibly resampled) DataFrame returning the
+        statistic: a float, a vector (array / Series), or a fitted result
+        with ``.params`` -- ``lambda d: sp.regress("y ~ x", data=d)`` is
+        Stata's ``bootstrap _b: regress y x``. A vector statistic returns
+        an ``EconometricResults`` with bootstrap standard errors, the
+        bootstrap covariance (``vcov()``), z statistics and normal-based
+        intervals as Stata reports them; percentile intervals, the bias and
+        the replicates are in ``model_info``.
     n_boot : int, default 1000
         Number of bootstrap replications.
     cluster : str, optional
@@ -115,14 +158,31 @@ def bootstrap(
     block : str, optional
         Column name for block bootstrap (resample blocks, preserve
         within-block ordering). Useful for panel/time-series data.
+        With ``cluster=`` or ``block=`` the BCa acceleration is a
+        delete-one-group jackknife, the unit that is resampled. A grouping
+        column with missing ids or a single group is refused.
     ci_method : str, default 'percentile'
-        CI method: ``'percentile'``, ``'bca'``, or ``'normal'``.
+        CI method: ``'percentile'``, ``'bca'``, ``'normal'`` or
+        ``'studentized'``. The studentized (bootstrap-t) interval needs a
+        standard error from every resample, so ``statistic`` must then
+        return the pair ``(estimate, se)``. With ``t* = (est* - est) /
+        se*`` over the resamples, the interval is ``[est - q(1 - alpha/2)
+        se, est - q(alpha/2) se]`` with ``q`` the quantiles of ``t*``
+        and ``se`` the standard error on the original data. It is
+        second-order accurate where the percentile interval is first-order
+        (R ``rsample::int_t``, ``boot::boot.ci(type = "stud")``).
     alpha : float, default 0.05
         Significance level.
     seed : int, optional
         Random seed.
     null_value : float, default 0.0
         Value under H0 for p-value computation.
+    idcluster : str, optional
+        With ``cluster=``, the name of a new column holding a distinct id
+        for every resampled cluster (Stata ``idcluster()``): a cluster drawn
+        twice becomes two groups, which a fixed-effects statistic must see
+        to stay the cluster bootstrap. Absorb or cluster on this column
+        inside ``statistic``.
 
     Returns
     -------
@@ -145,28 +205,112 @@ def bootstrap(
     True
     """
     rng = np.random.RandomState(seed)
+    _check_alpha(alpha, "bootstrap")
+    if ci_method not in ("percentile", "normal", "bca", "studentized"):
+        raise MethodIncompatibility(
+            f"Unknown ci_method: {ci_method}. Use 'percentile', 'normal', "
+            "'bca' or 'studentized'."
+        )
+    if idcluster is not None and cluster is None:
+        raise MethodIncompatibility("idcluster= requires cluster=.")
+    for option, column in (("cluster", cluster), ("block", block)):
+        if column is None or column not in data.columns:
+            continue
+        ids = data[column]
+        n_missing = int(ids.isna().sum())
+        if n_missing:
+            raise MethodIncompatibility(
+                f"bootstrap: {option}={column!r} is missing (NaN) on "
+                f"{n_missing} row(s), which belong to no resampling unit.",
+                recovery_hint="Drop those rows or fill in the ids before "
+                "calling sp.bootstrap.",
+                diagnostics={"n_missing": n_missing},
+            )
+        if option == "block" and cluster is not None:
+            continue  # cluster= decides the resampling unit
+        n_units = int(ids.nunique())
+        if n_units < 2:
+            # every resample of one unit is the data itself
+            raise DataInsufficient(
+                f"bootstrap: {option}={column!r} has {n_units} distinct "
+                "value(s); resampling whole units needs at least two.",
+                recovery_hint=f"Drop {option}= to resample rows, or use a "
+                "grouping with several units.",
+                diagnostics={"n_units": n_units},
+            )
 
     # Original estimate
-    theta_hat = statistic(data)
+    base = data
+    if idcluster is not None:
+        base = data.assign(**{idcluster: pd.factorize(data[cluster])[0]})
+    studentized = ci_method == "studentized"
+    se_hat = float("nan")
+    last_se = [float("nan")]
+    if studentized:
+        pair_statistic = statistic
+
+        def statistic(frame: pd.DataFrame) -> float:  # type: ignore[misc]
+            est, se_b = _estimate_and_se(pair_statistic(frame))
+            last_se[0] = se_b
+            return est
+
+    theta_raw = statistic(base)
+    se_hat = last_se[0]
+    if studentized and not (np.isfinite(se_hat) and se_hat > 0):
+        raise MethodIncompatibility(
+            "bootstrap(ci_method='studentized'): the statistic returned "
+            f"standard error {se_hat!r} on the original data.",
+        )
+    names, theta_vec = _as_statistic_vector(theta_raw)
+    if names is not None:
+        return _bootstrap_vector(
+            data,
+            statistic,
+            names,
+            theta_vec,
+            n_boot=n_boot,
+            cluster=cluster,
+            block=block,
+            idcluster=idcluster,
+            alpha=alpha,
+            rng=rng,
+            seed=seed,
+        )
+    theta_hat = float(theta_vec)
 
     # Bootstrap distribution
     boot_stats = np.empty(n_boot)
+    boot_se = np.full(n_boot, np.nan)
+    rows = _cluster_rows(data, cluster) if cluster is not None else None
     for b in range(n_boot):
-        boot_data = _resample(data, rng, cluster=cluster, block=block)
+        boot_data = _resample(
+            data, rng, cluster=cluster, block=block, idcluster=idcluster, rows=rows
+        )
         try:
             boot_stats[b] = statistic(boot_data)
+            boot_se[b] = last_se[0]
         except Exception:
             boot_stats[b] = np.nan
 
-    # Remove failed replications
+    # Remove failed replications -- counted and reported, not dropped
+    # silently.
+    if studentized:
+        # a resample without a usable standard error has no t statistic
+        boot_stats[~(np.isfinite(boot_se) & (boot_se > 0))] = np.nan
+    n_failed = int(np.isnan(boot_stats).sum())
+    boot_se = boot_se[~np.isnan(boot_stats)]
     boot_stats = boot_stats[~np.isnan(boot_stats)]
     n_valid = len(boot_stats)
+    if n_failed:
+        warnings.warn(
+            f"bootstrap: {n_failed}/{n_boot} replications failed or returned "
+            "NaN and were excluded (Stata reports these as 'x').",
+            RuntimeWarning,
+            stacklevel=2,
+        )
 
     if n_valid < 10:
-        raise RuntimeError(
-            f"Only {n_valid}/{n_boot} bootstrap replications succeeded. "
-            "Check that your statistic function handles resampled data."
-        )
+        raise RuntimeError(_too_few_replicates(n_valid, n_boot))
 
     # Standard error
     se = float(np.std(boot_stats, ddof=1))
@@ -183,10 +327,13 @@ def bootstrap(
         ci_lower, ci_upper = _bca_ci(
             theta_hat, boot_stats, data, statistic, alpha, rng, cluster, block
         )
-    else:
-        raise ValueError(
-            f"Unknown ci_method: {ci_method}. Use 'percentile', 'normal', or 'bca'."
-        )
+    elif studentized:
+        t_star = (boot_stats - theta_hat) / boot_se
+        q_lo, q_hi = np.percentile(t_star, [100 * alpha / 2, 100 * (1 - alpha / 2)])
+        ci_lower = float(theta_hat - q_hi * se_hat)
+        ci_upper = float(theta_hat - q_lo * se_hat)
+    else:  # pragma: no cover - ci_method is validated on entry
+        raise MethodIncompatibility(f"Unknown ci_method: {ci_method}.")
 
     # Two-sided p-value (fraction of boot dist more extreme than null)
     centered = boot_stats - theta_hat  # center at estimate
@@ -238,21 +385,30 @@ def _resample(
     rng: np.random.RandomState,
     cluster: Optional[str] = None,
     block: Optional[str] = None,
+    idcluster: Optional[str] = None,
+    rows: Optional[dict] = None,
 ) -> pd.DataFrame:
-    """Resample data according to the specified strategy."""
+    """Resample data according to the specified strategy.
+
+    ``rows`` (``_cluster_rows``) can be passed to avoid regrouping on every
+    replication.
+    """
     n = len(data)
 
     if cluster is not None:
         # Cluster bootstrap: resample clusters, keep all rows within
         clusters = data[cluster].unique()
         boot_clusters = rng.choice(clusters, size=len(clusters), replace=True)
-        frames: List[pd.DataFrame] = []
-        for i, c in enumerate(boot_clusters):
-            chunk = data[data[cluster] == c].copy()
-            # Relabel to avoid duplicate indices
-            chunk.index = range(len(frames) * 0 + len(chunk))  # will be reset
-            frames.append(chunk)
-        return pd.concat(frames, ignore_index=True)
+        if rows is None:
+            rows = _cluster_rows(data, cluster)
+        idx = np.concatenate([rows[c] for c in boot_clusters])
+        out = data.iloc[idx].reset_index(drop=True)
+        if idcluster is not None:
+            # Stata idcluster(): each draw is its own cluster.
+            out[idcluster] = np.repeat(
+                np.arange(len(boot_clusters)), [len(rows[c]) for c in boot_clusters]
+            )
+        return out
 
     elif block is not None:
         # Block bootstrap: resample blocks (e.g., time periods)
@@ -265,6 +421,114 @@ def _resample(
         # Nonparametric: resample rows
         idx = rng.choice(n, size=n, replace=True)
         return data.iloc[idx].reset_index(drop=True)
+
+
+def _cluster_rows(data: pd.DataFrame, cluster: str) -> dict:
+    """Row positions of each cluster, in data order."""
+    return {
+        c: np.asarray(ix) for c, ix in data.groupby(cluster, sort=False).indices.items()
+    }
+
+
+def _as_statistic_vector(value: Any) -> Tuple[Optional[List[str]], Any]:
+    """``(names, values)`` for a vector statistic, ``(None, float)`` for a scalar."""
+    if hasattr(value, "params") and isinstance(getattr(value, "params"), pd.Series):
+        p = value.params
+        return [str(k) for k in p.index], p.to_numpy(dtype=float)
+    if isinstance(value, pd.Series):
+        return [str(k) for k in value.index], value.to_numpy(dtype=float)
+    arr = np.asarray(value, dtype=float)
+    if arr.ndim == 0 or arr.size == 1:
+        return None, float(arr.reshape(-1)[0])
+    return [f"_b{j}" for j in range(arr.size)], arr.reshape(-1)
+
+
+def _bootstrap_vector(
+    data: pd.DataFrame,
+    statistic: Callable,
+    names: List[str],
+    theta: np.ndarray,
+    *,
+    n_boot: int,
+    cluster: Optional[str],
+    block: Optional[str],
+    idcluster: Optional[str],
+    alpha: float,
+    rng: np.random.RandomState,
+    seed: Optional[int],
+) -> "EconometricResults":
+    """Stata ``bootstrap _b``: SEs and covariance from the replicates."""
+    from ..core.results import EconometricResults
+
+    p = len(names)
+    draws = np.full((n_boot, p), np.nan)
+    rows = _cluster_rows(data, cluster) if cluster is not None else None
+    for b in range(n_boot):
+        boot_data = _resample(
+            data, rng, cluster=cluster, block=block, idcluster=idcluster, rows=rows
+        )
+        try:
+            got_names, got = _as_statistic_vector(statistic(boot_data))
+        except Exception:
+            continue
+        if got_names is None:
+            continue
+        if got_names != names:
+            # A replicate that drops or adds a term (collinearity in the
+            # resample) is aligned by name; missing terms stay NaN.
+            got = pd.Series(got, index=got_names).reindex(names).to_numpy()
+        draws[b] = got
+    ok = np.all(np.isfinite(draws), axis=1)
+    n_failed = int((~ok).sum())
+    if n_failed:
+        warnings.warn(
+            f"bootstrap: {n_failed}/{n_boot} replications failed or had a "
+            "missing coefficient and were excluded (Stata reports these as "
+            "'x').",
+            RuntimeWarning,
+            stacklevel=3,
+        )
+    draws = draws[ok]
+    if len(draws) < 10:
+        raise DataInsufficient(_too_few_replicates(len(draws), n_boot))
+    V = np.cov(draws, rowvar=False, ddof=1).reshape(p, p)
+    se = np.sqrt(np.diag(V))
+    pct = pd.DataFrame(
+        {
+            "ci_lower": np.percentile(draws, 100 * alpha / 2, axis=0),
+            "ci_upper": np.percentile(draws, 100 * (1 - alpha / 2), axis=0),
+        },
+        index=names,
+    )
+    res = EconometricResults(
+        params=pd.Series(theta, index=names),
+        std_errors=pd.Series(se, index=names),
+        model_info={
+            "model_type": "Bootstrap",
+            "method": "bootstrap"
+            + (f", cluster({cluster})" if cluster else "")
+            + (f", block({block})" if block else ""),
+            "n_boot": int(len(draws)),
+            "n_failed": n_failed,
+            "cluster": cluster,
+            "idcluster": idcluster,
+            "seed": seed,
+            "bias": pd.Series(draws.mean(axis=0) - theta, index=names),
+            "percentile_ci": pct,
+            "boot_distribution": pd.DataFrame(draws, columns=names),
+            "alpha": alpha,
+        },
+        data_info={
+            "nobs": int(len(data)),
+            "var_cov": V,
+            "var_names": list(names),
+            "inference": "z",
+        },
+        diagnostics={},
+    )
+    res.alpha = alpha
+    res._compute_statistics()
+    return res
 
 
 # ====================================================================== #
@@ -290,34 +554,42 @@ def _bca_ci(
     # Acceleration factor a (jackknife).
     #
     # The jackknife leave-one-out unit must match the *resampling* unit of
-    # the bootstrap that produced ``boot_stats``: with ``cluster=`` the
-    # bootstrap resamples clusters, so the jackknife deletes whole clusters
-    # (leave-one-cluster-out), not individual rows — otherwise ``a`` is
+    # the bootstrap that produced ``boot_stats``: with ``cluster=`` (or
+    # ``block=``) the bootstrap resamples whole groups, so the jackknife
+    # deletes whole groups, not individual rows — otherwise ``a`` is
     # estimated on a different design than the interval it corrects.
     _JACK_CAP = 200
-    if cluster is not None and cluster in data.columns:
-        units = list(pd.unique(data[cluster]))
+    group = cluster if cluster is not None else block
+    if group is not None and group in data.columns:
+        units = list(pd.unique(data[group]))
 
         def _delete(u: object) -> pd.DataFrame:
-            return data[data[cluster] != u].reset_index(drop=True)
+            return data[data[group] != u].reset_index(drop=True)
 
     else:
         units = list(range(len(data)))
+        positions = np.arange(len(data))
 
         def _delete(u: object) -> pd.DataFrame:
-            return data.drop(data.index[u]).reset_index(drop=True)
+            # by position: index labels need not be unique
+            return data.iloc[positions != u].reset_index(drop=True)
 
     # Cap the jackknife for cost. Sample the units *at random* rather than
     # taking the first K, whose statistic is systematically biased when the
     # data are ordered (by group, time, …); warn that ``a`` is approximate.
     n_units = len(units)
+    unit_name = (
+        "clusters"
+        if cluster is not None
+        else "blocks" if group is not None else "observations"
+    )
     if n_units > _JACK_CAP:
         pick = rng.choice(n_units, size=_JACK_CAP, replace=False)
         units = [units[int(k)] for k in pick]
         warnings.warn(
             f"bootstrap: BCa acceleration is estimated from a random "
             f"{_JACK_CAP}-unit jackknife subsample of {n_units} "
-            f"{'clusters' if cluster is not None else 'observations'} "
+            f"{unit_name} "
             "(exact jackknife capped for cost); the interval endpoints are "
             "approximate.",
             RuntimeWarning,

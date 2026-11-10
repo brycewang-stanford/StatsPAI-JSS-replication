@@ -13,6 +13,8 @@ from typing import Any, Callable, Dict, List, Optional, Union
 import numpy as np
 import pandas as pd
 
+from .._input_validation import check_columns, missing_named_columns
+from ..exceptions import ColumnNotFound, MethodIncompatibility
 from ._format import AUTO
 from ._format import fmt_val as _fmt_val
 from ._format import resolve_digits
@@ -29,6 +31,11 @@ def sumstats(
     digits: Optional[int] = None,
     labels: Optional[Dict[str, str]] = None,
     by_labels: Optional[Dict[Any, str]] = None,
+    percentile_method: str = "linear",
+    weights: Optional[str] = None,
+    total: bool = False,
+    filename: Optional[str] = None,
+    use_labels: bool = True,
 ) -> Union[str, pd.DataFrame]:
     """
     Generate descriptive statistics table.
@@ -38,27 +45,76 @@ def sumstats(
     data : pd.DataFrame
         Input data.
     vars : list of str, optional
-        Variables to summarize. Defaults to all numeric columns.
+        Variables to summarize. Defaults to all numeric columns. A string,
+        categorical or boolean column named here is summarised by one row
+        per level (``"region: north"``), the statistics of its 0/1
+        indicator: ``Mean`` is the share of that level among the rows
+        where the variable is not missing (Stata ``summarize i.region``).
     by : str, optional
         Group-by variable for stratified summaries.
     stats : list of str, optional
         Statistics to compute. Default: ['n', 'mean', 'sd', 'min', 'p25',
         'median', 'p75', 'max'].
-        Available: 'n', 'mean', 'sd', 'min', 'max', 'p25', 'median',
-        'p75', 'p10', 'p90'.
+        Available: 'n', 'mean', 'sd', 'min', 'max', 'sum', 'range',
+        'variance', 'semean', 'cv', 'skewness', 'kurtosis', 'iqr',
+        'median', and the percentiles 'p1', 'p5', 'p10', 'p25', 'p50',
+        'p75', 'p90', 'p95', 'p99'. Skewness and kurtosis are the moment
+        ratios ``m3 / m2**1.5`` and ``m4 / m2**2`` with divisor ``N`` (a
+        normal distribution has kurtosis 3), as Stata's ``summarize,
+        detail``. An unknown name raises.
     output : str, default 'text'
-        'text', 'latex', 'html', 'dataframe', or filepath (.xlsx/.docx).
+        'text', 'latex', 'html', 'markdown', 'dataframe', 'numeric', or a
+        file path (.xlsx / .docx / .tex / .html / .md / .txt / .csv).
+        ``'dataframe'`` holds the formatted display strings; ``'numeric'``
+        the unrounded values (``N`` as int, the rest float) for further
+        computation, with ``fmt`` / ``digits`` ignored. Anything else
+        raises ``MethodIncompatibility``.
     title : str
         Table title.
     fmt : str
-        Number format.
+        Number format. The default rounds each cell to a few significant
+        digits; pass ``digits=3`` for a fixed three decimals throughout.
     labels : dict, optional
-        Variable labels: ``{'x1': 'Education (years)'}``.
+        Variable labels: ``{'x1': 'Education (years)'}``. They override
+        the labels stored on the data (see ``use_labels``).
     by_labels : dict, optional
         Group labels for ``by=`` panel headers, e.g.
-        ``{0: 'Control', 1: 'Treated'}``. When ``by`` is binary 0/1
-        and no ``by_labels`` is supplied, ``Control``/``Treated`` is
+        ``{0: 'Control', 1: 'Treated'}``. Without them the value labels
+        stored for ``by`` are used (see ``use_labels``); when there are
+        none and ``by`` is binary 0/1, ``Control``/``Treated`` is
         auto-applied so academic Table 1 reads correctly out of the box.
+    percentile_method : {'linear', 'stata'}, default 'linear'
+        How a percentile between two order statistics is defined.
+        ``'linear'`` interpolates (numpy / pandas default, R's type 7).
+        ``'stata'`` is the rule of Stata's ``summarize, detail`` and
+        ``tabstat``: with ``h = N * p / 100``, the mean of the ``h``-th and
+        ``(h + 1)``-th order statistics when ``h`` is an integer, and the
+        ``ceil(h)``-th otherwise. The two agree on the median of an odd
+        sample and can differ elsewhere within a gap between observations.
+    weights : str, optional
+        Column of analytic weights (Stata ``summarize x [aweight=w]``).
+        Rows with a missing or zero weight are left out. The mean is
+        ``sum(w x) / sum(w)``; the variance is the weighted mean squared
+        deviation times ``n / (n - 1)``, with ``n`` the number of rows
+        used; skewness and kurtosis are ratios of weighted moments; ``sum``
+        is ``n`` times the weighted mean (the weights are scaled to add up
+        to ``n``). Percentiles are the weighted ones of Stata's ``_pctile``
+        whatever ``percentile_method`` says: the first value at which the
+        cumulative weight passes ``p`` percent of the total, or the mean of
+        that value and the next when it lands on it exactly. ``N`` counts
+        rows. Negative weights raise.
+    total : bool, default False
+        With ``by=``, add a panel ``'Total'`` for all the rows that belong
+        to a group (Stata ``tabstat, by()`` prints it as its last row).
+    filename : str, optional
+        Also write the table to this file; the extension picks the format
+        (.xlsx / .docx / .tex / .html / .md / .txt / .csv). The return value
+        is still what ``output`` asks for.
+    use_labels : bool, default True
+        Show the variable labels stored on the data (``sp.label_var``, a
+        Stata ``.dta`` read with ``sp.read_data``) instead of the column
+        names, and the value labels of ``by`` as the panel headers.
+        ``False`` shows the names.
 
     Returns
     -------
@@ -67,6 +123,11 @@ def sumstats(
     Examples
     --------
     >>> import statspai as sp
+    >>> import pandas as pd
+    >>> small = pd.DataFrame({"educ": [12.0, 16.0, 14.0], "d": [0, 1, 1]})
+    >>> sp.label_var(small, "educ", "Education (years)")
+    >>> list(sp.sumstats(small, vars=["educ"], output="dataframe").index)
+    ['Education (years)']
     >>> df = sp.cps_wage()
     >>> tab = sp.sumstats(
     ...     df, vars=['log_wage', 'education', 'experience'],
@@ -78,28 +139,99 @@ def sumstats(
     >>> sp.sumstats(df, output='table1.docx')  # doctest: +SKIP
     """
     # Select variables
+    vars_given = vars if vars is None or isinstance(vars, str) else list(vars)
+    if isinstance(vars, str):
+        vars = [vars]
     if vars is None:
         vars = list(data.select_dtypes(include=[np.number]).columns)
     fmt = resolve_digits(fmt, digits, default=AUTO)
+    _check_output(output, filename, extra=("numeric",), function="sumstats")
 
     if stats is None:
         stats = ["n", "mean", "sd", "min", "p25", "median", "p75", "max"]
 
-    stat_funcs = {
+    if percentile_method not in ("linear", "stata"):
+        raise MethodIncompatibility(
+            f"sumstats: unknown percentile_method {percentile_method!r}.",
+            recovery_hint="Use 'linear' or 'stata'.",
+        )
+
+    def pct(p: float) -> Callable[[pd.Series], float]:
+        return lambda s: _percentile(s, p, percentile_method)
+
+    def moment_ratio(order: int) -> Callable[[pd.Series], float]:
+        def ratio(s: pd.Series) -> float:
+            x = s.to_numpy(dtype=float)
+            if x.size == 0:
+                return float("nan")
+            d = x - x.mean()
+            m2 = float(np.mean(d**2))
+            return float(np.mean(d**order) / m2 ** (order / 2)) if m2 > 0 else np.nan
+
+        return ratio
+
+    stat_funcs: Dict[str, _StatFunc] = {
         "n": ("N", lambda s: int(s.count())),
         "mean": ("Mean", lambda s: s.mean()),
         "sd": ("Std. Dev.", lambda s: s.std()),
         "min": ("Min", lambda s: s.min()),
         "max": ("Max", lambda s: s.max()),
-        "p10": ("P10", lambda s: s.quantile(0.1)),
-        "p25": ("P25", lambda s: s.quantile(0.25)),
-        "median": ("Median", lambda s: s.median()),
-        "p75": ("P75", lambda s: s.quantile(0.75)),
-        "p90": ("P90", lambda s: s.quantile(0.9)),
+        "sum": ("Sum", lambda s: s.sum()),
+        "range": ("Range", lambda s: s.max() - s.min()),
+        "variance": ("Variance", lambda s: s.var()),
+        "semean": ("Std. Err.", lambda s: s.std() / np.sqrt(s.count())),
+        "cv": ("CV", lambda s: s.std() / s.mean()),
+        "skewness": ("Skewness", moment_ratio(3)),
+        "kurtosis": ("Kurtosis", moment_ratio(4)),
+        "iqr": ("IQR", lambda s: pct(75)(s) - pct(25)(s)),
+        "p1": ("P1", pct(1)),
+        "p5": ("P5", pct(5)),
+        "p10": ("P10", pct(10)),
+        "p25": ("P25", pct(25)),
+        "median": ("Median", pct(50)),
+        "p50": ("Median", pct(50)),
+        "p75": ("P75", pct(75)),
+        "p90": ("P90", pct(90)),
+        "p95": ("P95", pct(95)),
+        "p99": ("P99", pct(99)),
     }
+    unknown = [st for st in stats if st not in stat_funcs]
+    if unknown:
+        raise MethodIncompatibility(
+            f"sumstats: unknown statistic(s) {unknown}.",
+            recovery_hint="Available: " + ", ".join(sorted(stat_funcs)) + ".",
+        )
 
+    numeric = output == "numeric"
+    check_columns(
+        data,
+        {"vars": vars_given, "by": by, "weights": weights},
+        function="sumstats",
+    )
+    if use_labels:
+        stored = dict(getattr(data, "attrs", {}).get("_labels") or {})
+        if stored:
+            labels = {**stored, **(labels or {})}
+        if by is not None and by_labels is None:
+            coded = (getattr(data, "attrs", {}).get("_value_labels") or {}).get(by)
+            if coded:
+                by_labels = dict(coded)
+    data, vars, labels = _expand_categoricals(data, list(vars), labels, exclude=by)
+    if weights is not None:
+        if (pd.to_numeric(data[weights], errors="coerce") < 0).any():
+            raise MethodIncompatibility(
+                "sumstats: negative weights.",
+                recovery_hint="Analytic weights must be zero or positive.",
+            )
+        vars = [v for v in vars if v != weights]
+        stat_funcs = {
+            st: (label, _weighted(st)) for st, (label, _) in stat_funcs.items()
+        }
     if by is None:
-        df_result = _compute_stats(data, vars, stats, stat_funcs, fmt, labels)
+        df_result = _compute_stats(
+            data, vars, stats, stat_funcs, fmt, labels, numeric=numeric,
+            weights=weights,
+        )  # fmt: skip
     else:
         groups = sorted(data[by].dropna().unique())
         # Auto Control/Treated for binary 0/1 unless caller supplied labels.
@@ -116,14 +248,221 @@ def sumstats(
         for g in groups:
             label = by_labels.get(g, str(g)) if by_labels else str(g)
             subset = data[data[by] == g]
-            panels[label] = _compute_stats(subset, vars, stats, stat_funcs, fmt, labels)
+            panels[label] = _compute_stats(
+                subset, vars, stats, stat_funcs, fmt, labels, numeric=numeric,
+                weights=weights,
+            )  # fmt: skip
+        if total:
+            panels["Total"] = _compute_stats(
+                data[data[by].notna()], vars, stats, stat_funcs, fmt, labels,
+                numeric=numeric, weights=weights,
+            )  # fmt: skip
         # Stack panels
         df_result = pd.concat(panels, axis=1)
 
+    if filename is not None:
+        _write_file(df_result, filename, title)
+    if numeric:
+        return df_result
     return _format_output(df_result, output, title, stats)
 
 
 _StatFunc = tuple[str, Callable[[pd.Series], Any]]
+
+#: Output keywords both tables accept, and the file extensions they write.
+_OUTPUT_KEYWORDS = ("text", "latex", "html", "markdown", "dataframe")
+_FILE_EXTENSIONS = (".xlsx", ".docx", ".tex", ".html", ".md", ".txt", ".csv")
+
+
+def _check_output(
+    output: str, filename: Optional[str], *, extra: tuple = (), function: str
+) -> None:
+    """Refuse an ``output=`` / ``filename=`` the table cannot produce.
+
+    An unknown ``output`` used to fall back to text silently, and a file
+    extension other than .xlsx / .docx printed text and wrote nothing.
+    """
+    valid = _OUTPUT_KEYWORDS + tuple(extra)
+    out = str(output)
+    if out not in valid and not out.lower().endswith(_FILE_EXTENSIONS):
+        raise MethodIncompatibility(
+            f"{function}(output={output!r}) is neither a format nor a file "
+            "path with a known extension.",
+            recovery_hint=(
+                f"Use one of {list(valid)} or a path ending in "
+                + ", ".join(_FILE_EXTENSIONS)
+                + "."
+            ),
+            diagnostics={"output": output},
+        )
+    if filename is not None and not str(filename).lower().endswith(_FILE_EXTENSIONS):
+        raise MethodIncompatibility(
+            f"{function}(filename={filename!r}) has no known extension.",
+            recovery_hint="End it in " + ", ".join(_FILE_EXTENSIONS) + ".",
+            diagnostics={"filename": filename},
+        )
+
+
+def _is_categorical(s: pd.Series) -> bool:
+    return not pd.api.types.is_numeric_dtype(s) or pd.api.types.is_bool_dtype(s)
+
+
+def _expand_categoricals(
+    data: pd.DataFrame,
+    vars: List[str],
+    labels: Optional[Dict[str, str]],
+    exclude: Optional[str] = None,
+) -> tuple:
+    """Replace each non-numeric variable by one 0/1 indicator per level.
+
+    The indicator is missing where the variable is, so its mean is the
+    share of the level among the non-missing rows. Rows are named
+    ``"<label>: <level>"``. String and categorical columns used to raise a
+    raw ``TypeError`` from ``Series.mean``.
+    """
+    cat_vars = [
+        v
+        for v in vars
+        if v in data.columns and v != exclude and _is_categorical(data[v])
+    ]
+    if not cat_vars:
+        return data, vars, labels
+    data = data.copy()
+    new_vars: List[str] = []
+    new_labels: Dict[str, str] = dict(labels or {})
+    for v in vars:
+        if v not in cat_vars:
+            new_vars.append(v)
+            continue
+        col = data[v]
+        if isinstance(col.dtype, pd.CategoricalDtype):
+            levels = [lv for lv in col.cat.categories if (col == lv).any()]
+        else:
+            levels = sorted(col.dropna().unique(), key=lambda x: (str(type(x)), x))
+        base = (labels or {}).get(v, v)
+        for lv in levels:
+            key = f"{v}={lv}"
+            data[key] = (col == lv).astype(float).where(col.notna())
+            new_labels[key] = f"{base}: {lv}"
+            new_vars.append(key)
+    return data, new_vars, new_labels
+
+
+def _write_file(df: pd.DataFrame, filename: str, title: str) -> None:
+    """Write a formatted table to ``filename`` (extension picks the format)."""
+    from pathlib import Path
+
+    low = str(filename).lower()
+    if low.endswith(".xlsx"):
+        _sumstats_to_excel(df, filename, title)
+    elif low.endswith(".docx"):
+        _sumstats_to_word(df, filename, title)
+    elif low.endswith(".csv"):
+        Path(filename).write_text(df.to_csv(), encoding="utf-8")
+    else:
+        render = {
+            ".tex": _sumstats_to_latex,
+            ".html": _sumstats_to_html,
+            ".md": _sumstats_to_markdown,
+            ".txt": _sumstats_to_text,
+        }[Path(low).suffix]
+        Path(filename).write_text(render(df, title), encoding="utf-8")
+
+
+def _percentile(s: pd.Series, p: float, method: str) -> float:
+    """The ``p``-th percentile of a series with no missing values."""
+    if method == "linear":
+        return float(s.quantile(p / 100.0))
+    x = np.sort(s.to_numpy(dtype=float))
+    n = x.size
+    if n == 0:
+        return float("nan")
+    h = n * p / 100.0
+    if abs(h - round(h)) < 1e-9 * max(1.0, h):
+        i = int(round(h))
+        if i <= 0:
+            return float(x[0])
+        if i >= n:
+            return float(x[-1])
+        return float((x[i - 1] + x[i]) / 2.0)
+    return float(x[min(int(np.ceil(h)), n) - 1])
+
+
+def weighted_percentile(x: np.ndarray, w: np.ndarray, p: float) -> float:
+    """The ``p``-th percentile of ``x`` with weights ``w``, as Stata's
+    ``_pctile`` defines it: with ``P = W p / 100`` and ``W`` the total
+    weight, the first value whose cumulative weight exceeds ``P``, or the
+    mean of the value whose cumulative weight equals ``P`` and the next."""
+    order = np.argsort(x, kind="stable")
+    xs, ws = np.asarray(x, float)[order], np.asarray(w, float)[order]
+    if xs.size == 0:
+        return float("nan")
+    cum = np.cumsum(ws)
+    target = cum[-1] * p / 100.0
+    tol = 1e-12 * max(cum[-1], 1.0)
+    i = int(np.searchsorted(cum, target - tol, side="left"))
+    i = min(i, xs.size - 1)
+    if abs(cum[i] - target) <= tol and i + 1 < xs.size:
+        return float((xs[i] + xs[i + 1]) / 2.0)
+    return float(xs[i])
+
+
+def _weighted(stat: str) -> Callable[[pd.Series], Any]:
+    """The statistic ``stat`` of a series that carries its rows' analytic
+    weights in ``attrs`` (put there by ``_used``)."""
+
+    def fn(s: pd.Series) -> Any:
+        x = s.to_numpy(dtype=float)
+        w = np.asarray(s.attrs["_weights"], dtype=float)
+        n = x.size
+        if stat == "n":
+            return n
+        if n == 0:
+            return float("nan")
+        total = w.sum()
+        mean = float(np.sum(w * x) / total)
+        if stat == "mean":
+            return mean
+        if stat == "min":
+            return float(x.min())
+        if stat == "max":
+            return float(x.max())
+        if stat == "range":
+            return float(x.max() - x.min())
+        if stat == "sum":
+            return n * mean
+        if stat == "iqr":
+            return weighted_percentile(x, w, 75) - weighted_percentile(x, w, 25)
+        if stat == "median" or stat[1:].isdigit():
+            return weighted_percentile(
+                x, w, 50.0 if stat == "median" else float(stat[1:])
+            )
+        d = x - mean
+        m2 = float(np.sum(w * d**2) / total)
+        if stat in ("skewness", "kurtosis"):
+            k = 3 if stat == "skewness" else 4
+            return float(np.sum(w * d**k) / total / m2 ** (k / 2)) if m2 > 0 else np.nan
+        var = m2 * n / (n - 1) if n > 1 else float("nan")
+        if stat == "variance":
+            return var
+        if stat == "sd":
+            return float(np.sqrt(var))
+        if stat == "semean":
+            return float(np.sqrt(var / n))
+        return float(np.sqrt(var) / mean)  # cv
+
+    return fn
+
+
+def _used(data: pd.DataFrame, var: str, weights: Optional[str]) -> pd.Series:
+    """The values of ``var`` that enter its statistics."""
+    if weights is None:
+        return data[var].dropna()
+    w = pd.to_numeric(data[weights], errors="coerce")
+    keep = data[var].notna() & w.notna() & (w > 0)
+    s = data.loc[keep, var].copy()
+    s.attrs["_weights"] = w[keep].to_numpy(dtype=float)
+    return s
 
 
 def _compute_stats(
@@ -133,13 +472,35 @@ def _compute_stats(
     stat_funcs: Dict[str, _StatFunc],
     fmt: str,
     labels: Optional[Dict[str, str]],
+    numeric: bool = False,
+    weights: Optional[str] = None,
 ) -> pd.DataFrame:
-    """Compute statistics for each variable."""
+    """Compute statistics for each variable (display strings, or values)."""
+    if numeric:
+        vals: Dict[str, Dict[str, Any]] = {}
+        for var in vars:
+            if var not in data.columns:
+                continue
+            s = _used(data, var, weights)
+            display = labels.get(var, var) if labels else var
+            vals[display] = {
+                stat_funcs[st][0]: (
+                    int(stat_funcs[st][1](s))
+                    if st == "n"
+                    else float(stat_funcs[st][1](s))
+                )
+                for st in stats
+                if st in stat_funcs
+            }
+        out = pd.DataFrame(vals).T
+        if "N" in out.columns:
+            out["N"] = out["N"].astype("int64")
+        return out
     rows: Dict[str, Dict[str, str]] = {}
     for var in vars:
         if var not in data.columns:
             continue
-        s = data[var].dropna()
+        s = _used(data, var, weights)
         display = labels.get(var, var) if labels else var
         row: Dict[str, str] = {}
         for stat in stats:
@@ -154,6 +515,23 @@ def _compute_stats(
     return pd.DataFrame(rows).T
 
 
+def _level_smd(p_t: float, p_c: float, p_all: float) -> float:
+    """SMD of a 0/1 level indicator, R ``cobalt``'s binary convention.
+
+    ``(p_t - p_c) / sqrt((p_t (1 - p_t) + p_c (1 - p_c)) / 2)``: the
+    proportions' own variances, no ``n - 1``. When both arms are constant
+    (a level that separates them) the denominator is the whole sample's
+    ``sqrt(p (1 - p))``, which is what ``cobalt::bal.tab`` reports there.
+    """
+    diff = p_t - p_c
+    denom = np.sqrt((p_t * (1 - p_t) + p_c * (1 - p_c)) / 2)
+    if denom <= 1e-12:
+        denom = np.sqrt(p_all * (1 - p_all))
+    if denom <= 1e-12:
+        return 0.0
+    return float(diff / denom)
+
+
 def balance_table(
     data: pd.DataFrame,
     treat: str,
@@ -164,6 +542,7 @@ def balance_table(
     digits: Optional[int] = None,
     labels: Optional[Dict[str, str]] = None,
     test: str = "ttest",
+    filename: Optional[str] = None,
 ) -> Union[str, pd.DataFrame]:
     """
     Generate a balance table comparing treated and control groups.
@@ -177,9 +556,18 @@ def balance_table(
     treat : str
         Binary treatment variable (0/1).
     covariates : list of str
-        Variables to check balance on.
+        Variables to check balance on. A string, categorical or boolean
+        covariate gets one row per level, the balance of its 0/1 indicator
+        (the means are the shares of the level in each arm). The SMD of
+        such a level is R ``cobalt``'s binary one, ``(p_t - p_c) /
+        sqrt((p_t(1 - p_t) + p_c(1 - p_c)) / 2)`` (the whole sample's
+        ``sqrt(p(1 - p))`` when both arms are constant); numeric covariates,
+        a 0/1 numeric column included, keep the pooled sample-SD
+        denominator.
     output : str, default 'text'
-        'text', 'latex', 'html', 'dataframe', or filepath.
+        'text', 'latex', 'html', 'markdown', 'dataframe', or a file path
+        (.xlsx / .docx / .tex / .html / .md / .txt / .csv). Anything else
+        raises ``MethodIncompatibility``.
     title : str
         Table title.
     fmt : str
@@ -188,6 +576,8 @@ def balance_table(
         Variable labels.
     test : str, default 'ttest'
         Test for difference: 'ttest' or 'ranksum'.
+    filename : str, optional
+        Also write the table to this file; the extension picks the format.
 
     Returns
     -------
@@ -212,6 +602,32 @@ def balance_table(
     """
     from scipy import stats as sp_stats
 
+    from ..core._validate import require_binary_treatment
+
+    named = missing_named_columns(
+        {"treat": treat, "covariates": list(covariates)}, data.columns
+    )
+    if named:
+        raise ColumnNotFound.from_missing(
+            named,
+            list(data.columns),
+            context="balance_table",
+            extra_diagnostics={"missing": list(named.values())},
+        )
+    require_binary_treatment(data[treat], function="balance_table")
+    _check_output(output, filename, function="balance_table")
+    if test not in ("ttest", "ranksum"):
+        raise MethodIncompatibility(
+            f"balance_table: unknown test {test!r}.",
+            recovery_hint="Use test='ttest' or 'ranksum'.",
+        )
+    given = set(covariates)
+    data, covariates, labels = _expand_categoricals(
+        data, list(covariates), labels, exclude=treat
+    )
+    # 0/1 indicators of the levels of a string / categorical / boolean
+    # covariate (the expansion's new columns).
+    level_rows = {v for v in covariates if v not in given}
     T = data[treat].values
     treated = data[T == 1]
     control = data[T == 0]
@@ -220,8 +636,6 @@ def balance_table(
 
     rows = []
     for var in covariates:
-        if var not in data.columns:
-            continue
         display = labels.get(var, var) if labels else var
 
         t_vals = treated[var].dropna()
@@ -233,8 +647,11 @@ def balance_table(
         sd_c = c_vals.std()
 
         # Standardized mean difference
-        sd_pooled = np.sqrt((sd_t**2 + sd_c**2) / 2)
-        smd = (mean_t - mean_c) / sd_pooled if sd_pooled > 0 else 0
+        if var in level_rows:
+            smd = _level_smd(mean_t, mean_c, pd.concat([t_vals, c_vals]).mean())
+        else:
+            sd_pooled = np.sqrt((sd_t**2 + sd_c**2) / 2)
+            smd = (mean_t - mean_c) / sd_pooled if sd_pooled > 0 else 0
 
         # Test
         if test == "ttest":
@@ -274,6 +691,8 @@ def balance_table(
     ).set_index("Variable")
     df_result = pd.concat([df_result, n_row])
 
+    if filename is not None:
+        _write_file(df_result, filename, title)
     return _format_output(df_result, output, title, None)
 
 
@@ -291,18 +710,16 @@ def _format_output(
     """Route to the appropriate output format."""
     if output == "dataframe":
         return df
-    elif output.endswith(".xlsx"):
-        _sumstats_to_excel(df, output, title)
+    if output.lower().endswith(_FILE_EXTENSIONS):
+        _write_file(df, output, title)
         return f"Exported to: {output}"
-    elif output.endswith(".docx"):
-        _sumstats_to_word(df, output, title)
-        return f"Exported to: {output}"
-    elif output == "latex":
+    if output == "latex":
         return _sumstats_to_latex(df, title)
-    elif output == "html":
+    if output == "html":
         return _sumstats_to_html(df, title)
-    else:
-        return _sumstats_to_text(df, title)
+    if output == "markdown":
+        return _sumstats_to_markdown(df, title)
+    return _sumstats_to_text(df, title)
 
 
 def _sumstats_to_text(df: pd.DataFrame, title: str) -> str:
@@ -314,6 +731,12 @@ def _sumstats_to_text(df: pd.DataFrame, title: str) -> str:
     lines.append(df.to_string())
     lines.append("=" * 80)
     return "\n".join(lines)
+
+
+def _sumstats_to_markdown(df: pd.DataFrame, title: str) -> str:
+    """GitHub-flavoured Markdown table."""
+    head = f"**{title}**\n\n" if title else ""
+    return head + str(df.to_markdown(disable_numparse=True)) + "\n"
 
 
 def _sumstats_to_latex(df: pd.DataFrame, title: str) -> str:

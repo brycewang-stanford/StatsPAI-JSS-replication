@@ -29,11 +29,17 @@ import pandas as pd
 from scipy import stats
 
 from .._aliases import accepts_aliases
+from .._input_validation import check_columns
+from ..core._call_record import records_call
+from ..core._vcov_spec import accepts_vce
 from ..core.results import CausalResult
+from ..exceptions import ColumnNotFound, MethodIncompatibility
 from .did_imputation import did_imputation
 
 
-@accepts_aliases(covariates="controls")
+@records_call("bjs_pretrend_joint")
+@accepts_aliases(covariates="controls", cohort="first_treat", g="first_treat")
+@accepts_vce(default=None)
 def bjs_pretrend_joint(
     result: CausalResult,
     data: pd.DataFrame,
@@ -109,6 +115,39 @@ def bjs_pretrend_joint(
             "did_imputation() with a non-empty `horizon=` argument."
         )
 
+    method = str(getattr(result, "method", ""))
+    if "imputation" not in method.lower():
+        # The statistic re-tests the leads of THIS fit with a covariance
+        # bootstrapped from did_imputation re-fits; pairing another
+        # estimator's leads with that covariance is a different, unjustified
+        # test, even though the event-study table has the same columns.
+        raise MethodIncompatibility(
+            "bjs_pretrend_joint re-tests the leads of a did_imputation fit; "
+            f"this result comes from {method or 'an unknown estimator'!r}.",
+            recovery_hint=(
+                "Fit sp.did_imputation(data, y=, group=<unit id>, time=, "
+                "first_treat=, horizon=[-3, ..., 3]) and pass that result "
+                "with the same arguments."
+            ),
+            alternative_functions=["sp.did_imputation", "sp.pretrends_summary"],
+        )
+    check_columns(
+        data,
+        {"y": y, "group": group, "time": time, "first_treat": first_treat},
+        function="sp.bjs_pretrend_joint",
+        extra_hint="Pass the same data and columns as did_imputation.",
+    )
+    if group == first_treat or data.duplicated([group, time]).any():
+        raise MethodIncompatibility(
+            f"bjs_pretrend_joint: group={group!r} does not identify units "
+            f"(rows repeat within ({group!r}, {time!r})). `group` is the unit "
+            "id; the cohort column goes in `first_treat`.",
+            recovery_hint=(
+                "Pass the unit identifier as group=, exactly as in the "
+                "did_imputation call."
+            ),
+        )
+
     if horizon is None:
         horizon = sorted(es["relative_time"].astype(int).tolist())
 
@@ -124,7 +163,11 @@ def bjs_pretrend_joint(
 
     cluster_col = cluster if cluster is not None else group
     if cluster_col not in data.columns:
-        raise ValueError(f"Cluster column '{cluster_col}' not found in data.")
+        raise ColumnNotFound.from_missing(
+            {"cluster": cluster_col},
+            list(data.columns),
+            message=f"Cluster column '{cluster_col}' not found in data.",
+        )
 
     clusters = pd.Index(data[cluster_col].unique())
     G = len(clusters)
@@ -135,6 +178,7 @@ def bjs_pretrend_joint(
     # bootstrap replications fail we can surface it to the user rather
     # than silently claim "not enough reps succeeded".
     last_unexpected: Optional[Exception] = None
+    last_expected: Optional[Exception] = None
     for b in range(n_boot):
         picks = rng.choice(clusters, size=G, replace=True)
         frames = []
@@ -155,9 +199,11 @@ def bjs_pretrend_joint(
                 horizon=horizon,
                 cluster=cluster_col,
             )
-        except (ValueError, RuntimeError, np.linalg.LinAlgError):
+        except (ValueError, RuntimeError, np.linalg.LinAlgError) as exc:
             # Expected failures on pathological resamples (e.g. a draw
-            # that happens to drop all eventually-treated units).  Skip.
+            # that happens to drop all eventually-treated units).  Skip,
+            # but keep the reason: when every draw fails it is the reason.
+            last_expected = exc
             continue
         except Exception as exc:
             # Anything else is likely a genuine bug in BJS — keep the
@@ -176,11 +222,13 @@ def bjs_pretrend_joint(
 
     valid = ~np.any(np.isnan(boot_mat), axis=1)
     if valid.sum() < K + 1:
-        extra = (
-            f"  Last unexpected error: {type(last_unexpected).__name__}: "
-            f"{last_unexpected}"
-            if last_unexpected is not None
-            else ""
+        extra = "".join(
+            f"  {label}: {type(err).__name__}: {err}"
+            for label, err in (
+                ("Last unexpected error", last_unexpected),
+                ("Last refit error", last_expected),
+            )
+            if err is not None
         )
         raise RuntimeError(
             f"Only {int(valid.sum())} / {n_boot} bootstrap replications "

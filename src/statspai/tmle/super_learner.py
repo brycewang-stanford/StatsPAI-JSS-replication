@@ -27,6 +27,8 @@ from typing import TYPE_CHECKING, Any, List, Optional
 import numpy as np
 from scipy.optimize import minimize
 
+from .._aliases import accepts_aliases
+from ..core._learners import positive_class_proba
 from ..exceptions import DataInsufficient, MethodIncompatibility
 
 # sklearn is imported lazily inside the methods that need it so that
@@ -42,6 +44,7 @@ if TYPE_CHECKING:
 # ======================================================================
 
 
+@accepts_aliases(seed="random_state")
 def super_learner(
     X: np.ndarray,
     y: np.ndarray,
@@ -153,6 +156,41 @@ class SuperLearner:
         self._fitted = False
         self.n_features_in_: Optional[int] = None
 
+    # scikit-learn estimator protocol (duck-typed; inheriting BaseEstimator
+    # would import scikit-learn on every ``import statspai``). ``clone``
+    # needs get_params / set_params, which is how sp.lmtp / sp.ltmle /
+    # sp.aipw take a fresh copy of a user learner per fold.
+    def get_params(self, deep: bool = True) -> dict:
+        """Constructor parameters (scikit-learn ``get_params``)."""
+        del deep
+        return {
+            "library": self.library,
+            "n_folds": self.n_folds,
+            "task": self.task,
+            "random_state": self.random_state,
+        }
+
+    def set_params(self, **params: Any) -> "SuperLearner":
+        """Set constructor parameters (scikit-learn ``set_params``)."""
+        valid = self.get_params()
+        for k, v in params.items():
+            if k not in valid:
+                raise MethodIncompatibility(
+                    f"SuperLearner.set_params(): unknown parameter {k!r}.",
+                    recovery_hint=f"Valid parameters: {sorted(valid)}.",
+                )
+            setattr(self, k, v)
+        return self
+
+    @property
+    def _estimator_type(self) -> str:
+        return "classifier" if self.task == "classification" else "regressor"
+
+    def __sklearn_tags__(self) -> Any:
+        from ..core._sklearn_tags import duck_typed_tags
+
+        return duck_typed_tags(self)
+
     def fit(
         self, X: Any, y: Any, sample_weight: Optional[Any] = None
     ) -> "SuperLearner":
@@ -167,7 +205,10 @@ class SuperLearner:
         passed to every base learner's ``fit`` and weights the simplex
         least-squares and the CV risks -- R ``SuperLearner``'s
         ``obsWeights``. A learner whose ``fit`` does not take
-        ``sample_weight`` raises rather than being fitted unweighted.
+        ``sample_weight`` raises rather than being fitted unweighted --
+        except in the *default* library, where such learners (the k-nearest
+        neighbours learner) are left out with a warning and listed in
+        ``dropped_learners_``.
         """
         from sklearn.base import clone
         from sklearn.model_selection import KFold, StratifiedKFold
@@ -198,8 +239,30 @@ class SuperLearner:
                     recovery_hint="Use learners that accept sample_weight.",
                 ) from exc
 
+        self.dropped_learners_: List[str] = []
         if self.library is None:
             self.library = self._default_library()
+            if sw is not None:
+                from sklearn.utils.validation import has_fit_parameter
+
+                kept = [
+                    m for m in self.library if has_fit_parameter(m, "sample_weight")
+                ]
+                self.dropped_learners_ = [
+                    type(m).__name__ for m in self.library if m not in kept
+                ]
+                if self.dropped_learners_:
+                    import warnings
+
+                    warnings.warn(
+                        "SuperLearner: the default library's "
+                        f"{', '.join(self.dropped_learners_)} cannot take "
+                        "sample_weight and is left out of this weighted fit. "
+                        "Pass library= to choose the learners yourself.",
+                        UserWarning,
+                        stacklevel=2,
+                    )
+                self.library = kept
         if not isinstance(self.library, list) or len(self.library) == 0:
             raise MethodIncompatibility(
                 "SuperLearner.fit() requires a non-empty learner library.",
@@ -281,7 +344,9 @@ class SuperLearner:
                 m = clone(learner)
                 _fit_one(m, X_tr, y_tr, None if sw is None else sw[train_idx])
                 if self.task == "classification" and hasattr(m, "predict_proba"):
-                    cv_preds[test_idx, k] = m.predict_proba(X_te)[:, 1]
+                    cv_preds[test_idx, k] = positive_class_proba(
+                        m, X_te, context="SuperLearner"
+                    )
                 else:
                     cv_preds[test_idx, k] = m.predict(X_te)
 
@@ -361,6 +426,8 @@ class SuperLearner:
             self._fitted_learners.append(m)
 
         self.n_features_in_ = X.shape[1]
+        if self.task == "classification":
+            self.classes_ = np.array([0.0, 1.0])
         self._fitted = True
         return self
 
@@ -523,7 +590,7 @@ class SuperLearner:
         preds = np.zeros((n, n_learners))
         for k, m in enumerate(self._fitted_learners):
             if self.task == "classification" and hasattr(m, "predict_proba"):
-                preds[:, k] = m.predict_proba(X)[:, 1]
+                preds[:, k] = positive_class_proba(m, X, context="SuperLearner")
             else:
                 preds[:, k] = m.predict(X)
 
@@ -539,10 +606,12 @@ class SuperLearner:
         return np.asarray(out)
 
     def predict_proba(self, X: Any) -> np.ndarray:
-        """Predict probabilities (for classification task).
+        """Predict P(Y = 1) (for classification task).
 
-        Identical to :meth:`predict` under ``task='classification'`` —
-        kept as a separate method for sklearn-style API parity.
+        Identical to :meth:`predict` under ``task='classification'``: a
+        vector of shape ``(n,)``, not scikit-learn's ``(n, 2)`` array. The
+        estimators that take a learner (``sp.aipw``, ``sp.ipw``,
+        ``sp.ltmle``, ``sp.lmtp``) accept both shapes.
         """
         return self.predict(X)
 

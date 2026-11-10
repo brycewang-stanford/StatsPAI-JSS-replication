@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import re
 import subprocess
 import sys
 import zipfile
@@ -521,8 +522,6 @@ def test_validation_claim_lint_covers_release_notes() -> None:
     #
     # What is worth asserting is that the census *closes*: the tiers must
     # partition the public surface exactly, with nothing unaccounted for.
-    import statspai as sp
-
     counts = payload["claim_counts"]
     tiers = ("certified", "validated", "api_stable", "experimental")
     observed_tiers = {t: counts[t] for t in tiers}
@@ -530,7 +529,20 @@ def test_validation_claim_lint_covers_release_notes() -> None:
         f"registry tiers do not partition the surface: {observed_tiers} "
         f"vs registry={counts['registry']}"
     )
-    assert counts["registry"] == len(sp.list_functions())
+    # The lint holds its documents to the census of the release the
+    # manuscript describes (generated_claims.tex); whether the live registry
+    # still equals that census is generate_manuscript_claims.py --check's
+    # job, and it is expected to drift on main while the paper is in review.
+    assert payload["claim_count_source"].startswith("manuscript snapshot")
+    claims = (
+        REPO_ROOT / "Paper-JSS" / "manuscript" / "generated_claims.tex"
+    ).read_text(encoding="utf-8")
+    snapshot_total = int(
+        re.search(r"\\newcommand\{\\RegistryTotal\}\{(.*)\}\s*$", claims, re.M)
+        .group(1)
+        .replace("{,}", "")
+    )
+    assert counts["registry"] == snapshot_total
     assert counts["certified_validated"] == counts["certified"] + counts["validated"]
     assert all(counts[t] > 0 for t in tiers)
 
@@ -750,13 +762,14 @@ def test_methodological_gap_ledger_pins_t4_metadata() -> None:
         "07_scm": {
             "validation_tier": "identification_dependent_native",
             "reference_backend": "Synth",
-            # 0f4b9e2b gave SLSQP the exact adding-up Jacobian; the winning Basque
-            # start is now dirichlet_3, tied with regression to 1e-12 at an unchanged
-            # optimum (see CHANGELOG [Unreleased]). The six diagnostics below did not move.
-            "solver_best_start": "dirichlet_3",
+            # The exact inner solver of 1.36.0 (95d87260) moved the winning Basque
+            # start back to regression (it ties with dirichlet_3 at an unchanged
+            # optimum) and the largest L1 distance between near-best weight
+            # classes from 0.00513 to 0.007786. The two counts did not move.
+            "solver_best_start": "regression",
             "solver_near_best_start_count": "4",
             "solver_near_best_weight_class_count": "2",
-            "solver_near_best_weight_l1_max": "0.00513",
+            "solver_near_best_weight_l1_max": "0.007786",
             "weight_solution_nonunique": "True",
         },
     }

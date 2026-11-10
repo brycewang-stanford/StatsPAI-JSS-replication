@@ -37,6 +37,7 @@ import pandas as pd
 from scipy import stats
 from scipy.optimize import minimize
 
+from ..core._call_record import records_call
 from ..core.results import EconometricResults
 from ..exceptions import (
     ConvergenceFailure,
@@ -975,6 +976,7 @@ class _FrontierSpec:
 # ---------------------------------------------------------------------------
 
 
+@records_call("frontier")
 def frontier(
     data: pd.DataFrame,
     y: str,
@@ -1345,13 +1347,18 @@ def frontier(
         if -alt_result.fun > -result.fun + 1e-4:
             result = alt_result
 
-    theta_hat = result.x
+    # L-BFGS-B on finite-difference gradients stops ~1e-8 short of the
+    # optimum; Newton steps finish it, as in the mixture models.
+    theta_hat = _fc.newton_polish(neg_loglik, result.x, bounds)
     ll_val = -neg_loglik(theta_hat)
     beta_hat, sigma_u_i, sigma_v_i, mu_i = _unpack(theta_hat)
 
     # ---------------------- Standard errors ----------------------
 
-    H = _fc.numerical_hessian(neg_loglik, theta_hat)
+    # Richardson extrapolation: a plain h = 1e-5 central difference left
+    # ~1e-5 relative round-off in the SEs, enough that perturbing y by one
+    # ulp moved the intercept SE by 1.7e-5 (Track A module 28).
+    H = _fc.richardson_hessian(neg_loglik, theta_hat)
     vcov_oim = _fc.safe_invert_hessian(H)
     if vce == "oim":
         vcov = vcov_oim

@@ -1,7 +1,9 @@
 r"""
 StatsPAI JSS replication script -- Section 4.3 worked example.
 
-Callaway-Sant'Anna staggered DiD on the calibrated mpdta replica.
+Callaway-Sant'Anna staggered DiD. The case study of Section 4.3 runs on the
+original did::mpdta bytes (``original_case``); the rest of this script keeps
+the drift guards on the calibrated replica that the parity harness uses.
 Cross-checks the simple ATT, the doubly-robust IPW-DR variant
 (Sant'Anna & Zhao 2020), and the cross-estimator parity contract
 against Sun-Abraham and the imputation estimator.
@@ -30,6 +32,8 @@ import statspai as sp
 HERE = Path(__file__).resolve().parent
 RESULTS_DIR = HERE.parent / "results"
 TABLES_DIR = HERE.parent / "tables"
+sys.path.insert(0, str(HERE))
+from _paths import STATSPAI_ROOT  # noqa: E402
 
 
 def run() -> dict:
@@ -139,8 +143,63 @@ def run() -> dict:
             "role": "weighted synthetic-control x DiD estimator",
         },
     }
+    out["original_case"] = _original_case()
 
     return out
+
+
+def _original_case() -> dict:
+    """Section 4.3 on the original did::mpdta bytes, every post period.
+
+    For each event time: the M = 0 fixed-length interval and the breakdown
+    value under the joint covariance the fit carries, and the same under the
+    ``diag(SE^2)`` a hand-composed hand-off can rebuild from a results table.
+    Every post period is reported so the comparison cannot be read as chosen.
+    """
+    import numpy as np
+    import pandas as pd
+    from statspai.did._flci import breakdown_m_sd, event_study_moments, flci_delta_sd
+
+    df = pd.read_csv(STATSPAI_ROOT / "tests" / "orig_parity" / "data" / "02_mpdta_original.csv")
+    cs = sp.callaway_santanna(
+        df, y="lemp", time="year", id="countyreal", g="first_treat",
+        control_group="nevertreated", estimator="reg",
+    )
+    agg = sp.aggte(cs, type="simple")
+    dyn = sp.aggte(cs, type="dynamic")
+    beta, sigma, times = event_study_moments(cs)
+    post = times >= 0
+    order = np.r_[np.where(~post)[0], np.where(post)[0]]
+    beta, sigma, times = beta[order], sigma[np.ix_(order, order)], times[order]
+    n_pre, n_post = int((~post).sum()), int(post.sum())
+    diag = np.diag(np.diag(sigma))
+    corr = sigma / np.sqrt(np.outer(np.diag(sigma), np.diag(sigma)))
+    pre_idx, post_idx = np.arange(n_pre), np.arange(n_pre, n_pre + n_post)
+    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+    np.savetxt(RESULTS_DIR / "ex03_mpdta_beta.csv", beta, fmt="%.17g")
+    np.savetxt(RESULTS_DIR / "ex03_mpdta_sigma.csv", sigma, fmt="%.17g", delimiter=",")
+    rows = []
+    for k, e in enumerate(times[n_pre:]):
+        l_post = (times[n_pre:] == e).astype(float)
+        joint = flci_delta_sd(beta, sigma, n_pre, n_post, 0.0, l_post=l_post)
+        short = flci_delta_sd(beta, diag, n_pre, n_post, 0.0, l_post=l_post)
+        rows.append({
+            "event_time": int(e),
+            "att": float(beta[n_pre + k]),
+            "se": float(np.sqrt(sigma[n_pre + k, n_pre + k])),
+            "ci_joint": [float(joint.ci_lower), float(joint.ci_upper)],
+            "ci_diagonal": [float(short.ci_lower), float(short.ci_upper)],
+            "breakdown_joint": float(breakdown_m_sd(beta, sigma, n_pre, n_post, l_post=l_post)),
+            "breakdown_diagonal": float(breakdown_m_sd(beta, diag, n_pre, n_post, l_post=l_post)),
+        })
+    return {
+        "dataset": "tests/orig_parity/data/02_mpdta_original.csv (did::mpdta)",
+        "simple_att": float(agg.estimate),
+        "simple_se": float(agg.se),
+        "dynamic_overall_att": float(dyn.estimate),
+        "max_abs_correlation_pre_post": float(np.max(np.abs(corr[np.ix_(pre_idx, post_idx)]))),
+        "rows": rows,
+    }
 
 
 def _handoff_covariance(cs) -> dict:
@@ -198,6 +257,28 @@ def write_outputs(results: dict) -> None:
         "\\end{tabular}\n"
     )
     (TABLES_DIR / "ex03_csdid.tex").write_text(tex, encoding="utf-8")
+
+    def _ci(pair: list) -> str:
+        return f"$[{pair[0]:.4f},\\,{pair[1]:.4f}]$".replace("-", "-")
+
+    case_rows = "\n".join(
+        f"    {r['event_time']} & ${r['att']:.4f}$ & {r['se']:.4f} & {_ci(r['ci_joint'])} & "
+        f"{r['breakdown_joint']:.4f} & {_ci(r['ci_diagonal'])} & {r['breakdown_diagonal']:.4f} \\\\"
+        for r in results["original_case"]["rows"]
+    )
+    (TABLES_DIR / "ex03_handoff.tex").write_text(
+        "\\begin{tabular}{@{}rrrcrcr@{}}\n"
+        "    \\toprule\n"
+        "    & & & \\multicolumn{2}{c}{Joint covariance} & "
+        "\\multicolumn{2}{c}{$\\operatorname{diag}(\\mathrm{SE}^2)$} \\\\\n"
+        "    $e$ & ATT & SE & 95\\% interval at $M=0$ & Breakdown & "
+        "95\\% interval at $M=0$ & Breakdown \\\\\n"
+        "    \\midrule\n"
+        f"{case_rows}\n"
+        "    \\bottomrule\n"
+        "\\end{tabular}\n",
+        encoding="utf-8",
+    )
 
     snap = results["modern_did_snapshot"]
     rows = [

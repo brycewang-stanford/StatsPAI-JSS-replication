@@ -25,6 +25,8 @@ from scipy.spatial.distance import cdist
 
 from .._aliases import accepts_aliases
 from .._result_serialize import ResultProtocolMixin
+from ..core._covariates import expands_categorical_covariates as _expands_categorical
+from ..core._validate import require_binary_treatment
 
 
 @dataclass
@@ -78,6 +80,7 @@ class OptimalMatchResult(ResultProtocolMixin):
     se: float  # (rough) analytic SE on matched pairs
     n_treated: int
     n_matched: int
+    n_unmatched_treated: int = 0
 
     @property
     def att(self) -> float:
@@ -101,8 +104,15 @@ class OptimalMatchResult(ResultProtocolMixin):
             f"Treated (T=1) : {self.n_treated}",
             f"Matched       : {self.n_matched}",
             f"Mean distance : {self.distances.mean():.4f}",
-            f"ATT           : {self.ate:.4f}  (SE = {self.se:.4f})",
         ]
+        if self.n_unmatched_treated:
+            lines += [
+                f"Unmatched T=1 : {self.n_unmatched_treated}",
+                f"Effect on matched treated : {self.ate:.4f}  "
+                f"(SE = {self.se:.4f}); not the ATT",
+            ]
+        else:
+            lines.append(f"ATT           : {self.ate:.4f}  (SE = {self.se:.4f})")
         return "\n".join(lines)
 
     def __repr__(self) -> str:
@@ -162,7 +172,8 @@ def _distance_matrix(
     if metric == "propensity":
         if ps_treat is None or ps_ctrl is None:  # pragma: no cover - internal
             raise ValueError("metric='propensity' requires fitted scores")
-        return np.abs(ps_treat[:, None] - ps_ctrl[None, :])
+        _ret: np.ndarray = np.abs(ps_treat[:, None] - ps_ctrl[None, :])
+        return _ret
     raise ValueError(
         f"unknown metric {metric!r}; expected 'mahalanobis', 'euclidean' "
         "or 'propensity'"
@@ -170,6 +181,7 @@ def _distance_matrix(
 
 
 @accepts_aliases(treat="treatment", y="outcome")
+@_expands_categorical("covariates")
 def optimal_match(
     data: pd.DataFrame,
     treatment: str,
@@ -181,13 +193,25 @@ def optimal_match(
     """Optimal 1:1 matching via the Hungarian algorithm.
 
     Each treated unit is matched to exactly one control; the total
-    sum of matched distances is globally minimised. Requires
-    ``n_treated ≤ n_control``.
+    sum of matched distances is globally minimised.
+
+    When there are fewer controls than treated units, every control is
+    matched to a distinct treated unit and the remaining treated units go
+    unmatched (the behaviour of R ``MatchIt::matchit(method = "optimal")``,
+    which warns "Fewer control units than treated units"). The estimate is
+    then the effect on the *matched* treated units, not the ATT; a
+    warning says how many treated units were dropped and
+    ``n_unmatched_treated`` records it. ``sp.full_match`` keeps every unit.
 
     Parameters
     ----------
     caliper : float, optional
         Drop any pair with distance greater than ``caliper``.
+
+    See Also
+    --------
+    two_criteria_match : optimal matching with several controls per treated
+        unit, fine balance, near-exact matching and penalised calipers.
 
     Examples
     --------
@@ -214,6 +238,9 @@ def optimal_match(
     ['treated_idx', 'control_idx', 'distance']
     """
     df = data.dropna(subset=[treatment, outcome] + covariates).reset_index(drop=True)
+    require_binary_treatment(
+        df[treatment], function="optimal_match", argument=treatment
+    )
     t = df[treatment].to_numpy().astype(int)
     y = df[outcome].to_numpy(dtype=float)
     X = df[covariates].to_numpy(dtype=float)
@@ -234,10 +261,20 @@ def optimal_match(
             },
             alternative_functions=[],
         )
-    if len(treated_idx) > len(ctrl_idx):
-        raise ValueError(
-            "Optimal 1:1 matching requires n_control ≥ n_treated. "
-            f"Got n_treated={len(treated_idx)}, n_control={len(ctrl_idx)}."
+    n_unmatched_treated = max(len(treated_idx) - len(ctrl_idx), 0)
+    if n_unmatched_treated:
+        import warnings
+
+        from ..exceptions import AssumptionWarning
+
+        warnings.warn(
+            f"optimal_match: fewer control units ({len(ctrl_idx)}) than "
+            f"treated units ({len(treated_idx)}); {n_unmatched_treated} "
+            "treated units stay unmatched, so the estimate is the effect on "
+            "the matched treated units, not the ATT. sp.full_match keeps "
+            "every unit.",
+            AssumptionWarning,
+            stacklevel=2,
         )
     ps_t = ps_c = None
     if metric == "propensity":
@@ -277,6 +314,7 @@ def optimal_match(
         se=se,
         n_treated=len(treated_idx),
         n_matched=len(pairs),
+        n_unmatched_treated=int(len(treated_idx) - len(pairs)),
     )
     try:
         from ..output._lineage import attach_provenance as _attach_prov
@@ -342,11 +380,11 @@ class CardinalityMatchResult(ResultProtocolMixin):
     >>> isinstance(res, sp.CardinalityMatchResult)
     True
     >>> res.n_matched_pairs
-    107
+    106
     >>> round(res.ate, 2)
-    1.86
-    >>> res.balance['|SMD|'].round(3).tolist()
-    [0.111, 0.082]
+    1.84
+    >>> bool((res.balance['|SMD|'] <= 0.1).all())
+    True
     """
 
     treated_matched: np.ndarray  # indices of matched treated
@@ -373,6 +411,7 @@ class CardinalityMatchResult(ResultProtocolMixin):
 
 
 @accepts_aliases(treat="treatment", y="outcome")
+@_expands_categorical("covariates")
 def cardinality_match(
     data: pd.DataFrame,
     treatment: str,
@@ -423,13 +462,16 @@ def cardinality_match(
     ...                            covariates=['x1', 'x2'],
     ...                            smd_tolerance=0.1)
     >>> res.n_matched_pairs
-    107
+    106
     >>> round(res.ate, 2)
-    1.86
-    >>> res.balance['|SMD|'].round(3).tolist()
-    [0.111, 0.082]
+    1.84
+    >>> bool((res.balance['|SMD|'] <= 0.1).all())
+    True
     """
     df = data.dropna(subset=[treatment, outcome] + covariates).reset_index(drop=True)
+    require_binary_treatment(
+        df[treatment], function="cardinality_match", argument=treatment
+    )
     t = df[treatment].to_numpy().astype(int)
     y = df[outcome].to_numpy(dtype=float)
     X = df[covariates].to_numpy(dtype=float)

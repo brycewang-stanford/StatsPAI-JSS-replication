@@ -36,7 +36,9 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 
+from .._input_validation import check_columns
 from ..core.results import CausalResult
+from ._cite import bib_citation
 
 # ======================================================================
 # Internal helpers
@@ -469,16 +471,24 @@ def fdid(
 
     Examples
     --------
+    Called through the ``sp.synth`` dispatcher:
+
     >>> import statspai as sp
-    >>> result = sp.synth.fdid(
-    ...     data=panel_df,
-    ...     outcome='gdp',
-    ...     unit='country',
-    ...     time='year',
-    ...     treated_unit='West Germany',
-    ...     treatment_time=1990,
+    >>> panel_df = sp.dgp_synth(n_units=10, n_periods=20, treatment_time=15,
+    ...                         effect=2.0, seed=0)
+    >>> result = sp.synth(
+    ...     panel_df,
+    ...     outcome='y',
+    ...     unit='unit',
+    ...     time='time',
+    ...     treated_unit=0,
+    ...     treatment_time=15,
+    ...     method='fdid',
     ... )
-    >>> result.summary()
+    >>> result.method
+    'Forward Difference-in-Differences (FDID)'
+    >>> 'selected_donors' in result.model_info
+    True
 
     References
     ----------
@@ -495,9 +505,11 @@ def fdid(
             f"got '{method}'."
         )
 
-    for col in (outcome, unit, time):
-        if col not in data.columns:
-            raise ValueError(f"Column '{col}' not found in data.")  # pragma: no cover
+    check_columns(
+        data,
+        {"outcome": outcome, "unit": unit, "time": time},
+        function="sp.synth(method='fdid')",
+    )
 
     if treated_unit not in data[unit].values:
         raise ValueError(f"treated_unit '{treated_unit}' not found in column '{unit}'.")
@@ -651,6 +663,7 @@ def fdid(
     # ------------------------------------------------------------------
     return CausalResult(
         method="Forward Difference-in-Differences (FDID)",
+        _citation_key=bib_citation("li2024forward", "fdid"),
         estimand="ATT",
         estimate=float(att),
         se=se,

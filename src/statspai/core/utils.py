@@ -2,13 +2,367 @@
 Utility functions for formula parsing and data processing
 """
 
-from typing import Tuple, List, Optional, Dict, Any
-import pandas as pd
-import numpy as np
 import re
+from typing import Any, Dict, List, Optional, Tuple
+
+import numpy as np
+import pandas as pd
 from patsy import dmatrices
 
+from ._formula_dtypes import float_generated_term_columns, warn_wrapped_integer_columns
+
 _BARE_NAME_RE = re.compile(r"^[A-Za-z_]\w*$")
+
+# Functions a formula may call without the ``np.`` prefix, so that a formula
+# written for R or Stata (``log(wage) ~ educ + sqrt(exper)``) reads the same
+# here. A data column of the same name takes precedence, as in patsy.
+_FORMULA_FUNCTIONS: Dict[str, Any] = {
+    "np": np,
+    "log": np.log,
+    "log2": np.log2,
+    "log10": np.log10,
+    "log1p": np.log1p,
+    "exp": np.exp,
+    "sqrt": np.sqrt,
+}
+
+
+_R_FACTOR_CALL = re.compile(r"(?<![\w.])(?:as\.)?factor\(")
+
+
+def r_formula_idioms(formula: str, fixest_fe: bool = False) -> str:
+    """Read a formula written the way R writes it.
+
+    Three spellings are translated before the formula reaches the parser:
+
+    * ``factor(x)`` and ``as.factor(x)`` become ``C(x)``. They are how R
+      marks a categorical term; the coefficient labels are the house ones
+      (``C(x)[T.2]``), so ``sp.test``, ``sp.margins`` and the table
+      builders read them without knowing where the formula came from.
+    * ``^`` inside ``I(...)`` becomes ``**``, see
+      :func:`_caret_as_power_in_identity`.
+    * a name in backticks becomes ``Q("name")``, see
+      :func:`backticks_to_q`.
+
+    Stata's factor-variable terms (``i.g##c.x``, ``ib2.g``, ``c.x#c.x``)
+    are translated as ``sp.from_stata`` translates them, see
+    :mod:`statspai.core._stata_formula`. A time-series term (``L.x``) needs
+    the data and is resolved by :func:`create_design_matrices`; here it is
+    refused with the spelling that works.
+
+    ``fixest_fe=True`` (the fixest layer) leaves the fixed-effects part of
+    ``y ~ x | fe`` untranslated: there ``i.f#c.x`` is an absorbed varying
+    slope (``reghdfe absorb(i.f#c.x)``), not a regressor.
+    """
+    from ._stata_formula import has_stata_ts_terms, stata_factor_syntax
+
+    if has_stata_ts_terms(formula):
+        from ..exceptions import MethodIncompatibility
+
+        raise MethodIncompatibility(
+            f"{formula!r} uses a Stata time-series operator (L. / F. / D.), "
+            "which this estimator's formula parser does not resolve",
+            recovery_hint="Make the column first, e.g. df['x_L1'] = "
+            "sp.lag(df, 'x', id='unit', time='period'), and name it in the "
+            "formula; or use an estimator that resolves L.x after "
+            "sp.xtset (sp.regress, sp.logit, sp.glm ...).",
+        )
+    formula = stata_factor_syntax(formula, fixest_fe=fixest_fe)
+    if "`" in formula:
+        formula = backticks_to_q(formula)
+    if "factor(" in formula:
+        formula = _R_FACTOR_CALL.sub("C(", formula)
+    return _caret_as_power_in_identity(formula)
+
+
+_Q_NAME = re.compile(r"""^Q\(\s*(["'])(.*)\1\s*\)$""")
+
+
+def unquote_name(term: str) -> str:
+    """The column a quoted term names: ``Q("my col")`` or `` `my col` ``.
+
+    Anything else is returned unchanged. For the parsers that read column
+    names only (fixed effects, the variable of a smooth).
+    """
+    term = term.strip()
+    if len(term) >= 2 and term[0] == term[-1] == "`":
+        return term[1:-1]
+    match = _Q_NAME.match(term)
+    if match and match.group(1) not in match.group(2).replace(
+        "\\" + match.group(1), ""
+    ):
+        return (
+            match.group(2)
+            .replace("\\" + match.group(1), match.group(1))
+            .replace("\\\\", "\\")
+        )
+    return term
+
+
+def backticks_to_q(formula: str) -> str:
+    """Rewrite R's backtick-quoted names as ``Q("name")``.
+
+    R writes a column whose name is not an identifier between backticks,
+    as in a formula with the terms In-game Purchases and Side-quest
+    Engagement. The parser reads the same thing as
+    ``Q("In-game Purchases")``, so the backticks are translated and
+    everything downstream (term names, ``sp.test``, tables) sees the one
+    spelling. Backticks inside a quoted string are left alone.
+    """
+    out: List[str] = []
+    i, n = 0, len(formula)
+    quote = ""
+    while i < n:
+        ch = formula[i]
+        if quote:
+            out.append(ch)
+            if ch == quote:
+                quote = ""
+            i += 1
+        elif ch in "\"'":
+            quote = ch
+            out.append(ch)
+            i += 1
+        elif ch == "`":
+            end = formula.find("`", i + 1)
+            if end == -1:
+                from ..exceptions import MethodIncompatibility
+
+                raise MethodIncompatibility(
+                    f"Formula {formula!r} has an unmatched backtick.",
+                    recovery_hint=(
+                        "Quote a column name on both sides: `my column`, "
+                        'or write Q("my column").'
+                    ),
+                    diagnostics={"formula": formula},
+                )
+            name = formula[i + 1 : end].replace("\\", "\\\\").replace('"', '\\"')
+            out.append(f'Q("{name}")')
+            i = end + 1
+        else:
+            out.append(ch)
+            i += 1
+    return "".join(out)
+
+
+def _caret_as_power_in_identity(formula: str) -> str:
+    """Read ``^`` inside ``I(...)`` as a power, the way R does.
+
+    ``I(exper^2)`` is how R (and anyone coming from it) writes a squared
+    term. patsy hands the inside of ``I()`` to Python, where ``^`` is
+    bitwise XOR, so the term used to fail with a message about ``xor`` on a
+    float array. Inside ``I()`` the caret has no formula meaning, and XOR of
+    two regressors is not something a regression formula asks for, so it is
+    rewritten to ``**``. Outside ``I()`` the caret keeps patsy's meaning
+    (``(a + b)^2`` expands interactions) and is left alone.
+    """
+    if "^" not in formula or "I(" not in formula:
+        return formula
+    out: List[str] = []
+    i, n = 0, len(formula)
+    while i < n:
+        ch = formula[i]
+        starts = (
+            ch == "I"
+            and formula.startswith("I(", i)
+            and (i == 0 or not (formula[i - 1].isalnum() or formula[i - 1] in "_."))
+        )
+        if not starts:
+            out.append(ch)
+            i += 1
+            continue
+        depth, j = 0, i + 1
+        while j < n:
+            if formula[j] == "(":
+                depth += 1
+            elif formula[j] == ")":
+                depth -= 1
+                if depth == 0:
+                    break
+            j += 1
+        out.append(formula[i : j + 1].replace("^", "**"))
+        i = j + 1
+    return "".join(out)
+
+
+def formula_eval_env() -> Any:
+    """The namespace in which every StatsPAI formula is evaluated."""
+    from patsy import EvalEnvironment
+
+    return EvalEnvironment([_FORMULA_FUNCTIONS])
+
+
+_PATSY_BUILTINS = frozenset(
+    {
+        "C", "I", "Q", "Treatment", "Sum", "Poly", "Helmert", "Diff",
+        "center", "standardize", "scale", "bs", "cr", "cc", "te",
+        "True", "False", "None", "and", "or", "not", "in", "is", "if", "else",
+    }
+)  # fmt: skip
+_QUOTED_NAME_RE = re.compile(r"""\bQ\(\s*(["'])(.*?)\1\s*\)""")
+_STRING_LITERAL_RE = re.compile(r"""(["'])(?:\\.|(?!\1).)*\1""")
+# a bare name that is neither called (``f(``) nor a keyword (``reference=``)
+_IDENTIFIER_RE = re.compile(r"(?<![\w.])([A-Za-z_]\w*)\b(?![\w.]*\s*\()(?!\s*=(?!=))")
+# patsy: "name 'x' is not defined" / "no data named 'x'"; formulaic (pyfixest):
+# "`x` is not present in the dataset"
+_NAME_ERROR_RE = re.compile(
+    r"""name '([^']+)' is not defined|no data named '([^']+)'"""
+    r"""|`([^`]+)` is not present in the dataset"""
+)
+
+
+def _formula_name_error(error: BaseException) -> Optional[str]:
+    """The name an evaluation failure could not resolve, if it was a lookup."""
+    seen = set()
+    exc: Optional[BaseException] = error
+    while exc is not None and id(exc) not in seen:
+        seen.add(id(exc))
+        if isinstance(exc, NameError):
+            name = getattr(exc, "name", None)
+            if name:
+                return str(name)
+            hit = _NAME_ERROR_RE.search(str(exc))
+            if hit:
+                return next(g for g in hit.groups() if g)
+        exc = exc.__cause__ or exc.__context__
+    hit = _NAME_ERROR_RE.search(str(error))
+    if hit:
+        return next(g for g in hit.groups() if g)
+    return None
+
+
+def formula_unknown_columns(formula: str, data: pd.DataFrame) -> List[str]:
+    """Names a formula reads as data columns that ``data`` does not have.
+
+    Bare identifiers that are not called as functions, plus the contents
+    of ``Q("...")``; names of the formula namespace (``log``, ``np`` ...)
+    and patsy's own helpers are not columns.  Order of first appearance.
+    """
+    cols = set(map(str, data.columns))
+    found: List[str] = []
+    for match in _QUOTED_NAME_RE.finditer(formula):
+        found.append(match.group(2))
+    bare = _STRING_LITERAL_RE.sub(" ", _QUOTED_NAME_RE.sub(" ", formula))
+    for match in _IDENTIFIER_RE.finditer(bare):
+        name = match.group(1)
+        if name in _FORMULA_FUNCTIONS or name in _PATSY_BUILTINS:
+            continue
+        found.append(name)
+    out: List[str] = []
+    for name in found:
+        if name not in cols and name not in out:
+            out.append(name)
+    return out
+
+
+def raise_if_formula_names_missing(
+    formula: str,
+    data: pd.DataFrame,
+    error: Optional[BaseException] = None,
+    *,
+    context: Optional[str] = None,
+) -> None:
+    """Raise :class:`~statspai.exceptions.ColumnNotFound` for unknown columns.
+
+    Called where a formula is turned into a design matrix.  With ``error``
+    (the exception patsy raised) it fires only when the failure was a name
+    lookup for something used as a variable, not a misspelled function
+    (``lg(x)``), so other evaluation errors keep their own message.
+    Without ``error`` it is a pre-flight check on the formula text.
+    """
+    from ..exceptions import ColumnNotFound
+
+    if error is not None:
+        name = _formula_name_error(error)
+        if name is None or re.search(
+            r"(?<![\w.])" + re.escape(name) + r"\s*\(", formula
+        ):
+            return
+    missing = formula_unknown_columns(formula, data)
+    if (
+        error is not None
+        and name is not None
+        and name not in missing
+        and name not in set(map(str, data.columns))
+    ):
+        missing.append(name)
+    if not missing:
+        return
+    extra: Dict[str, Any] = {"formula": formula}
+    if error is not None:
+        extra["parser_error"] = f"{type(error).__name__}: {str(error)[:300]}"
+    exc = ColumnNotFound.from_missing(
+        missing,
+        list(data.columns),
+        context=context,
+        extra_diagnostics=extra,
+    )
+    # Not chained to the parser's error: patsy's NameError keeps its
+    # evaluation frame, whose variable lookup raises KeyError when a
+    # traceback formatter lists the frame's names for a suggestion
+    # (exceptiongroup on Python 3.10), and the report itself then fails.
+    raise exc from None
+
+
+def evaluate_formula_expression(expr: str, data: pd.DataFrame) -> pd.Series:
+    """One formula expression (``np.log(wage)``, ``I(a / b)``) as a column.
+
+    Rows on which it cannot be evaluated are missing in the result. An
+    expression that expands to several columns (``C(g)``, ``a * b``) is
+    refused: an outcome or an endogenous regressor is a single variable.
+    """
+    from patsy import NAAction, dmatrix
+
+    from ..exceptions import MethodIncompatibility
+
+    code = "0 + " + r_formula_idioms(expr)
+    frame = _coerce_string_extension_dtypes(data, code)
+    try:
+        design = dmatrix(
+            code,
+            frame,
+            eval_env=formula_eval_env(),
+            return_type="dataframe",
+            NA_action=NAAction(on_NA="drop"),
+        )
+    except Exception as exc:
+        raise_if_formula_names_missing(expr, frame, exc)
+        raise MethodIncompatibility(
+            f"Could not evaluate {expr!r} on the data: {exc}",
+            recovery_hint=(
+                "Check the column names; log, exp, sqrt and np.<function> "
+                "are available, and arithmetic goes inside I(...)."
+            ),
+            diagnostics={"expression": expr},
+        ) from exc
+    if design.shape[1] != 1:
+        raise MethodIncompatibility(
+            f"{expr!r} expands to {design.shape[1]} columns "
+            f"({list(design.columns)}); a single variable is needed here.",
+            recovery_hint="Create the variable as a column first.",
+            diagnostics={"expression": expr},
+        )
+    return design.iloc[:, 0].astype(float).reindex(data.index)
+
+
+def formula_to_columns(
+    formula: str, data: pd.DataFrame
+) -> Tuple[pd.DataFrame, str, List[str]]:
+    """Evaluate ``y ~ terms`` and return ``(frame, y_name, x_names)``.
+
+    For estimators that work from column names: the transformed outcome and
+    every built regressor (``np.log(x)``, ``I(x**2)``, ``C(g)``, ``a:b``)
+    become columns of a copy of ``data``, restricted to the rows on which
+    the formula could be evaluated. The intercept is not among ``x_names``.
+    """
+    y_df, X_df = create_design_matrices(formula, data)
+    frame = data.loc[X_df.index].copy()
+    y_name = str(y_df.columns[0])
+    frame[y_name] = np.asarray(y_df.iloc[:, 0], dtype=float)
+    x_names = [str(c) for c in X_df.columns if c != "Intercept"]
+    for col in x_names:
+        frame[col] = np.asarray(X_df[col], dtype=float)
+    return frame, y_name, x_names
 
 
 def _split_additive_formula_terms(part: str) -> List[str]:
@@ -157,10 +511,13 @@ def parse_formula(formula: str) -> Dict[str, Any]:
         "has_constant": True,
     }
 
+    if "`" in formula:
+        formula = backticks_to_q(formula)
+
     # Split by | for fixed effects
     if "|" in formula:
         main_formula, fe_part = formula.split("|", 1)
-        result["fixed_effects"] = [var.strip() for var in fe_part.split("+")]
+        result["fixed_effects"] = [unquote_name(var) for var in fe_part.split("+")]
     else:
         main_formula = formula
 
@@ -208,7 +565,9 @@ def parse_formula(formula: str) -> Dict[str, Any]:
     return result
 
 
-def _coerce_string_extension_dtypes(data: pd.DataFrame) -> pd.DataFrame:
+def _coerce_string_extension_dtypes(
+    data: pd.DataFrame, formula: Any = None
+) -> pd.DataFrame:
     """Cast pandas string-extension columns to ``object`` for patsy.
 
     pandas >= 3.0 makes ``StringDtype`` the default for text columns. patsy's
@@ -218,6 +577,10 @@ def _coerce_string_extension_dtypes(data: pd.DataFrame) -> pd.DataFrame:
     ``object`` restores the pandas < 3.0 code path (object -> categorical) with
     identical downstream design matrices. Numeric / bool / datetime columns are
     left untouched, and the frame is copied only when a conversion is needed.
+
+    With ``formula`` (a formula string or a patsy ``DesignInfo``), the
+    integer columns that a generated term such as ``I(x**3)`` reads are cast
+    to ``float64`` as well (:func:`float_generated_term_columns`).
     """
     offenders = {}
     for col in data.columns:
@@ -229,7 +592,191 @@ def _coerce_string_extension_dtypes(data: pd.DataFrame) -> pd.DataFrame:
             offenders[col] = data[col].astype(object)
     if offenders:
         data = data.assign(**offenders)
+    data = _widen_narrow_integers(data)
+    if formula is not None:
+        # integer arithmetic inside I(...) wraps around even in int64
+        data = float_generated_term_columns(data, formula)
     return data
+
+
+def _widen_narrow_integers(data: pd.DataFrame) -> pd.DataFrame:
+    """Cast ``int8`` / ``int16`` / ``int32`` (and unsigned) columns to ``int64``.
+
+    ``pd.read_stata`` and ``pd.read_parquet`` keep the storage type of the
+    file, so a Stata ``int`` arrives as ``int16``. numpy arithmetic stays in
+    that type and wraps around without a warning: ``I(x**2)`` on an ``int16``
+    column with values above 181 is a column of garbage, and the regression
+    built on it has no error to show for it. Stata and R do arithmetic in
+    double precision, so the same formula there is right. ``int64`` keeps the
+    names of ``C(x)`` levels unchanged (a cast to float would rename ``T.2``
+    to ``T.2.0``). A column that only holds -1, 0 and 1 cannot overflow in
+    a product or a power and is left as it is, so the indicator columns of a
+    large frame are not copied; the frame itself is copied only when a
+    column is widened.
+    """
+    if not isinstance(data, pd.DataFrame) or not data.columns.is_unique:
+        return data
+    narrow = {}
+    for col, dtype in data.dtypes.items():
+        if not (
+            isinstance(dtype, np.dtype) and dtype.kind in "iu" and dtype.itemsize < 8
+        ):
+            continue
+        values = data[col].to_numpy()
+        if values.size and (values.max() > 1 or values.min() < -1):
+            narrow[col] = values.astype(np.int64)
+    if narrow:
+        data = data.assign(**narrow)
+    return data
+
+
+def _complete_cases_for_factors(formula: str, data: pd.DataFrame) -> pd.DataFrame:
+    """Drop the rows that listwise deletion will drop before the levels of
+    a categorical term are read.
+
+    patsy takes the levels of ``C(g)`` from every row in which ``g`` is
+    observed, also the rows it then drops because another variable is
+    missing. A level that occurs only in such rows became the reference
+    category of an empty cell, and the remaining indicators added up to
+    the intercept. R (``model.frame`` drops unused levels) and Stata (the
+    base is the lowest level in the estimation sample) read the levels
+    from the rows that are used; so does this. The rows are the same ones
+    patsy would have dropped, so only the coding of the factor changes.
+    """
+    if "C(" not in formula or not isinstance(data, pd.DataFrame):
+        return data
+    names = {
+        m.group(0)
+        for m in re.finditer(r"(?<![\w.\"'])[A-Za-z_]\w*(?![\w(.\"'])", formula)
+    }
+    used = [c for c in data.columns if isinstance(c, str) and c in names]
+    if not used:
+        return data
+    keep = data[used].notna().all(axis=1)
+    return data if bool(keep.all()) else data.loc[keep]
+
+
+_KEYWORD_SUFFIX = "__pykw"
+
+
+def _alias_keyword_columns(
+    formula: str, data: pd.DataFrame
+) -> Tuple[str, pd.DataFrame, Dict[str, str]]:
+    """Make a formula over columns named like Python keywords evaluable.
+
+    patsy evaluates each term as Python code, so ``y ~ C(class)`` or
+    ``ret ~ log(yield)`` is a syntax error although ``class``, ``return``
+    and ``yield`` are ordinary variable names in Stata and R data. The
+    columns are given an alias for the evaluation; the caller writes the
+    names back into the design columns. Text inside quotes is left alone
+    (``Q("class")`` keeps working).
+
+    Returns the formula, the data and ``{alias: name}`` (empty when no
+    such column is used).
+    """
+    import keyword
+
+    if not isinstance(data, pd.DataFrame):
+        return formula, data, {}
+    names = [c for c in data.columns if isinstance(c, str) and keyword.iskeyword(c)]
+    if not names:
+        return formula, data, {}
+    pattern = re.compile(
+        r"(?<![\w.])(" + "|".join(re.escape(n) for n in names) + r")(?![\w(])"
+    )
+    used: Dict[str, str] = {}
+
+    def alias(match: "re.Match[str]") -> str:
+        used[match.group(1) + _KEYWORD_SUFFIX] = match.group(1)
+        return match.group(1) + _KEYWORD_SUFFIX
+
+    pieces = re.split(r"(\"[^\"]*\"|'[^']*')", formula)
+    rewritten = "".join(
+        piece if i % 2 else pattern.sub(alias, piece) for i, piece in enumerate(pieces)
+    )
+    if not used:
+        return formula, data, {}
+    renamed = data.rename(columns={name: key for key, name in used.items()})
+    return rewritten, renamed, used
+
+
+def _unalias(text: str, aliases: Dict[str, str]) -> str:
+    for key, name in aliases.items():
+        text = text.replace(key, name)
+    return text
+
+
+_QUOTED = re.compile(r"""(["'`]).*?\1""")
+_DOT_TERM = re.compile(r"(?<![\w.)\]])\.(?![\w.(])")
+_IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+def expand_dot(formula: str, data: pd.DataFrame) -> str:
+    """Write out the ``.`` of ``y ~ .`` as every other column of ``data``.
+
+    R's shorthand for "regress on everything else": the dot stands for
+    all columns not named on the left-hand side. Terms can still be
+    removed or added around it (``y ~ . - id``, ``y ~ . + I(x**2)``).
+    Columns whose names are not Python identifiers are quoted. A formula
+    without a free-standing dot, or with the ``|`` of an instrument or
+    fixed-effect part, is returned unchanged.
+    """
+    if "~" not in formula or "|" in formula or "." not in formula:
+        return formula
+    lhs, rhs = formula.split("~", 1)
+    masked = _QUOTED.sub(lambda m: "_" * len(m.group(0)), rhs)
+    spots = [m.start() for m in _DOT_TERM.finditer(masked)]
+    if not spots:
+        return formula
+    outcome = set(_IDENTIFIER.findall(lhs)) | {lhs.strip().strip("`")}
+    terms = []
+    for col in data.columns:
+        name = str(col)
+        if name in outcome:
+            continue
+        if _IDENTIFIER.fullmatch(name):
+            terms.append(name)
+        else:
+            escaped = name.replace("\\", "\\\\").replace('"', '\\"')
+            terms.append(f'Q("{escaped}")')
+    if not terms:
+        from ..exceptions import MethodIncompatibility
+
+        raise MethodIncompatibility(
+            "The '.' in the formula stands for every other column of the "
+            "data, and there is none."
+        )
+    expansion = "(" + " + ".join(terms) + ")"
+    out = rhs
+    for pos in reversed(spots):
+        out = out[:pos] + expansion + out[pos + 1 :]
+    return f"{lhs}~{out}"
+
+
+def _logical_outcome_as_indicator(y: Any, return_type: str) -> Any:
+    """A true / false left-hand side as one 0 / 1 column.
+
+    ``(earn > 0) ~ height`` is how R writes a binary outcome defined on
+    the fly. patsy codes a logical term as two indicator columns,
+    ``[False]`` and ``[True]``; every estimator downstream expects one
+    outcome column and failed on the doubled length. The ``[True]``
+    column is the outcome, named by the expression.
+    """
+    info = getattr(y, "design_info", None)
+    names = list(getattr(info, "column_names", []) or [])
+    if len(names) != 2:
+        return y
+    first, second = str(names[0]), str(names[1])
+    if not (first.endswith("[False]") and second.endswith("[True]")):
+        return y
+    if first[: -len("[False]")] != second[: -len("[True]")]:
+        return y
+    label = second[: -len("[True]")]
+    if return_type == "dataframe":
+        out = y.iloc[:, [1]].copy()
+        out.columns = [label]
+        return out
+    return np.asarray(y)[:, [1]]
 
 
 def create_design_matrices(
@@ -252,18 +799,59 @@ def create_design_matrices(
     Tuple[pd.DataFrame, pd.DataFrame]
         (y, X) matrices
     """
+    from ._stata_formula import resolve_formula_ts_terms, stata_factor_syntax
+
+    # Stata syntax first: L.x reads the declared panel, and grouped factor
+    # terms (c.(x1-x3)) expand against the data's columns
+    formula, data = resolve_formula_ts_terms(formula, data)
+    formula = stata_factor_syntax(formula, columns=list(data.columns))
+    formula = expand_dot(formula, data)
+    formula = r_formula_idioms(formula)
+    warn_wrapped_integer_columns(data, formula)
     fast = _try_simple_numeric_design_matrices(formula, data, return_type)
     if fast is not None:
         return fast
 
-    data = _coerce_string_extension_dtypes(data)
+    data = _coerce_string_extension_dtypes(data, formula)
+    data = _complete_cases_for_factors(formula, data)
 
+    safe_formula, safe_data, aliases = _alias_keyword_columns(formula, data)
     try:
-        y, X = dmatrices(formula, data, return_type=return_type)
+        y, X = dmatrices(
+            safe_formula,
+            safe_data,
+            eval_env=formula_eval_env(),
+            return_type=return_type,
+        )
+        if aliases and return_type == "dataframe":
+            for frame in (y, X):
+                frame.columns = [_unalias(str(c), aliases) for c in frame.columns]
+        y = _logical_outcome_as_indicator(y, return_type)
         return y, X
-    except Exception:
+    except Exception as patsy_error:
+        # A misspelled column is the common failure: name it, with a
+        # did-you-mean, before the manual-parse fallback below.
+        raise_if_formula_names_missing(formula, data, patsy_error)
         # Fallback to manual parsing if patsy fails
         parsed = parse_formula(formula)
+        unknown = [
+            name
+            for name in [parsed["dependent"]] + list(parsed["exogenous"])
+            if name not in data.columns
+        ]
+        if unknown:
+            # the manual parser reads column names only; without them the
+            # patsy message is the one that says what is wrong
+            from ..exceptions import MethodIncompatibility
+
+            raise MethodIncompatibility(
+                f"Could not evaluate the formula {formula!r}: {patsy_error}",
+                recovery_hint=(
+                    "Check the column names and the functions the formula "
+                    "calls; log, exp, sqrt and np.<function> are available."
+                ),
+                diagnostics={"formula": formula, "unknown_terms": unknown},
+            ) from patsy_error
 
         y = data[parsed["dependent"]].values
         if return_type == "dataframe":

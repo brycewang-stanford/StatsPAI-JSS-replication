@@ -14,9 +14,23 @@ diagnostic tests, following the standards from empirical economics:
 
 Usage
 -----
+>>> import numpy as np
+>>> import pandas as pd
+>>> import statspai as sp
+>>> rng = np.random.default_rng(0)
+>>> n = 200
+>>> df = pd.DataFrame({"treated": np.repeat([0, 1], n),
+...                    "post": np.tile([0, 1], n)})
+>>> df["wage"] = (1.0 + 0.5 * df["post"] + 0.8 * df["treated"] * df["post"]
+...               + rng.normal(size=2 * n))
 >>> result = sp.did(df, y='wage', treat='treated', time='post')
->>> sp.diagnose_result(result)          # auto-detects DID → runs DID battery
->>> sp.diagnose_result(result, print_results=True)
+>>> out = sp.diagnose_result(result, print_results=False)  # auto-detects DID
+>>> out["method_type"]
+'did'
+>>> [check["test"] for check in out["checks"]]
+['Treatment effect']
+
+Pass ``print_results=True`` (the default) to also print the formatted battery.
 """
 
 from __future__ import annotations
@@ -320,7 +334,9 @@ def _battery_iv(result: Any, alpha: float = 0.05) -> Dict[str, Any]:
             {
                 "test": "First-stage F-statistic",
                 "pass": None,
-                "interpretation": "Not available — re-run with first_stage=True if supported",
+                "interpretation": (
+                    "Not available — re-run with first_stage=True if supported"
+                ),
             }
         )
 
@@ -382,17 +398,30 @@ def _battery_did(result: Any, alpha: float = 0.05) -> Dict[str, Any]:
 
     if pretrend is not None:
         p_val = pretrend.get("pvalue", pretrend.get("p_value"))
+        if p_val is None:
+            verdict = "No p-value recorded for the pre-trend test"
+        elif float(p_val) < alpha:
+            verdict = "Pre-trend detected — parallel trends assumption may be violated"
+        else:
+            # A test that does not reject is not evidence that trends are
+            # parallel: it may simply lack power. The agent summary warns
+            # below p = 0.10, so the wording must not call that "supported".
+            verdict = (
+                f"No pre-trend detected at the {alpha:g} level"
+                + (" (but p < 0.10)" if float(p_val) < 0.10 else "")
+                + "; not rejecting is not evidence of parallel trends. Bound the"
+                " violation with sp.honest_did and check power with"
+                " sp.pretrends_power"
+            )
         checks.append(
             {
-                "test": "Pre-trend test (joint significance of pre-treatment coefficients)",
+                "test": (
+                    "Pre-trend test (joint significance of pre-treatment coefficients)"
+                ),
                 "statistic": pretrend.get("statistic"),
                 "pvalue": round(float(p_val), 4) if p_val is not None else None,
                 "pass": float(p_val) >= alpha if p_val is not None else None,
-                "interpretation": (
-                    "Parallel trends supported"
-                    if p_val and float(p_val) >= alpha
-                    else "Pre-trend detected — parallel trends assumption may be violated"
-                ),
+                "interpretation": verdict,
             }
         )
 
@@ -410,11 +439,14 @@ def _battery_did(result: Any, alpha: float = 0.05) -> Dict[str, Any]:
                     "n_pre_periods": len(pre),
                     "n_significant": sig_pre,
                     "pass": sig_pre == 0,
-                    "interpretation": f"{sig_pre}/{len(pre)} pre-treatment periods significant at 5%"
+                    "interpretation": (
+                        f"{sig_pre}/{len(pre)} pre-treatment periods significant at 5%"
+                    )
                     + (
                         " — parallel trends concern"
                         if sig_pre > 0
-                        else " — parallel trends supported"
+                        else " — none individually significant, which is not"
+                        " evidence of parallel trends"
                     ),
                 }
             )
@@ -550,7 +582,9 @@ def _battery_synth(result: Any, alpha: float = 0.05) -> Dict[str, Any]:
                 "test": "Donor pool composition",
                 "n_donors_with_weight": n_nonzero,
                 "pass": True,
-                "interpretation": f"{n_nonzero} donors contribute to the synthetic unit.",
+                "interpretation": (
+                    f"{n_nonzero} donors contribute to the synthetic unit."
+                ),
             }
         )
 

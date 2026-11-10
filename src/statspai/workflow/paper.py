@@ -1232,13 +1232,16 @@ def _reviewer_audit_section(
     lines.append("**Reviewer checklist**")
     lines.append("- Re-run the replication script or `sp.replication_pack()` output.")
     lines.append(
-        "- Check identification assumptions against the study design, not only the code."
+        "- Check identification assumptions against the study design, not only the "
+        "code."
     )
     lines.append(
-        "- Inspect overlap, pre-trends, weak instruments, or bandwidth sensitivity when relevant."
+        "- Inspect overlap, pre-trends, weak instruments, or bandwidth sensitivity "
+        "when relevant."
     )
     lines.append(
-        "- Confirm exported tables are generated from `tidy()`/`glance()`/`sp.collect()` artifacts."
+        "- Confirm exported tables are generated from "
+        "`tidy()`/`glance()`/`sp.collect()` artifacts."
     )
     return "\n".join(lines)
 
@@ -1781,14 +1784,24 @@ def paper_from_question(
 
     Examples
     --------
+    >>> import os
+    >>> import tempfile
+    >>> import numpy as np
     >>> import statspai as sp
+    >>> df = sp.dgp_did(n_units=60, n_periods=6, seed=0)
+    >>> # with id=, the treatment column is the first-treated period (0 = never)
+    >>> df['first_treat'] = df['first_treat'].fillna(0).astype(int)
+    >>> edu = np.random.default_rng(0).integers(8, 18, 60)
+    >>> df['edu'] = edu[df['unit']]
     >>> q = sp.causal_question(
-    ...     "trained", "wage", data=df, design="did",
-    ...     time="year", id="worker_id",
+    ...     "first_treat", "y", data=df, design="did",
+    ...     time="time", id="unit",
     ...     covariates=["edu"]
     ... )
     >>> draft = sp.paper(q, fmt='qmd')
-    >>> draft.write("paper.qmd")
+    >>> list(draft.sections)[:3]
+    ['Question', 'Data', 'Identification']
+    >>> draft.write(os.path.join(tempfile.mkdtemp(), "paper.qmd"))
     """
     if q.data is None:
         raise ValueError(

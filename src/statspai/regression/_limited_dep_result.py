@@ -22,7 +22,7 @@ the existing test contract (``result.estimate``, ``result.detail``,
 remains ``True``.
 """
 
-from typing import Optional
+from typing import Any, Dict, Optional
 
 import numpy as np
 import pandas as pd
@@ -40,6 +40,11 @@ class LimitedDepResult(CausalResult):
     """
 
     _COEF_COL = "coefficient"
+    # Design and estimate kept by the estimator for post-estimation tests
+    # (sp.cmtest); None when the fit cannot be rebuilt from them.
+    _cm_design: Optional[Dict[str, Any]] = None
+    # Unweighted per-observation log-likelihood, when the fit has one.
+    _llobs: Optional[Any] = None
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -97,6 +102,33 @@ class LimitedDepResult(CausalResult):
         if s is not None:
             return s
         return super().pvalues
+
+    # ------------------------------------------------------------------
+    # Summary: a second equation, when the estimator reports one
+    # ------------------------------------------------------------------
+    def summary(self, *args: Any, **kwargs: Any) -> Any:
+        """The base summary, with the selection equation of a two-step
+        Heckman fit (``model_info['selection_equation']``) printed below
+        the outcome equation, as Stata prints the ``select`` block."""
+        text = super().summary(*args, **kwargs)
+        table = (self.model_info or {}).get("selection_equation")
+        if not isinstance(table, pd.DataFrame) or not isinstance(text, str):
+            return text
+        rule = "-" * 78
+        block = "\n".join(
+            [
+                rule,
+                "  Selection Equation (probit)",
+                rule,
+                table.to_string(index=False, float_format="%.4f"),
+                "",
+            ]
+        )
+        marker = f"{rule}\n  Observations:"
+        body = str(text)
+        if marker not in body:
+            return text
+        return type(text)(body.replace(marker, f"{block}\n{marker}", 1))
 
     # ------------------------------------------------------------------
     # Convenience: full coefficient table as a tidy DataFrame

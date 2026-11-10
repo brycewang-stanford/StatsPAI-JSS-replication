@@ -45,7 +45,9 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 
+from .._aliases import accepts_aliases
 from .._result_serialize import ResultProtocolMixin
+from ..core._covariates import expands_categorical_covariates as _expands_categorical
 
 
 @dataclass
@@ -211,6 +213,8 @@ def _fitness(
     return worst - 0.1 * max_smd
 
 
+@accepts_aliases(seed="random_state")
+@_expands_categorical("covariates")
 def genmatch(
     data: pd.DataFrame,
     y: str,
@@ -276,7 +280,7 @@ def genmatch(
     >>> res.n_treated
     111
     >>> round(res.att, 2)
-    1.72
+    1.73
     >>> res.balance.columns.tolist()
     ['variable', 'smd_pre', 'smd_post', 'ks_p_pre', 'ks_p_post']
     """

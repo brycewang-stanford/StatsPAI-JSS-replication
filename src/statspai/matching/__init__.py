@@ -41,15 +41,21 @@ Press. [@rosenbaum1983central]
 from typing import Any, Dict, List, Optional
 
 from .._aliases import accepts_aliases
+from ..core._covariates import expands_categorical_covariates as _expands_categorical
 from ..exceptions import MethodIncompatibility
+from ._cem_extras import l1_imbalance
+from .bal_tab import BalTabResult, bal_tab
+from .balance_randomization import BalanceRandomizationResult, balance_vs_randomization
 from .cbps import cbps
 from .ebalance import ebalance
+from .full import FullMatchResult, full_match
 from .genmatch import GenMatchResult, genmatch
 
 # Underlying estimators — the dispatcher delegates here.
 from .match import MatchEstimator, balanceplot
 from .match import match as _match_classical
 from .match import psplot
+from .nnmatch import nnmatch as _nnmatch
 from .optimal import (
     CardinalityMatchResult,
     OptimalMatchResult,
@@ -67,8 +73,13 @@ from .ps_diagnostics import (
     ps_balance,
     trimming,
 )
+from .ps_weights import energy_distance, ess, implied_weights, ps_weights
+from .pscore import PScoreResult, pscore
 from .psmatch2 import PSMatch2Result, PSTestResult, psmatch2
+from .residual_balance import residual_balance
 from .sbw import SBWResult, sbw
+from .two_criteria import TwoCriteriaMatchResult, tighten_blocks, two_criteria_match
+from .weightit import WeightItResult, weightit
 
 # ═══════════════════════════════════════════════════════════════════════
 #  Unified dispatcher — sp.match(..., method=...)
@@ -113,6 +124,61 @@ _CLASSICAL_ONLY_KWARGS = frozenset(
     }
 )
 
+
+class _MatchArgumentError(MethodIncompatibility, TypeError):
+    """A keyword the chosen ``sp.match`` method does not take.
+
+    Also a ``TypeError``, which is what the call raised before 1.40, so
+    code that caught that keeps working.
+    """
+
+
+#: Spellings that belong to a sibling method: ``{method: {given: wanted}}``.
+_KWARG_SYNONYMS: Dict[str, Dict[str, str]] = {
+    "nnmatch": {"bias_correction": "bias_adjust", "distance": "metric"},
+    "classical": {"bias_adjust": "bias_correction", "metric": "distance"},
+}
+
+
+def _check_method_kwargs(
+    func: Any, kwargs: Dict[str, Any], method: str, kind: str
+) -> None:
+    """Refuse keywords ``func`` does not accept, with the right spelling."""
+    import difflib
+    import inspect
+
+    try:
+        params = inspect.signature(func).parameters
+    except (TypeError, ValueError):  # pragma: no cover - builtins
+        return
+    if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()):
+        return
+    accepted = set(params) | set(getattr(func, "__statspai_aliases__", {}) or {})
+    accepted -= {"data", "y", "treat", "covariates", "treatment", "outcome"}
+    unknown = [k for k in kwargs if k not in accepted]
+    if not unknown:
+        return
+    synonyms = _KWARG_SYNONYMS.get(kind, {})
+    hints = []
+    for k in unknown:
+        if k in synonyms and synonyms[k] in accepted:
+            hints.append(f"{k}= is spelled {synonyms[k]}= for method={method!r}")
+            continue
+        close = difflib.get_close_matches(k, sorted(accepted), n=1, cutoff=0.75)
+        if close:
+            hints.append(f"did you mean {close[0]}=?")
+    raise _MatchArgumentError(
+        f"sp.match(method={method!r}) got unexpected keyword argument(s) "
+        f"{unknown}" + (f" ({'; '.join(hints)})" if hints else "") + ".",
+        recovery_hint=(
+            (("; ".join(hints) + " ") if hints else "")
+            + f"The keywords method={method!r} accepts are listed in "
+            f"sp.describe_function('{getattr(func, '__name__', kind)}')."
+        ),
+        diagnostics={"unknown": unknown, "accepted": sorted(accepted)},
+    )
+
+
 _CLASSICAL_METHODS = frozenset(
     {
         "nearest",
@@ -143,6 +209,9 @@ _MATCH_METHOD_ALIASES: Dict[str, str] = {
     "llr": "llr",
     "local_linear": "llr",
     "local_linear_regression": "llr",
+    # Abadie-Imbens covariate matching (Stata teffects nnmatch)
+    "nnmatch": "nnmatch",
+    "teffects_nnmatch": "nnmatch",
     # Weighting
     "ebalance": "ebalance",
     "entropy_balancing": "ebalance",
@@ -161,10 +230,14 @@ _MATCH_METHOD_ALIASES: Dict[str, str] = {
     "optimal_match": "optimal",
     "cardinality": "cardinality",
     "cardinality_match": "cardinality",
+    "full": "full",
+    "full_match": "full",
+    "fullmatch": "full",
 }
 
 
 @accepts_aliases(_strict=True, controls="covariates")
+@_expands_categorical("covariates")
 def match(
     data: Any = None,
     y: Optional[str] = None,
@@ -190,10 +263,19 @@ def match(
 
         - **Classical:** ``'nearest'`` (default), ``'stratify'``,
           ``'cem'``, ``'psm'``, ``'mahalanobis'``.
+        - **Covariate matching:** ``'nnmatch'`` -- Abadie-Imbens
+          nearest-neighbour matching on covariates with all ties kept,
+          the Abadie-Imbens (2006) variance and optional bias adjustment;
+          reproduces Stata ``teffects nnmatch`` (point estimates and
+          standard errors to 1e-13 on the NSW-CPS sample). Keywords:
+          ``estimand``, ``n_matches``, ``metric``, ``exact``, ``caliper``,
+          ``bias_adjust``, ``vce``, ``vce_nn``.
         - **Weighting:** ``'ebalance'``, ``'cbps'``, ``'sbw'``,
           ``'overlap'``.
         - **Genetic:** ``'genmatch'``.
-        - **Optimization:** ``'optimal'``, ``'cardinality'``.
+        - **Optimization:** ``'optimal'`` (pairs), ``'full'`` (optimal
+          full matching: every unit is used, in sets of one treated and
+          several comparison units or the reverse), ``'cardinality'``.
     **kwargs
         Forwarded to the chosen estimator.  Classical methods accept
         ``distance`` / ``estimand`` / ``n_matches`` / ``caliper`` /
@@ -222,6 +304,11 @@ def match(
     >>> # Default: nearest-neighbour propensity-score matching
     >>> r = sp.match(df, y='log_wage', treat='union',
     ...              covariates=['education', 'experience', 'tenure'])
+
+    >>> # Abadie-Imbens covariate matching (Stata `teffects nnmatch`)
+    >>> r = sp.match(df, y='log_wage', treat='union',
+    ...              covariates=['education', 'experience', 'tenure'],
+    ...              method='nnmatch', bias_adjust=True)
 
     >>> # Entropy balancing
     >>> r = sp.match(df, y='log_wage', treat='union',
@@ -272,6 +359,7 @@ def match(
     if canon in _CLASSICAL_METHODS:
         # Pass the canonical method name (already lowercased) plus all
         # original kwargs.  match.py knows the legacy aliases too.
+        _check_method_kwargs(_match_classical, kwargs, method, "classical")
         return _match_classical(
             data=data,
             y=y,
@@ -281,14 +369,40 @@ def match(
             **kwargs,
         )
 
+    # ── Abadie-Imbens covariate matching: its own keyword set ─────────
+    if canon == "nnmatch":
+        _check_method_kwargs(_nnmatch, kwargs, method, "nnmatch")
+        return _nnmatch(data=data, y=y, treat=treat, covariates=covariates, **kwargs)
+
+    # ── Optimal full matching: shares distance= / caliper= ───────────
+    if canon == "full":
+        _check_method_kwargs(full_match, kwargs, method, "full")
+        return full_match(data=data, y=y, treat=treat, covariates=covariates, **kwargs)
+
     # ── Advanced: strip classical-only kwargs and forward ────────────
     bad = [k for k in kwargs if k in _CLASSICAL_ONLY_KWARGS]
     if bad:
-        raise TypeError(
+        raise _MatchArgumentError(
             f"method='{method}' does not accept these classical-matching "
             f"kwargs: {bad}.  See sp.{canon}() docstring for the supported "
-            f"parameter list."
+            f"parameter list.",
+            recovery_hint=(
+                f"Drop {bad}, or use method='nearest' for nearest-neighbour "
+                "matching options."
+            ),
+            diagnostics={"unknown": bad, "method": method},
         )
+    _advanced = {
+        "ebalance": ebalance,
+        "cbps": cbps,
+        "sbw": sbw,
+        "overlap": overlap_weights,
+        "genmatch": genmatch,
+        "optimal": optimal_match,
+        "cardinality": cardinality_match,
+    }
+    if canon in _advanced:
+        _check_method_kwargs(_advanced[canon], kwargs, method, canon)
 
     if canon == "ebalance":
         return ebalance(data=data, y=y, treat=treat, covariates=covariates, **kwargs)
@@ -352,16 +466,35 @@ __all__ = [
     "balance_diagnostics",
     "BalanceDiagnosticsResult",
     "optimal_match",
+    "full_match",
+    "FullMatchResult",
     "cardinality_match",
     "OptimalMatchResult",
     "CardinalityMatchResult",
+    "two_criteria_match",
+    "tighten_blocks",
+    "TwoCriteriaMatchResult",
+    "balance_vs_randomization",
+    "BalanceRandomizationResult",
+    "ps_weights",
+    "ess",
+    "energy_distance",
+    "implied_weights",
     "overlap_weights",
     "cbps",
     "genmatch",
     "GenMatchResult",
     "sbw",
     "SBWResult",
+    "weightit",
+    "WeightItResult",
+    "bal_tab",
+    "l1_imbalance",
+    "BalTabResult",
+    "residual_balance",
     "psmatch2",
     "PSMatch2Result",
+    "pscore",
+    "PScoreResult",
     "PSTestResult",
 ]

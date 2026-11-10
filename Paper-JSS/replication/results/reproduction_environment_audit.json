@@ -10,7 +10,7 @@
   "makefile": {
     "pandoc_markdown_optional": true,
     "required_targets_missing": [],
-    "target_count": 68
+    "target_count": 70
   },
   "r_environment_present": true,
   "r_expected_reproduced_modules": 89,
@@ -19,11 +19,12 @@
   "r_repro_report_rows": 89,
   "r_reproduced_modules": 89,
   "random_seeding": {
-    "checked_file_count": 42,
-    "seeded_stochastic_file_count": 15,
-    "stochastic_file_count": 15,
+    "checked_file_count": 44,
+    "seeded_stochastic_file_count": 16,
+    "stochastic_file_count": 16,
     "stochastic_files": [
       "Paper-JSS/replication/scripts/ex01_card.py",
+      "Paper-JSS/replication/scripts/ex03_honestdid_check.R",
       "Paper-JSS/replication/scripts/ex06_causal_impact.py",
       "tests/coverage_monte_carlo/mechanisms/dml_plr_learners.py",
       "tests/coverage_monte_carlo/mechanisms/feols_ssc.py",

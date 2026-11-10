@@ -33,8 +33,9 @@ the full list):
 * Lee bounds: ``trimming='quantile'`` is Lee's sample-quantile rule;
   ``leebounds`` as shipped reproduces it on the side where its rounded
   threshold falls below the quantile observation, and drops that
-  observation on the other side (block 4 of the do-file shows the
-  mechanism; ``trimming='exact'`` reproduces the patched run).
+  observation on the other side (the test rebuilds that number from the
+  rounded threshold). ``trimming='exact'`` is checked against known truth
+  in ``test_lee_bounds_exact_threshold.py``.
 
 Tolerances: 1e-10 relative wherever both sides run closed forms or
 Newton-converged MLEs; 1e-8 where a sklearn ``lbfgs`` logistic fit sits in
@@ -257,7 +258,8 @@ def test_stabilized_weights_match_ipwtm_gaussian_with_ml_sd():
 )
 def test_msm_matches_ipwtm_plus_vcovcl(exposure, family, key):
     y = "y" if family == "gaussian" else "yb"
-    r = sp.msm(LONG, y=y, exposure=exposure, family=family, **MSM_KW)
+    # ipwtm(trunc = 0.01) on the R side; sp.msm truncates only on request.
+    r = sp.msm(LONG, y=y, exposure=exposure, family=family, trim=0.01, **MSM_KW)
     ref = R["msm"][key]
     _close(r.detail["estimate"], ref["coef"], rtol=1e-9)
     _close(r.detail["se"], ref["se"], rtol=1e-9)
@@ -505,24 +507,6 @@ def test_lee_bounds_lower_gap_is_leebounds_threshold_rounding():
     r = sp.lee_bounds(CS, y="ys", treat="d", selection="s", se_method="analytic")
     assert r.model_info["lower_bound"] > ST["leebounds_d"]["lower"] + 1e-3
     assert kept == 297
-
-
-def test_lee_bounds_exact_trimming_matches_leebounds_with_exact_thresholds():
-    """leebounds' tie branch (fractional trimming), reached once the
-    thresholds are held exactly, is trimming='exact' -- bounds and the
-    analytic variance of both."""
-    r = sp.lee_bounds(
-        CS, y="ys", treat="d", selection="s", se_method="analytic", trimming="exact"
-    )
-    ref = ST["leebounds_exact"]
-    _close(
-        [r.model_info["lower_bound"], r.model_info["upper_bound"]],
-        [ref["lower"], ref["upper"]],
-    )
-    _close(
-        [r.model_info["se_lower"] ** 2, r.model_info["se_upper"] ** 2],
-        [ref["V_lower"], ref["V_upper"]],
-    )
 
 
 def test_lee_bounds_control_trimmed_mirror():

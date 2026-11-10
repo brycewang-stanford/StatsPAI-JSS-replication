@@ -28,18 +28,27 @@ References
   Estimation. *Journal of Applied Econometrics*, 14(1), 57-67.
 """
 
+import re
 import warnings
+import zlib
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import pandas as pd
 from scipy import stats
 
+from ..core._call_record import records_call
 from ..core._vcov_spec import markout_clusters
 from ..core.base import BaseEstimator, BaseModel
 from ..core.results import EconometricResults
 from ..core.utils import parse_formula
-from ..exceptions import AssumptionWarning, DataInsufficient, MethodIncompatibility
+from ..exceptions import (
+    AssumptionWarning,
+    ColumnNotFound,
+    DataInsufficient,
+    MethodIncompatibility,
+    StatsPAIWarning,
+)
 
 
 def _require_string(value: Any, name: str) -> str:
@@ -97,8 +106,6 @@ def _k_class_fit(
     m = Z.shape[1]
 
     if m < k2:
-        from statspai.exceptions import MethodIncompatibility
-
         raise MethodIncompatibility(
             f"Under-identified: {m} instruments for {k2} endogenous "
             f"variables. Need at least {k2} instruments.",
@@ -157,7 +164,12 @@ def _k_class_fit(
             alternative_functions=["sp.vif", "sp.anderson_rubin_ci"],
         ) from exc
 
-    params = XAX_inv @ XAy
+    if kappa == 1.0:
+        # 2SLS is least squares on the projected regressors; solving it by
+        # an orthogonal factorisation keeps the digits the inverse loses
+        params = np.linalg.lstsq(PX, y, rcond=None)[0]
+    else:
+        params = np.linalg.solve(XAX, XAy)
 
     # Residuals always use actual endogenous regressors
     fitted_values = X_actual @ params
@@ -195,7 +207,6 @@ def _k_class_fit(
     # Sargan is no longer valid.
     sargan = _sargan_test(residuals, W, m, k2) if m > k2 else None
     hansen = _hansen_j(y, X_actual, W, residuals, robust, cluster)
-
     # Durbin-Wu-Hausman endogeneity test
     hausman = _hausman_test(y, X_exog, X_endog, W)
 
@@ -237,11 +248,57 @@ def _projector(
     the same linear map at O(n k) cost.
     """
 
+    # An orthonormal basis of the column space, not (W'W)^{-1}: the
+    # normal-equations form squares the condition number of W, which costs
+    # seven digits of the coefficients when the instruments are powers of
+    # one variable (a cubic in class size). ``WtW_inv`` is still what the
+    # callers use for leverages and what fails first on a singular W.
+    Q = np.linalg.qr(W)[0]
+
     def apply(M: np.ndarray) -> np.ndarray:
-        out: np.ndarray = W @ (WtW_inv @ (W.T @ M))
+        out: np.ndarray = Q @ (Q.T @ M)
         return out
 
     return apply
+
+
+def _independent_instruments(X_exog: np.ndarray, Z: np.ndarray) -> List[int]:
+    """Columns of ``Z`` that are not linear combinations of ``X_exog`` and
+    the columns of ``Z`` before them.
+
+    Each instrument is measured after the exogenous regressors and the
+    instruments already kept have been projected out; one whose remaining
+    sum of squares is below ``1e-11`` of its own is redundant (exact
+    dependence among dummies leaves about ``1e-16``). The elimination runs
+    on the cross-product of the residualised instruments, so its cost does
+    not grow with the number of rows beyond forming that matrix. When
+    ``X_exog`` is itself rank deficient every column is kept and the fit
+    reports that.
+    """
+    m = Z.shape[1]
+    if m == 0 or X_exog.shape[0] <= X_exog.shape[1] + m:
+        return list(range(m))
+    if X_exog.shape[1]:
+        Qx, Rx = np.linalg.qr(X_exog)
+        diag = np.abs(np.diag(Rx))
+        if diag.min() <= 1e-9 * max(diag.max(), 1e-300):
+            return list(range(m))
+        rest = Z - Qx @ (Qx.T @ Z)
+    else:
+        rest = Z
+    gram = rest.T @ rest
+    size = np.maximum((Z**2).sum(axis=0), 1e-300)
+    keep: List[int] = []
+    chol = np.zeros((m, m))  # rows: the Cholesky factor of gram[keep, keep]
+    for j in range(m):
+        r = len(keep)
+        y = np.linalg.solve(chol[:r, :r], gram[keep, j]) if r else np.zeros(0)
+        left = gram[j, j] - float(y @ y)
+        if left > 1e-11 * size[j]:
+            chol[r, :r] = y
+            chol[r, r] = np.sqrt(left)
+            keep.append(j)
+    return keep
 
 
 def _row_leverage(W: np.ndarray, WtW_inv: np.ndarray) -> np.ndarray:
@@ -275,37 +332,41 @@ def _liml_kappa(
 
     This is the Anderson (1951) / Anderson-Rubin LIML formulation.
     """
-    W_full = np.column_stack([X_exog, Z])  # all instruments
-
-    # W0 = [y, X_endog]
+    # W0 = [y, X_endog], and the excluded instruments, both with the
+    # exogenous regressors partialled out.
     W0 = np.column_stack([y, X_endog])
+    if X_exog.size:
+        W0 = W0 - X_exog @ np.linalg.lstsq(X_exog, W0, rcond=None)[0]
+        Zt = Z - X_exog @ np.linalg.lstsq(X_exog, Z, rcond=None)[0]
+    else:
+        Zt = Z
 
-    # Matrices for generalized eigenvalue problem
-    # A = W0' M_full W0  (residuals from full model)
-    # B = W0' M_exog W0  (residuals from exog-only model)
-    # computed as W0'W0 - (Q'W0)'(Q'W0)-type cross products, never forming
-    # the n x n annihilators.
-    W0W0 = W0.T @ W0
-    XeW0 = X_exog.T @ W0
-    WfW0 = W_full.T @ W0
-    A = W0W0 - WfW0.T @ np.linalg.solve(W_full.T @ W_full, WfW0)
-    B = W0W0 - XeW0.T @ np.linalg.solve(X_exog.T @ X_exog, XeW0)
+    # B = W0' M_exog W0 and A = W0' M_full W0 = B - D, where
+    # D = W0' P_Zt W0 is the part of W0 the excluded instruments explain.
+    # kappa solves B v = kappa A v, i.e. D v = (kappa - 1) A v.
+    #
+    # D is formed directly. Forming A and B each as "cross product minus
+    # projection" and taking their generalized eigenvalue loses as many
+    # digits as kappa is close to 1: with weak instruments kappa - 1 is
+    # 1e-5 or less, and the result was good to 1e-9 only (kappa
+    # 1.00000662005 where ivregress and ivreg2 both give 1.00000661921 on
+    # the Angrist-Krueger sample, moving the coefficient by 1e-6).
+    B = W0.T @ W0
+    # An orthonormal basis of the instruments' column space; singular
+    # directions (collinear instruments) are left out rather than given an
+    # arbitrary direction.
+    Q, sv, _ = np.linalg.svd(Zt, full_matrices=False)
+    if sv.size:
+        Q = Q[:, sv > sv.max() * max(Zt.shape) * np.finfo(float).eps]
+    QW = Q.T @ W0
+    D = QW.T @ QW
+    A = B - D
 
-    # kappa_LIML solves the generalized symmetric eigenvalue problem
-    #     B v = kappa A v
-    # with A = W0' M_full W0, B = W0' M_exog W0 (both symmetric PSD).
-    # Because B >= A in the Loewner order (extra residualisation shrinks
-    # SSR), all eigenvalues are >= 1, and kappa_LIML is the *smallest*.
-    # NOTE: the previous implementation used ``np.linalg.eigvalsh`` on the
-    # non-symmetric product ``inv(A) @ B`` which silently returned garbage
-    # (often negative or complex real parts) — always bug, flipping
-    # LIML into a biased direction. Fixed by using the proper generalized
-    # eigendecomposition via ``scipy.linalg.eigh(B, A)``.
     try:
         from scipy.linalg import eigh as _sp_eigh
 
-        eigvals = _sp_eigh(B, A, eigvals_only=True)
-        kappa = float(np.min(eigvals))
+        eigvals = _sp_eigh(D, A, eigvals_only=True)
+        kappa = 1.0 + float(np.min(eigvals))
         if not np.isfinite(kappa) or kappa < 1 - 1e-8:
             # Numerical pathology — fall back to 2SLS rather than produce a
             # demonstrably wrong kappa.
@@ -331,6 +392,55 @@ def _liml_kappa(
 # ====================================================================== #
 
 
+#: Stata ``ivregress gmm``'s weight matrices (``hac`` has no counterpart).
+_GMM_WMATRIX = ("robust", "unadjusted", "cluster")
+
+
+def _resolve_gmm_wmatrix(
+    wmatrix: Optional[str], robust: str, cluster: Any, overidentified: bool = False
+) -> str:
+    """The GMM weight matrix: ``wmatrix=`` if given, else the pre-1.42 rule.
+
+    Without ``wmatrix=`` the weight matrix follows the variance options:
+    clustered with ``cluster=``, heteroskedasticity-robust with any robust
+    ``robust=``, homoskedastic (``'unadjusted'``) otherwise. The last makes
+    the default ``sp.iv(method='gmm')`` the 2SLS point estimate with a
+    sandwich variance; from 1.42 the default is ``'robust'``, Stata
+    ``ivregress gmm``'s, and until then that call warns.
+    """
+    if wmatrix is not None:
+        if wmatrix == "cluster" and cluster is None:
+            raise MethodIncompatibility(
+                "wmatrix='cluster' needs cluster= (the clustering variable "
+                "of the weight matrix).",
+                recovery_hint="Pass cluster='<column>' with wmatrix='cluster'.",
+            )
+        return wmatrix
+    if cluster is not None:
+        return "cluster"
+    if robust != "nonrobust":
+        return "robust"
+    if not overidentified:
+        # just-identified: every weight matrix gives the IV estimate and the
+        # same sandwich, so the 1.42 change does not touch this call
+        return "unadjusted"
+    from ..did._crit import _external_stacklevel
+
+    warnings.warn(
+        "sp.iv(method='gmm'): without wmatrix= or a robust / cluster "
+        "variance the weight matrix is the homoskedastic one, so the "
+        "estimate equals 2SLS (with a sandwich variance). From 1.42 the "
+        "default is wmatrix='robust', the heteroskedasticity-robust two-step "
+        "GMM that Stata `ivregress gmm` and linearmodels IVGMM fit by "
+        "default; estimates change when the model is over-identified. Pass "
+        "wmatrix='robust' to adopt it now, or wmatrix='unadjusted' to keep "
+        "this estimator. See MIGRATION.md.",
+        FutureWarning,
+        stacklevel=_external_stacklevel(),
+    )
+    return "unadjusted"
+
+
 def _gmm_fit(
     y: np.ndarray,
     X_exog: np.ndarray,
@@ -339,9 +449,16 @@ def _gmm_fit(
     robust: str = "nonrobust",
     cluster: Optional[pd.Series] = None,
     gmm_vcov: str = "sandwich",
+    wmatrix: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Efficient two-step GMM estimator for IV.
+
+    ``wmatrix`` is the weight matrix (``'unadjusted'``, ``'robust'`` or
+    ``'cluster'``); ``None`` derives it from ``cluster`` / ``robust`` as
+    :func:`_resolve_gmm_wmatrix` does. The variance is clustered whenever
+    ``cluster`` is given, whatever the weight matrix (Stata
+    ``wmatrix(robust) vce(cluster c)``).
 
     Step 1: 2SLS to get initial residuals.
     Step 2: Re-estimate with optimal weighting matrix S^{-1}.
@@ -354,8 +471,6 @@ def _gmm_fit(
     m = Z.shape[1]
 
     if m < k2:
-        from statspai.exceptions import MethodIncompatibility
-
         raise MethodIncompatibility(
             f"Under-identified: {m} instruments for {k2} endogenous "
             f"variables. Need at least {k2} instruments.",
@@ -382,7 +497,9 @@ def _gmm_fit(
 
     # Step 2: Optimal weighting matrix
     # S = (1/n) sum_i (Z_i * e_i)(Z_i * e_i)' for heteroskedastic case
-    if cluster is not None:
+    if wmatrix is None:
+        wmatrix = _resolve_gmm_wmatrix(None, robust, cluster)
+    if wmatrix == "cluster":
         # Cluster-robust weighting matrix. With multiway clustering the
         # inclusion-exclusion matrix is not guaranteed PSD, so it cannot
         # serve as a GMM weight; ``ivreg2`` uses the first clustering
@@ -391,7 +508,7 @@ def _gmm_fit(
         _frame = _as_cluster_frame(cluster)
         S, _ = _cluster_meat(W, resid_init, _cluster_codes(_frame, (0,)))
         S /= n
-    elif robust != "nonrobust":
+    elif wmatrix == "robust":
         # Heteroskedasticity-robust weighting matrix
         S = (W * resid_init[:, np.newaxis]).T @ (W * resid_init[:, np.newaxis]) / n
     else:
@@ -419,18 +536,18 @@ def _gmm_fit(
     # which is what ``ivreg2``/``ivreghdfe`` print. ``"sandwich"`` (the
     # StatsPAI default) keeps the full sandwich with Omega re-estimated at
     # the final residuals, which stays valid if the weight matrix is not
-    # the efficient one. Both carry the same finite-sample factor q as the
-    # k-class path: G/(G-1) * (n-1)/(n-k) when clustered, n/(n-k) for HC1,
-    # 1 otherwise.
+    # the efficient one. Both carry the finite-sample factor q of
+    # ``ivregress gmm ..., small``: G/(G-1) * (n-1)/(n-k) when clustered and
+    # n/(n-k) otherwise, under the unadjusted weight matrix as well (Stata 18;
+    # until 1.40.1 that branch carried no factor, so small=True left the
+    # large-sample variance in place). ``small=False`` divides q back out.
     if cluster is not None:
         _frame = _as_cluster_frame(cluster)
         _codes = _cluster_codes(_frame, (0,))
         _g = int(_codes.max()) + 1
         ssc = (_g / (_g - 1)) * ((n - 1) / max(n - k, 1))
-    elif robust != "nonrobust":
-        ssc = n / max(n - k, 1)
     else:
-        ssc = 1.0
+        ssc = n / max(n - k, 1)
 
     if gmm_vcov == "efficient":
         # bread == (1/n) (X'W Sigma^{-1} W'X)^{-1} because S == Sigma / n.
@@ -514,7 +631,8 @@ def _jive_fit(
     Jackknife IV Estimator (JIVE1).
 
     For each observation i, the first-stage fitted value uses
-    leave-one-out: X_hat_i = P_{W,-i} X_i. This removes the
+    leave-one-out: X_hat_i = P_{W,-i} X_i, and the fitted values serve as
+    instruments: beta = (X_hat'X)^-1 X_hat'y. This removes the
     own-observation bias that plagues 2SLS with many instruments.
 
     Reference: Angrist, Imbens & Krueger (1999).
@@ -524,8 +642,6 @@ def _jive_fit(
     m = Z.shape[1]
 
     if m < k2:
-        from statspai.exceptions import MethodIncompatibility
-
         raise MethodIncompatibility(
             f"Under-identified: {m} instruments for {k2} endogenous "
             f"variables. Need at least {k2} instruments.",
@@ -558,22 +674,44 @@ def _jive_fit(
     for j in range(k2):
         X_endog_jive[:, j] = (X_endog_hat_full[:, j] - h * X_endog[:, j]) / (1 - h)
 
-    # Second stage with JIVE fitted values
+    # JIVE1 (Angrist, Imbens & Krueger 1999, eq. for "JIVE1"; Stata
+    # ``jive, ujive1``): the leave-one-out fitted values are the
+    # *instruments* of a just-identified IV step,
+    #     beta = (Xh'X)^-1 Xh'y,   Xh = [X_exog, X_endog_loo].
+    # Through 1.39.1 this was (Xh'Xh)^-1 Xh'y, OLS of y on the leave-one-out
+    # fitted values, which is attenuated like OLS on a noisy regressor.
     X_hat_jive = np.column_stack([X_exog, X_endog_jive])
-    XhXh_inv = np.linalg.inv(X_hat_jive.T @ X_hat_jive)
-    params = XhXh_inv @ X_hat_jive.T @ y
+    A_inv = np.linalg.inv(X_hat_jive.T @ X_actual)
+    params = A_inv @ (X_hat_jive.T @ y)
 
     fitted_values = X_actual @ params
     residuals = y - fitted_values
 
-    # Standard errors (HC1-style with JIVE bread)
+    # Variance: the IV sandwich with Xh as the instrument,
+    #     V = (Xh'X)^-1 M (X'Xh)^-1,
+    # M = s^2 Xh'Xh with s^2 = e'e / (n - k) (classical; Stata ``jive``),
+    # M = sum_i e_i^2 xh_i xh_i' (hc0; times n / (n - k) for hc1), or the
+    # cluster / multiway sum of within-cluster score outer products with the
+    # same finite-sample factor as the k-class path. ``_robust_cov`` and
+    # ``_cluster_cov`` return ``bread @ meat @ bread``; called with an
+    # identity bread they return the (scaled) meat M.
+    eye_k = np.eye(k)
     if cluster is not None:
-        var_cov = _cluster_cov(X_hat_jive, None, residuals, XhXh_inv, cluster)
+        meat = _cluster_cov(X_hat_jive, None, residuals, eye_k, cluster)
+    elif robust in ("hc2", "hc3"):
+        raise MethodIncompatibility(
+            f"robust={robust!r} is not available with method='jive': the "
+            "leverage corrections are defined for a symmetric projection, "
+            "and the jackknife IV step is not one.",
+            recovery_hint="Use robust='hc0' or 'hc1' (or cluster=) with JIVE.",
+            diagnostics={"robust": robust, "method": "jive"},
+        )
     elif robust != "nonrobust":
-        var_cov = _robust_cov(X_hat_jive, None, residuals, XhXh_inv, robust, n, k)
+        meat = _robust_cov(X_hat_jive, None, residuals, eye_k, robust, n, k)
     else:
         sigma2 = np.sum(residuals**2) / (n - k)
-        var_cov = sigma2 * XhXh_inv
+        meat = sigma2 * (X_hat_jive.T @ X_hat_jive)
+    var_cov = _as_float_array(A_inv @ meat @ A_inv.T)
 
     std_errors = np.sqrt(np.maximum(np.diag(var_cov), 0))
 
@@ -794,6 +932,21 @@ def _as_cluster_frame(cluster: Any) -> pd.DataFrame:
 def _cluster_codes(frame: pd.DataFrame, cols: Tuple[int, ...]) -> np.ndarray:
     """Integer group codes for the intersection of ``cols`` in ``frame``."""
     sub = frame.iloc[:, list(cols)]
+    if bool(sub.isna().any().any()):
+        # factorize codes a missing label -1, and index -1 is the last
+        # cluster: the row's score would be added to an unrelated cluster.
+        # Named cluster columns have such rows dropped before the fit; an
+        # array of labels cannot be realigned here, so it is refused.
+        raise DataInsufficient(
+            "Clustered IV inference needs a cluster label for every "
+            "observation in the estimation sample; "
+            f"{int(sub.isna().any(axis=1).sum())} are missing.",
+            recovery_hint=(
+                "Drop those rows before fitting, or pass the cluster "
+                "variable by column name so they are excluded for you."
+            ),
+            diagnostics={"n_missing": int(sub.isna().any(axis=1).sum())},
+        )
     if len(cols) == 1:
         return pd.factorize(sub.iloc[:, 0], sort=False)[0]
     keys = pd.MultiIndex.from_frame(sub.astype(object))
@@ -822,8 +975,10 @@ def _psd_project(V: np.ndarray) -> np.ndarray:
     """Project a symmetric matrix onto the PSD cone (Cameron-Gelbach-Miller).
 
     The multiway inclusion-exclusion variance is not guaranteed PSD in
-    finite samples; the standard fix (and what ``ivreg2``/``reghdfe`` do)
-    is to zero out negative eigenvalues.
+    finite samples; ``fixest`` zeroes the negative eigenvalues, as here.
+    ``ivreg2`` 4.1.12 reports the raw matrix instead (pinned in
+    ``tests/reference_parity/test_vce_menu_parity.py``), which is what
+    ``sp.ivreg`` returns.
     """
     V = 0.5 * (V + V.T)
     evals, evecs = np.linalg.eigh(V)
@@ -1030,6 +1185,80 @@ def _hausman_test(
     return {"statistic": f_stat, "pvalue": f_pvalue, "df": k2}
 
 
+def _robust_endogeneity_tests(
+    y: np.ndarray,
+    X_exog: np.ndarray,
+    X_endog: np.ndarray,
+    Z: np.ndarray,
+    cluster: Optional[np.ndarray] = None,
+) -> Dict[str, float]:
+    """Endogeneity tests that stay valid under heteroskedasticity or
+    clustering: what Stata ``estat endogenous`` reports after
+    ``ivregress ..., vce(robust)`` / ``vce(cluster)``.
+
+    The Durbin and Wu-Hausman statistics assume homoskedastic errors. Two
+    replacements, both built on the first-stage residuals ``v``:
+
+    * the *regression-based* test: the Wald F for ``v`` in the regression of
+      ``y`` on the regressors and ``v``, with the HC1 (or cluster-robust)
+      covariance; ``F(k, N - K)`` or ``F(k, G - 1)``;
+    * the *robust score* test of Wooldridge (1995), which needs only the
+      restricted fit: regress 1 on ``u * r`` with ``u`` the OLS residual
+      and ``r`` the part of ``v`` orthogonal to the regressors; the
+      statistic is ``N`` minus the residual sum of squares, ``chi2(k)``.
+      It is reported for the heteroskedastic case only, as in Stata.
+
+    Checked against Stata 18 on ``sp.datasets.card_1995()``: 1e-10.
+    """
+    y = np.asarray(y, dtype=np.float64)
+    X_exog = np.asarray(X_exog, dtype=np.float64)
+    X_endog = np.asarray(X_endog, dtype=np.float64)
+    W = np.column_stack([X_exog, np.asarray(Z, dtype=np.float64)])
+    n, k2 = len(y), X_endog.shape[1]
+    out: Dict[str, float] = {}
+    try:
+        v_hat = X_endog - W @ np.linalg.lstsq(W, X_endog, rcond=None)[0]
+        X_orig = np.column_stack([X_exog, X_endog])
+        X_aug = np.column_stack([X_orig, v_hat])
+        ka = X_aug.shape[1]
+        beta = np.linalg.lstsq(X_aug, y, rcond=None)[0]
+        resid = y - X_aug @ beta
+        bread = np.linalg.inv(X_aug.T @ X_aug)
+        scores = X_aug * resid[:, None]
+        if cluster is None:
+            df_denom = n - ka
+            meat = scores.T @ scores * (n / df_denom)
+        else:
+            codes, uniques = pd.factorize(np.asarray(cluster), sort=False)
+            n_g = len(uniques)
+            sums = np.zeros((n_g, ka))
+            np.add.at(sums, codes, scores)
+            df_denom = n_g - 1
+            meat = sums.T @ sums * (n_g / (n_g - 1) * (n - 1) / (n - ka))
+        if df_denom <= 0:
+            return out
+        V = bread @ meat @ bread
+        idx = np.arange(ka - k2, ka)
+        f_stat = float(beta[idx] @ np.linalg.solve(V[np.ix_(idx, idx)], beta[idx]) / k2)
+        out.update(
+            regression_F=f_stat,
+            regression_F_pvalue=float(stats.f.sf(f_stat, k2, df_denom)),
+            df_num=float(k2),
+            df_denom=float(df_denom),
+        )
+        if cluster is None:
+            u0 = y - X_orig @ np.linalg.lstsq(X_orig, y, rcond=None)[0]
+            r = v_hat - X_orig @ np.linalg.lstsq(X_orig, v_hat, rcond=None)[0]
+            g = r * u0[:, None]
+            ones = np.ones(n)
+            coef = np.linalg.lstsq(g, ones, rcond=None)[0]
+            score = float(n - np.sum((ones - g @ coef) ** 2))
+            out.update(score_chi2=score, score_pvalue=float(stats.chi2.sf(score, k2)))
+    except np.linalg.LinAlgError:
+        return {}
+    return out
+
+
 # ====================================================================== #
 #  Legacy IVEstimator (kept for backward compat)
 # ====================================================================== #
@@ -1176,7 +1405,7 @@ class IVRegression(BaseModel):
         if data is not None:
             data = _require_dataframe(data, "data")
         method = _require_string(method, "method")
-        self.formula = formula
+        self.formula = _two_part_to_block_formula(formula)
         self.data = data
         self.method = method.lower()
         self.fuller_alpha = fuller_alpha
@@ -1209,8 +1438,9 @@ class IVRegression(BaseModel):
                     "has_data": self.data is not None,
                 },
             )
-        data = self.data
-        parsed = parse_formula(self.formula)
+        formula, data = _materialise_formula_terms(self.formula, self.data)
+        self._term_names_shown = dict(data.attrs.get(_TERM_NAMES_ATTR, {}))
+        parsed = parse_formula(formula)
 
         if not parsed["endogenous"] or not parsed["instruments"]:
             raise MethodIncompatibility(
@@ -1228,13 +1458,11 @@ class IVRegression(BaseModel):
         all_vars = [self.dependent_var] + exog_names + endog_names + instrument_names
         missing = [v for v in all_vars if v not in data.columns]
         if missing:
-            raise MethodIncompatibility(
-                f"Variables not found in data: {missing}",
-                recovery_hint=(
-                    "Add the missing outcome, exogenous, endogenous, or "
-                    "instrument columns to the DataFrame."
-                ),
-                diagnostics={"missing_columns": missing},
+            raise ColumnNotFound.from_missing(
+                missing,
+                list(data.columns),
+                message=f"Variables not found in data: {missing}",
+                extra_diagnostics={"formula": self.formula},
             )
 
         extra_cols = [c for c in data.columns if c not in all_vars]
@@ -1288,16 +1516,26 @@ class IVRegression(BaseModel):
         cluster : str, list of str, Series or DataFrame, optional
             Clustering dimension(s). More than one selects multiway
             (Cameron-Gelbach-Miller) clustering.
-        weights : str or array-like, optional
-            Analytic regression weights (Stata ``[aw=]``): a column name, or
-            one strictly positive value per estimation-sample row. Every
-            estimator runs on the ``sqrt(w)``-scaled design, so point
-            estimates, classical / robust / cluster SEs and the first stage
-            are the weighted ones ``ivregress ... [aw=w]`` reports.
-        alpha : float, default 0.05
-            Significance level of the reported confidence intervals.
-        gmm_vcov : str, default 'sandwich'
-            ``method='gmm'`` only.
+        **kwargs
+            Three further options:
+
+            - ``weights_as`` ({'analytic', 'sampling'}, optional): what the
+              weights are. ``'analytic'`` (Stata ``[aw=]``) is what
+              ``weights=`` alone already means. ``'sampling'`` (Stata
+              ``[pw=]``) gives the same coefficients with the HC1
+              variance, unless ``robust=`` or ``cluster=`` asks for
+              another. Saying which also silences the warning about
+              dispersed weights under the classical variance.
+              ``'frequency'`` is refused.
+            - ``weights`` (str or array-like, optional): analytic regression
+              weights (Stata ``[aw=]``), a column name or one strictly
+              positive value per estimation-sample row. Every estimator runs
+              on the ``sqrt(w)``-scaled design, so point estimates,
+              classical / robust / cluster SEs and the first stage are the
+              weighted ones ``ivregress ... [aw=w]`` reports.
+            - ``alpha`` (float, default 0.05): significance level of the
+              reported confidence intervals.
+            - ``gmm_vcov`` (str, default 'sandwich'): ``method='gmm'`` only.
 
         Returns
         -------
@@ -1309,8 +1547,51 @@ class IVRegression(BaseModel):
         from ..core._vcov_spec import reject_unknown_kwargs
 
         weights = kwargs.pop("weights", None)
+        # weights_as=: what the weights are. 'sampling' takes the robust
+        # variance unless another was asked for.
+        from ..core._agent_summary import resolve_weights_as
+
+        weights_as = resolve_weights_as(
+            kwargs.pop("weights_as", None),
+            has_weights=weights is not None,
+            native="analytic",
+            entry="sp.iv",
+        )
+        if (
+            weights_as == "sampling"
+            and cluster is None
+            and isinstance(robust, str)
+            and robust.lower() == "nonrobust"
+        ):
+            robust = "hc1"
         alpha = _validate_iv_alpha(kwargs.pop("alpha", 0.05))
         gmm_vcov = str(kwargs.pop("gmm_vcov", "sandwich")).lower()
+        if gmm_vcov not in ("sandwich", "efficient"):
+            raise MethodIncompatibility(
+                f"Unknown gmm_vcov={gmm_vcov!r}. Choose 'sandwich' or " "'efficient'.",
+                recovery_hint="Use gmm_vcov='sandwich' (default) or 'efficient'.",
+                diagnostics={
+                    "gmm_vcov": gmm_vcov,
+                    "valid": ["sandwich", "efficient"],
+                },
+            )
+        wmatrix = kwargs.pop("wmatrix", None)
+        if wmatrix is not None:
+            wmatrix = str(wmatrix).strip().lower()
+            if wmatrix not in _GMM_WMATRIX:
+                raise MethodIncompatibility(
+                    f"Unknown wmatrix={wmatrix!r}.",
+                    recovery_hint="Use wmatrix='robust', 'unadjusted' or "
+                    "'cluster' (Stata ivregress gmm's weight matrices).",
+                    diagnostics={"wmatrix": wmatrix, "valid": list(_GMM_WMATRIX)},
+                )
+            if self.method != "gmm":
+                raise MethodIncompatibility(
+                    f"wmatrix= is the GMM weight matrix; method={self.method!r} "
+                    "has none.",
+                    recovery_hint="Pass method='gmm', or drop wmatrix=.",
+                    diagnostics={"wmatrix": wmatrix, "method": self.method},
+                )
         reject_unknown_kwargs(kwargs, function="iv")
 
         # Normalise the SE-type vocabulary through the shared Stata grammar
@@ -1339,8 +1620,37 @@ class IVRegression(BaseModel):
             robust = "nonrobust" if _se.kind == "cluster" else _se.kind
         robust = _normalize_robust(robust)
 
+        n_missing_cluster = 0
         if self.formula is not None and self.data is not None:
-            self._prepare_from_formula()
+            # Rows whose cluster label is missing leave the estimation
+            # sample, as Stata's vce(cluster) does and as sp.ivreg /
+            # sp.regress do through ``markout_clusters``. They used to stay
+            # in the fit with factorize code -1, which added their scores
+            # to the last cluster's sum.
+            _full_data = self.data
+            _cl_names = [
+                c
+                for c in (_normalise_cluster(cluster) or ())
+                if c in getattr(_full_data, "columns", ())
+            ]
+            if _cl_names:
+                _miss = _full_data[_cl_names].isna().any(axis=1)
+                n_missing_cluster = int(_miss.sum())
+                if n_missing_cluster == len(_full_data):
+                    n_missing_cluster = 0
+            if n_missing_cluster:
+                warnings.warn(
+                    f"iv: {n_missing_cluster} observation(s) with a missing "
+                    f"cluster variable ({', '.join(_cl_names)}) excluded from "
+                    "the estimation sample, as Stata's vce(cluster) does.",
+                    StatsPAIWarning,
+                    stacklevel=3,
+                )
+                self.data = _full_data.loc[~_miss]
+            try:
+                self._prepare_from_formula()
+            finally:
+                self.data = _full_data
         elif not (
             self.y is not None
             and self.X_exog is not None
@@ -1424,6 +1734,36 @@ class IVRegression(BaseModel):
                 },
             )
 
+        # Excluded instruments that add nothing to the ones before them
+        # (a full set of quarter-by-year cells next to the year dummies):
+        # drop them and say so, as Stata does, instead of failing on a
+        # singular cross-product.
+        omitted_instruments: List[str] = []
+        keep_z = _independent_instruments(
+            np.asarray(X_exog_fit, dtype=float), np.asarray(Z_fit, dtype=float)
+        )
+        if len(keep_z) < np.shape(Z_fit)[1]:
+            kept = set(keep_z)
+            omitted_instruments = [
+                str(name)
+                for j, name in enumerate(self._instrument_names)
+                if j not in kept
+            ]
+            Z_fit = np.asarray(Z_fit)[:, keep_z]
+            self.Z = Z_fit
+            self._instrument_names = [self._instrument_names[j] for j in keep_z]
+            warnings.warn(
+                f"{len(omitted_instruments)} instrument(s) omitted because of "
+                "collinearity with the exogenous regressors and the other "
+                f"instruments: {omitted_instruments[:8]}"
+                + (" ..." if len(omitted_instruments) > 8 else "")
+                + ". The estimates are unaffected; the count of instruments "
+                "and the degrees of freedom of the overidentification test "
+                "use the ones kept.",
+                StatsPAIWarning,
+                stacklevel=3,
+            )
+
         # Cluster variable. Accept either a column-name string (looked up in
         # the model data) or an array-like / pandas Series aligned with the
         # estimation sample. The ``cluster is not None`` guard replaces a bare
@@ -1441,7 +1781,23 @@ class IVRegression(BaseModel):
                     src = self.data
                 cols = list(getattr(src, "columns", []))
                 missing = [c for c in cluster_spec if c not in cols]
-                if src is None or missing:
+                if src is not None and missing:
+                    raise ColumnNotFound.from_missing(
+                        (
+                            {"cluster": cluster_spec[0]}
+                            if len(cluster_spec) == 1
+                            else {
+                                f"cluster[{i}]": c
+                                for i, c in enumerate(cluster_spec)
+                                if c in missing
+                            }
+                        ),
+                        cols,
+                        message=f"Cluster variable not found in data: {missing}",
+                        extra_hint=("Or pass an array/Series aligned with the sample."),
+                        extra_diagnostics={"cluster": cluster, "missing": missing},
+                    )
+                if src is None:
                     raise MethodIncompatibility(
                         f"Cluster variable not found in data: {missing or cluster!r}",
                         recovery_hint=(
@@ -1513,6 +1869,12 @@ class IVRegression(BaseModel):
             )
 
         elif method == "gmm":
+            gmm_weight = _resolve_gmm_wmatrix(
+                wmatrix,
+                robust,
+                cluster_var,
+                overidentified=Z_fit.shape[1] > X_endog_fit.shape[1],
+            )
             results = _gmm_fit(
                 y_fit,
                 X_exog_fit,
@@ -1521,6 +1883,7 @@ class IVRegression(BaseModel):
                 robust=robust,
                 cluster=cluster_var,
                 gmm_vcov=gmm_vcov,
+                wmatrix=gmm_weight,
             )
 
         elif method == "jive":
@@ -1562,9 +1925,36 @@ class IVRegression(BaseModel):
             "cluster": cluster,
             "alpha": alpha,
         }
+        if method == "gmm":
+            # robust= / cluster= choose the weight matrix, gmm_vcov the
+            # variance: the default 'nonrobust' still reports a sandwich
+            model_info["gmm_vcov"] = gmm_vcov
+            model_info["gmm_wmatrix"] = gmm_weight
         if sw is not None:
             model_info["weights"] = weights if isinstance(weights, str) else "array"
             model_info["weight_type"] = "aweight"
+            from ..core._agent_summary import note_weight_diagnostics
+
+            _keys = None
+            if cluster_var is not None:
+                _frame = _as_cluster_frame(cluster_var)
+                if _frame.shape[1] == 1 and len(_frame) == len(sw):
+                    _keys = _frame.iloc[:, 0].to_numpy()
+            note_weight_diagnostics(
+                model_info,
+                sw**2,
+                (
+                    "cluster"
+                    if cluster_var is not None
+                    else ("classical" if robust == "nonrobust" else "robust")
+                ),
+                entry="sp.iv",
+                robust_option="robust='hc1' (Stata [pw=])",
+                classical_reading="analytic weights (Stata [aw=])",
+                cluster_keys=_keys,
+                cluster=cluster if isinstance(cluster, str) else None,
+                weights_as=weights_as,
+            )
         if cluster_var is not None:
             try:
                 _cf = _as_cluster_frame(cluster_var)
@@ -1576,6 +1966,11 @@ class IVRegression(BaseModel):
                 pass
         if results.get("kappa") is not None:
             model_info["kappa"] = results["kappa"]
+        if n_missing_cluster:
+            model_info["n_missing_cluster_dropped"] = n_missing_cluster
+            model_info["n_input_rows"] = int(len(self.data))
+        if omitted_instruments:
+            model_info["omitted_instruments"] = omitted_instruments
 
         # Surface the first-stage strength so it is machine-readable downstream
         # (``result.violations()`` / ``sp.audit_result``), not just printed in
@@ -1712,9 +2107,67 @@ class IVRegression(BaseModel):
             diagnostics[f"{test_name} p-value"] = overid["pvalue"]
             diagnostics[f"{test_name} df"] = overid["df"]
 
+        # The i.i.d.-error statistics next to the headline one, as Stata's
+        # `estat overid, forcenonrobust` prints them: Sargan and Basmann
+        # after 2SLS, Anderson-Rubin and Basmann's F after LIML.
+        sargan = results.get("sargan")
+        n_obs = len(y_fit)
+        n_all = X_exog_fit.shape[1] + results["n_instruments"]
+        if method in ("2sls", "liml") and sargan is not None and sargan["df"] > 0:
+            q = int(sargan["df"])
+            if method == "2sls":
+                s_stat = float(sargan["statistic"])
+                basmann = s_stat * (n_obs - n_all) / (n_obs - s_stat)
+                diagnostics["Sargan chi2 (i.i.d.)"] = s_stat
+                diagnostics["Sargan chi2 (i.i.d.) p-value"] = float(sargan["pvalue"])
+                diagnostics["Basmann chi2"] = basmann
+                diagnostics["Basmann chi2 p-value"] = float(stats.chi2.sf(basmann, q))
+            else:
+                kappa_liml = float(results.get("kappa", 1.0))
+                # Stata's form, n (kappa - 1); n log(kappa) is the same
+                # to first order
+                ar = n_obs * (kappa_liml - 1.0)
+                basmann_f = (kappa_liml - 1.0) * (n_obs - n_all) / q
+                diagnostics["Anderson-Rubin chi2"] = ar
+                diagnostics["Anderson-Rubin chi2 p-value"] = float(stats.chi2.sf(ar, q))
+                diagnostics["Basmann F"] = basmann_f
+                diagnostics["Basmann F p-value"] = float(
+                    stats.f.sf(basmann_f, q, n_obs - n_all)
+                )
+
         if results["hausman"] is not None:
             diagnostics["Hausman F-stat"] = results["hausman"]["statistic"]
             diagnostics["Hausman p-value"] = results["hausman"]["pvalue"]
+            # The Wu-Hausman F assumes homoskedastic errors. Under a robust
+            # or clustered covariance report the tests that do not.
+            _cl_vec = None
+            _robust_endog_ok = str(robust).lower() != "nonrobust"
+            if cluster_var is not None:
+                try:
+                    _cl_frame = _as_cluster_frame(cluster_var)
+                    if _cl_frame.shape[1] == 1:
+                        _cl_vec = _cl_frame.iloc[:, 0].to_numpy()
+                        _robust_endog_ok = True
+                    else:
+                        _robust_endog_ok = False
+                except (TypeError, ValueError):  # pragma: no cover - defensive
+                    _robust_endog_ok = False
+            if _robust_endog_ok:
+                _re = _robust_endogeneity_tests(
+                    y_fit, X_exog_fit, X_endog_fit, Z_fit, cluster=_cl_vec
+                )
+                if "regression_F" in _re:
+                    diagnostics["Robust regression F (endogeneity)"] = _re[
+                        "regression_F"
+                    ]
+                    diagnostics["Robust regression F p-value"] = _re[
+                        "regression_F_pvalue"
+                    ]
+                    diagnostics["Robust regression F df (num)"] = int(_re["df_num"])
+                    diagnostics["Robust regression F df (denom)"] = int(_re["df_denom"])
+                if "score_chi2" in _re:
+                    diagnostics["Robust score chi2 (endogeneity)"] = _re["score_chi2"]
+                    diagnostics["Robust score chi2 p-value"] = _re["score_pvalue"]
 
         # Store for programmatic access
         self._first_stage = [dict(fs) for fs in results["first_stage"]]
@@ -1731,6 +2184,7 @@ class IVRegression(BaseModel):
             diagnostics=diagnostics,
         )
 
+        _restore_term_names(results_obj, getattr(self, "_term_names_shown", None))
         self._results = results_obj
         self.is_fitted = True
         return results_obj
@@ -1746,7 +2200,14 @@ class IVRegression(BaseModel):
 
         if isinstance(weights, str):
             src = getattr(self, "_clean_data", None)
-            if src is None or weights not in getattr(src, "columns", ()):
+            if src is not None and weights not in getattr(src, "columns", ()):
+                raise ColumnNotFound.from_missing(
+                    {"weights": weights},
+                    list(src.columns),
+                    message=f"weights='{weights}' is not a column in the data.",
+                    extra_diagnostics={"weights": weights},
+                )
+            if src is None:
                 raise MethodIncompatibility(
                     f"weights='{weights}' is not a column in the data.",
                     recovery_hint="Pass the name of a weight column in `data`.",
@@ -1814,13 +2275,13 @@ class IVRegression(BaseModel):
         needed = exog + endog
         missing = [v for v in needed if v not in data.columns]
         if missing:
-            raise MethodIncompatibility(
-                f"New data is missing columns referenced by the model: {missing}",
-                recovery_hint=(
-                    "Add the missing formula columns to the prediction data "
-                    "or refit the model with the desired specification."
+            raise ColumnNotFound.from_missing(
+                missing,
+                list(data.columns),
+                message=(
+                    f"New data is missing columns referenced by the model: {missing}"
                 ),
-                diagnostics={"missing_columns": missing},
+                extra_hint="Add them to the prediction data.",
             )
 
         params = _as_float_array(self._results.params)
@@ -1925,19 +2386,25 @@ def _materialise_interacted_fe(
         parts = [p.strip() for p in term.split("^") if p.strip()]
         missing = [p for p in parts if p not in out.columns]
         if missing:
-            raise MethodIncompatibility(
-                f"absorb term {term!r} references missing column(s): {missing}",
-                recovery_hint=(
+            raise ColumnNotFound.from_missing(
+                missing,
+                list(out.columns),
+                message=(
+                    f"absorb term {term!r} references missing column(s): {missing}"
+                ),
+                extra_hint=(
                     "Interacted fixed effects use the fixest spelling "
                     '"a^b"; every component must be a column in `data`.'
                 ),
-                diagnostics={"term": term, "missing_columns": missing},
+                extra_diagnostics={"term": term},
             )
         name = "__fe_" + "_x_".join(parts)
         codes = out[parts[0]].astype(str)
         for extra in parts[1:]:
             codes = codes + "\x1f" + out[extra].astype(str)
-        out[name] = codes
+        # A missing component leaves the combination missing (the row is
+        # dropped, as reghdfe drops it); astype(str) would make it "nan".
+        out[name] = codes.where(out[parts].notna().all(axis=1))
         rewritten.append(name)
     return out, rewritten
 
@@ -1964,6 +2431,8 @@ def _iv_absorb_preprocess(
 
     cluster_names = list(cluster_names or [])
 
+    formula, data = _materialise_formula_terms(formula, data)
+    term_names_shown = dict(data.attrs.get(_TERM_NAMES_ATTR, {}))
     parsed = parse_formula(formula)
     if not parsed["endogenous"] or not parsed["instruments"]:
         raise MethodIncompatibility(
@@ -1994,13 +2463,10 @@ def _iv_absorb_preprocess(
     needed = [c for c in needed if not (c in seen or seen.add(c))]
     missing = [v for v in needed if v not in data.columns]
     if missing:
-        raise MethodIncompatibility(
-            f"Variables not found in data: {missing}",
-            recovery_hint=(
-                "Add the missing formula, absorb, or cluster columns to the "
-                "DataFrame."
-            ),
-            diagnostics={"missing_columns": missing},
+        raise ColumnNotFound.from_missing(
+            missing,
+            list(data.columns),
+            message=f"Variables not found in data: {missing}",
         )
     missing_absorb = [c for c in absorb_terms if c not in data.columns]
     if missing_absorb:
@@ -2053,6 +2519,18 @@ def _iv_absorb_preprocess(
         tol_abs=fe_tol,
     )
 
+    if not all(info.converged):
+        from ..exceptions import ConvergenceWarning
+
+        warnings.warn(
+            f"sp.iv(absorb=...): the fixed-effect sweep did not converge in "
+            f"{fe_maxiter} iterations (max |dx| = {max(info.max_dx):.2e}); the "
+            "estimates are not those of the absorbed model. Raise fe_maxiter, "
+            "or use sp.hdfe_ols('y ~ exog | fe | endog ~ z').",
+            ConvergenceWarning,
+            stacklevel=3,
+        )
+
     keep_mask = info.keep_mask
     n_kept = int(info.n_kept)
     n_dropped = int(info.n_dropped)
@@ -2096,6 +2574,7 @@ def _iv_absorb_preprocess(
         "cluster_frame": cluster_kept,
         "cluster_names": list(cluster_names),
         "var_names": var_names,
+        "term_names_shown": term_names_shown,
         "n_obs": int(n_obs),
         "n_kept": n_kept,
         "n_dropped": n_dropped,
@@ -2220,6 +2699,7 @@ def _iv_absorb_run(
         result.model_info["fe_nested_in_cluster"] = list(nested_fe)
         result.model_info["n_dropped_singletons"] = int(pre["n_dropped"])
 
+    _restore_term_names(result, pre.get("term_names_shown"))
     return result, model, pre
 
 
@@ -2253,6 +2733,414 @@ def _scale_vcov_for_fe_dof(
         result.data_info["df_resid"] = int(df_resid_new)
 
 
+_PLAIN_NAME = re.compile(r"[^\W\d]\w*$")
+
+
+def _top_level_terms(text: str) -> List[str]:
+    """Split on ``+`` outside parentheses and brackets."""
+    terms: List[str] = []
+    depth, start = 0, 0
+    for i, ch in enumerate(text):
+        if ch in "([":
+            depth += 1
+        elif ch in ")]":
+            depth -= 1
+        elif ch == "+" and depth == 0:
+            terms.append(text[start:i].strip())
+            start = i + 1
+    terms.append(text[start:].strip())
+    return [t for t in terms if t]
+
+
+def _safe_term_name(name: str) -> str:
+    """A design-matrix column name that the formula parser can read back:
+    ``C(g)[T.2]`` -> ``g[2]``, ``C(g)[T.2]:x`` -> ``g[2]:x``,
+    ``I(x ** 2)`` -> ``I[x ** 2]``."""
+    # A quoted column name can hold any character, an operator included; it
+    # is replaced whole by a word the parser reads as one name.
+    name = re.sub(
+        r"""Q\(\s*(["'])(.*?)\1\s*\)""",
+        lambda m: "Q_"
+        + re.sub(r"\W", "_", m.group(2))
+        + f"_{zlib.crc32(m.group(2).encode('utf-8')) % 10**6}",
+        name,
+    )
+    name = re.sub(r"C\(([^(),]+)(?:,[^\[\]]*)?\)\[T\.([^\]]+)\]", r"\1[\2]", name)
+    name = re.sub(r"C\(([^(),]+)(?:,[^\[\]]*)?\)\[([^\]]+)\]", r"\1[\2]", name)
+    return (
+        name.replace("(", "[").replace(")", "]").replace("+", " plus ").replace("~", "")
+    )
+
+
+_IV_BRACKET_BLOCK = re.compile(r"\[([^\[\]]*~[^\[\]]*)\]")
+
+
+def _minus_one_as_term(text: str) -> str:
+    """Read ``- 1`` / ``- 0`` as terms of their own, outside quoted names.
+
+    Applied to the whole string, the rewrite also hit a hyphen inside a
+    quoted column name: ``Q("x-1")`` became ``Q("x+ -1")``.
+    """
+    pieces = re.split(r"(\"[^\"]*\"|'[^']*')", text)
+    out = []
+    offset = 0
+    for k, piece in enumerate(pieces):
+        if k % 2:
+            out.append(piece)
+        else:
+            pattern = (
+                r"\s*-\s*(?=[01](?:\b|$))"
+                if offset
+                else r"(?<!^)\s*-\s*(?=[01](?:\b|$))"
+            )
+            out.append(re.sub(pattern, "+ -", piece))
+        offset += len(piece)
+    return "".join(out)
+
+
+def _two_part_to_block_formula(formula: Any) -> Any:
+    """Rewrite R's two-part IV formula as the block form.
+
+    ``y ~ x1 + d | x1 + z`` is how ``AER::ivreg`` and ``ivreg::ivreg`` write
+    an IV model: regressors before the bar, the full instrument list after
+    it. A regressor missing from the instrument list is endogenous; an
+    instrument missing from the regressors is excluded; what appears on
+    both sides is exogenous. That reading is unambiguous, so the formula is
+    rewritten as ``y ~ x1 + (d ~ z)``. Any other use of ``|`` is left for
+    the parser to judge.
+    """
+    if not isinstance(formula, str) or formula.count("|") != 1:
+        return formula
+    if "~" not in formula or re.search(r"[(\[][^()\[\]]*~", formula):
+        return formula
+    left, right = formula.split("|")
+    dep, rhs = left.split("~", 1)
+    if "~" in right:
+        return formula
+
+    def _terms(text: str) -> List[str]:
+        text = _minus_one_as_term(text.strip())
+        return [re.sub(r"\s+", " ", t) for t in _top_level_terms(text)]
+
+    regs, insts = _terms(rhs), _terms(right)
+    if "." in regs or "." in insts or any(t.startswith(". ") for t in insts):
+        raise MethodIncompatibility(
+            "The '.' shorthand of a two-part IV formula is not supported.",
+            recovery_hint=(
+                "List the instruments in full after the bar, or write the "
+                'model as "y ~ exog + (endog ~ instruments)".'
+            ),
+            diagnostics={"formula": formula},
+        )
+    constants = {"1", "0", "-1", "-0"}
+    inst_set = set(insts)
+    endog = [t for t in regs if t not in inst_set and t not in constants]
+    excluded = [t for t in insts if t not in set(regs) and t not in constants]
+    exog = [t for t in regs if t in inst_set or t in constants]
+    if not endog or not excluded:
+        raise MethodIncompatibility(
+            "The two-part IV formula has "
+            + (
+                "no endogenous regressor: every regressor is also in the "
+                "instrument list."
+                if not endog
+                else "no excluded instrument: every instrument is also a " "regressor."
+            ),
+            recovery_hint=(
+                'In "y ~ regressors | instruments" the endogenous variables '
+                "are the regressors left out of the instrument list, and the "
+                "instruments that are not regressors identify them."
+            ),
+            diagnostics={"formula": formula, "regressors": regs, "instruments": insts},
+        )
+    block = f"({' + '.join(endog)} ~ {' + '.join(excluded)})"
+    parts = [t for t in exog if not t.startswith("-")] + [block]
+    out = f"{dep.strip()} ~ {' + '.join(parts)}"
+    for t in exog:
+        if t.startswith("-"):
+            out += f" - {t[1:]}"
+    return out
+
+
+def _materialise_formula_terms(
+    formula: str, data: pd.DataFrame
+) -> Tuple[str, pd.DataFrame]:
+    """Turn categorical, transformed and interaction terms of an IV formula
+    into columns.
+
+    The IV formula parser reads column names only. A term such as
+    ``C(region)``, ``C(g, Treatment(2))``, ``x:z`` or ``I(x**2)`` -- among
+    the exogenous regressors or the instruments -- is expanded here with
+    the same rules ``sp.regress`` uses (treatment coding, the lowest level
+    omitted), the columns are added to a copy of the data, and the formula
+    is rewritten in terms of them. A formula of plain names is returned
+    untouched, with the data it came with. The linearmodels block
+    ``[endog ~ instruments]`` is accepted as ``(endog ~ instruments)``.
+    """
+    # ``y ~ 1 + [endog ~ z] + exog`` is the linearmodels spelling of the
+    # same model; read the bracketed block as the parenthesised one.
+    if "`" in formula:
+        from ..core.utils import backticks_to_q
+
+        formula = backticks_to_q(formula)
+    formula = _IV_BRACKET_BLOCK.sub(r"(\1)", formula)
+    formula = _two_part_to_block_formula(formula)
+    if "|" in formula or "~" not in formula:
+        return formula, data
+    dep, rhs = formula.split("~", 1)
+    # "- 1" / "- 0" drop the intercept; read them as terms of their own
+    rhs = _minus_one_as_term(rhs)
+    # the parenthesised (endog ~ instruments) block
+    depth, lo, hi = 0, -1, -1
+    for i, ch in enumerate(rhs):
+        if ch == "(":
+            if depth == 0:
+                lo = i
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0 and "~" in rhs[lo:i]:
+                hi = i
+                break
+    if lo < 0 or hi < 0:
+        return formula, data
+    endog_part, inst_part = rhs[lo + 1 : hi].split("~", 1)
+    exog_terms = _top_level_terms(rhs[:lo] + " + " + rhs[hi + 1 :])
+    inst_terms = _top_level_terms(inst_part)
+    endog_terms = _top_level_terms(endog_part)
+    controls = {"1", "0", "-1", "+1", "-0"}
+
+    def plain(term: str) -> bool:
+        compact = term.replace(" ", "")
+        return compact in controls or bool(_PLAIN_NAME.match(compact))
+
+    dep_term = dep.strip()
+    if all(plain(t) for t in exog_terms + inst_terms + endog_terms + [dep_term]):
+        return formula, data
+
+    from patsy import NAAction, dmatrix
+
+    from ..core.utils import (
+        _coerce_string_extension_dtypes,
+        evaluate_formula_expression,
+        formula_eval_env,
+        r_formula_idioms,
+        raise_if_formula_names_missing,
+    )
+
+    generated = [
+        t
+        for t in exog_terms + inst_terms + endog_terms
+        if t.replace(" ", "") not in controls
+    ]
+    frame = _coerce_string_extension_dtypes(
+        data, r_formula_idioms(dep_term + " ~ " + (" + ".join(generated) or "1"))
+    ).copy()
+    # safe column name -> the name the formula engine gives the term, which
+    # is the name the result reports (see ``_restore_term_names``)
+    shown: Dict[str, str] = {}
+
+    def single(term: str) -> str:
+        """A transformed outcome or endogenous regressor, as one column."""
+        if plain(term) or term in frame.columns:
+            return term
+        safe = _safe_term_name(term)
+        frame[safe] = evaluate_formula_expression(term, frame)
+        shown[safe] = _formula_term_name(term)
+        return safe
+
+    # ``np.log(wage) ~ ...`` and ``(np.log(wage) ~ z)``: one variable each.
+    # A term that expands to several columns (an interaction, a factor)
+    # would need instruments of its own for every column, and is refused.
+    dep = single(dep_term)
+    endog_terms = [single(t) for t in endog_terms]
+
+    def expand(terms: List[str]) -> List[str]:
+        keep = [t for t in terms if t.replace(" ", "") in controls]
+        build = [t for t in terms if t.replace(" ", "") not in controls]
+        if all(plain(t) for t in build):
+            return keep + build
+        try:
+            design = dmatrix(
+                "1 + " + r_formula_idioms(" + ".join(build)),
+                frame,
+                eval_env=formula_eval_env(),
+                return_type="dataframe",
+                NA_action=NAAction(on_NA="drop"),
+            )
+        except Exception as exc:
+            raise_if_formula_names_missing(" + ".join(build), frame, exc)
+            raise MethodIncompatibility(
+                f"IV formula: could not build the term(s) {build!r}: {exc}",
+                recovery_hint="Check the column names inside C(...) / I(...).",
+                diagnostics={"formula": formula},
+            ) from exc
+        names: List[str] = []
+        for col in design.columns:
+            if col == "Intercept":
+                continue
+            safe = _safe_term_name(str(col))
+            # rows patsy dropped for a missing value stay missing here, and
+            # are dropped with the rest of the estimation sample downstream
+            frame[safe] = design[col].reindex(frame.index)
+            if safe != str(col):
+                shown[safe] = str(col)
+            names.append(safe)
+        return keep + names
+
+    exog_names = expand(exog_terms)
+    # An interaction among the instruments brings the main-effect dummies
+    # with it; where those are exogenous regressors already they are the
+    # same columns, not further instruments.
+    inst_names = [n for n in expand(inst_terms) if n not in exog_names]
+    new_rhs = " + ".join(
+        exog_names + [f"({' + '.join(endog_terms)} ~ {' + '.join(inst_names)})"]
+    )
+    frame.attrs[_TERM_NAMES_ATTR] = shown
+    return f"{dep.strip()} ~ {new_rhs}", frame
+
+
+#: ``DataFrame.attrs`` key under which ``_materialise_formula_terms`` leaves
+#: the map from its column names to the names the formula engine uses.
+_TERM_NAMES_ATTR = "_statspai_formula_term_names"
+
+
+def _formula_term_name(term: str) -> str:
+    """``I(x**2)`` as the formula engine spells it, ``I(x ** 2)``."""
+    from patsy import ModelDesc, PatsyError
+
+    try:
+        return str(ModelDesc.from_formula("~ 0 + " + term).rhs_termlist[0].name())
+    except (PatsyError, SyntaxError, IndexError):
+        # a term the formula engine cannot name keeps the text it was given
+        return term.strip()
+
+
+def _restore_term_names(result: Any, shown: Optional[Dict[str, str]]) -> None:
+    """Report formula terms under the names ``sp.regress`` gives them.
+
+    The IV parser reads plain column names, so ``np.log(x)``, ``I(x**2)``
+    and ``C(g)`` are estimated under the stand-in names ``np.log[x]``,
+    ``I[x ** 2]`` and ``g[2]``. Those are an internal device: a table of an
+    OLS and an IV fit of one model must put the same regressor on one row,
+    and ``sp.test(result, "np.log(x) = 0")`` must find it. Every label the
+    result carries is mapped back here; the arrays are untouched.
+    """
+    if not shown:
+        return
+
+    def name(value: Any) -> Any:
+        return shown.get(value, value) if isinstance(value, str) else value
+
+    def relabel(obj: Any) -> Any:
+        if isinstance(obj, pd.Series):
+            return obj.rename(index=name)
+        if isinstance(obj, pd.DataFrame):
+            return obj.rename(index=name, columns=name)
+        if isinstance(obj, list):
+            return [relabel(item) for item in obj]
+        if isinstance(obj, tuple):
+            return tuple(relabel(item) for item in obj)
+        if isinstance(obj, dict):
+            return {text(key): relabel(value) for key, value in obj.items()}
+        return name(obj)
+
+    def text(key: Any) -> Any:
+        """A label that embeds a term name: ``First-stage F (np.log[x])``."""
+        if not isinstance(key, str):
+            return key
+        if key in shown:
+            return shown[key]
+        for safe, real in shown.items():
+            if f"({safe})" in key:
+                key = key.replace(f"({safe})", f"({real})")
+        return key
+
+    for attr, value in list(vars(result).items()):
+        if isinstance(value, (pd.Series, pd.DataFrame, list, tuple, dict)):
+            try:
+                setattr(result, attr, relabel(value))
+            except AttributeError:  # a read-only view of another attribute
+                continue
+
+
+def _apply_small(
+    result: EconometricResults, small: bool, method: str, absorbed: bool
+) -> None:
+    """Honour ``small=``; ``True`` (the fitted convention) is a no-op."""
+    if not isinstance(small, bool):
+        raise MethodIncompatibility(f"small must be True or False, got {small!r}")
+    if small:
+        # recorded so that summary() can say which convention t / F follow
+        if isinstance(getattr(result, "model_info", None), dict):
+            result.model_info.setdefault("small", True)
+        return
+    if absorbed:
+        raise MethodIncompatibility(
+            "small=False is not defined with absorb= (ivreghdfe follows "
+            "ivreg2's conventions).",
+            recovery_hint="Drop small=False, or partial the effects out as dummies.",
+        )
+    _ivregress_large_sample(result, method)
+
+
+def _ivregress_large_sample(result: EconometricResults, method: str) -> None:
+    """Rescale a fitted IV result to ``ivregress`` without ``small``.
+
+    Stata's ``ivregress`` reports large-sample statistics by default: the
+    classical variance divides the residual sum of squares by ``N``,
+    ``vce(robust)`` is HC0, ``vce(cluster)`` carries no finite-sample factor
+    at all, and inference is z / chi2 (read off Stata 18: the clustered SE
+    is the ``small`` one times ``sqrt((G-1)/G * (N-K)/(N-1))``). The
+    ``small`` option restores the ``N - K`` divisor, the
+    ``G/(G-1) * (N-1)/(N-K)`` cluster factor and t / F -- the convention
+    ``sp.iv`` has always reported.
+    """
+    if method not in ("2sls", "tsls", "iv", "liml", "gmm"):
+        raise MethodIncompatibility(
+            "small=False reproduces ivregress for 2SLS, LIML and GMM; "
+            f"got method={method!r}.",
+            recovery_hint="Use small=True (the default) for other estimators.",
+        )
+    di, mi = result.data_info, result.model_info
+    n = int(di["nobs"])
+    df_resid = int(di["df_resid"])
+    robust = str(mi.get("robust", "nonrobust")).lower()
+    n_cl = mi.get("n_clusters")
+    if isinstance(n_cl, list):
+        raise MethodIncompatibility(
+            "small=False is defined for one-way clustering (ivregress); "
+            "multiway clustering follows ivreg2's small-sample convention.",
+            recovery_hint="Drop small=False, or cluster on one variable.",
+        )
+    if n_cl is not None:
+        g = int(n_cl)
+        factor = (df_resid / (n - 1)) * ((g - 1) / g)
+    elif robust in ("nonrobust", "hc1") or method == "gmm":
+        # ``_gmm_fit`` carries n / (n - k) under every unclustered weight
+        # matrix, so ``ivregress gmm`` without ``small`` removes it.
+        factor = df_resid / n
+    elif robust == "hc0":
+        factor = 1.0
+    else:
+        raise MethodIncompatibility(
+            f"small=False matches ivregress, which has no {robust.upper()} "
+            "variance; use robust='robust' (HC0 without small) or small=True.",
+        )
+    V = di.get("var_cov")
+    if V is not None:
+        di["var_cov"] = np.asarray(V) * factor
+    result.std_errors = result.std_errors * float(np.sqrt(factor))
+    di["inference"] = "z"
+    di.pop("df_inference", None)
+    mi["small"] = False
+    if n_cl is None and (
+        robust == "hc1" or (method == "gmm" and robust != "nonrobust")
+    ):
+        mi["robust"] = "hc0"
+    result._compute_statistics()
+
+
 def iv(
     formula: Optional[str] = None,
     data: Optional[pd.DataFrame] = None,
@@ -2261,6 +3149,7 @@ def iv(
     cluster: Optional[str] = None,
     fuller_alpha: float = 1.0,
     absorb: Optional[Union[str, List[str]]] = None,
+    small: bool = True,
     **kwargs: Any,
 ) -> EconometricResults:
     """
@@ -2277,7 +3166,8 @@ def iv(
     - ``'gmm'``  — Efficient two-step GMM. More efficient than 2SLS under
       heteroskedasticity when over-identified.
     - ``'jive'`` — Jackknife IV (Angrist, Imbens & Krueger 1999). Reduces
-      many-instrument bias by using leave-one-out fitted values.
+      many-instrument bias by using leave-one-out first-stage fitted
+      values as the instruments (JIVE1, ``(Xh'X)^-1 Xh'y``).
 
     For DeepIV (neural network IV) use ``sp.deepiv()``.
     For Bartik shift-share IV use ``sp.bartik()``.
@@ -2290,6 +3180,12 @@ def iv(
         - Variables in parentheses before ``~``: endogenous regressors
         - Variables in parentheses after ``~``: excluded instruments
         - Variables outside parentheses: exogenous controls
+
+        The two-part formula of R's ``AER::ivreg`` is read as well:
+        ``"y ~ exog + endog | exog + z1 + z2"`` lists the regressors before
+        the bar and every instrument after it, so a regressor missing from
+        the second list is endogenous. Fixed effects go in ``absorb=``, not
+        after a bar.
     data : pd.DataFrame
         Data containing all variables.
     method : str, default '2sls'
@@ -2317,6 +3213,35 @@ def iv(
         ``reghdfe``: ``sum(G_k - 1)`` over fixed effects *not* nested
         within a clustering dimension, plus one for the absorbed
         constant.
+    small : bool, default True
+        Small-sample statistics, as Stata's ``ivregress ..., small``: the
+        classical variance divides by ``N - K``, ``robust`` is HC1, a
+        cluster variance carries ``G/(G-1) * (N-1)/(N-K)``, and inference
+        is t / F. ``small=False`` gives ``ivregress``'s default
+        large-sample statistics instead: ``N`` divisor, HC0, no cluster
+        factor, and z / chi2 (2SLS, LIML and GMM, one-way clustering, no
+        ``absorb``).
+
+        For ``method='gmm'`` the options map onto ``ivregress gmm`` as
+        follows, each checked on the Card data to 2e-10
+        (``tests/reference_parity/test_iv_gmm_stata_parity.py``):
+        ``robust='hc1', small=False`` is ``ivregress gmm`` at its default
+        ``wmatrix(robust)``; ``robust='hc1'`` is the same with ``small``;
+        ``cluster=`` with and without ``small=False`` is
+        ``wmatrix(cluster ...)``; ``gmm_vcov='efficient'`` is
+        ``wmatrix(unadjusted) small`` (``wmatrix(unadjusted)`` with
+        ``small=False``); and the default (``robust='nonrobust'``) is
+        ``wmatrix(unadjusted) vce(robust) small``, a sandwich around the
+        homoskedastic weight matrix (``small=False`` drops the
+        ``N / (N - K)``). Note that ``robust=`` picks the GMM *weight
+        matrix*; the variance is ``gmm_vcov``, so the default reports a
+        heteroskedasticity-robust sandwich, not the classical variance
+        Stata prints for ``wmatrix(unadjusted)`` alone.
+
+        ``small=True`` stays the default on purpose: R ``AER::ivreg``,
+        ``fixest``, ``ivreg2, small`` and ``sp.ivreg`` report small-sample
+        statistics too; only ``ivregress`` defaults to large-sample ones.
+        ``result.inference_rule()`` and ``summary()`` state which applies.
     **kwargs
         Estimator-specific options forwarded to the underlying fitter.
         The one most users reach for is ``gmm_vcov``
@@ -2326,6 +3251,16 @@ def iv(
         matrix is not the efficient one; ``'efficient'`` reports the
         textbook efficient-GMM variance ``q (X'W S^-1 W'X)^-1``, which is
         what ``ivreg2 gmm2s`` prints.
+
+        ``wmatrix`` ({'robust', 'unadjusted', 'cluster'}) is the GMM weight
+        matrix, as ``ivregress gmm``'s ``wmatrix()``; ``cluster=`` then sets
+        the variance on its own (``wmatrix='robust', cluster='g'`` is
+        ``wmatrix(robust) vce(cluster g)``). Left out, the weight matrix
+        follows the variance options: clustered with ``cluster=``, robust
+        with a robust ``robust=``, otherwise unadjusted, which makes the
+        estimate 2SLS. From 1.42 the default is ``'robust'``, Stata's and
+        linearmodels'; until then an over-identified call that relies on
+        the old default warns (``FutureWarning``).
 
     Returns
     -------
@@ -2339,10 +3274,27 @@ def iv(
 
     Examples
     --------
+    >>> import numpy as np, pandas as pd
+    >>> import statspai as sp
+    >>> rng = np.random.default_rng(0)
+    >>> n = 500
+    >>> df = pd.DataFrame(rng.normal(size=(n, 5)),
+    ...                   columns=["z1", "z2", "z3", "z4", "z5"])
+    >>> df["parent_edu"] = rng.normal(12, 2, n)
+    >>> df["distance"] = rng.exponential(10, n)
+    >>> df["experience"] = rng.normal(10, 4, n)
+    >>> u = rng.normal(size=n)                      # unobserved ability
+    >>> df["education"] = (4 + 0.5 * df["parent_edu"] - 0.1 * df["distance"]
+    ...                    + 0.3 * df[["z1", "z2", "z3", "z4", "z5"]].sum(axis=1)
+    ...                    + 0.8 * u + rng.normal(size=n))
+    >>> df["wage"] = 1 + 0.1 * df["education"] + 0.05 * df["experience"] + u
+
     >>> # Standard 2SLS
     >>> result = sp.iv("wage ~ (education ~ parent_edu + distance) + experience",
     ...               data=df)
-    >>> print(result.summary())
+    >>> list(result.params.index)
+    ['Intercept', 'experience', 'education']
+    >>> text = result.summary()
 
     >>> # LIML (better with weak instruments)
     >>> result = sp.iv("wage ~ (education ~ parent_edu + distance) + experience",
@@ -2417,6 +3369,7 @@ def iv(
             fuller_alpha=fuller_alpha,
         )
         _result = model.fit(robust=robust, cluster=cluster, **kwargs)
+    _apply_small(_result, small, str(method).lower(), bool(absorb_terms))
     try:
         from ..output._lineage import attach_provenance as _attach_prov
 
@@ -2453,6 +3406,7 @@ def iv(
 _IV_WILD_VCOV = frozenset({"wild", "wildbootstrap", "wild_cluster", "wre", "boottest"})
 
 
+@records_call("ivreg")
 @markout_clusters
 def ivreg(
     formula: str,
@@ -2480,7 +3434,9 @@ def ivreg(
     Parameters
     ----------
     formula : str
-        IV formula: ``"y ~ (endog ~ z1 + z2) + exog1 + exog2"``
+        IV formula: ``"y ~ (endog ~ z1 + z2) + exog1 + exog2"``, or the
+        two-part form of R's ``AER::ivreg``,
+        ``"y ~ exog1 + endog | exog1 + z1 + z2"``.
     data : pd.DataFrame
     robust : str, default 'nonrobust'
     cluster : str, optional
@@ -2491,6 +3447,13 @@ def ivreg(
         canonical alias for ``robust``.
     wild_reps, wild_weight_type, seed
         Controls for the ``vce="wild"`` path.
+    conley_lat, conley_lon : str, optional
+        With ``vce="conley"`` (2SLS only): the latitude and longitude
+        columns, in degrees. Required for that ``vce``.
+    conley_cutoff : float, optional
+        With ``vce="conley"``: the distance cutoff in km for the Conley
+        spatial HAC standard errors (uniform kernel, Stata ``acreg``
+        compatible). Required for that ``vce``.
 
     Returns
     -------
@@ -2542,14 +3505,32 @@ def ivreg(
 
     # Resolve the canonical `vce` alias; intercept the wild sentinel.
     se_kw = vce if vce is not None else robust
+
+    def _two_sls_only(what: str) -> None:
+        # The wild / CR2 / CR3 / Conley / two-way variances below are
+        # derived for 2SLS; ``method=`` used to be forwarded next to the
+        # hard-coded method="2sls" and died with a duplicate-keyword
+        # TypeError.
+        chosen = str(kwargs.pop("method", "2sls")).lower()
+        if chosen != "2sls":
+            raise MethodIncompatibility(
+                f"ivreg: {what} is implemented for 2SLS only; got "
+                f"method={chosen!r}.",
+                recovery_hint=(
+                    "Drop method= (2SLS), or use sp.iv(method=..., "
+                    "cluster=...) for the CR1 cluster variance of "
+                    "LIML / Fuller / GMM / JIVE."
+                ),
+                diagnostics={"method": chosen},
+            )
+
     if isinstance(se_kw, str) and se_kw.lower() in _IV_WILD_VCOV:
         if cluster is None:
-            from statspai.exceptions import MethodIncompatibility
-
             raise MethodIncompatibility(
                 "ivreg(vce='wild') requires cluster=... — the wild *cluster* "
                 "bootstrap resamples residuals within clusters."
             )
+        _two_sls_only("vce='wild'")
         base = iv(
             formula=formula,
             data=data,
@@ -2607,12 +3588,11 @@ def ivreg(
     # (jackknife-type), matching R clubSandwich for 2SLS.
     if isinstance(se_kw, str) and se_kw.lower() in ("cr2", "cr3", "jackknife"):
         if cluster is None:
-            from statspai.exceptions import MethodIncompatibility
-
             raise MethodIncompatibility(
                 f"ivreg(vce={se_kw!r}) requires cluster=... (a cluster-robust "
                 "small-sample correction)."
             )
+        _two_sls_only(f"vce={se_kw!r}")
         kind = "CR3" if se_kw.lower() in ("cr3", "jackknife") else "CR2"
         base = iv(
             formula=formula,
@@ -2622,22 +3602,18 @@ def ivreg(
             method="2sls",
             **kwargs,
         )
-        from scipy import stats as _stats
-
         from statspai.inference.iv_wild import iv_cr_vcov
 
         cr = iv_cr_vcov(base, data, cluster, kind=kind)
         se = cr["std_errors"]
         base.std_errors = se
-        z = base.params / se
-        base.pvalues = pd.Series(2 * _stats.norm.sf(np.abs(z)), index=base.params.index)
-        crit = _stats.norm.ppf(0.975)
-        base.conf_int_lower = base.params - crit * se
-        base.conf_int_upper = base.params + crit * se
+        # t(G - 1), the reference the one-way cluster variance of this
+        # function already uses (ivregress, small); normal through 1.36.0.
+        from statspai.inference.jackknife import set_cluster_t_inference
+
+        _n_cl = base.model_info.get("n_clusters") or data[cluster].nunique()
+        set_cluster_t_inference(base, se, int(_n_cl))
         base.model_info = dict(base.model_info)
-        # These SEs replace the fitted ones and their p-values are normal;
-        # mark the fit so conf_int() / tidy() / sp.test use z as well.
-        base.data_info = dict(base.data_info, inference="z")
         base.model_info["vcov_type"] = (
             f"{kind} cluster-robust (clubSandwich, Pustejovsky-Tipton 2018)"
         )
@@ -2647,12 +3623,11 @@ def ivreg(
     # Conley spatial HAC: ``vce="conley"`` with coordinates + a distance cutoff.
     if isinstance(se_kw, str) and se_kw.lower() == "conley":
         if conley_lat is None or conley_lon is None or conley_cutoff is None:
-            from statspai.exceptions import MethodIncompatibility
-
             raise MethodIncompatibility(
                 "ivreg(vce='conley') requires conley_lat=, conley_lon=, and "
                 "conley_cutoff= (planar distance cutoff in km)."
             )
+        _two_sls_only("vce='conley'")
         base = iv(
             formula=formula,
             data=data,
@@ -2687,6 +3662,7 @@ def ivreg(
     # variance with the two-way IV sandwich (matches Stata `ivreg2, cluster(a b)
     # small`).
     if isinstance(cluster, (list, tuple)) and len(cluster) == 2:
+        _two_sls_only("two-way clustering")
         c1, c2 = cluster
         base = iv(
             formula=formula,
@@ -2729,6 +3705,6 @@ def ivreg(
         function="ivreg",
         # ``small`` / ``iv_diag`` used to be listed here and then dropped
         # downstream without effect; they are rejected until implemented.
-        known=("method", "alpha", "weights"),
+        known=("method", "alpha", "weights", "weights_as"),
     )
     return iv(formula=formula, data=data, robust=se_kw, cluster=cluster, **kwargs)

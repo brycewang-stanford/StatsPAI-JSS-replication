@@ -21,15 +21,18 @@ import numpy as np
 import pandas as pd
 from scipy import stats as sp_stats
 
+from .._result_serialize import attach_result_protocol
 from ._format import AUTO
 from ._format import fmt_val as _fmt_val
 from ._format import format_stars as _format_stars
+from ._format import latex_escape as _latex_escape
 from ._format import resolve_digits
-from .estimates import _html_escape, _latex_escape
+from .estimates import _html_escape
 
 __all__ = ["MeanComparisonResult", "mean_comparison"]
 
 
+@attach_result_protocol
 class MeanComparisonResult:
     """Rich result object for balance / mean comparison tables.
 
@@ -106,19 +109,40 @@ class MeanComparisonResult:
             if self.test == "ranksum":
                 try:
                     stat, pval = sp_stats.mannwhitneyu(v0, v1, alternative="two-sided")
-                except Exception:
+                except Exception as exc:
+                    from ..core._fallback import warn_fallback
+
+                    warn_fallback(
+                        f"rank-sum test for {var!r}",
+                        exc,
+                        "its p-value is reported as NaN",
+                    )
                     pval = np.nan
             elif self.test == "chi2":
                 try:
                     ct = pd.crosstab(data[self.group], data[var])
                     chi2, pval, _, _ = sp_stats.chi2_contingency(ct)
-                except Exception:
+                except Exception as exc:
+                    from ..core._fallback import warn_fallback
+
+                    warn_fallback(
+                        f"chi-squared test for {var!r}",
+                        exc,
+                        "its p-value is reported as NaN",
+                    )
                     pval = np.nan
             else:
                 # Default: Welch t-test
                 try:
                     stat, pval = sp_stats.ttest_ind(v0, v1, equal_var=False)
-                except Exception:
+                except Exception as exc:
+                    from ..core._fallback import warn_fallback
+
+                    warn_fallback(
+                        f"Welch t test for {var!r}",
+                        exc,
+                        "its p-value is reported as NaN",
+                    )
                     pval = np.nan
 
             stars = _format_stars(pval, (0.10, 0.05, 0.01))
@@ -226,10 +250,12 @@ class MeanComparisonResult:
         lines.append("<tr>")
         lines.append('<th style="text-align:left;"></th>')
         lines.append(
-            '<th style="text-align:center; font-weight:normal; font-size:11px;">Mean (SD)</th>'
+            '<th style="text-align:center; font-weight:normal; font-size:11px;">Mean '
+            "(SD)</th>"
         )
         lines.append(
-            '<th style="text-align:center; font-weight:normal; font-size:11px;">Mean (SD)</th>'
+            '<th style="text-align:center; font-weight:normal; font-size:11px;">Mean '
+            "(SD)</th>"
         )
         lines.append("<th></th><th></th>")
         lines.append("</tr>")
@@ -246,13 +272,16 @@ class MeanComparisonResult:
 
             lines.append("<tr>")
             lines.append(
-                f'<td style="text-align:left; padding:2px 10px;">{_html_escape(row["variable"])}</td>'
+                '<td style="text-align:left; padding:2px '
+                f'10px;">{_html_escape(row["variable"])}</td>'
             )
             lines.append(
-                f'<td style="text-align:center; padding:2px 10px;">{fmt_mean0} ({fmt_sd0})</td>'
+                f'<td style="text-align:center; padding:2px 10px;">{fmt_mean0} '
+                f"({fmt_sd0})</td>"
             )
             lines.append(
-                f'<td style="text-align:center; padding:2px 10px;">{fmt_mean1} ({fmt_sd1})</td>'
+                f'<td style="text-align:center; padding:2px 10px;">{fmt_mean1} '
+                f"({fmt_sd1})</td>"
             )
             lines.append(
                 f'<td style="text-align:center; padding:2px 10px;">{fmt_diff}</td>'
@@ -264,7 +293,8 @@ class MeanComparisonResult:
 
         # N row
         lines.append(
-            '<tr><td colspan="5" style="border-top:1px solid black; padding:0;"></td></tr>'
+            '<tr><td colspan="5" style="border-top:1px solid black; '
+            'padding:0;"></td></tr>'
         )
         lines.append("<tr>")
         lines.append('<td style="text-align:left; padding:2px 10px;">N</td>')
@@ -277,13 +307,15 @@ class MeanComparisonResult:
         lines.append("<td></td><td></td>")
         lines.append("</tr>")
         lines.append(
-            '<tr><td colspan="5" style="border-top:3px solid black; padding:0;"></td></tr>'
+            '<tr><td colspan="5" style="border-top:3px solid black; '
+            'padding:0;"></td></tr>'
         )
 
         lines.append("</tbody>")
         lines.append("<tfoot>")
         lines.append(
-            '<tr><td colspan="5" style="text-align:left; font-size:11px; padding:4px 10px;">'
+            '<tr><td colspan="5" style="text-align:left; font-size:11px; padding:4px '
+            '10px;">'
             "* p&lt;0.10, ** p&lt;0.05, *** p&lt;0.01</td></tr>"
         )
         lines.append("</tfoot>")

@@ -23,14 +23,16 @@ Cameron, A.C., Gelbach, J.B. and Miller, D.L. (2008).
 *Review of Economics and Statistics*, 90(3), 414-427. [@cameron2008bootstrap]
 """
 
-from typing import Any, Dict, List, Optional, Tuple
+import warnings
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import pandas as pd
 
 from ..core.results import EconometricResults
-from ..exceptions import MethodIncompatibility
+from ..exceptions import ColumnNotFound, DataInsufficient, MethodIncompatibility
 from ._psd import se_from_vcov
+from .basic_tests import _check_alpha
 
 
 def jackknife_se(
@@ -91,26 +93,24 @@ def jackknife_se(
 
     The effective degrees of freedom are G - 1, which gives
     wider confidence intervals than asymptotic cluster-robust SEs.
+
+    Each refit is least squares on the design the fit stored (its terms,
+    its intercept or lack of one, and ``sqrt(w)`` scaling for a weighted
+    fit). A result whose design cannot be recovered, one with absorbed
+    fixed effects, and a cluster variable with a single cluster are
+    refused; ``sp.jackknife`` with a statistic that refits the model
+    covers those estimators.
     """
-    # Extract formula components from the result
-    formula = result.model_info.get("formula", "")
+    _check_alpha(alpha, "jackknife_se")
+    # The refits use the design the fit itself stored (its columns, in its
+    # order, scaled by sqrt(w) for a weighted fit), so an interaction, a
+    # factor, a suppressed intercept and the weights are those of the model.
+    X, Y, var_names, cl, _src = _design_from_result(result, data, cluster)
+    _require_refittable(result, X, Y, var_names)
 
-    # Parse the formula to get y and X variable names
-    y_var, x_vars = _parse_formula(formula, result)
-
-    # Prepare data
-    cols = [y_var] + x_vars + [cluster]
-    cols = [c for c in cols if c in data.columns]
-    df = data[cols].dropna()
-
-    Y = df[y_var].values.astype(float)
-    X_names = [v for v in x_vars if v in df.columns]
-    X = np.column_stack([np.ones(len(df)), df[X_names].values.astype(float)])
-    var_names = ["_const"] + X_names
-
-    cl = df[cluster].values
     unique_cl = np.unique(cl)
     G = len(unique_cl)
+    _require_two_clusters(G, "jackknife_se", cluster)
     k = X.shape[1]
 
     # Leave-one-cluster-out estimates
@@ -137,16 +137,7 @@ def jackknife_se(
     params_series = result.params.copy()
 
     for i, vn in enumerate(var_names):
-        # Match variable name (handle _const vs Intercept)
-        matched = None
-        if vn == "_const":
-            for pn in param_names:
-                if pn.lower() in ("intercept", "_const", "const", "(intercept)"):
-                    matched = pn
-                    break
-        else:
-            if vn in param_names:
-                matched = vn
+        matched = _match_varname(vn, param_names)
         if matched is not None:
             se_series[matched] = jk_se[i]
 
@@ -230,6 +221,11 @@ def cr2_se(
     of the hat matrix. This removes the downward bias in the
     conventional cluster-robust variance estimator.
 
+    Each coefficient's p-value and confidence interval use a t
+    distribution with that coefficient's own Bell-McCaffrey degrees of
+    freedom (``diagnostics['satterthwaite_dof']``), the ones R ``estimatr``
+    and ``clubSandwich`` report. ``data_info['df_resid']`` is their minimum.
+
     See Bell & McCaffrey (2002) and Pustejovsky & Tipton (2018).
 
     Examples
@@ -252,6 +248,8 @@ def cr2_se(
 
     unique_cl = np.unique(cl)
     G = len(unique_cl)
+    # With one cluster I - H_gg is the residual maker, which is singular.
+    _require_two_clusters(G, "cr2_se", cluster)
     k = X.shape[1]
 
     XtX_inv = np.linalg.inv(X.T @ X)
@@ -303,9 +301,15 @@ def cr2_se(
     model_info["n_clusters"] = G
 
     data_info = dict(result.data_info)
-    # Use minimum Satterthwaite DoF across coefficients
+    # Each coefficient is referred to a t with its own Bell-McCaffrey df.
+    # ``df_resid`` keeps the smallest, the conservative single number for
+    # anything that needs one (a joint test, a summary line).
     min_dof = float(np.nanmin(dof)) if len(dof) > 0 else G - 1
     data_info["df_resid"] = min_dof
+    data_info.pop("df_inference", None)
+    data_info["df_by_coefficient"] = {
+        name: float(value) for name, value in dof_series.dropna().items()
+    }
 
     diagnostics = dict(result.diagnostics)
     diagnostics["n_clusters"] = G
@@ -339,31 +343,48 @@ def cr2_se(
 def wild_cluster_boot(
     result: EconometricResults,
     data: pd.DataFrame,
-    cluster: str,
-    variable: str,
+    cluster: Union[str, List[str]],
+    variable: Optional[Union[str, List[str]]] = None,
     n_boot: int = 999,
     weight_type: str = "rademacher",
     seed: Optional[int] = None,
     alpha: float = 0.05,
+    h0: Union[float, List[float]] = 0.0,
+    confidence_set: bool = False,
+    bootcluster: Optional[Union[str, List[str]]] = None,
 ) -> Dict[str, Any]:
     """
-    Wild cluster bootstrap t-test for a single coefficient.
+    Wild cluster bootstrap test of one coefficient, or of several jointly.
 
-    Implements the WCR (Wild Cluster Restricted) bootstrap from
-    Cameron, Gelbach & Miller (2008), designed for inference with
-    few clusters. Imposes the null hypothesis when generating
-    bootstrap samples for better finite-sample performance.
+    The bootstrap is the one the fitted estimator defines -- the one Stata
+    ``boottest`` runs after the same command:
+
+    * least squares (``sp.regress``, ``sp.feols``, ``sp.hdfe_ols``, a
+      fixed-effects ``sp.panel``): the WCR (wild cluster restricted)
+      bootstrap of Cameron, Gelbach & Miller (2008) on the stored design,
+      after checking that least squares on it reproduces the coefficients;
+    * ``sp.ivreg`` (2SLS): the WRE bootstrap of
+      :func:`statspai.iv_wild_bootstrap` (endogenous coefficients);
+    * ``sp.logit`` / ``sp.probit`` / ``sp.poisson`` / ``sp.glm`` (those
+      links): the score wild cluster bootstrap (Kline-Santos), bit-exact
+      with ``boottest`` when the Rademacher grid is enumerated;
+    * ``sp.did`` (2 x 2): its own ``vce='wild'``, replayed from the call
+      record (``variable`` may be omitted).
+
+    Any other model raises: refitting it by least squares (as this function
+    did before) bootstraps a different estimator.
 
     Parameters
     ----------
     result : EconometricResults
-        A fitted regression result from ``sp.regress()``.
+        A fitted result (see above).
     data : pd.DataFrame
         The original data used for estimation.
     cluster : str
         Name of the cluster variable.
-    variable : str
-        Name of the coefficient to test (H0: beta = 0).
+    variable : str, optional
+        Name of the coefficient to test (H0: beta = ``h0``). Required except
+        after ``sp.did``, where the ATT is tested.
     n_boot : int, default 999
         Number of bootstrap replications (use odd number).
     weight_type : str, default 'rademacher'
@@ -375,11 +396,42 @@ def wild_cluster_boot(
         Random seed for reproducibility.
     alpha : float, default 0.05
         Significance level for confidence interval.
+    h0 : float, default 0.0
+        The value of the coefficient under the null, imposed when the
+        bootstrap samples are generated (Stata ``boottest x = h0``).
+    confidence_set : bool, default False
+        Also return ``ci_inverted``, the set of null values the test does
+        not reject at level ``alpha``: the confidence set Stata
+        ``boottest`` prints. The test is repeated over null values with the
+        same bootstrap weights (a few hundred times), so it is off by
+        default. One coefficient, one-way clustering.
+    bootcluster : str or list of str, optional
+        Least squares: the variable(s) whose clusters the bootstrap weights
+        are drawn for (Stata ``boottest, bootcluster()``). Default: the
+        intersection of the cluster variables, boottest's default. As in
+        boottest, bootstrap clusters that cut across one-way error
+        clusters are replaced by their intersections with them (a
+        subcluster bootstrap, with a warning); ones nested in no error
+        clustering and coarser are refused.
+
+    Notes on multi-way and joint tests
+    ----------------------------------
+    ``cluster=[a, b]`` uses the multi-way variance
+    ``sum_s (-1)^(|s|+1) c_s V_s`` with each term's own
+    ``G_s/(G_s - 1) (n - 1)/(n - k)``, as boottest does; draws whose
+    variance is not positive have no statistic and are left out of the
+    p-value (``n_boot_valid``). ``variable=[x1, x2]`` with ``h0=[r1, r2]``
+    tests the restrictions jointly by the Wald statistic ``F = W / q``
+    (``statistic``) with all of them imposed on the bootstrap data,
+    ``p = #{F* > F} / B`` (boottest ``(x1 = r1) (x2 = r2)``). Both are
+    least-squares only and return no interval.
 
     Returns
     -------
     dict
-        Keys:
+        Keys (least squares; the other bootstraps return the subset they
+        define and a ``method`` key naming the bootstrap):
+        - ``method``: which bootstrap ran
         - ``beta_hat``: point estimate
         - ``se_cluster``: conventional cluster-robust SE
         - ``t_stat``: observed t-statistic
@@ -391,6 +443,13 @@ def wild_cluster_boot(
         - ``n_boot``: number of replications used (``2**G`` when the
           Rademacher grid is enumerated, i.e. when ``2**G <= n_boot``)
         - ``n_boot_requested`` / ``enumerated``
+        - ``ci_inverted``: with ``confidence_set=True``, the interval of
+          null values with a bootstrap p-value of at least ``alpha``. The
+          p-value is a step function of the null value and each endpoint
+          is the jump where it falls below ``alpha``. ``boottest``
+          interpolates between the points of a grid instead, and its
+          endpoints differ from these by up to about 2% of a standard
+          error.
 
     Examples
     --------
@@ -420,9 +479,46 @@ def wild_cluster_boot(
     """
     import warnings
 
+    from ._wild_dispatch import absorbed_fe_codes, dispatch, require_least_squares
+
+    multi_cluster = not isinstance(cluster, str) and len(list(cluster)) > 1
+    joint = not isinstance(variable, str) and variable is not None
+    if multi_cluster or joint or bootcluster is not None:
+        return _wild_multi_or_joint(
+            result,
+            data,
+            [cluster] if isinstance(cluster, str) else list(cluster),
+            [variable] if isinstance(variable, str) else list(variable or []),
+            h0,
+            bootcluster,
+            n_boot=n_boot,
+            weight_type=weight_type,
+            seed=seed,
+            confidence_set=confidence_set,
+        )
+    if not isinstance(cluster, str):
+        cluster = list(cluster)[0]
+
+    routed = dispatch(
+        result,
+        data,
+        cluster,
+        variable,
+        n_boot=n_boot,
+        weight_type=weight_type,
+        seed=seed,
+        alpha=alpha,
+        h0=h0,
+        confidence_set=confidence_set,
+    )
+    if routed is not None:
+        return routed
+
     rng = np.random.default_rng(seed)
 
     X, Y, var_names, cl, _src = _design_from_result(result, data, cluster)
+    require_least_squares(result, X, Y, var_names)
+    fe_codes = absorbed_fe_codes(result, X.shape[0])
 
     if variable not in var_names:
         raise ValueError(f"Variable '{variable}' not found. Available: {var_names}")
@@ -430,6 +526,7 @@ def wild_cluster_boot(
 
     unique_cl = np.unique(cl)
     G = len(unique_cl)
+    _require_two_clusters(G, "wild_cluster_boot", cluster)
     n = len(Y)
     k = X.shape[1]
 
@@ -455,45 +552,52 @@ def wild_cluster_boot(
         meat += np.outer(score_g, score_g)
     vcov_cl = correction * XtX_inv @ meat @ XtX_inv
     se_cl = float(np.sqrt(vcov_cl[test_idx, test_idx]))
-    t_stat = beta_test / se_cl if se_cl > 0 else 0.0
-
-    # Restricted OLS (impose H0: beta_variable = 0)
-    other_cols = [j for j in range(k) if j != test_idx]
-    X_other = X[:, other_cols]
-    beta_other = np.linalg.lstsq(X_other, Y, rcond=None)[0]
-    beta_r = np.zeros(k)
-    for i, j in enumerate(other_cols):
-        beta_r[j] = beta_other[i]
-    beta_r[test_idx] = 0.0
-    resid_r = Y - X @ beta_r
+    h0 = float(h0)
 
     # Bootstrap (shared WCR engine; enumerates the Rademacher grid when
     # 2**G <= n_boot, as Stata boottest / R fwildclusterboot do).
     from .wild_bootstrap import (
+        _invert_bootstrap_test,
         _symmetric_boot_pvalue,
         _wcr_t_stats,
         _wild_weight_matrix,
     )
 
+    other_cols = [j for j in range(k) if j != test_idx]
+    X_other = X[:, other_cols]
     _, cl_idx = np.unique(cl, return_inverse=True)
     W, enumerated = _wild_weight_matrix(G, n_boot, weight_type, rng)
-    t_boot = _wcr_t_stats(
-        X,
-        XtX_inv,
-        X @ beta_r,
-        resid_r,
-        cl_idx,
-        cl_idx,
-        G,
-        test_idx,
-        0.0,
-        correction,
-        W,
-    )
 
-    # Bootstrap p-value (two-sided, symmetric; strict inequality as in
-    # boottest -- ties at |t| are the identity draw and its negation).
-    p_boot = _symmetric_boot_pvalue(t_boot, t_stat, W)
+    def _test_at(null: float) -> Tuple[float, np.ndarray, float]:
+        """t statistic, bootstrap t statistics and p-value under
+        H0: beta_variable = null, with the weights drawn once."""
+        t_obs = (beta_test - null) / se_cl if se_cl > 0 else 0.0
+        # Restricted OLS (impose H0)
+        beta_other = np.linalg.lstsq(X_other, Y - null * X[:, test_idx], rcond=None)[0]
+        beta_r = np.zeros(k)
+        for i, j in enumerate(other_cols):
+            beta_r[j] = beta_other[i]
+        beta_r[test_idx] = null
+        resid_r = Y - X @ beta_r
+        draws = _wcr_t_stats(
+            X,
+            XtX_inv,
+            X @ beta_r,
+            resid_r,
+            cl_idx,
+            cl_idx,
+            G,
+            test_idx,
+            null,
+            correction,
+            W,
+            fe_codes=fe_codes,
+        )
+        # two-sided, symmetric; strict inequality as in boottest -- ties at
+        # |t| are the identity draw and its negation
+        return float(t_obs), draws, _symmetric_boot_pvalue(draws, t_obs, W)
+
+    t_stat, t_boot, p_boot = _test_at(h0)
 
     # Percentile-t CI
     t_lower = np.percentile(t_boot, 100 * alpha / 2)
@@ -504,6 +608,7 @@ def wild_cluster_boot(
     )
 
     return {
+        "method": "WCR wild cluster restricted bootstrap (least squares)",
         "beta_hat": float(beta_test),
         "se_cluster": se_cl,
         "t_stat": float(t_stat),
@@ -516,7 +621,96 @@ def wild_cluster_boot(
         "n_boot_requested": n_boot,
         "enumerated": bool(enumerated),
         "weight_type": weight_type,
+        "h0": h0,
+        **(
+            {
+                "ci_inverted": _invert_bootstrap_test(
+                    lambda null: _test_at(null)[2], float(beta_test), se_cl, alpha
+                )
+            }
+            if confidence_set
+            else {}
+        ),
     }
+
+
+def _wild_multi_or_joint(
+    result: Any,
+    data: pd.DataFrame,
+    clusters: List[str],
+    variables: List[str],
+    h0: Any,
+    bootcluster: Any,
+    *,
+    n_boot: int,
+    weight_type: str,
+    seed: Optional[int],
+    confidence_set: bool,
+) -> Dict[str, Any]:
+    """Multi-way clustering / joint restrictions (least squares only)."""
+    from ._wild_dispatch import dispatch_kind, require_least_squares
+    from ._wild_multi import wild_wald
+
+    who = "wild_cluster_boot"
+    kind = dispatch_kind(result)
+    if kind != "least_squares":
+        raise MethodIncompatibility(
+            f"{who}: multi-way clustering and joint restrictions are "
+            f"implemented for least-squares fits; this is a {kind} fit.",
+            recovery_hint="Test one coefficient with one cluster variable, "
+            "or use a least-squares fit.",
+        )
+    if not variables:
+        raise MethodIncompatibility(
+            f"{who}: pass variable= (a name, or a list for a joint test).",
+            recovery_hint="E.g. variable=['x1', 'x2'], h0=[0, 0].",
+        )
+    if confidence_set:
+        raise MethodIncompatibility(
+            f"{who}: confidence_set= is implemented for one coefficient with "
+            "one-way clustering.",
+            recovery_hint="Drop confidence_set=.",
+        )
+    if isinstance(bootcluster, str):
+        bootcluster = [bootcluster]
+    names = list(dict.fromkeys(clusters + list(bootcluster or [])))
+    missing = [c for c in names if c not in data.columns]
+    if missing:
+        raise ColumnNotFound.from_missing(missing, list(data.columns), context=who)
+    X = Y = None
+    cols: Dict[str, np.ndarray] = {}
+    for c in names:
+        Xc, Yc, var_names, cl, _src = _design_from_result(result, data, c)
+        if X is None:
+            X, Y = Xc, Yc
+        elif Xc.shape != X.shape or not np.array_equal(Xc, X):
+            raise MethodIncompatibility(
+                f"{who}: the cluster columns {names} could not all be aligned "
+                "with the fitted sample.",
+                recovery_hint="Pass the DataFrame the model was fitted on.",
+            )
+        cols[c] = cl
+    assert X is not None and Y is not None
+    require_least_squares(result, X, Y, var_names)
+    from ._wild_dispatch import absorbed_fe_codes
+    from ._wild_multi import _bootcluster_codes, _codes
+
+    boot = _codes([cols[c] for c in (bootcluster or clusters)])
+    if bootcluster:
+        boot = _bootcluster_codes(boot, [_codes([cols[c]]) for c in clusters], who)
+    return wild_wald(
+        X,
+        Y,
+        var_names,
+        [cols[c] for c in clusters],
+        boot,
+        variables,
+        [h0] if np.isscalar(h0) else list(h0),
+        n_boot=n_boot,
+        weight_type=weight_type,
+        rng=np.random.default_rng(seed),
+        fe_codes=absorbed_fe_codes(result, X.shape[0]),
+    )
 
 
 # ======================================================================
@@ -548,6 +742,65 @@ def _parse_formula(
         if p.lower() not in ("intercept", "_const", "const", "(intercept)")
     ]
     return y_var, x_vars
+
+
+def _require_two_clusters(n_clusters: int, who: str, cluster: str) -> None:
+    """A between-cluster variance needs at least two clusters."""
+    if n_clusters < 2:
+        raise DataInsufficient(
+            f"{who}: cluster={cluster!r} has {n_clusters} cluster(s) on the "
+            "fitted sample; a cluster-level variance needs at least two.",
+            recovery_hint="Cluster on a variable with several groups, or use "
+            "heteroskedasticity-robust standard errors.",
+            diagnostics={"n_clusters": int(n_clusters)},
+        )
+
+
+def _require_refittable(
+    result: EconometricResults, X: np.ndarray, Y: np.ndarray, var_names: List[str]
+) -> None:
+    """Refuse a delete-one-cluster refit that would not be the fitted model.
+
+    The refit is least squares of ``Y`` on ``X``. That is the model only if
+    every coefficient has a column, least squares on the full design returns
+    the reported coefficients (it does not for IV or a non-linear model, or
+    when a formula re-parse lost a term), and no fixed effects were absorbed
+    (the stored design is then demeaned on the full sample and a refit would
+    have to demean again).
+    """
+    info = getattr(result, "model_info", {}) or {}
+    absorbed = [k for k in ("fixed_effects", "absorb", "fe") if info.get(k)]
+    if absorbed:
+        raise MethodIncompatibility(
+            "jackknife_se: the fit absorbed fixed effects; its stored design "
+            "is demeaned on the full sample, so dropping a cluster and "
+            "solving least squares on it is not a refit of the model.",
+            recovery_hint="Use sp.jackknife(data, statistic, cluster=...) "
+            "with a statistic that refits the model, or enter the fixed "
+            "effects as C() terms in sp.regress.",
+        )
+    params = result.params
+    matched = [_match_varname(vn, list(params.index)) for vn in var_names]
+    ok = (
+        X.shape[1] == len(params)
+        and None not in matched
+        and len(set(matched)) == len(params)
+    )
+    if ok:
+        beta = np.linalg.lstsq(X, Y, rcond=None)[0]
+        target = params[matched].to_numpy(dtype=float)
+        scale = max(1.0, float(np.max(np.abs(target))))
+        ok = bool(np.allclose(beta, target, rtol=0.0, atol=1e-6 * scale))
+    if not ok:
+        raise MethodIncompatibility(
+            "jackknife_se: least squares on the design recovered for this "
+            "result does not reproduce its coefficients, so the "
+            "delete-one-cluster refits would be those of another model.",
+            recovery_hint="Pass the DataFrame the model was fitted on and a "
+            "result from sp.regress; for other estimators use "
+            "sp.jackknife(data, statistic, cluster=...).",
+            diagnostics={"design_columns": list(var_names)},
+        )
 
 
 def _match_varname(vn: str, param_names: List[str]) -> Optional[str]:
@@ -599,17 +852,44 @@ def _design_from_result(
         X = np.asarray(stored_x, dtype=float)
         y = np.asarray(stored_y, dtype=float).ravel()
         cl_col = data[cluster]
-        # Trust the stored design only when it row-aligns to ``data`` and the
-        # cluster key is complete; otherwise the fitted sample was filtered and
-        # the rows would not correspond.
+        # A fit that dropped rows records which rows it kept; the cluster
+        # key is then read on those rows rather than giving up on the
+        # stored design.
+        kept = di.get("sample_index")
+        if kept is not None and len(kept) == X.shape[0] and len(kept) != len(data):
+            try:
+                picked = cl_col.loc[kept]
+                # Only if those rows are the fitted ones: the outcome on
+                # them must be the stored outcome.
+                dep = di.get("dependent_var")
+                same = dep in data.columns and np.array_equal(
+                    np.asarray(data[dep].loc[kept], dtype=float), y
+                )
+            except (KeyError, TypeError, ValueError):
+                same = False
+            if same and len(picked) == X.shape[0]:
+                cl_col = picked
+        # Trust the stored design only when it row-aligns to the cluster key
+        # and the key is complete; otherwise the fitted sample was filtered
+        # and the rows would not correspond.
         if (
             X.ndim == 2
-            and X.shape[0] == len(data)
+            and X.shape[0] == len(cl_col)
             and y.shape[0] == X.shape[0]
             and not cl_col.isna().any()
         ):
             var_names = [str(v) for v in stored_names]
+            X, y = _weighted_design(X, y, di.get("analytic_weights"))
             return X, y, var_names, cl_col.to_numpy(), "stored"
+
+    if di.get("analytic_weights") is not None:
+        raise MethodIncompatibility(
+            "This standard error cannot be computed for the weighted fit: its "
+            "stored design could not be aligned to the data, and the formula "
+            "re-parse fallback is unweighted.",
+            recovery_hint="Pass the same DataFrame the model was fitted on, "
+            "with no missing cluster keys.",
+        )
 
     # --- fallback: formula re-parse (plain-OLS design) -----------------------
     y_var, x_vars = _parse_formula(result.model_info.get("formula", ""), result)
@@ -624,36 +904,6 @@ def _design_from_result(
     return X, y, var_names, cl, "reparsed"
 
 
-def _draw_weights(
-    G: int,
-    weight_type: str,
-    rng: np.random.Generator,
-) -> np.ndarray:
-    """Draw G bootstrap weights from the specified distribution."""
-    if weight_type == "rademacher":
-        return rng.choice([-1.0, 1.0], size=G)
-    elif weight_type == "webb":
-        vals = np.array(
-            [
-                -np.sqrt(1.5),
-                -np.sqrt(1.0),
-                -np.sqrt(0.5),
-                np.sqrt(0.5),
-                np.sqrt(1.0),
-                np.sqrt(1.5),
-            ]
-        )
-        return rng.choice(vals, size=G)
-    elif weight_type == "mammen":
-        p = (np.sqrt(5) + 1) / (2 * np.sqrt(5))
-        vals = np.array([-(np.sqrt(5) - 1) / 2, (np.sqrt(5) + 1) / 2])
-        return rng.choice(vals, size=G, p=[p, 1 - p])
-    raise ValueError(
-        f"weight_type must be 'rademacher', 'webb', or 'mammen', "
-        f"got '{weight_type}'"
-    )
-
-
 def _satterthwaite_dof(
     X: np.ndarray,
     cl: np.ndarray,
@@ -662,38 +912,52 @@ def _satterthwaite_dof(
     k: int,
 ) -> np.ndarray:
     """
-    Satterthwaite degrees of freedom approximation for CR2.
+    Bell-McCaffrey (Satterthwaite) degrees of freedom for CR2, per coefficient.
 
-    Approximates the effective DoF for each coefficient using:
-        dof_j = (sum_g A_{jj,g})^2 / sum_g A_{jj,g}^2
+    Under the working model of independent homoskedastic errors the CR2
+    variance of coefficient ``j`` is a quadratic form ``e' G_j G_j' e`` with
+    one column of ``G_j`` per cluster,
 
-    where A_{jj,g} is the j-th diagonal of the g-th cluster
-    contribution to the variance.
+        g_s = (I - H)_s' A_s X_s (X'X)^{-1} c_j,   A_s = (I - H_ss)^{-1/2},
+
+    and the degrees of freedom match its first two moments,
+
+        dof_j = tr(G_j'G_j)^2 / tr((G_j'G_j)^2).
+
+    ``G_j'G_j = diag(v_s'v_s) - U B U'`` with ``v_s = A_s X_s B c_j``,
+    ``u_s = X_s'v_s`` and ``B = (X'X)^{-1}``, so neither the n x n projection
+    nor the S x S matrix is formed. This is the df of R ``estimatr``
+    (``se_type='CR2'``) and of ``clubSandwich::coef_test(test='Satterthwaite')``.
     """
-    G = len(unique_cl)
-    A_diag = np.zeros((G, k))  # A_{jj,g} for each cluster and coeff
-
-    for g_idx, g_val in enumerate(unique_cl):
-        idx = cl == g_val
-        X_g = X[idx]
-        n_g = idx.sum()
-
-        H_gg = X_g @ XtX_inv @ X_g.T
-        I_H = np.eye(n_g) - H_gg
-
+    codes = np.searchsorted(unique_cl, cl)
+    n_cl = len(unique_cl)
+    order = np.argsort(codes, kind="stable")
+    bounds = np.searchsorted(codes[order], np.arange(n_cl + 1))
+    vv = np.zeros((n_cl, k))
+    U = np.zeros((n_cl, k, k))
+    for s in range(n_cl):
+        idx = order[bounds[s] : bounds[s + 1]]
+        X_s = X[idx]
+        I_H = np.eye(len(idx)) - X_s @ XtX_inv @ X_s.T
         eigvals, eigvecs = np.linalg.eigh(I_H)
-        eigvals = np.maximum(eigvals, 1e-12)
-        I_H_inv = eigvecs @ np.diag(1.0 / eigvals) @ eigvecs.T
-
-        # Contribution: (X'X)^{-1} X_g' (I-H_gg)^{-1} X_g (X'X)^{-1}
-        M_g = XtX_inv @ X_g.T @ I_H_inv @ X_g @ XtX_inv
-        A_diag[g_idx] = np.diag(M_g)
-
-    # Satterthwaite: dof = (sum A_jj)^2 / sum A_jj^2
-    sum_A = A_diag.sum(axis=0)
-    sum_A2 = (A_diag**2).sum(axis=0)
-    dof = np.where(sum_A2 > 1e-20, sum_A**2 / sum_A2, G - 1)
-
+        # A cluster a regressor singles out has a zero eigenvalue; the
+        # adjustment there is the generalized inverse.
+        keep = eigvals > 1e-10
+        inv_sqrt = np.where(keep, 1.0 / np.sqrt(np.where(keep, eigvals, 1.0)), 0.0)
+        A_s = (eigvecs * inv_sqrt) @ eigvecs.T
+        V = A_s @ X_s @ XtX_inv  # column j is v_s for coefficient j
+        vv[s] = (V**2).sum(axis=0)
+        U[s] = X_s.T @ V
+    dof = np.full(k, float(n_cl - 1))
+    for j in range(k):
+        Uj = U[:, :, j]
+        UB = Uj @ XtX_inv
+        quad = np.einsum("sk,sk->s", UB, Uj)  # u_s' B u_s
+        trace = vv[:, j].sum() - quad.sum()
+        M = XtX_inv @ (Uj.T @ Uj)
+        frob = (vv[:, j] ** 2).sum() - 2.0 * (vv[:, j] * quad).sum() + np.trace(M @ M)
+        if frob > 1e-300:
+            dof[j] = trace**2 / frob
     return dof
 
 
@@ -739,6 +1003,55 @@ def _ols_correction_from_cl_codes(
     return (g / (g - 1.0)) * ((n - 1) / (n - k))
 
 
+def set_cluster_t_inference(base: Any, se: "pd.Series", n_clusters: int) -> int:
+    """p-values and intervals from ``t(G - 1)`` for replaced cluster SEs.
+
+    A bias-reduced or multiway cluster variance replaces the standard
+    errors of an already fitted result; this gives it the reference
+    distribution Stata uses for ``vce(hc2 clustvar)``, ``vce(jackknife,
+    cluster())`` and ``vce(cluster a b)``. ``data_info['df_inference']``
+    is what ``conf_int()`` / ``tidy()`` / ``sp.test`` read, so the same
+    distribution reaches them. Returns the degrees of freedom used.
+    """
+    from scipy import stats as _stats
+
+    df = max(int(n_clusters) - 1, 1)
+    t_stat = base.params / se
+    base.pvalues = pd.Series(
+        2 * _stats.t.sf(np.abs(t_stat), df), index=base.params.index
+    )
+    crit = _stats.t.ppf(0.975, df)
+    base.conf_int_lower = base.params - crit * se
+    base.conf_int_upper = base.params + crit * se
+    info = dict(base.data_info)
+    info.pop("inference", None)
+    info["df_inference"] = df
+    base.data_info = info
+    return df
+
+
+def _weighted_design(
+    X: np.ndarray, y: np.ndarray, weights: Any
+) -> Tuple[np.ndarray, np.ndarray]:
+    """The design a weighted least-squares fit is least squares on.
+
+    With analytic weights the estimator is OLS of ``sqrt(w) y`` on
+    ``sqrt(w) X``; the cluster scores, the hat blocks and the CR2 / CR3
+    adjustments are those of that design (Stata ``regress [aw=w],
+    vce(hc2 g)`` and ``vce(cluster a b)``).
+    """
+    if weights is None:
+        return X, y
+    w = np.asarray(weights, dtype=float).ravel()
+    if w.shape[0] != X.shape[0]:
+        raise MethodIncompatibility(
+            "stored weights do not match the stored design "
+            f"({w.shape[0]} weights for {X.shape[0]} rows)."
+        )
+    root = np.sqrt(w)
+    return X * root[:, None], y * root
+
+
 def cr_vcov_ols(
     result: "EconometricResults",
     cluster_codes: np.ndarray,
@@ -771,6 +1084,7 @@ def cr_vcov_ols(
         )
     X = np.asarray(iv["X"], dtype=float)
     y = np.asarray(iv["y"], dtype=float).ravel()
+    X, y = _weighted_design(X, y, iv.get("analytic_weights"))
     names = list(iv["var_names"])
     vcov = cr_vcov_matrix(X, y, cluster_codes, power=power, small_sample=small_sample)
     return pd.Series(np.sqrt(np.maximum(np.diag(vcov), 0)), index=names)
@@ -819,36 +1133,48 @@ def cr_vcov_matrix(
     return corr * bread @ meat @ bread
 
 
-def two_way_correction_ols(
+def two_way_vcov_ols(
     result: "EconometricResults",
     c1_codes: np.ndarray,
     c2_codes: np.ndarray,
     c12_codes: np.ndarray,
     small_sample: bool = True,
-) -> "pd.Series":
-    """Two-way (Cameron-Gelbach-Miller 2011) cluster-robust SE on the OLS design.
+) -> Tuple[np.ndarray, List[str], int]:
+    """Two-way (Cameron-Gelbach-Miller 2011) cluster-robust covariance on
+    the OLS design: the matrix, the coefficient names, and the number of
+    negative eigenvalues that had to be set to zero.
 
     Inclusion-exclusion on the projected-score meat ``M1 + M2 - M12``, with
     ``M_g = (X_g' e_g)(X_g' e_g)'``.  Default correction is
-    ``(G_min/(G_min-1))·((n-1)/(n-k))`` (Stata ``reg, cluster(a b) small``
-    convention). Pass ``small_sample=False`` for the bias-reduced variant.
+    ``(G_min/(G_min-1))·((n-1)/(n-k))`` on the whole meat. Stata 18's
+    ``regress, vce(cluster a b)`` scales each component by its own
+    ``G/(G-1)`` instead (``sp.twoway_cluster``); the two are rebuilt side by
+    side in ``tests/reference_parity/test_regress_vce_weights_stata_parity.py``.
+    Pass ``small_sample=False`` for the bias-reduced variant. Analytic
+    weights stored on the result are applied.
+
+    The difference of matrices need not be positive semi-definite. When it
+    is not, the negative eigenvalues are set to zero (:func:`psd_adjust`)
+    and a ``RuntimeWarning`` says so; before 1.39 a negative variance was
+    reported as a standard error of zero.
     """
     iv = getattr(result, "data_info", None) or {}
     X = np.asarray(iv["X"], dtype=float)
     y = np.asarray(iv["y"], dtype=float).ravel()
+    X, y = _weighted_design(X, y, iv.get("analytic_weights"))
     names = list(iv["var_names"])
     n, k = X.shape
     bread = np.linalg.inv(X.T @ X)
     beta = bread @ (X.T @ y)
     resid = y - X @ beta
 
+    from ..fast.inference import _cr1_meat
+
     def _meat(codes: np.ndarray) -> np.ndarray:
-        m = np.zeros((k, k))
-        for cid in range(int(codes.max()) + 1):
-            idx = codes == cid
-            s = X[idx].T @ resid[idx]
-            m += np.outer(s, s)
-        return m
+        # one bincount pass per column; a loop over clusters with a row
+        # mask each was O(n G): 10 s for 100k rows and 5k clusters.
+        c = np.asarray(codes, dtype=np.int64)
+        return _cr1_meat(X, resid, c, int(c.max()) + 1)
 
     meat = _meat(c1_codes) + _meat(c2_codes) - _meat(c12_codes)
     if small_sample:
@@ -857,7 +1183,52 @@ def two_way_correction_ols(
     else:
         corr = 1.0
     vcov = corr * bread @ meat @ bread
-    return pd.Series(np.sqrt(np.maximum(np.diag(vcov), 0)), index=names)
+    vcov, n_negative = psd_adjust(vcov)
+    if n_negative:
+        warnings.warn(
+            "Two-way clustered covariance was not positive semi-definite "
+            f"({n_negative} negative eigenvalue{'s' if n_negative > 1 else ''}); "
+            "they were set to zero, the adjustment of Cameron, Gelbach and "
+            "Miller (2011) that fixest and reghdfe also apply. This happens "
+            "when one clustering dimension has few clusters relative to the "
+            "number of coefficients; treat joint tests with care.",
+            RuntimeWarning,
+            stacklevel=3,
+        )
+    return vcov, names, n_negative
+
+
+def two_way_correction_ols(
+    result: "EconometricResults",
+    c1_codes: np.ndarray,
+    c2_codes: np.ndarray,
+    c12_codes: np.ndarray,
+    small_sample: bool = True,
+) -> "pd.Series":
+    """Standard errors of :func:`two_way_vcov_ols`."""
+    vcov, names, _ = two_way_vcov_ols(
+        result, c1_codes, c2_codes, c12_codes, small_sample
+    )
+    return pd.Series(np.sqrt(np.maximum(np.diag(vcov), 0.0)), index=names)
+
+
+def psd_adjust(vcov: np.ndarray) -> Tuple[np.ndarray, int]:
+    """A multiway covariance with its negative eigenvalues set to zero.
+
+    The inclusion-exclusion estimator ``V1 + V2 - V12`` is not positive
+    semi-definite by construction. Cameron, Gelbach and Miller (2011,
+    sec. 2.3) replace ``V = U L U'`` by ``U max(L, 0) U'``. Returns the
+    matrix (unchanged when it is already positive semi-definite) and the
+    number of eigenvalues that were negative beyond rounding.
+    """
+    sym = (vcov + vcov.T) / 2.0
+    vals, vecs = np.linalg.eigh(sym)
+    tol = 1e-12 * max(float(np.max(np.abs(vals))), 1e-300)
+    negative = vals < -tol
+    if not negative.any():
+        return vcov, 0
+    fixed = (vecs * np.maximum(vals, 0.0)) @ vecs.T
+    return fixed, int(negative.sum())
 
 
 def conley_vcov_ols(
@@ -926,10 +1297,7 @@ def _align_to_fitted_sample(
     """
     missing = [c for c in columns if c not in data.columns]
     if missing:
-        raise MethodIncompatibility(
-            f"Column(s) {missing} not found in data. Available: "
-            f"{list(data.columns)[:20]}"
-        )
+        raise ColumnNotFound.from_missing(missing, data.columns)
 
     if len(data) != n:
         raise MethodIncompatibility(
@@ -987,14 +1355,23 @@ def conley_vcov_matrix(
 
 
 def _matrix_power_sym(mat: np.ndarray, power: float, tol: float = -12.0) -> np.ndarray:
-    """Symmetric matrix power via eigendecomposition (clubSandwich ``matrix_power``).
+    """Power of a symmetric matrix through its eigendecomposition.
 
-    Eigenvalues at or below ``10**tol`` are zeroed (generalised inverse), matching
-    R ``clubSandwich:::matrix_power``.
+    Eigenvalues at or below ``10**tol`` (an absolute threshold) are treated
+    as zero and dropped, so a negative ``power`` returns the Moore-Penrose
+    inverse of the positive power on the non-null subspace. This is what
+    the CR2 adjustment matrices of Bell and McCaffrey (2002) and
+    Pustejovsky and Tipton (2018) need when a cluster block is singular
+    [@bell2002bias; @pustejovsky2018small]. The input is symmetrised first,
+    so rounding asymmetry does not depend on which triangle is read. The
+    default threshold matches the outputs of R ``clubSandwich`` 0.6.2, used
+    as a black box.
     """
-    vals, vecs = np.linalg.eigh((mat + mat.T) / 2)
-    val_p = np.where(vals > 10.0**tol, vals**power, 0.0)
-    return (vecs * val_p) @ vecs.T
+    mat = np.asarray(mat, dtype=float)
+    vals, vecs = np.linalg.eigh(0.5 * (mat + mat.T))
+    keep = vals > 10.0**tol
+    vecs = vecs[:, keep]
+    return (vecs * vals[keep] ** power) @ vecs.T
 
 
 def glm_cr_vcov(
@@ -1128,160 +1505,6 @@ def glm_conley_vcov(
     return np.sqrt(np.maximum(np.diag(vcov), 0.0))
 
 
-def glm_score_wild_boot(
-    X: np.ndarray,
-    y: np.ndarray,
-    family: Any,
-    cluster_codes: np.ndarray,
-    test_idx: int,
-    *,
-    n_boot: int = 9999,
-    weight_type: str = "rademacher",
-    seed: Optional[int] = None,
-) -> Dict[str, float]:
-    """Score wild cluster bootstrap for one GLM coefficient (Kline-Santos 2012).
-
-    The restricted (null-imposed) score wild cluster bootstrap — the method
-    Stata ``boottest`` runs after ``poisson``/``logit`` — implemented with
-    ``boottest``'s exact studentization, reverse-engineered from its enumerated
-    bootstrap distribution and corroborated against ``boottest.mata`` (the
-    ``ClustShare`` centering of the bootstrap scores). In the enumerated regime
-    the p-value and the observed z statistic are **bit-exact** matches to Stata
-    ``boottest`` (verified for Poisson and logit, multiple G and coefficients).
-
-    Algorithm (test of ``H0: beta[test_idx] = 0``):
-
-    1. Fit the **restricted** GLM (drop column ``test_idx``) → fitted ``mu_tilde``.
-    2. Per-cluster one-step numerator contributions on the full design at the
-       restricted fit: ``q_g = (A @ s_g)[test_idx]`` with
-       ``s_g = Σ_{i∈g} X_i (d_i/V_i)(y_i - mu_tilde_i)`` and
-       ``A = (X' diag(w) X)^{-1}`` (``d = dμ/dη``, ``V = Var(μ)``,
-       ``w = d²/V`` at ``mu_tilde``).
-    3. For wild weights ``w``: numerator ``N(w) = Σ_g w_g q_g`` and the
-       **cluster-share-centered** CRVE denominator
-       ``D²(w) = Σ_g (w_g q_g − c_g N(w))²`` with ``c_g = n_g/N`` (the
-       cluster's share of observations — ``boottest``'s ``ClustShare``
-       centering; this is what distinguishes its studentization from the
-       plain score bootstrap).
-    4. ``t*(w) = N(w)/D(w)``; the observed statistic is ``t*(1)`` (the
-       identity draw) — this equals ``boottest``'s reported ``r(z)``.
-    5. ``p = #{|t*_b| > |t_obs|} / B`` with **strict** inequality
-       (``boottest``'s counting rule; under enumeration the identity draw and
-       its negation tie exactly with ``|t_obs|`` and are excluded).
-
-    Enumeration follows ``boottest``'s rule: when ``2**G <= n_boot`` the full
-    Rademacher grid is enumerated (deterministic — the bit-exact regime);
-    otherwise ``n_boot`` draws are sampled with ``seed`` (same formula per
-    draw, but the RNG stream necessarily differs from Stata's).
-
-    Verified references (Stata 18 MP, boottest 4.5.3, enumerated)::
-
-        poisson y x1 x2 x3 i.firm, vce(cluster clu)   // n=240, G=10
-        boottest x3, reps(2000) weighttype(rademacher)
-        //  p = 0.31640625 (= 324/1024), z = -1.0999434   <- both reproduced
-        logit y x1 x2 x3 i.firm, vce(cluster clu)     // n=300, G=9
-        boottest x3, reps(2000)  //  p = 0.95703125, z = 0.0645052  <- reproduced
-
-    Returns ``{"p_boot", "t_obs", "n_reps", "enumerated"}``.
-    """
-    import statsmodels.api as sm  # noqa: F401 — core dependency
-
-    n, k = X.shape
-    keep = [c for c in range(k) if c != test_idx]
-    X_rest = X[:, keep]
-    fit_r = sm.GLM(y, X_rest, family=family).fit()
-    mu = np.asarray(fit_r.mu, dtype=float)
-    d = 1.0 / family.link.deriv(mu)
-    V = family.variance(mu)
-    w = d**2 / V
-    A = np.linalg.inv((X * w[:, None]).T @ X)
-    scores = X * ((d / V) * (y - mu))[:, None]
-    g = scores @ A[test_idx]  # per-obs one-step contribution (beta units)
-
-    G = int(cluster_codes.max()) + 1
-    q = np.array([g[cluster_codes == c].sum() for c in range(G)])
-    c_share = np.array([(cluster_codes == c).sum() for c in range(G)]) / float(n)
-    return score_wild_from_q(
-        q, c_share, n_boot=n_boot, weight_type=weight_type, seed=seed
-    )
-
-
-def score_wild_from_q(
-    q: np.ndarray,
-    c_share: np.ndarray,
-    *,
-    n_boot: int = 9999,
-    weight_type: str = "rademacher",
-    seed: Optional[int] = None,
-) -> Dict[str, float]:
-    """boottest score-wild-bootstrap engine on per-cluster contributions.
-
-    The shared core behind :func:`glm_score_wild_boot` (and the ``sp.ppmlhdfe``
-    wild path): given the per-cluster one-step numerator contributions ``q_g``
-    (beta units) and the cluster observation shares ``c_g``, run the
-    cluster-share-centered studentization + strict exceedance counting that
-    reproduces Stata ``boottest`` bit-exactly in the enumerated regime.
-    The score bootstrap only touches ``q`` and ``c`` — never per-observation
-    leverage — which is why the FE-absorbed (weighted-FWL) computation of ``q``
-    is exact and the engine is reusable across low- and high-dimensional FE.
-    """
-    G = len(q)
-
-    def _tstat(wv: np.ndarray) -> float:
-        num = float(wv @ q)
-        dev = wv * q - c_share * num
-        den = float(np.sqrt((dev**2).sum()))
-        return num / den if den > 0 else 0.0
-
-    t_obs = _tstat(np.ones(G))
-    if t_obs == 0.0:
-        return {"p_boot": 1.0, "t_obs": 0.0, "n_reps": 0, "enumerated": 0.0}
-
-    # boottest's rule: enumerate the full 2^G Rademacher grid when it fits in
-    # the requested replications; the grid includes the identity draw.
-    enumerate_it = weight_type.lower() in ("rademacher", "rade") and 2**G <= n_boot
-    if enumerate_it:
-        from itertools import product
-
-        exceed = 0
-        reps = 0
-        for signs in product((1.0, -1.0), repeat=G):
-            tb = _tstat(np.asarray(signs))
-            reps += 1
-            if abs(tb) > abs(t_obs) + 1e-12:
-                exceed += 1
-        p_boot = exceed / reps
-    else:
-        rng = np.random.default_rng(seed)
-        draws = _draw_wild_weights(weight_type, (n_boot, G), rng)
-        num = draws @ q
-        dev = draws * q[None, :] - c_share[None, :] * num[:, None]
-        den = np.sqrt((dev**2).sum(axis=1))
-        tb = num / den
-        exceed = int(np.sum(np.abs(tb) > abs(t_obs) + 1e-12))
-        p_boot = exceed / n_boot
-        reps = n_boot
-
-    return {
-        "p_boot": float(p_boot),
-        "t_obs": float(t_obs),
-        "n_reps": float(reps),
-        "enumerated": float(enumerate_it),
-    }
-
-
-def _draw_wild_weights(
-    weight_type: str, shape: Tuple[int, int], rng: "np.random.Generator"
-) -> np.ndarray:
-    """Cluster wild weights. Rademacher (±1) or Webb 6-point."""
-    wt = weight_type.lower()
-    if wt in ("rademacher", "rade"):
-        return rng.choice((-1.0, 1.0), size=shape)
-    if wt == "webb":
-        pts = np.array(
-            [-np.sqrt(1.5), -1.0, -np.sqrt(0.5), np.sqrt(0.5), 1.0, np.sqrt(1.5)]
-        )
-        return rng.choice(pts, size=shape)
-    raise MethodIncompatibility(
-        f"Unknown wild weight_type {weight_type!r}; use 'rademacher' or 'webb'."
-    )
+# The GLM score wild cluster bootstrap lives in ``_score_wild`` (clean-room
+# rewrite, 2026-10-20); re-exported here for the existing import paths.
+from ._score_wild import glm_score_wild_boot, score_wild_from_q  # noqa: E402,F401

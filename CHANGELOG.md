@@ -2,6 +2,13730 @@
 
 All notable changes to StatsPAI will be documented in this file.
 
+## [Unreleased]
+
+## [1.40.2] — 2026-10-27
+
+A patch release: one correctness fix to `sp.iv` GMM and two to the frontier
+SEs. The rest makes statistics StatsPAI already computed say how they were
+computed, and audits the parity harness row by row. Read the ⚠️ entries
+before upgrading: they change numbers.
+
+- **Correctness fixes.** `sp.iv(method='gmm')` under the unadjusted weight
+  matrix now applies `N/(N-K)` when `small=True`, as Stata does.
+  `sp.frontier` / `sp.xtfrontier` SEs no longer carry the ~1e-5 round-off
+  of a fixed-step Hessian. The `sp.panel` model test now uses the reported
+  variance.
+- **Parity harness.** Every Track A row above 1e-6 now has a registered
+  reason, and every convention has rows that reproduce it. Python now fits
+  the exact doubles Stata reads. SE budgets of 18 modules drop to 1e-6.
+- **Added.** `wmatrix=` for GMM, `result.inference_rule()`, and
+  `threshold=` on the pre-trends power functions.
+
+An external audit compared StatsPAI 1.40.1 with Stata 18 on 60
+specifications (240 rows, 30 groups) and asked why coefficients and
+standard errors could match while t / F / p-values did not. One case was a
+gap and is fixed (⚠️ below); the others were legitimate conventions that the
+output did not state, and the output now states them.
+
+### ⚠️ Correctness
+
+- `sp.iv(method='gmm')` under the unadjusted weight matrix (the default
+  `robust='nonrobust'`, with either `gmm_vcov`) now carries the finite-sample
+  factor `N / (N - K)` when `small=True` (the default), as Stata
+  `ivregress gmm ..., wmatrix(unadjusted) small` does. Until 1.40.1 that
+  branch carried no factor, so `small=True` paired the large-sample variance
+  with t / F inference. Standard errors grow by `sqrt(N / (N - K))`: on the
+  audit's data (N = 240, K = 4) the SE of x1 moves from 0.067613 to 0.068183
+  and the joint F from 10.1226 to 9.9539, both now equal to Stata 18 to 1e-15.
+  `small=False` is unchanged and point estimates and Hansen's J are unchanged.
+  `sp.from_stata` / `sp.stata` now translate `ivregress gmm ...,
+  wmatrix(unadjusted) small`, which they reported as untranslatable.
+- `sp.panel` with `cluster=`, a robust / kernel variance or `ssc=`: the model
+  test in `diagnostics` (and the summary) was linearmodels' homoskedastic F
+  whatever the variance, so a clustered fit printed F = 12.29 where the
+  clustered test of the same slopes is 29.47 (`sp.test`) and Stata's
+  `xtreg, fe vce(cluster)` 28.49 (`ssc='stata'`). It is now the Wald test of
+  the reported variance on the coefficients' reference distribution:
+  `F-statistic` / `F p-value` under t inference, `Wald chi2` / `Prob > chi2`
+  under z (`xtreg, re` with `ssc='stata'`, Stata 21.516). Classical-variance
+  fits keep linearmodels' F, which is the same number.
+
+- `sp.frontier` and `sp.xtfrontier` (Pitt-Lee `ti`, Battese-Coelli `tvd`)
+  standard errors came from a plain central-difference Hessian with step
+  1e-5, whose round-off is about 1e-5 relative: on Track A module 28,
+  perturbing the outcome by one ulp moved the intercept SE by 1.7e-5, and the
+  reported SE sat 1.3e-5 from R `sfaR` and Stata `frontier`, which agree with
+  each other to 1e-8. Both now use the Richardson-extrapolated Hessian the
+  mixture models already used, and finish the quasi-Newton search with Newton
+  steps. SEs move by up to about 2e-5 relative and estimates by up to about
+  3e-6; module 28 now agrees with both references to 1e-8 and module 29 with
+  Stata `xtfrontier, ti` to 2e-10 (estimates) and 8e-10 (SEs), from 3e-6.
+
+### Announced for 1.42 (owner decisions 2026-10-24)
+
+- **`sp.iv(method='gmm')` defaults to the robust weight matrix.** Without
+  `wmatrix=`, `cluster=` or a robust `robust=`, the weight matrix is the
+  homoskedastic one, so the estimate is 2SLS. From 1.42 the default is
+  `wmatrix='robust'`, the two-step GMM of Stata `ivregress gmm` and
+  linearmodels `IVGMM`. Over-identified calls that rely on the old default
+  warn (`FutureWarning`); just-identified ones do not, the estimator being
+  the same. `wmatrix='robust'` adopts the new default now,
+  `wmatrix='unadjusted'` keeps the old one.
+- **`sp.panel` defaults to `ssc='stata'`.** linearmodels' convention has no
+  G/(G-1) cluster factor, refers clustered and RE statistics to t(N-K), and
+  reads `robust='robust'` as White SEs, which are inconsistent with fixed
+  effects; `xtreg` clusters on the panel variable instead. On the audit data
+  the clustered FE p-value of x1 is 2.5e-05 by default and 2.1e-04 under
+  Stata's rule. Fits whose SEs or p-values would change warn
+  (`FutureWarning`): one-way clustering, `robust='robust'` with fe / twoway /
+  re / CRE, and the RE family. Classical fe / twoway / pooled / fd / be fits
+  are the same number under both and do not warn; kernel, Driscoll-Kraay and
+  two-way clustering have no Stata counterpart and keep linearmodels'.
+  `ssc='stata'` adopts the new default, `ssc='linearmodels'` keeps today's.
+- **Not changing:** `sp.iv(small=True)`. R `AER::ivreg`, `fixest`,
+  `ivreg2, small` and `sp.ivreg` report small-sample statistics as well;
+  only Stata `ivregress` defaults to large-sample ones. `summary()` now says
+  which applies, and `sp.stata` translates `ivregress` exactly.
+
+### Fixed
+
+- Parity harness (Track A). Every gap above 1e-6 now has a written reason,
+  row by row (`compare.py::ROW_GAP_NOTES`), on both reference sides and for
+  estimates and SEs, and a convention gap must come with rows that reproduce
+  the reference's convention at 1e-6 or better. Building the table found:
+  - The Python side fitted the in-memory frame, while R and Stata parsed the
+    `%.16g` CSV, which does not round-trip every double. `dump_csv` now
+    replaces the float columns with the correctly rounded parse, which is
+    also what Stata reads, so Python and Stata see identical doubles. R's
+    `read.csv` differs in the last bit on 10-36% of fixture values; the
+    harness records this and does not hide it. Six results moved beyond the
+    1e-9 reproducibility floor: the forest's single draw, frontier ×2, ARIMA,
+    CR2 and spatial.
+  - Module 76's 4e-4 gap, put down to `mvtnorm`'s randomised integrator, was
+    mostly `pretrends`' fixed 1.96 cutoff, plus `uniroot`'s default tolerance.
+    New `*_t196` rows join at 1.6e-8; the module moves to the machine tier.
+  - The Oaxaca Stata SE (1.2%) sat under a budget written for R's bootstrap.
+    It is two conventions: classical vs HC1 group regressions, and
+    stochastic vs fixed covariate means. `oaxaca, vce(robust) fixed` now
+    joins StatsPAI at 2e-14 on all three threefold components.
+  - Convention rows also pin `glm`'s expected information for probit
+    (against `sampleSelection::probit`, 1e-12), `glm.nb`'s conditional-on-θ
+    SEs (3e-13), `betareg`'s expected information (`hessian = TRUE`,
+    1.2e-7), and Stata `newey`'s N/(N-K) (`hac_small=True`, 4e-16).
+  - `fixest` at `glm.tol = 1e-12` removes module 67's 1e-5 SE gap (1e-15
+    logit, 1e-7 Poisson).
+  - Stata `synth` builds its synthetic path from weights rounded to 0.001,
+    so module 07's Stata gap is that rounding. StatsPAI's weights rounded the
+    same way reproduce Stata's gap to 5e-16 (`*_w3dp` rows).
+  - Stata `sdid`'s `e(ATT)` keeps 7 significant digits. The do-file now
+    reads the full value and agrees to 1e-15.
+  - SE budgets of 18 modules tightened to 1e-6; the tier census is 82
+    machine / 5 iterative (was 80 / 7).
+- `sp.recommend(design='did', treat_time=...)` with a time-invariant group
+  indicator as `treatment` on a panel: the Callaway-Sant'Anna card derived
+  each unit's cohort as its first "treated" period, which for a group
+  indicator is the first observed period. With periods starting at 0 that is
+  the never-treated code, so every unit was coded never treated and the
+  suggested fit raised "No treatment cohorts found". The ever-treated units
+  now adopt at `treat_time`, and the code shown says so. (The recommend
+  benchmark's repeated-cross-section case had failed CI since 10-19; its
+  data now drop the unit id, as the case intends.)
+- `sp.mixlogit` maximises with a central-difference gradient. The
+  forward-difference default stopped about 1e-7 short of the optimum,
+  limited by rounding rather than `tol`, so the digits depended on the BLAS
+  build (Linux CI missed Stata's correlated Σ by 1.3e-6). Estimates now agree
+  with Stata `mixlogit` to 4e-9 and move by about 1e-7 from 1.40.1; each fit
+  takes about 0.5 s longer.
+- Tests: `test_period_date_out_of_range_warns_and_keeps_counts` used year 0,
+  which pandas 3.1 represents (`0000-01-01`); it now uses a year beyond every
+  datetime64 resolution. The SCM optimality check in
+  `test_scest_multi_parity.py` bounds the objective by the rounding of its
+  own evaluation instead of a fixed 1e-14 (Windows CI: 48 eps against a
+  153-eps bound).
+
+### Added
+
+- `sp.pretrends_power(threshold=)` and `sp.pretrends_slope_for_power(threshold=)`:
+  the critical |t| of the coefficient-by-coefficient pre-test. The default
+  stays `qnorm(1 - alpha/2)`; Roth's `pretrends` package fixes it at 1.96,
+  and `threshold=1.96` reproduces that package (Track A module 76, 1.6e-8
+  against `pretrends` with an exact integrator).
+- `sp.iv(method='gmm', wmatrix=)`: the weight matrix (`'robust'`,
+  `'unadjusted'`, `'cluster'`) separately from the variance, as
+  `ivregress gmm`'s `wmatrix()` and `vce()`. `wmatrix='robust', cluster='g'`
+  is `wmatrix(robust) vce(cluster g)` and `wmatrix='unadjusted', cluster='g'`
+  is `wmatrix(unadjusted) vce(cluster g)`, both new and equal to Stata 18 to
+  1e-15 with and without `small`. `sp.stata` now passes `wmatrix=` for every
+  `ivregress gmm` line and translates those two combinations.
+- `result.inference_rule()` on regression results: the variance label, the
+  reference distribution (`'t'` with its df, or `'z'`), the joint-test form
+  (`F(q, df)` / `chi2(q)`), clusters, the IV `small` convention, the panel
+  `ssc` convention, rows and groups for panel fits, and notes on defaults
+  that differ from Stata. `summary()` prints it under the coefficient table
+  and `to_agent_summary()` returns it under `inference`. For a GMM fit the
+  label names the variance, not the weight matrix: the default reports a
+  sandwich even though `robust='nonrobust'`.
+- `sp.panel` results record `data_info['n_rows']` and `data_info['n_groups']`;
+  for `method='be'` the summary shows "240 observations in 30 groups" where
+  `nobs` (the N of the degrees of freedom) is 30 and Stata's `e(N)` is 240.
+- `tests/reference_parity/test_inference_conventions_stata_parity.py`: the
+  audit's data (its DGP, regenerated) and Stata 18 output for GMM under three
+  weight matrices with and without `small`, 2SLS, LIML, logit / probit /
+  poisson `vce(robust)`, `xtreg` fe / re / be and a collinear design. All 18
+  fits agree on b, SE, the joint test and its p-value to 4.4e-14.
+
+### Changed
+
+- `sp.test` refuses a restriction on a coefficient omitted for collinearity
+  ("was omitted from the model (collinear with 'x1'), so a restriction on it
+  is not estimable") instead of "Unknown coefficient".
+- Docstrings of `sp.logit` / `sp.probit` / `sp.cloglog` / `sp.poisson` /
+  `sp.nbreg` no longer present `robust='hc1'` and `'robust'` as synonyms:
+  `'robust'` is Stata's `vce(robust)` (N/(N-1)), `'hc1'` scales by N/(N-K).
+  The default panel convention note (`model_info['ssc_reference']`) now says
+  that RE is referred to t / F by default and that `ssc='stata'` gives z / chi2.
+
+## [1.40.1] — 2026-10-22
+
+A patch release of DiD fixes and conventions, most of them found by
+replicating five DiD papers in Stata 18 and StatsPAI side by side. Read the
+⚠️ entries before upgrading: they change numbers.
+
+- **Correctness fixes.** `sp.did_multiplegt` with several rows per group and
+  period, and its `controls=` adjustment (both now equal Stata
+  `did_multiplegt_old`); `sp.rlasso_iv(select_Z=True, select_X=False)`;
+  `sp.did_summary` rows now share one estimand; `sp.feols` / `sp.fepois`
+  extended variances no longer crash under pandas 3.
+- **Reproducing R and Stata in one argument.** `parity='r' | 'stata'` on
+  `sp.callaway_santanna` / `sp.aggte` now also covers repeated
+  cross-sections, unbalanced panels and sampling weights; `sp.did` and
+  `sp.cs_report` forward it.
+- **New options from Stata's dCDH command**: `robust_dynamic`,
+  `firstdiff_placebo`, `effect_average`, controls in placebo and dynamic
+  effects.
+- **Announced for 1.41**: event-study p-values and intervals move to t(G-1)
+  with clustered SEs (`crit_dist='t'`), as Stata and fixest report. Calls
+  that would change warn now; `crit_dist=` adopts or keeps a rule.
+- **Deprecated**: the `group=` keyword of `sp.drdid` (use `treat=`).
+
+### Added
+
+- `sp.did_multiplegt(robust_dynamic=True)`: the first-time-switcher DID_l estimators of Stata `did_multiplegt_old, robust_dynamic` (dCDH, REStat 2024). The estimate becomes DID_0, `dynamic=` gives DID_1..DID_L against groups with the same initial treatment that have not switched yet, and the placebos are Stata's long differences. Checked against Stata 18 on 16 configurations (binary and count treatments switching on and off, balanced and unbalanced, with and without controls, rows below the cell and cell means) to 3e-15, `tests/reference_parity/test_did_multiplegt_dynamic_conventions.py`. Conventions found by running Stata as a black box are listed in docs/dev/modules/did.md (the sign of a group is that of its summed deviation from the baseline after the first switch, not of the first change; placebo l uses DID_{l-1}'s groups; a group must be observed throughout the effect's window). `model_info['dynamic'][h]['n_switchers']` equals Stata's `e(N_switchers_effect_h)`. The default is unchanged: the pair-by-pair dynamic effects of R `DIDmultiplegt` 0.1.4 that Track A module 81 certifies. The two agree on a binary staggered treatment with one row per cell and differ when treatment switches on and off (on the 2026-10-21 test panel: 0.80151 with `robust_dynamic=True`, Stata 0.80151, against 0.70159 by default, R 0.70159).
+- `sp.did_multiplegt(robust_dynamic=True, firstdiff_placebo=True)`: Stata's `firstdiff_placebo`. Placebo l is the first difference `Y_{F-l} - Y_{F-l-1}` of the first-time switchers against the groups not yet switched at F (DID_0's comparison), so it tests parallel trends over two consecutive periods l periods before the switch and does not depend on `dynamic=`. A group must be observed in every period from F-l-1 to F (found by running Stata as a black box on the unbalanced fixture). Requires `robust_dynamic=True`: the default placebos already are first differences, and Stata ignores the option without `robust_dynamic`. `model_info['placebo'][l]['n_switchers']` now reports Stata's `e(N_switchers_placebo_l)` under `robust_dynamic`. Matches Stata 18 on the 16 configurations of the dynamic fixture to 6e-16.
+- `sp.did_multiplegt(robust_dynamic=True, dynamic>=1)` reports Stata's `e(effect_average)` in `model_info['effect_average']`: the DID_0..DID_L weighted by the number of switchers each applies to, divided by the same average with the treatment as outcome (the first stage), so an effect per unit of treatment of the first switches. Point estimate and `n_switchers` match Stata 18 on all 16 configurations to 6e-16; the SE is the bootstrap standard deviation of the ratio (Stata's SE comes from its own bootstrap and is not compared). The existing `model_info['avg_cumulative_effect']` is unchanged: it is the unweighted mean of the DID_l, not scaled by the first stage, so it differs from `effect_average` whenever horizons have different numbers of switchers or treatment moves after the first switch.
+- `sp.did_multiplegt(placebo_controls='refit' | 'main')`: with `controls=` the placebos refit the slopes on their own stayers (R, the default) or reuse the DID_M slopes (Stata `did_multiplegt_old` without `robust_dynamic`).
+- `crit_dist=` on `sp.event_study`, `sp.sun_abraham` (`'t'` / `'normal'`) and `sp.did_2x2` (`'t'` / `'residual'`): the critical-value rule for p-values and confidence intervals, named by convention rather than by program. `'t'` is t(G-1) with cluster-robust SEs and t(N-K) otherwise, the critical values of `parity='stata'` / `'r'` (castle-doctrine panel: equal to Stata `reghdfe` / `regress` to 1e-10, `tests/reference_parity/test_es_crit_default.py`). For `sp.sun_abraham` it leaves `share_variance` alone. A legacy value together with `parity=` raises `MethodIncompatibility`. Recorded in `model_info['conventions']` (`crit_dist`, `crit_df`). The MCP `sun_abraham` tool exposes it.
+- `sp.did(parity='r' | 'stata')` forwards `parity=` to the estimator the
+  method resolves to (`sp.callaway_santanna`, whose `sp.aggte` inherits it,
+  `sp.sun_abraham`, `sp.did_2x2`) and refuses it for the other methods.
+  Under `parity=`, `base_period` reaches the CS fit only when passed, and
+  under `parity='stata'` the aggregation's `n_boot` / `random_state` only
+  when passed (csdid's `estat` is analytic).
+- `sp.did(crit_dist=)` forwards to `sp.did_2x2` (`'t'` / `'residual'`) and
+  `sp.sun_abraham` (`'t'` / `'normal'`), so the 1.41 `FutureWarning` those
+  emit through `sp.did` can be acted on there; other methods refuse it.
+  `crit_dist='legacy'` keeps whichever estimator's pre-1.41 rule and is a
+  no-op where there is none, so library callers that go through `sp.did`
+  (`sp.causal_question`, `sp.compare_estimators`, `CausalWorkflow`) pin it
+  and do not warn. The warning now points at the user's line when the
+  estimator is reached through another `sp.*` function (`did/_crit.py`
+  walked past only one frame-input shim).
+- `sp.cs_report(parity=)` forwards to every `sp.callaway_santanna` fit and
+  `sp.aggte` call of the report.
+- `sp.validation_scope`: evidence rows for the `parity=` switches. The
+  `callaway_santanna` map gains a `parity` dimension (`'none'` / `'r'` /
+  `'stata'`) with rows for `tests/reference_parity/test_cs_parity_switch.py`
+  (balanced panels) and `test_cs_parity_rc_unbal.py` (repeated
+  cross-sections, unbalanced panels, sampling weights), comparing the
+  estimate, its SE and the pre-test (`joint_test`). The `event_study` and
+  `sun_abraham` maps gain a `crit_dist` dimension (`'normal'`, t(N-K)
+  `'t_resid'`, t(G-1) `'t_cluster'`), and a new output, `interval` (the
+  p-values and confidence limits, which pin the critical value), graded by
+  `test_es_crit_parity.py`; the critical value is declared not to affect
+  estimates, SEs or the covariance. New `did_2x2` map (variance, weights,
+  covariates, critical value) with its Stata, R `survey` and fixest rows.
+  Rows run without `parity=` no longer vouch for a `parity=` fit, whose
+  headline can differ. `docs/evidence_inventory.md` gains an `interval`
+  column.
+
+- `sp.breakdown_m` and `sp.pretrends_test` accept event-study coefficients
+  with `sigma=` / `event_times=` / `num_pre_periods=`, as `sp.pretrends_power`
+  does: a breakdown value and a joint pre-test from the estimates and SEs a
+  paper prints. On the personal-bankruptcy pilot paper's event study the
+  relative-magnitude breakdown is 0.36793 and the smoothness one 0.00095703;
+  Stata `honestdid` excludes zero just below each and includes it just above.
+- `sp.bacon_decomposition(balance='observed_rows')` reproduces Stata
+  `ddtiming` on unbalanced panels (every `e()` scalar to 1e-15 on three
+  synthetic panels and the 267-city replication panel): Theorem 1 applied to
+  the observed rows. Off a balanced panel this is not an identity, so
+  `weighted_sum` (ddtiming's DD) differs from `beta_twfe` and the function
+  warns; weights can be negative; 2x2s with no treatment variation are NaN
+  with `identified=False` (ddtiming prints 0). Golden fixture
+  `tests/reference_parity/_fixtures/bacon_ddtiming_Stata.json`.
+- `sp.stacked_did(aggregation='event_time' | 'treated_obs')`: the overall ATT
+  as the equal-weight mean of the post event-time effects (default, as
+  before) or weighted by treated observations, the estimand of CS / BJS /
+  ETWFE. `sp.stacked_did(cluster_stack=True)` clusters on unit x stack, the
+  default of Stata `stackedev`, for replication only: a control unit repeats
+  in every stack, so it understates the SEs of time-varying controls (0.62x
+  on the test panel). Both match Stata to 2e-11
+  (`test_stacked_did_stackedev_Stata_parity.py`). stackedev builds its
+  cluster id as `stack * unit`, which can merge two (unit, stack) pairs; ours
+  does not.
+- `sp.did_summary(event_study=True, event_window=)` puts every method's
+  event-study path in `result.event_study_paths` on one relative-time axis,
+  with a `lead_definition` column (`reference_period` for CS / SA / stacked,
+  `untreated_regression` for BJS leads, `post_only` for ETWFE);
+  `sp.did_summary_plot(kind='event_study')` draws them.
+- `sp.did_multiplegt_dyn`: `detail` and `model_info['event_study']` gain
+  `twfe_relative_time` (effect l at l, placebo l at -(l+1), the axis of a
+  base -1 event study; `relative_time` is unchanged, where placebo 1 sits at
+  -1), and `detail` gains a public `se` column for whichever `se_method` ran.
+
+### Changed
+
+- The code that `sp.recommend` and the agent cards suggest for `sp.sun_abraham` / `sp.event_study` now spells out the announced defaults (`aggregation='fixest_att'`, `crit_dist='t'`), so a copied call does not warn and keeps its numbers when 1.41 flips the defaults.
+- `sp.from_stata` / `sp.stata` translate `did_multiplegt_old ..., robust_dynamic dynamic() placebo()` to `sp.did_multiplegt(robust_dynamic=True, ...)` (it used to be refused and pointed at `did_multiplegt_dyn`), and `controls()` with `placebo()` but without `robust_dynamic` to `placebo_controls='main'`. `dynamic()` without `robust_dynamic` is refused, as the command refuses it; `firstdiff_placebo` translates to `firstdiff_placebo=True` with `robust_dynamic` and is dropped with a note without it (the command ignores it there; checked in Stata 18).
+
+- `sp.validation_scope` for `callaway_santanna` gains the `variance_convention` dimension. On the repeated-cross-section DR path with covariates, R `did` / `DRDID` / csdid evidence ran `'reference'` and no longer vouches for the default `'delta'` standard error (its ATT is still covered: identical to 1e-12).
+- `sp.aggte(agg_weights='csdid')` works for all four aggregation types and on unbalanced panels (`balance='pair'`), not only for the simple and group aggregates on repeated cross-sections. Its SEs carry the estimation term of the cell counts in every aggregate, and its group average holds its cohort weights fixed, as csdid does; before, with the default `share_variance=True`, the group-average SE added R's cohort-share term to csdid's weights. A fit that carries no cell counts (a balanced panel, or `allow_unbalanced_panel=True`) raises.
+- `sp.from_stata` / `sp.stata` translate `eventstudyinteract` to `sp.sun_abraham(..., parity='stata')` and `sp.from_r` translates fixest `sunab()` to `sp.sun_abraham(..., parity='r')` (was `share_variance=False`). Coefficients and SEs are unchanged; p-values and intervals now use t(G-1) with clustered SEs, as the translated command reports them.
+- Announced for 1.41 (owner decision 2026-10-21): the default becomes `crit_dist='t'`, the Stata / fixest convention. Until then the default reproduces today's numbers byte for byte (normal for the two event studies, t(N-K) also under clustering for `did_2x2`), and a call that sets neither `crit_dist` nor `parity` warns (`FutureWarning`, once per call, attributed to the caller's line) wherever the intervals or p-values would change; `sp.did_2x2` without `cluster=` does not warn. Estimates, standard errors, the pre-trend tests, `sp.uniform_bands` and `sp.honest_did` do not depend on it. Callaway-Sant'Anna keeps the normal distribution (R `did`, Stata `csdid`). Library entry points that call these estimators for the user (`sp.did_analysis`, `sp.did_summary`, `sp.auto_did`, `sp.compare_event_study_conventions`, `sp.causal_question`, `CausalWorkflow.compare_estimators`, the calibrated simulation) pass the pre-1.41 value and do not warn. Before / after on the castle-doctrine panel in MIGRATION.md ("1.40.0 → 1.41").
+- **`sp.drdid` takes `treat=`; the keyword `group=` is deprecated.** In the
+  rest of the DiD family `group` is the unit id (`sp.did_imputation`,
+  `sp.gardner_did`, `sp.stacked_did`, `sp.etwfe`, `sp.wooldridge_did`,
+  `sp.did_multiplegt`); `sp.drdid` was the one place where it was the 0/1
+  treatment group. The parameter is now named `treat`. `group=` still works,
+  gives the same result and emits a `DeprecationWarning`; it will be removed
+  no earlier than 1.42. Positional calls (`sp.drdid(df, "y", "d", "post")`)
+  and `treat=` / `dname=` are silent. Agent schemas list `treat` and no
+  longer advertise `group`. Library examples, the Stata `drdid` translation
+  and Track A module 38 use `treat=`. No number changes.
+- **Swap guards on five more DiD estimators** (`did/_arg_roles.py`).
+  `sp.gardner_did`, `sp.stacked_did`, `sp.etwfe` (panel fits) and
+  `sp.wooldridge_did` refuse a 0/1 `group` column whose cohort varies
+  within it, with a recovery hint that names `id=`; for the first three
+  the call was already refused by the cohort check, with a message that did
+  not say why. `sp.wooldridge_did` has no such check and used to return a
+  number. A 0/1 `group` with several rows per period runs and warns
+  (`ArgumentRoleWarning`), since a two-group design looks the same.
+  `sp.did_multiplegt` refuses a 0/1 `group` with several rows per period
+  when the treatment varies within those cells (its period-to-period
+  pairing would compare rows of different units) and warns when it does
+  not. Correct calls return exactly what they returned before (tested
+  against the same call with the guard switched off; Track A 16, 17, 38,
+  73, 75, 81, 84 byte-identical to main's own reruns).
+
+- Announced for 1.42: `sp.did_multiplegt_dyn` defaults become
+  `aggregation='switchers'` (Stata / R `Av_tot_eff`) and
+  `se_method='analytic'`. A call that leaves either unset warns
+  (`FutureWarning`); numbers are unchanged until then. See MIGRATION.md.
+
+### Fixed
+
+- `pip install statspai[io]` on Python 3.10 tried to build pyreadstat 1.3.7 from source (it ships no cp310 wheels; the build fails on Windows). The `io` extra keeps Python 3.10 on `pyreadstat<1.3.7`.
+
+- `sp.feols` / `sp.fepois` with `vce='wild'`, `'CR2'` / `'CR3'` or `'conley'` raised `ValueError: output array is read-only` under pandas 3 (copy-on-write): the singleton removal of 1.40.0 narrowed a `.to_numpy()` mask in place. Numbers are unchanged.
+- `sp.doctor()` read an editable install's `file:///C:/...` URL as a POSIX path on Windows and reported the checkout as shadowed.
+
+- **⚠️ Correctness**: `sp.did_multiplegt` on data below the group level (individuals within groups, several rows per group and period). Stata `did_multiplegt_old` averages such data to (group, period) cells and weights each cell by its row count; its results on the rows equal its results on the collapsed cells with `weight(n)`. StatsPAI paired the rows of a group across periods, so a cell weighed n_t x n_{t-1} in DID_M (0.6149 against Stata's 0.5600 on the test panel), and the placebo and dynamic paths kept only the first row of each cell. It now collapses to cells and weights them as Stata does (DID_M and placebo cells by their size in the switching period), matching Stata to 3e-16 on DID_M and placebos, with binary and count treatments. Dynamic cells weigh their size in the switching period t by default, as R `DIDmultiplegt` does (0.66028 on the test panel, R 0.66028), and their size at t + l with `robust_dynamic=True`, as Stata does. A cluster variable that varies within a cell is refused. `n_obs` is the row count; `model_info` gains `collapsed_to_cells` and `n_cells`. One row per (group, period), the usual layout, is unchanged.
+- **⚠️ Correctness**: `sp.did_multiplegt(controls=)` now nets out the controls as Stata `did_multiplegt_old` does: `dY - dX @ theta_d`, with `theta_d` from a regression of dY on dX and period effects over the stayer cells of baseline value d (weighted like the cells). The old code fitted dY on dX within each period's switchers and stayers and returned 0.7015 where Stata returns 0.6425 (group-level test panel); both layouts now match Stata to 2e-16. The placebo and dynamic effects use the controls too (next entry).
+- **⚠️ Correctness**: `sp.did_multiplegt(controls=)` with `placebo=` or `dynamic=`. Placebo and dynamic effects ignored the controls. Each now nets out `dX @ theta_d` with slopes fitted on that estimate's own control cells: by default a dynamic effect refits them on its robust stayers' long differences and a placebo on its stayers' lagged differences, as R `DIDmultiplegt` 0.1.4 does; `placebo_controls='main'` reuses the DID_M slopes, as Stata `did_multiplegt_old` does; `robust_dynamic=True` fits them on the not-yet-switched cells, as Stata `robust_dynamic` does. On the 2026-10-21 test panel (cell means) dynamic_1 moves from 0.59200 to 0.57119 (R 0.57119) and placebo_1 (`placebo_sign='r'`) from -0.16141 to -0.11499 (R -0.11499; Stata's convention -0.11457). All three match their reference to 3e-15 on the new 16-configuration fixture (balanced panels for R). A control with no variation net of the period effects in a regression sample now gets a slope of 0, as in R, instead of a minimum-norm split; this also applies to DID_M and changes it only in such degenerate samples. The warning and `controls_scope == 'main'` are gone (`'all'`).
+- Not changed, now documented: on unbalanced panels R `DIDmultiplegt` 0.1.4 differences a group's outcome across a gap (consecutive observed periods), Stata leaves that difference missing. StatsPAI follows Stata for every estimate; R's unbalanced numbers, DID_M included, are not reproduced (docs/dev/modules/did.md).
+
+- **`parity='r' | 'stata'` on repeated cross-sections and unbalanced panels** (`sp.callaway_santanna`, `sp.aggte`). The 1.40.0 switch was checked on balanced panels only, and `parity='stata'` warned that csdid's cell weights were verified for the simple and group aggregates on repeated cross-sections only. Checked now against R `did` 2.5.1 (`panel = FALSE`, the default balancing, `allow_unbalanced_panel = TRUE`) and Stata `csdid` 1.81 (no `ivar()`, and `ivar()` on the unbalanced panel) on a repeated cross-section and an unbalanced panel built from `mpdta`, with and without `lpop`, never- and not-yet-treated, unit and state clusters: every ATT(g, t), SE, pre-test and the four aggregations (overall and cells) match to 1e-10 without the covariate, and to 1e-7 (R) / 1e-6 (Stata) with it (`tests/reference_parity/test_cs_parity_rc_unbal.py`, 40 cases). Three conventions were missing and are now set by `parity=`. (1) Both programs use the reference sign of the doubly robust pre-period regression term, so `parity=` sets `variance_convention='reference'` (SEs with covariates on repeated cross-sections moved by up to 15%). (2) csdid weights every ATT(g, t) by its own treated count in every aggregate (rows of the cohort in the cell's two periods; units of the cohort seen in both on an unbalanced panel) and carries the estimation of those counts into the SEs; `parity='stata'` now does this for the calendar and event aggregates and on unbalanced panels too, where the aggregates were off by up to 5% (single cells up to 20%), and the fit's own simple ATT is `estat simple`. (3) `parity='r'` accepts `allow_unbalanced_panel=True` / `balance='none'`, an option R has (it raised). The warning is gone. Default numbers are unchanged (Track A 04 / 38 / 79 and original-data 02 rerun identical to main's code). **Sampling weights** (`weights=`, csdid `[iw=]`; csdid refuses `pw` and `aw`, and its help file says the iweight is treated as a pweight) were then the one case `sp.aggte(agg_weights='csdid')` still warned about: it weighted each cell by its treated head count. csdid weights a cell by the weight mass of those treated observations (its `e(gtt)` still lists the head count) and the group average by the mean weight mass of a cohort's post-treatment cells; head counts missed csdid's weighted aggregates by up to 19% (calendar cells, unbalanced panel) and 2.6% overall. Fixed and the warning removed: on the same two data sets with a sampling weight, and on the balanced `mpdta` with each county's weight, 24 weighted cases against csdid and 32 against R `did` (`weightsname`), every ATT(g, t), SE, pre-test and the four aggregations match to 2.2e-14 (Stata) / 1.3e-12 (R) without `lpop` and 2.4e-7 / 1.7e-8 with it. R's weighted cohort shares already matched.
+- `sp.did_multiplegt(n_boot=0)` no longer warns that placebo / dynamic effects are not estimable when they were estimated (the check read the missing bootstrap SE).
+- **⚠️ Correctness**: `sp.rlasso_iv(select_Z=True, select_X=False)` solves the second stage exactly. It used `MASS::ginv`'s tolerance on `Dhat'[d, x]`, as `hdm::rlassoIVselectZ` 0.3.2 does; that product squares the conditioning of the controls, and on the BCH eminent-domain application (`EminentDomain$logGDP`, 80 full-rank controls with condition number 7e6, product 5e13) the cutoff discarded 34 of 81 singular values. The 0.2274 that hdm prints and StatsPAI matched is a truncated-SVD value that moves with the tolerance (0.0054 at 1e-10). The controls are now partialled out with a pivoted QR and the IV system solved exactly: 0.0154, HC0 SE 0.0141 (was 0.2274 / 0.1760), equal to `AER::ivreg` with `sandwich::vcovHC(type='HC0')` to 6e-13 on the same first stage; the parity fixture now uses that reference. Well-conditioned designs move by rounding only. The double-selection and `select_X` paths are unchanged. The deprecation message of `iv.bch_post_lasso_iv` no longer says it is "~17x off" hdm here: that comparison was against the truncated value (it returns 0.0130).
+- **⚠️ Correctness**: `sp.did_summary` reported the Sun-Abraham and stacked
+  rows as the equal-weight mean of the post event-time effects and the other
+  rows as treated-observation ATTs, then averaged them and called the spread
+  a disagreement between estimators. All rows are now treated-observation
+  ATTs (SA `aggregation='fixest_att'`, stacked `aggregation='treated_obs'`),
+  and `detail` has an `estimand` column. On the 267-city personal-bankruptcy
+  replication panel: SA 0.01696 -> 0.01215, stacked 0.01617 -> 0.01187,
+  cross-method SD 0.0025 -> 0.00012.
+- The design guardrail of `sp.feols` / `sp.fepois` / `sp.regress` /
+  `sp.hdfe_ols` / `sp.panel` reported an event-time dummy that only some
+  cohorts reach (k = 3 when only the earliest cohort is seen three years
+  after adoption) as "assigned at the cohort level" and suggested clustering
+  on the handful of cohorts. A column on which the treatment depends only
+  through `time - column` is an adoption date, not an assignment unit, and
+  is no longer flagged. State-level assignment still is. Warnings only.
+- `sp.bacon_plot` default colours were keyed by names that
+  `sp.bacon_decomposition` never writes, so every point was grey; a partial
+  `colors=` dict now overrides type by type.
+- `sp.did_imputation(min_n=0)` raised; it is Stata's `minn(0)` (report every
+  horizon) and is accepted. Other invalid values raise
+  `MethodIncompatibility` with a recovery hint.
+- `sp.from_stata` / `sp.stata` carry `did_imputation, minn(#)` over, and
+  Stata's default `minn(30)` when the option is left out (unweighted event
+  studies, where the effective number of treated observations is the count
+  `min_n=` uses). The translation used to report the horizons Stata
+  suppresses.
+- `sp.from_r("did_multiplegt_dyn(..., effects = k)")` emitted `dynamic=k`, one
+  effect too many; it emits `dynamic=k-1` and `aggregation='switchers'`.
+
+## [1.40.0] — 2026-10-21
+
+A minor release. Read the ⚠️ entries before upgrading: several of them change
+numbers.
+
+- **Three announced defaults take effect** (MIGRATION.md, "1.39.x → 1.40"):
+  `sp.feols` / `sp.fepois` drop fixed-effect singletons, as R `fixest` does;
+  `sp.bayes_regress` uses the weakly informative prior when no prior is given;
+  `sp.kaplan_meier` reports the log-log interval, as Stata does.
+- **Correctness fixes from a library-wide review against Stata and R**, among
+  them: `sp.rdrobust` mass-point bandwidths and CR2/CR3 cluster variances,
+  Callaway-Sant'Anna cohorts treated after the sample, dynamic-panel GMM
+  classical SEs, `sp.sac` SEs, `sp.rlasso_iv` with `select_X=False`,
+  wild-bootstrap dispatch, FE-aware `predict` / margins after `sp.fepois` /
+  `sp.feglm`, and translated `[pweight]` SEs in `sp.from_stata`.
+- **Clean-room rewrites**: modules whose code had been derived from GPL or
+  unlicensed reference implementations were re-implemented from the method
+  papers, documentation and black-box outputs, with parity unchanged
+  (`docs/dev/2026-10-20-license-provenance-audit.md`, specs in
+  `docs/dev/cleanroom/`). `THIRD_PARTY_NOTICES.md` now lists the
+  permissively licensed references.
+- **New**: survey designs (`design=`, replicate weights) in causal estimators,
+  survival causal tools (`sp.stteffects`, `sp.rmst`, weighted and
+  counting-process Cox / Kaplan-Meier), `sp.panel_match`, multi-endogenous and
+  cluster-robust weak-IV inference, IV / panel / state-dependent local
+  projections, group-sequential designs and mSPRT, `sp.weightit`,
+  `sp.bart_causal`, `sp.lmtp`, `sp.mmqreg`, `sp.two_stage_interference`, a
+  Stata-style data layer (`sp.xtset`, `sp.lag`, `sp.reshape`, `sp.collapse`,
+  `sp.egen`) and Stata factor-variable syntax in formulas.
+- **Dependencies**: matplotlib is now a core dependency.
+
+### Callaway-Sant'Anna: `parity='r' | 'stata'`, both pre-test p-values, always-treated units dropped
+
+From the 2026-10 replication of five DiD papers in Stata 18 and StatsPAI (items 1-4 of the improvement report). Every convention below was established by running R `did` 2.5.1 and Stata `csdid` 1.81 as black boxes on the same CSV bytes (the real `mpdta`, and the same panel with 35 always-treated counties).
+
+- **Added**: `sp.callaway_santanna(parity='r' | 'stata')` and `sp.aggte(parity=...)` (inherited from the fit by default). One argument sets every convention on which StatsPAI's default differs from that program: `base_period='varying'`; the not-yet-treated cutoff (`'period'` for R, `'cohort'` for csdid); the chi2 pre-test p-value; R's `balance='full'` on unbalanced panels; csdid's analytic SEs for every aggregation even after `wboot` (its `estat` never bootstraps); csdid's group average with fixed cohort shares (every other aggregate and every cell keeps the share term, as csdid does); and, with `bstrap=True`, each program's bootstrap defaults (Rademacher / 1000 draws in R, Mammen / 999 in csdid, uniform bands in both). The critical value is the normal one in both programs, clustered or not, so nothing changes there. An explicit argument that contradicts a convention raises `MethodIncompatibility` (e.g. `parity='stata', base_period='universal'`). With `parity=` and no other option, every ATT(g, t), SE, pre-test statistic and p-value, unit count and simple / group / calendar / dynamic aggregate matches `att_gt(bstrap = FALSE)` / `aggte` and `csdid` / `estat` to 1e-10 without covariates and 1e-7 with `lpop` (each program's logit stops at its own tolerance), never-treated and not-yet-treated, unit and state clustering (`tests/reference_parity/test_cs_parity_switch.py`, 34 cases).
+- **Added**: `model_info['conventions']` on every `callaway_santanna` and `aggte` result: `parity`, `base_period`, `base_period_explicit`, `se_method`, `crit_dist`, `crit_df`, `share_variance`, `pretest_pvalue`, plus `notyet_cutoff` / `balance` (fit) or `agg_weights` (aggregation).
+- **Added**: `model_info['pretrend_test']` reports `pvalue_f` (Hotelling F) and `pvalue_chi2` (R did / csdid) with `pvalue_method`; `pvalue` stays the Hotelling-F one by default and is the chi2 one under `parity=`. `summary()` prints both, e.g. `p (Hotelling F) = 0.1740; p (chi2, R did / csdid) = 0.1681` on `mpdta`. It used to print the Hotelling-F p-value next to a `chi2(5)` label.
+- **Added**: when `base_period` is left at its default, `summary()` prints one line saying that R `did` and Stata `csdid` default to `'varying'` and that only the pre-period ATT(g, t) differ. The default stays `'universal'`, the base `sp.honest_did` needs.
+- **Added**: `sp.callaway_santanna(n_boot=)` as an alias of `biters=` (`sp.aggte` already accepted both).
+- **Changed**: `sp.callaway_santanna(always_treated='drop')` (default) removes units first treated at or before the first period plus `anticipation`, with one warning, and records `model_info['n_always_treated_dropped']` and `['always_treated']` (cohorts, rows). This is R `did`'s rule (black box: `g <= min(t) + anticipation`, the first period included; 35 of 500 units on the test panel, 55 with `anticipation=1`, 175 rows on repeated cross-sections) and csdid's. `always_treated='error'` raises `IdentificationFailure`. The units used to be kept with their cohort skipped. Every ATT(g, t), aggregate and analytic SE is unchanged (checked to 1e-17 on 16 configurations); `n_units` / `n_obs` now match R, the Hotelling-F pre-test p-value counts only the remaining units (0.19888 → 0.19934 on the test panel; the chi2 p-value and clustered tests are unchanged), the few-treated-units count no longer includes them, and a seeded multiplier bootstrap draws for fewer units.
+- **Docs**: `docs/dev/modules/did.md`, `docs/guides/callaway_santanna.md`, `docs/guides/cs_report.md`.
+
+### CI repairs for 1.40: mypy baseline, strict docs build, citation audit, pandas 3 / Windows failures
+
+- **Fixed**: `sp.bal_tab` and the `margins` of `sp.intreg` / `sp.heckman` / `sp.heckprobit` raised `ValueError: output array is read-only` under pandas 3 (copy-on-write makes `.to_numpy()` read-only, and the sample mask was narrowed in place). Numbers unchanged.
+- **Fixed**: `sp.modelsummary(output="table.csv")` wrote `\r\r\n` line ends on Windows (pandas' `os.linesep` passed through a text-mode write). pandas now writes the file.
+- **Fixed**: `sp.cbps(variant='exact')`: near the root the potential changes by less than its rounding error, so the line search could stop with a balance residual of 2e-11 (lalonde ATE on Windows; 1e-16 elsewhere). A full Newton step that halves the moments is now accepted. Coefficients unchanged where the search already converged.
+- **Changed**: `sp.policy_tree` on a reward matrix (multi-action, depth <= 2) compares split values up to rounding (1e-12 of the total absolute reward) and keeps the first (feature, threshold) among ties, as documented. Exactly tied splits used to be decided by the last bits of the summation, so the root threshold differed between platforms on the policytree fixture (both splits give the same reward in exact arithmetic). Policy values are unchanged; a threshold can move to the first of several exactly tied ones.
+- **Fixed**: `structural_break` refuses a segment with no admissible split (`DataInsufficient`) and `mediate_sensitivity` refuses `max_iter < 1` (`MethodIncompatibility`); both raised `TypeError` before. The MCP HTTP transport leaves its in-flight table before it answers, so a retry with the same id is no longer refused as a duplicate.
+- **Changed**: `GARCHResult` declares `vce`, `presample` and `gradient_norm` as fields (default `None`; `sp.garch` sets them as before).
+- **Internal**: the mypy count is back under the 827 baseline (1361 in CI); the 26 griffe / autorefs warnings of `mkdocs build --strict` are fixed; the citation auditor resolves DataCite DOIs (Zenodo, Dataverse, arXiv's 10.48550) at DataCite instead of logging Crossref 404s, no longer reads "CGD Working Paper 103" as NBER w103, and repairs Crossref records whose given and family names are swapped; tests reset the specification-search counter before each test.
+
+### DiD API: swapped `group=` caught, one argument vocabulary, `result.attgt` / `.event_study` / `.aggregations`
+
+From the 2026-10-21 DiD replication report (items 5, 6, 8). No estimate or standard error changes.
+
+- **Changed**: `group=` is the unit id in `sp.did_imputation` but the 0/1 treatment group in `sp.drdid`, and swapping the two used to run. `sp.did_imputation` now refuses a 0/1 `group` column whose cohort varies within it (the cohort check refused the call anyway; the message now names the swap and points to `id=`). It warns with `ArgumentRoleWarning` when a 0/1 `group` has several rows per period (a two-group repeated cross-section looks the same, so it still runs). `sp.drdid` refuses a `group` column without exactly two values with a `recovery_hint` naming `treat=` and `id=` (it raised before, without the hint). It warns when the two values are not 0/1 and names the value taken as treated (the larger, as before). Docstrings, registry cards and examples now lead with the canonical `id=` / `cohort=` / `treat=`.
+- **Changed**: `sp.drdid` raises when `seed=` and `random_state=` disagree, and warns that `n_boot` / `seed` / `random_state` have no effect (its standard errors are influence-function based; nothing is resampled).
+- **Added**: `cohort=` (and `g=` / `first_treat=` where the parameter has the other name) on `did_imputation`, `gardner_did`, `stacked_did`, `etwfe`, `wooldridge_did`, `twfe_decomposition`, `did_summary`, `did_report`, `bjs_pretrend_joint`, `did_cluster_diagnostics`, `compare_event_study_conventions`, `cs_jackknife`, `staggered_rollout`, `functional_form_test`, `distributional_did`, `cs_report`, `auto_did` and `cluster_staggered_rollout`; `seed=` for `boot_seed` on `did_imputation` / `gardner_did`; `id=` / `unit=` and `cohort=` on `twfe_decomposition`; `unit=` / `i=` and `controls=` on `bacon_decomposition`. The house-style lint has a `cohort` theme (canonical `cohort`; legacy `first_treat`, `g`, `gname`) and lists `boot_seed` under `seed`. Signatures are unchanged.
+- **Added**: `CausalResult.attgt` (ATT(g,t) cells), `.event_study` (one row per relative time) and `.aggregations` (dict of `'overall'`, `'dynamic'`, `'group'`, `'calendar'`) read the tables each DiD estimator stores, including `gardner_did`'s `'D_k+h'` dict and the `etwfe` cohort cells, in one column layout. A missing table raises `ResultAccessorUnavailable`, an `AttributeError` with a `recovery_hint`. `docs/reference/did_result_contents.md` lists the `model_info` keys of the main DiD estimators; a test checks the CS, Sun-Abraham, BJS and drdid lists against real fits. `tidy()` already had the same seven leading columns on `CausalResult` and `EconometricResults`; a test now pins that.
+
+### `sp.doctor()` / `statspai doctor`, the MCP server names its interpreter, and a DiD paper gallery with fetched datasets
+
+- **Added**: `sp.doctor()` (registered), `statspai doctor [--json] [--no-path] [--check-imports]` and `python -m statspai --where`. The report gives the StatsPAI version, where it is imported from and whether that is an editable install (or code on `PYTHONPATH` ahead of one), the pip metadata version and git revision, `sys.executable` / `sys.prefix` / venv or conda, the optional backends with versions (`statspai_hdfe` with its API level against `MIN_API_VERSION` and `STATSPAI_SKIP_RUST`, pyfixest, numba, jax, torch, pymc, matplotlib, polars, pyarrow), whether `Rscript` and Stata are found, and every other `python` / `python3` / `python3.x` on `PATH` with the StatsPAI version it has. Nothing optional is imported unless `check_imports=True` (then in a child process); each probe has a timeout and failures become fields. `STATSPAI_*` variables are listed with secrets redacted.
+- **Added**: the MCP server reports its own runtime. The session instructions end with the StatsPAI version, Python version and interpreter path, and the `describe_function` and `preflight` replies carry `server_runtime`. `statspai mcp doctor` also prints the install kind.
+- **Added**: fetch-on-demand datasets (`statspai.datasets._fetch`). A loader downloads its file from the canonical public URL on first call, checks a pinned SHA-256 (a mismatching file is never used) and caches it in `$STATSPAI_DATA_DIR` (default `~/.cache/statspai/datasets`). Nothing downloads at import or when listing; offline, the loader raises `DataInsufficient` with the URL, hash and target path; `download=False` forbids the network. New loaders: `sp.datasets.jel_medicaid(sample='raw' | '2x2' | 'staggered')` (Baker et al. JEL county mortality, MIT, 6.3 MB), `sp.datasets.bacon_divorce()` (Goodman-Bacon 2021 / Stata `bacondecomp` example), `sp.datasets.lalonde_panel()` (the NSW + CPS + PSID 1975/1978 panel of Sant'Anna and Zhao 2020 / Stata `drdid`), and `sp.datasets.mpdta(simulated=False)` (the original `mpdta`, from Stata `csdid`'s copy). The bare `mpdta()` call is still the simulated replica; its warning now names the real variant.
+- **Changed**: `sp.list_datasets()` has new columns `delivery` (`shipped` / `fetched`), `available_offline` and `real_variant`; `source` is `fetched` for the new loaders.
+- **Docs**: `docs/guides/did_paper_gallery.md` reruns the five papers (JEL Medicaid, Sant'Anna-Zhao LaLonde, Goodman-Bacon divorce, Callaway-Sant'Anna mpdta, Cheng-Hoekstra castle) in a few lines each, with the published, Stata and R numbers.
+- **Tests**: `tests/external_parity/test_did_paper_gallery.py` (32 tests) checks all 54 cells of Sant'Anna-Zhao Table 3 and 81 Stata `drdid` estimates, all 156 Bacon 2x2s against `bacondecomp` (TWFE -3.08), the 12 ATT(g,t) and four `mpdta` aggregations against R `did` 2.5.1 (analytic SEs to 1e-8) and Stata `csdid`, the castle TWFE 0.0801 / 0.0946 and six Stata specifications, and the JEL 2x2 -2.56, DR -3.76 and TWFE+X -1.37 against the authors' tables and Stata. Reference numbers and provenance are in `tests/external_parity/data/did_paper_gallery.json`. Tests that need a fetched file skip unless it is cached or `STATSPAI_FETCH_DATASETS=1`; the nightly full-coverage job sets it.
+
+### Defaults announced for 1.40: `sp.feols` / `sp.fepois` singletons, `sp.bayes_regress` prior, `sp.kaplan_meier` interval
+
+- **Changed ⚠️**: `sp.feols` / `sp.fepois` default to `fixef_rm="singleton"` (was `"none"`, announced by a `FutureWarning` since 1.39.6, now removed): observations in a fixed-effect group of one are dropped, repeatedly until none is left, as R `fixest` (0.14: `fixef.rm = "perfect_fit"` removes them), Stata `reghdfe` and pyfixest do. Coefficients are unchanged; `nobs`, the degrees of freedom and the standard errors that carry a small-sample factor change on data with singletons. Pass `fixef_rm="none"` for the 1.39 numbers. The extended `vce=` menu (`"wild"`, `"CR2"` / `"CR3"` / `"jackknife"`, `"conley"`) now removes the singletons from `data` before it fits, so cluster codes and coordinates stay aligned with the estimation sample (with `fixef_rm="singleton"` these calls used to raise); `model_info['n_dropped_singletons']` records how many rows went. `sp.feglm` (no `fixef_rm`) already dropped singletons and is unchanged. Core API snapshot acknowledged (`feols.fixef_rm`).
+- **Changed ⚠️**: `sp.bayes_regress` without `prior` uses `prior="weakly_informative"` (normal priors scaled to the data, R `rstanarm`'s defaults) for models normal, logit, probit, poisson and negbin when `prior_mean` / `prior_var` are left at their defaults and `inference="mcmc"`; other calls keep the fixed `"vague"` prior. The 1.39 `DeprecationWarning` is removed. Posterior summaries change, most where a regressor or the intercept is in large units (the fixed prior pulled those toward zero). Pass `prior="vague"` for the 1.39 numbers. `prior_mean` now defaults to `None` (0 when not given) so that giving it, even as zeros, selects the fixed prior, as the 1.39 announcement said. Cross-validation refits repeat the prior that was used.
+- **Changed ⚠️**: `sp.kaplan_meier` without `conf_type` gives the log-log interval (`"log-log"`, Stata `sts list`'s default) instead of `"plain"`; the 1.39 `DeprecationWarning` is removed. `ci_lower` / `ci_upper` (and the bands of `.plot()`) change; the survival estimate, its standard error and the median do not. Pass `conf_type="plain"` for the 1.39 interval.
+- **Tests**: Track A module 67 passes `fixef_rm="singleton"` to `sp.fepois` explicitly (the setting of its `fixest::fepois` reference); its committed numbers are unchanged.
+
+### `parity=` critical values on the regression event studies; cluster spellings in `sp.feols`
+
+From the 2026 DiD replication series (castle doctrine, divorce reform). Standard errors already matched Stata and R; the reference distribution did not.
+
+- **Added**: `parity='stata' | 'r'` on `sp.event_study`, `sp.sun_abraham` and `sp.did_2x2`. It switches the critical values of the p-values and confidence intervals to those of Stata (`reghdfe` / `eventstudyinteract` / `regress`) and R `fixest`: Student t with G-1 degrees of freedom for cluster-robust SEs, t(N-K) otherwise (both programs agree, measured as black boxes). For `sun_abraham`, `parity='r'` also sets `share_variance=False` (fixest's fixed cohort shares) and `'stata'` keeps the share term of `eventstudyinteract`; an explicit `share_variance` that contradicts the chosen program raises. On the castle-doctrine and divorce panels the intervals and p-values then equal Stata's and fixest's to 2e-12 (`tests/reference_parity/test_es_crit_parity.py`; fixtures `_generate_es_crit_Stata.do` / `_generate_es_crit_R.R`). The default output is unchanged: normal critical values for the two event studies, t(N-K) for `did_2x2`. Every result records `model_info['conventions']` (`parity`, `crit_dist`, `crit_df`; `share_variance` for `sun_abraham`).
+- **Changed**: `sp.sun_abraham(share_variance=)` defaults to `None`, which means `True` (as before) unless `parity='r'`. Numbers unchanged.
+- **Fixed**: `sp.feols` / `sp.fepois` / `sp.feglm` accept every spelling that clearly means one-way or multiway CRV1 / CRV3 clustering: dict keys `CL1` / `CR1` / `cluster` (`CL3` / `CR3`), any case, with a column, `'a+b'` or a list; strings `'cluster:id'`, `'cluster(id)'`, `'cluster = id'`, `'CL1:id'`, `'~id'`, and a bare `'cluster'` next to `cluster=`. All give results identical to `cluster='id'` (including the mark-out of rows with a missing cluster). `vcov={'CL1': 'id'}` used to stop on pyfixest's internal `AssertionError`. Unknown spellings raise `MethodIncompatibility` with a hint pointing to `cluster=` / `vce='cluster id'`, and any `AssertionError` from pyfixest is re-raised the same way.
+- **Fixed**: `sp.hdfe_ols(vce='cluster firm')` (and `'vce(cluster firm)'`, `'cluster:firm'`, `'cluster(firm)'`, `'~firm'`) now means `cluster='firm'`; it used to be refused as unrecognised. An unknown `vce=` raises `MethodIncompatibility` (a `ValueError` subclass, as before) with a recovery hint.
+- **Not changed (reported)**: the default critical values differ across the DiD family. `event_study` and `sun_abraham` use the normal, `did_2x2` uses t(N-K) also with clustering (R `lm` + `coeftest(vcovCL)`), `sp.feols` uses t(G-1) (fixest / reghdfe), and the `event_study` pre-trend test is already a cluster F(q, G-1) test. Aligning the defaults would move published numbers and is left to the owner (`docs/dev/modules/did.md`).
+
+### Weighted Bacon decomposition, breakdown values for averages, reproducible C-LF, integer overflow in formula terms
+
+- **Added**: `sp.bacon_decomposition(weights=)`. A positive weight that is constant within each unit gives the decomposition of the weighted TWFE coefficient: group shares become weight shares and every 2x2 estimate and its weight become the weighted ones (derivation in the docstring). Works with `covariates=` too. The identity `beta_twfe = sum(weight * estimate)` holds against `sp.feols(..., weights=)` to 1e-10, integer weights equal replicated units, and the type rows match Stata `bacondecomp [aw=]` to 1e-7 (the ado's own rounding). Weights that vary within a unit, or are zero, negative or missing, raise `MethodIncompatibility`.
+- **⚠️ Correctness (precision)**: `sp.bacon_decomposition` on float32 columns (a Stata `float`, e.g. Goodman-Bacon's divorce data) kept means and group sums in single precision: `weighted_sum` missed `beta_twfe` by 2e-7 and the 2x2 rows agreed with Stata only to about 1e-7. The outcome, treatment and weight columns are now read in float64 (identity to 1e-15, Stata to 1e-8). float64 input is unchanged (Track A 20 reproduces bit for bit).
+- **Added**: the decomposition table has `comparison_class` (`'clean'`, `'forbidden'`, and with covariates `'mixed'` / `'covariates_only'`) and `is_forbidden` (True for `Later vs Earlier Treated` and `Later vs Always Treated`); the `summary` table and `summary()` show the class. Existing columns and numbers are unchanged.
+- **Added**: `sp.breakdown_m(l_vec=, window=)` with the meaning they have in `sp.honest_did` (e.g. `l_vec='average'`, the average post-treatment effect), found by the same non-nested scan. On the castle-doctrine data the average-effect C-LF value is 0.406; R HonestDiD brackets it at 0.97 / 1.03 times that value, and the Conditional value at 0.997 / 1.003.
+- **Added**: `sp.honest_did` / `sp.honest_did_from_moments` / `sp.breakdown_m` take `seed=` (default 0, HonestDiD's default; numbers unchanged) for the simulated C-LF critical value, and `backend='r'` passes it to HonestDiD. Tables record `attrs['simulated_cv']`, and for C-LF `attrs['seed']` and `attrs['lf_draws']` (1,000). C-LF was already reproducible run to run; its gap to R / Stata is their different random draws. `honestdid_method='Conditional'` has an exact critical value.
+- **Added**: `sp.honest_did(breakdown=)` and `attrs['next_steps']` (the matching `sp.breakdown_m` call). By default the breakdown value is stored in `attrs['breakdown_m']` for the FLCI, where it costs about half of the table; for the test-inverted sets pass `breakdown=True`.
+- **⚠️ Correctness**: integer columns read by a generated formula term (`I(x**3)`, `np.power(x, 2)`) are now cast to float64 before patsy evaluates the term. Widening narrow integers to int64 (the earlier fix) still let a large `int32` / `int64` column overflow: `sp.regress("y ~ I(pop**3)")` with populations of a few million returned a wrong coefficient without warning, and so did `sp.glm` / `sp.logit` / `sp.poisson` / `sp.ridge` / ordered models, Callaway-Sant'Anna and DR-DiD covariate formulas, and `predict(newdata=)`. Columns used by `C(...)` keep their integer level names. A narrow integer column whose values reach both ends of its type's range (a power computed in int8 before the call) now triggers a warning. `sp.feols` / `sp.fepois` / `sp.feglm` are covered too: the fixest formula is cut at the top-level `|`, each `~` part is read on its own, `i(f, ...)` keeps its integer level names, and the arguments of `sw()` / `csw()` are read one by one (`sp.feols("y ~ I(pop**3)")` on an int64 population column returned a coefficient of the wrong sign).
+
+### `sp.rlasso_iv` intercept and sandwich, `sp.psmatch2` tie warning, neural estimators without bootstrap draws
+
+- **⚠️ Correctness**: `sp.rlasso_iv(select_Z=True, select_X=False)` fitted the first stage with an intercept but solved the second stage without one (a faithful copy of `hdm::rlassoIVselectZ` 0.3.2). With a nonzero mean in `y` or `d` the slope was inconsistent: on a known-truth DGP (beta = -2) it returned -0.64; it now returns -1.969, which is exactly robust 2SLS when every instrument is selected. The intercept is not added when the controls already contain a constant, so EminentDomain's coefficient (0.2274) is unchanged.
+- **⚠️ Correctness**: the same path's robust variance used the transposed bread (`A^+' Ω A^+` instead of `A^+ Ω A^+'`, `A = Dhat'[d, x]`), again as in hdm. The SE was wrong whenever the first stage left a control out (Monte Carlo: sampling SD 0.239, corrected formula 0.234, old formula 0.363). EminentDomain logGDP SE 0.2466 → 0.1760. The reference is now hdm's own first stage followed by hdm's `tsls(homoscedastic=FALSE)` (synthetic fixture), or the same sandwich computed in R with `MASS::ginv` where `tsls`'s `solve()` fails on EminentDomain's control block (`tests/reference_parity/_generate_rlasso.R`).
+- **⚠️ Correctness**: `sp.rlasso_iv(select_Z=True, select_X=True)`: when no control was selected for the instrument, the instrument was centred at the grand mean of the control matrix (hdm's `mean(x)`) instead of its own mean. The slope was unaffected; the robust SE was inflated (5x on the DGP above). `intercept=` is now passed to every Lasso step of the `select_X` and double-selection paths, where it used to be ignored.
+- **Fixed**: `sp.psmatch2(..., ties=True)` no longer shows `sp.match`'s tie warning, which told the user to pass `ties='all'` (not a psmatch2 option). Without `ties`, psmatch2 warns in its own terms and points to `ties=True`. Numbers unchanged.
+- **Fixed**: `sp.tarnet` / `sp.cfrnet` with `n_bootstrap` below 2 returned NaN `se` and `ci` through three numpy `RuntimeWarning`s and reported `pvalue = 0.0`. They now return NaN `se`, `ci` and `pvalue` without warnings, with `model_info['se_method'] = 'none'` and a `se_note` saying why. `sp.dragonnet`'s `se_note` now describes its AIPW influence-function SE (it used to carry the plug-in-dispersion note of the other two); its `n_bootstrap` is documented as unused.
+
+### Cleanup: patched-leebounds fixtures retired, kernel/llr caliper warning, drdid RCS replay SE, dead recovery pointers
+
+- **Changed**: `sp.match(method='kernel' | 'llr', caliper=...)` now warns that the caliper has no effect (the kernel bandwidth is `bwidth`), as in Stata `psmatch2`, and sets `model_info['caliper_ignored']`. Numbers unchanged.
+- **Changed**: `sp.from_stata` / `sp.stata` translate `drdid ..., dripw` (with or without `rc1`, and `drdid ..., all`) on repeated cross-sections with `variance_convention='reference'`, so a replayed line prints Stata's SE. A note says that `sp.drdid`'s default `'delta'` (Sant'Anna and Zhao 2020, Appendix B) gives the asymptotically correct SE under propensity-score misspecification. The ATT is unchanged.
+- **Fixed**: `alternative_functions` recovery pointers that were not callable `sp.<name>` paths (`sp.binscatter`'s classic-with-controls warning, `sp.panel_match` refusals, `sp.scest(treat=)`).
+- **Tests**: the teffects / misc_sens Stata do-files no longer patch a copy of `leebounds.ado` (no licence stated); the rows that patch produced (`leebounds_exact`, `attr_lee_exact`) are retired and `trimming='exact'` is checked by known-truth and identity tests (`tests/reference_parity/test_lee_bounds_exact_threshold.py`). License provenance audit, addendum rows X2 / X3 (the superseded HTZ implementation plan is deleted).
+
+### RD follow-ups: CR2 / CR3 cluster variances in `sp.rdrobust`, NaN density test, rdplot T4 notes
+
+- **⚠️ Correctness**: `sp.rdrobust` / `sp.rdbwselect` with `cluster=` and `vce='hc2'` / `'hc3'` used HC2 / HC3-scaled residuals with the CR1 small-sample factor. R rdrobust 4.0.0 (the canonical implementation, used as a black box) maps these to its CR2 / CR3 variances, and so does StatsPAI now: each cluster's residuals times `(I - H_gg)^(-1/2)` / `(I - H_gg)^(-1)` with `H_gg` the cluster block of the weighted hat matrix of the same fit, no small-sample factor. SEs rise by 7% (CR2) to 18% (CR3) on the `rd_covs_discriminating` fixture, and the selected bandwidths move with them. `vce='cr1' / 'cr2' / 'cr3'` are accepted (falling back to `hc*` with a warning when no cluster is given, as in R). New parity test `tests/reference_parity/test_rd_cluster_cr23_R_parity.py` (10 designs x {CR1, CR2, CR3}: fixed and selected bandwidths, `h > b`, covariates, fuzzy, weights, p = 2, uniform kernel) agrees to 1e-9.
+- **⚠️ Correctness**: `sp.rddensity` reported `T = 0, p = 1` when the test statistic could not be computed (too few distinct values in a window); it now reports NaN with an `AssumptionWarning` and a `not_computable` diagnostic, as R `rddensity` reports `NA`.
+- **Docs**: two deliberate `rdplot` differences from R 4.0.0 (the extra boundary bin from floating-point rounding; `J_IMSE = J_MV = 1` instead of `Inf` / `NaN` for a side with a constant outcome) are recorded as T4 in `docs/dev/modules/rd.md`.
+- **Removed**: `tests/reference_parity/_fixtures/_verify_rdbwselect_cascade.R`, which replicated GPL rdrobust internals and was used by nothing (license provenance audit, addendum row X1).
+
+### DR-DiD on repeated cross-sections: delta-method SEs by default; more clean-room rewrites (CS grid / RCS path / multiplier bootstrap, AR tests, staggered SDID, score bootstrap)
+
+Second clean-room pass over self-declared ports of GPL code (audit rows H25-H27 and three DiD pieces found by the first pass). Specifications and evidence: `docs/dev/cleanroom/cs_rcs.md`, `dynpanel_ar.md`, `sdid_staggered.md`, `score_wild.md`. In every case the old code was deleted unread and the reference was used only as a black box.
+
+- **⚠️ Correctness (owner's decision)**: `sp.drdid(est_method='dr', method='trad')` on repeated cross-sections and `sp.callaway_santanna(estimator='dr')` on the repeated-cross-section / unbalanced-panel route now use the influence function of Sant'Anna and Zhao (2020, Appendix B) by default (`variance_convention='delta'`, a new keyword of both, also of `did._rcs.drdid_rc`). R `DRDID` / `did` and Stata `drdid` / `csdid` carry the pre-period comparison-regression estimation effect with the opposite sign; with a misspecified propensity score their 95% intervals cover 81% of the time in our Monte Carlo against 95% for the delta method (`tests/reference_parity/_fixtures/_drdid_rc_pre_regression_mc.py`). Point estimates are unchanged; standard errors move when there are covariates (with a correct propensity model the two agree asymptotically). `variance_convention='reference'` reproduces R and Stata; the parity tests now pass it explicitly, and the gap is recorded as T4 (reference divergence). No Track A or original-data module uses this path. `sp.from_stata` / `sp.stata` keep the default and say so in the translation notes. Upstream report draft: `docs/dev/2026-10-20-upstream-drdid-draft.md`.
+- **⚠️ Correctness**: `sp.callaway_santanna` treats cohorts first treated after the last observed period as never treated (they are untreated throughout the sample). They used to be left out of `control_group='nevertreated'` on the panel and the repeated-cross-section paths; R `did` includes them (black box: our ATT and SE now equal R's to 1e-15 on both paths; the probe panel moved from 1.087 to R's 1.044).
+- **⚠️ Correctness**: dynamic-panel GMM (`sp.xtabond`, `sp.xtdpdsys`) with `transform='fod'` or `h=1`: the classical one-step σ̂² divided by 2 as if the transformed errors were first differences. Classical one-step SEs were about √2 too small and the Sargan statistic twice too large there (abdata FOD: SE of L.n 0.0642 → 0.0908; xtabond2 0.0907). Robust and two-step results are unchanged.
+- **⚠️ Correctness**: the classical (one-step, non-robust) Arellano-Bond AR statistics for system GMM and after orthogonal deviations now match xtabond2 (up to its σ̂² divisor); they did not before (abdata system AR(1) -8.12 → -8.08, FOD -2.76 → -6.44, xtabond2 -8.09 / -6.44). Every robust, two-step and difference-GMM classical statistic is unchanged (2.4e-12 on 676 black-box configurations; every Stata fixture at 1e-9).
+- **Changed (clean-room)**: `did/_core.multiplier_bootstrap` (Algorithm 1 of Callaway and Sant'Anna 2021), the ATT(g, t) grid and the repeated-cross-section / unbalanced-panel estimator of `callaway_santanna` (new `did/_cs_rcs.py`), `gmm/_dynpanel` AR tests (`serial_correlation_test` replaces `arellano_bond_ar_test` / `ar_test_cross_basis`), the inference of `sp.sdid(treat=...)` (projected covariates, jackknife, bootstrap, placebo, refusals) and the GLM score wild bootstrap (new `inference/_score_wild.py`, re-exported from `inference/jackknife.py`). Seeded multiplier-bootstrap draws, SEs and critical values are unchanged (4e-16); the CS repeated-cross-section path reproduces the previous outputs on 49 configurations bit for bit except `model_info['cohort_sizes']` on weighted unbalanced panels (now the sum of mean-one unit weights; aggregates unchanged); SDID jackknife SEs match Stata at 1e-15; the score bootstrap reproduces boottest's enumerated p-values exactly. `sp.drdid(method='imp')` on an unweighted panel now runs the same engine as the weighted one (`_dr_imp_att`; Track A 38 reproduces to 1e-15).
+- **Changed**: on a panel, `sp.drdid` refuses (`DataInsufficient`) a sample with no treated or no control units, and, for the estimators with a comparison outcome regression, fewer comparison units than regressors; it used to return an infinite or minimum-norm result. `callaway_santanna` on repeated cross-sections / unbalanced panels refuses negative or all-zero weights, weights that vary within a unit on the unbalanced route, and a row-level cluster that is constant within every cohort x period cell, as before. A non-finite column of influence functions now gives a NaN bootstrap SE instead of 1e-12. Staggered SDID bootstrap / placebo SEs (an S-level screen) move by up to 1.3% with `method='sdid'` / `'sc'` (replicate weights are solved from scratch; `method='did'` replicates are identical).
+- **Removed (private)**: `wooldridge_did._drdid_imp_panel_core`, `_calibrated_pscore`, `_logistic_fit`, `_logistic_coefficients`, `_weighted_lstsq`, `callaway_santanna._rcs_residualise_on_controls` (unused after the rewrite; the `approach` entry of `model_info` that named it did not describe the computation and is dropped).
+
+### RD power, heterogeneous effects and boundary designs: clean-room rewrites
+
+Audit rows H9-H11 of `docs/dev/2026-10-20-license-provenance-audit.md`.
+
+- **Changed**: `sp.rdpower` / `sp.rdsampsi` (`rd/rdpower.py`) are reimplemented from Cattaneo, Titiunik and Vazquez-Bare (2019, section 2), the R `rdpower` 3.0 help pages and R's outputs (black box; spec `docs/dev/cleanroom/rdpower.md`). New fixture `rdpower_R.json` (`_generate_rdpower_R.R`): data-mode power and robust SE match R at 1e-9 on 10 cells, and `rdsampsi(data=)` window sample sizes match exactly on 14 cells. Where R's iterative solver does not return (e.g. `tau = 0.5` on the Senate data), the root is now bracketed and a number is returned.
+- **Changed**: `sp.rdhte` / `sp.rdbwhte` / `sp.rdhte_lincom` (`rd/hte.py`, new `rd/_hte_core.py`) are reimplemented from Calonico, Cattaneo, Farrell, Palomba and Titiunik (2025, both arXiv papers), the R `rdhte` 0.2.0 help pages and R's outputs (black box; spec `docs/dev/cleanroom/rdhte.md`). Every existing fixture still matches; the new fixture `rdhte_R.json` adds 29 cells (all variance types, kernels, orders, windows, cutoff, selected bandwidths) at 1e-9. Outputs on the previous API are unchanged (old vs new agree to 1e-9 on 19 configurations). New: a categorical (or boolean / string) moderator gives subgroup effects with a bandwidth per level, as R's factors do (it was an error); remapped `vce` with or without `cluster=` now warns; invalid `alpha`, `n_eval` or `h` raise; the result's `.plot` is picklable.
+- **Changed**: `sp.rd2d` / `sp.rd2d_bw` / `sp.boundary_rd` (`rd/rd2d.py`, `rd/_rd2d_location.py`, `rd/_rd2d_distance.py`, new `rd/_rd2d_common.py` and `rd/_rd2d_inputs.py`) are reimplemented from Cattaneo, Titiunik and Yu (location- and distance-based papers, arXiv 2505.05670 / 2510.26051, and the rd2d software article), the R `rd2d` 1.0.0 help pages and R's outputs, including its `$mseconsts` bandwidth constants (black box; spec `docs/dev/cleanroom/rd2d.md`). All 47 cells of `rd_open_R.json` still match; the new fixture `rd2d_floor_R.json` (n = 600, where the `bwcheck` floors bind) adds 17 cells at 1e-9 / 1e-8. Outputs of the previous implementation are reproduced to 1.2e-10 on 34 configurations. The private distance helpers `_poly_lm` / `_local_intercepts` are now `_quantile_poly_fit` / `_side_jumps`.
+- **⚠️ Correctness**: design-mode `sp.rdsampsi` now solves the exact two-sided power equation. The previous code used the one-tail approximation `tau/se = z_(1-alpha/2) + z_power`, which overstates the sample when the target power is close to `alpha` (e.g. `alpha=0.2, target_power=0.3, tau=0.2`: 21 + 21 before, 17 + 17 now, the smallest sample reaching power 0.3). At conventional settings (power 0.8, alpha 0.05) the numbers are unchanged. Invalid inputs (non-positive sizes, variances or bandwidths, `alpha` outside (0, 1), `target_power` outside (alpha, 1), `tau = 0` for `rdsampsi`, `ratio <= 0`) now raise `MethodIncompatibility` instead of returning nonsense or crashing.
+
+### ⚠️ Correctness: `sp.match(method='radius', caliper_scale='sd')`
+
+- **⚠️ Correctness**: radius matching read `caliper` on the raw score scale whatever `caliper_scale` said, so `caliper_scale='sd'` silently returned the estimate at a radius of `caliper` itself (on the reference data, 1.947 at `caliper=0.1` instead of 1.767). The radius is now `caliper * sd(score)` over the full sample (ddof 1), the rule nearest-neighbour matching already used. Stata has no SD caliper; the result equals `psmatch2 , radius caliper(c * sd(_pscore))` to 1e-9 in estimate and SE (`tests/reference_parity/_fixtures/psm_radius_sd_Stata.json`, psmatch2 run as a black box). `caliper_scale='raw'` (the default) is unchanged. Kernel and LLR matching do not read `caliper`, as in psmatch2 (black box: its kernel ATT is unchanged by `caliper()`).
+
+### Gate repairs on main: `sp.mmqreg` call record, `sp.reset_spec_counter(y=)`, agent cards
+
+- **Added**: `sp.mmqreg` records its call, so `sp.vcov(fit, 'robust')` / `sp.vcov(fit, 'cluster id')` refit it (the refit equals Stata `mmqreg`'s `e(V)` for that `vce` to 1e-10), and it accepts Stata's `vce='cluster id'` spelling as `vce='cluster', cluster='id'`.
+- **Changed**: `sp.reset_spec_counter`'s argument is now `y=` (the house-style outcome name); `outcome=` stays accepted as an alias. Neither has been released.
+- **Docs**: agent cards (assumptions, pre-conditions) for `sp.reset_spec_counter`, `sp.xtset`, `sp.reshape`, `sp.collapse`, `sp.egen`, `sp.msprt_lambda`, `sp.hpd_interval`, `sp.gelman_rubin` and `sp.westfall_young`, read from their code and docstrings.
+
+### Honest RD (`sp.rd_honest`, `sp.rd_discrete`, `sp.rd_bias_aware_fuzzy`): clean-room rewrite
+
+- **Changed**: `rd/_rdhonest.py`, `rd/bias_aware.py` and `rd/rd_discrete.py`
+  are reimplemented from Armstrong-Kolesár (2018, 2020), Kolesár-Rothe (2018),
+  Imbens-Kalyanaraman, the R `RDHonest` help pages and vignette, and
+  `RDHonest`'s outputs on our data (black box; licence audit row H8). The
+  previous files described themselves as ports of the GPL-3 package. Public
+  signatures and result fields are unchanged and every committed `RDHonest`
+  fixture still matches at its registered tolerance. Black-box checks over
+  ~40 further designs (279 selected bandwidths for sharp RD, fuzzy RD with
+  clusters and all three kernels) agree to <= 1.3e-7. Specification:
+  `docs/dev/cleanroom/rd_honest.md`.
+- **Open item**: for `rd_discrete(method='bme')`, R reports as
+  `maximum.bias` the bias of one of the two binding support-point choices,
+  but which one could not be determined from outputs. We report the one at
+  the farther end of the two-sided interval; it equals R's on the fixtures
+  and can differ elsewhere (only `maximum_bias` and the BME p-values; the
+  interval is unaffected).
+
+### Shift-share AKM inference, binned KDE, GWR bandwidth search and the CR2 HTZ test rewritten clean-room; MR diagnostics split
+
+Audit rows H19-H21, H23 and H24 of `docs/dev/2026-10-20-license-provenance-audit.md`: code whose docstrings said it ported GPL R code is rewritten from the method papers, the references' documentation and their outputs on our data (black box), never their source. Specs in `docs/dev/cleanroom/`.
+
+- **Changed**: `bartik/_akm.py` (the AKM / AKM0 rows of `sp.ssaggregate`, `sp.shift_share_se`, `sp.shift_share_political`, and the BHJ shock-level view; ShiftShareSE 1.1.0, GPL-3) is reimplemented from Adao, Kolesar and Morales (2019) and the ShiftShareSE vignette; the collinear-share selection is a limited-pivoting Householder QR written from R's `?qr` description in place of a port of R's QR routine (spec `akm.md`). All existing R / Stata fixtures pass at their tolerances; the previous outputs on 40 random designs are reproduced to 1e-12. New black-box fixture `akm_ci_shapes_R.json` (six designs, every AKM0 set shape, weights, clusters, `beta0`, `alpha`).
+- **Changed**: the Gaussian kernel density behind `sp.interflex(estimator='kernel')` and the `dineq` / `rifreg` quantile RIF (`regression/interflex.r_density`, `decomposition/_common._bw_nrd0` / `kde_at_dineq`; R `density()` / `bw.nrd0`, GPL) now comes from one new module, `core/_binned_kde.py`, written from Silverman's rule of thumb and the linear-binning estimator (spec `binned_kde.md`). New black-box fixture `binned_kde_blackbox_R.json`: R's densities to 1e-14, `dineq`'s RIF to 1e-12. Outputs unchanged except for a single observation (R refuses one; the bandwidth now follows the documented fall-backs instead of returning NaN).
+- **Changed**: `sp.gwr_bandwidth` (GWmodel 2.4-1, GPL >= 2) is reimplemented from the GWR papers and black-box runs of `GWmodel` (spec `gwr_bandwidth.md`). New fixture `gwr_golden_search_R.json`: 64 recorded searches reproduced probe for probe, `bw.gwr` on two data sets for three kernels. Every previous output on 144 valid configurations is bitwise unchanged. An unknown `kernel=` now raises `MethodIncompatibility`; it used to return the search's first lower probe. Probed bandwidths that admit no fit (one neighbour or less) still score as unusable, but a `RuntimeWarning` now says how many there were.
+- **Changed**: `sp.fast.cluster_wald_htz` / `cluster_dof_wald_htz` (the CR2 Wald test with the approximate Hotelling's T-squared reference; clubSandwich 0.6.2, GPL-3) are reimplemented from Pustejovsky and Tipton (2018, Section 3.2, eq. 12-13) (spec `htz.md`). New black-box fixture `htz_blackbox_R.json` (five designs including a two-way dummy panel where the CR2 adjustment needs the Moore-Penrose inverse; q = 1 to 4; non-zero nulls): `eta`, F, p and `V_R` agree with `Wald_test(test = "HTZ")` to 3e-14. The older fixture generator and the live-R test now call only clubSandwich's public API. A (near-)singular CR2 variance of `R beta` (a restriction on a cluster fixed effect) now warns and uses the pseudo-inverse instead of returning rounding noise.
+- **Changed**: `statspai.mendelian.diagnostics` (1,066 lines) is split: MR-PRESSO moves to `statspai.mendelian.presso`. Pure move: outputs are byte-identical and `from statspai.mendelian.diagnostics import mr_presso` (and the private helpers) still works.
+
+### `sp.interference("partial" | "hudgens_halloran")` deprecated; `sp.mmqreg` SE guidance; `mmqreg` in `sp.from_stata`
+
+- **Deprecated**: the dispatcher aliases `partial` and `hudgens_halloran` route to `sp.spillover`, which is not the Hudgens-Halloran estimator. They now emit a `FutureWarning`; in the next minor release they will route to `sp.two_stage_interference`. Numbers are unchanged. The dispatcher's default `design` is now `"spillover"` (the same estimator), so calls without a design neither warn nor change target later. See MIGRATION.md.
+- **Docs**: `sp.mmqreg` keeps `vce='gls'` as the default (Stata `mmqreg`'s). The docstring now says that the method paper (Rios-Avila, Siles and Canavire-Bacarreza 2024) finds the GLS standard errors biased when fitted scales are near zero or negative and favours `'robust'`, or `'cluster'` with within-group correlation in larger samples.
+- **Added**: `sp.from_stata` / `sp.stata` translate `mmqreg` (SSC) to `sp.mmqreg`: `quantile()` (a value below 1 is a fraction: Stata 18 gives the same `e(qval)` for `q(.5)` and `q(50)`), `absorb()`, `robust` / `vce(robust)`, `cluster()` / `vce(cluster)`. Refused: several quantiles in one call, `denopt()`, `dfadj`, `jknife`, other `vce()` types, multi-variable clustering, weights, factor variables. Executed equivalence: the lines run through `sp.stata` reproduce the frozen Stata 18 `mmqreg` 2.6 numbers of `tests/test_mmqreg.py` (full covariance of the three equations, 1e-10) for every `vce` with one, two and no absorbed sets (`tests/test_stata_translation_mmqreg.py`). `xtqreg` is refused: its quantile-coefficient standard errors use a GLS form that is not reproduced. The error suggests an `sp.mmqreg` call, which the test executes and checks against `xtqreg`'s coefficients, `e(q)` and location coefficients (1e-10).
+
+### E-value, Mendelian randomization, CBPS and mediation sensitivity rewritten clean-room
+
+Audit rows H13-H18 and H22 of `docs/dev/2026-10-20-license-provenance-audit.md`: code whose docstrings said it ported GPL R packages is rewritten from the method papers, the packages' help pages and their outputs on our data (black box), never their source. Each rewrite has a spec under `docs/dev/cleanroom/`.
+
+- **Changed**: `sp.evalue_rd` and the E-value threshold used by `sp.evalue` (EValue 4.1.4, GPL-2) are reimplemented from Ding and VanderWeele (2016, Propositions A.8 and A.11, eq. A.5). Every committed R case agrees to 1e-12 (the default-grid confidence-limit E-values are now bit-identical to `evalues.RD`), and the earlier implementation's outputs on 59 configurations are reproduced except the two rows below. New black-box fixture `evalue_rd_grid_R.json` pins the grid rule (first grid bias factor whose lower confidence limit reaches `true`) on coarse grids.
+- **⚠️ Correctness**: when no grid point below the point-estimate bias factor reached `true` (a coarse `grid=` on a precise table), `sp.evalue_rd` returned `evalue_ci = 1.0`, i.e. reported that the interval already contained `true`. It now uses that bias factor as the last grid point (the point E-value; still within one grid step of the exact root). R `evalues.RD` returns `NA` there. With no cases among the unexposed (infinite risk ratio) the call now raises `MethodIncompatibility` with a recovery hint instead of NumPy's `ValueError: Maximum allowed size exceeded`.
+- **Changed**: `sp.mr_raps` (mr.raps 0.4.3, GPL-3) is reimplemented from Zhao et al. (2020) (spec `docs/dev/cleanroom/mr_raps.md`). The sandwich variance evaluated at R's own estimates reproduces R to 1e-15; the new solver goes to machine precision, so fits differ from R by R's stopping rule (simple 8.7e-9, L2 over-dispersed tau2 1.75e-8, robust beta 2-3e-5 / tau2 up to 1e-3; in all 36 robust fits on scratch data our estimating-equation residuals are no larger than R's). One parity tolerance moves from 1e-8 to 1e-7 for that reason. Changes: `loglik_robust` for the Huber and Tukey losses is now `-sum rho(t)` as in the paper's eq. 5.1 (twice the old value; L2 unchanged); when the tau2 equation has no positive root, tau2 is exactly 0 with a warning (it was about 7e-9; beta moves by up to 5e-6 relative); fits that used to stop where R stops reach the root (tau2 up to 7e-6 relative).
+- **Changed**: `sp.mr_presso` (MRPRESSO 1.0, GPL-3) is reimplemented from Verbanck et al. (2018) (spec `docs/dev/cleanroom/mr_presso.md`). New black-box fixture `mr_presso_R.json` (3 data sets x 6 seeds): the raw and outlier-corrected estimates, SEs and p-values, the observed RSS (global and per variant), the outlier set and the distortion coefficient agree with MRPRESSO at 1e-10 (observed about 1e-15); the simulated global and outlier p-values are a stochastic screen (4 Monte Carlo SE), not parity. Against the previous implementation the deterministic outputs agree to 1e-14. **Open item (unexplained)**: the distortion-test p-value does not reproduce MRPRESSO (0.605 vs 0.519 and 0.801 vs 0.926 on two fixtures; the previous implementation did not either); it is not asserted and is documented in the spec.
+- **Changed**: `sp.mr_cml` (MendelianRandomization 0.10.0, GPL-2 | GPL-3) is reimplemented from Xue, Shen and Pan (2021) (spec `docs/dev/cleanroom/mr_cml.md`): every K matches R `mr_cML` to 1.6e-15, BIC selection is identical, the model-averaged estimate and SE (weights times the per-K root, as R's outputs settle) to 4e-16; the previous implementation is reproduced to 1.1e-14 on 88 fits. Invalid inputs (NaN, negative SEs, n <= 1, alpha outside (0, 1)) now raise `ValueError` instead of a `KeyError`, silent squaring or `log(0)`; `path` gains `converged`, and a `RuntimeWarning` fires when a K that carries weight hits `max_iter`.
+- **Changed**: `sp.grapple` (GRAPPLE 0.2.2, GPL >= 2) is reimplemented from Wang et al. (2021) and its S2 Text (spec `docs/dev/cleanroom/grapple.md`), with a new black-box fixture `grapple_R.json` (5 scenarios x 3 losses, tau2 estimated or fixed). The sandwich at GRAPPLE's own estimates reproduces its SEs to 1.6e-15 (L2) and 7e-7 (Huber / Tukey); estimates differ from GRAPPLE only by its optimiser's early stop. The previous implementation is reproduced to 2e-13 (estimates, tau2) and 1e-13 (L2 / Huber SEs). Invalid inputs raise `ValueError`.
+- **⚠️ Correctness**: `sp.grapple(loss='tukey')` (the default) evaluated the variance of rho(Z) with the max-1 biweight but its derivative on the c^2/6 scale, as GRAPPLE does, so the sandwich was not invariant to the scale of the loss and the tau2 SE came out 6/c^2 = 0.273 times the consistent value. One scale is now used throughout: `tau2_se` and `loglik` are 3.658 times the old values and the beta SE moves by 2e-5 to 15% (largest on weak-instrument data with tau2 = 0). Evidence: in 400 Monte Carlo replicates the SD of tau2-hat is 1.59e-4, the new mean `tau2_se` 1.55e-4, the old 4.2e-5, with beta coverage 0.948; an identity test pins scale invariance, and GRAPPLE's numbers are reproduced from the same formula when its mixed scale is fed in. For the beta SE alone the change rests on the invariance argument (on a weak-instrument design both versions are conservative: coverage 0.987 new, 0.977 old).
+- **Changed**: `sp.cbps` (CBPS 0.24, GPL >= 2) is reimplemented in full from Imai and Ratkovic (2014) (spec `docs/dev/cleanroom/cbps.md`). New black-box fixture `cbps_R.json` (generator `_generate_cbps_R.R` on committed simulated data) with 37 parity tests across estimands and exact / over-identified variants. Against the previous implementation on regular inputs the estimates agree to 2e-7, coefficients to 7e-7 and bootstrap SEs to 1.2e-7. Behaviour changes: an all-treated or all-control sample raises `DataInsufficient` (it used to return an estimate); non-convergence or propensity scores at the 1e-6 bound emit a `ConvergenceWarning` (on a perfectly separated design, where no finite solution exists, the over-identified estimate moves 1.8%); `_intercept` in `std_mean_diff_after` is exactly 0; `model_info` gains `weighting_point_scale`; bad arguments raise `MethodIncompatibility` / `ColumnNotFound` (both `ValueError` subclasses).
+- **Changed**: `sp.mediate_sensitivity` (mediation 4.5.1 `medsens`, GPL >= 2) is reimplemented from Imai, Keele and Yamamoto (2010) and Imai, Keele and Tingley (2010) (spec `docs/dev/cleanroom/mediate_sensitivity.md`); new black-box fixture `medsens_R.json` with 20 parity tests; the previous implementation's outputs are reproduced to 1.1e-11 on 18 configurations. Typed errors replace `KeyError`, `LinAlgError` and NumPy `ValueError`; `eps <= 0` is refused; hitting `max_iter` gives one `ConvergenceWarning` listing the affected rho values.
+
+### `sp.mmqreg`: quantile regression via moments with absorbed fixed effects
+
+- **Added**: `sp.mmqreg(data, y, x, absorb=, quantile=, vce='gls'|'robust'|'cluster')`, Machado and Santos Silva's (2019) location-scale quantile regression (Stata `xtqreg` / `mmqreg`) with one or more sets of fixed effects partialled out and the influence-function standard errors of Rios-Avila, Siles and Canavire-Bacarreza (IZA DP 17262, 2024). The density at the quantile is Stata `qreg`'s default (Hall-Sheather "fitted"). Against Stata 18 `mmqreg` 2.6 (black box) the coefficients and the full covariance of the location, scale and quantile equations agree to about 1e-14 for every `vce`, with one or two absorbed sets and without any (`tests/test_mmqreg.py`). Against `xtqreg` 1.3 the coefficients, `e(q)` and the location and scale coefficients agree to 1e-10 and its location / scale covariances are our cluster ones times `G/(G-1)(N-1)/(N-K)`; its quantile-coefficient covariance follows another GLS form (scale moment not centred) and is not reproduced, so its standard errors run 0.6% to 31% above `vce='gls'` on the fixture (T4, documented in `docs/dev/modules/panel_multilevel.md`). Observations alone in an absorbed group are dropped with a warning: Stata keeps them, and their 0/0 standardized residual (rounding noise) moved `q(tau)` by one order statistic on the fixture.
+
+### `sp.two_stage_interference`: Hudgens-Halloran two-stage randomized designs
+
+- **Added**: `sp.two_stage_interference(data, y, treat, group, saturation)` (also `sp.interference("two_stage", ...)`) estimates the direct, indirect (spillover), total and overall effects of a design in which groups are randomized to saturations and units within groups to treatment with that share treated (Hudgens and Halloran 2008), weighted by group (their estimands) or by individual (Basse and Feller 2018). Standard errors are the conservative group-level variance estimators. Evidence is exact enumeration of every assignment of a small design whose potential outcomes violate stratified interference: every estimate is unbiased (1e-12), the expected variance estimate exceeds the randomization variance by exactly the between-group variance of the group-level effect over the number of groups (1e-12), and equals it when that effect is constant (`tests/test_two_stage_interference.py`). Signs are treated minus untreated and higher minus reference saturation, the opposite of the paper's. `sp.spillover` is unchanged; the dispatcher aliases `partial` / `hudgens_halloran` still point to it.
+
+### Stata translation: `xtregar`, `xttobit`, `xtintreg`
+
+- **Added**: `sp.from_stata` / `sp.stata` translate `xtregar` (`fe` / `re`, `rhotype()` with its abbreviations, `rhof()`, `twostep`, `lbi`), `xttobit` (`ll(#)` / `ul(#)`, `intpoints()`, `tobit`) and `xtintreg` (`intpoints()`, `intreg`) to `sp.xtregar` / `sp.xttobit` / `sp.xtintreg`. The panel declaration comes from `xtset` as for `xtreg`. Refused: `ll` / `ul` without a number or with a variable, `xttobit` without any limit, factor-variable regressors, weights; `intmethod(ghermite)`, `noconstant`, `offset()` and `constraints()` are left out of the call and listed in `untranslated_options`, so `sp.stata` refuses to run them. Executed equivalence: the Stata lines run through `sp.stata` reproduce the frozen Stata 18 numbers of `tests/test_xtregar_stata.py` (1e-10) and `tests/test_xttobit_stata.py` (1e-6) (`tests/test_stata_translation_xt_ar_censored.py`).
+
+### DR-DiD engines and CS aggregation weights: clean-room rewrite
+
+- **Changed**: `did/_rcs.py` (the eight repeated-cross-section estimators
+  behind `sp.drdid` and `callaway_santanna(panel=False)`), the panel 2x2
+  engines of `callaway_santanna` (`estimator='reg' | 'ipw' | 'stdipw' |
+  'ipw_abadie' | 'dr' | 'drimp'`, also used by `sp.drdid` on panels),
+  `did/_core.weight_influence` and `sp.aggte`'s aggregated influence
+  functions are reimplemented from scratch. The earlier code had been
+  written after reading R `DRDID` / `did` source (GPL-3); the new code was
+  written only from Sant'Anna and Zhao (2020), Callaway and Sant'Anna
+  (2021), the DRDID help pages and DRDID 1.3.0's outputs on our data (black
+  box). Shared algebra lives in the new `did/_dr_common.py`; specification
+  and evidence in `docs/dev/cleanroom/did_drdid.md`. Signatures, result
+  fields and published numbers are unchanged (Track A 04 / 79 and
+  original-data 02 reproduce within 1e-9; all CS / drdid / aggte reference
+  tests pass at their tolerances). New black-box fixture: 82 estimator x
+  design x weighting cases (one design with trimmed controls, one with
+  singular cell regressions) with ATT, SE and five influence-function
+  projections (`test_drdid_blackbox_R_parity.py`). Repeated-cross-section
+  cell regressions that are singular now raise `MethodIncompatibility` for
+  the traditional DR and OR estimators and drop the collinear column for
+  the improved ones, as the reference does.
+- **Decided 2026-10-20 (see the clean-room section above)**: on repeated cross-sections the reference
+  carries the pre-period comparison-regression estimation effect of the
+  traditional DR estimators (`drdid_rc`, `drdid_rc1`) with the opposite sign
+  to the delta method (paper, Appendix B). With a misspecified propensity
+  score the reference SE is about a third too small in a Monte Carlo
+  (coverage 0.81 vs 0.95). The default keeps the reference sign;
+  `_rcs.drdid_rc(..., variance_convention='delta')` gives the paper's
+  influence function. Switching the default would be a correctness fix for
+  `sp.drdid(method='trad')` on repeated cross-sections and
+  `callaway_santanna(panel=False, estimator='dr')`.
+### RD core (`sp.rdrobust`, `sp.rdbwselect`, `sp.rdplot`, `sp.rddensity`, `sp.lprobust_at_point` / `lpbwselect_*`): clean-room rewrite
+
+- **Changed**: the modules the 2026-10-20 license audit listed as ports of
+  GPL code (rows H5, H6, H7, H12) are reimplemented from the papers, the
+  R / Stata help files and black-box runs of the references, without
+  reading their source: the CCT bandwidth selector and robust
+  bias-corrected estimator (`rd/_cct_bandwidth.py`, new `_cct_inference.py`,
+  `_cct_side.py`, `_nn_variance.py`), the RD-plot numbers
+  (`rd/_rdplot_numbers.py`), the CJM density estimator (`rd/_lpdensity.py`,
+  `diagnostics/rddensity.py`) and `nonparametric/lprobust.py` (+
+  `_lprobust_bw.py`, `_lprobust_select.py`). Specifications with the
+  black-box evidence for each convention are in `docs/dev/cleanroom/`
+  (`rd_cct.md`, `rdplot.md`, `rddensity.md`, `lpdensity.md`,
+  `lprobust.md`). Signatures and result fields are unchanged. Track A
+  modules 06, 09, 88, 89 and original-data 05 reproduce their committed
+  results within 1.5e-10. New R fixtures: NN residuals, rdplot (70 calls),
+  lpdensity, rdbwdensity regimes, lprobust selectors (600 cases).
+- **⚠️ Correctness**: `sp.rdrobust` / `sp.rdbwselect` with
+  `masspoints='adjust'` (the default) on a running variable with 20% or
+  more tied values floored the final `h` and `b` at the `bwcheck` distance
+  (the 10th distinct value from the cutoff). rdrobust 4.0.0 floors only
+  the pilot bandwidth; on the 20-support-point cells of
+  `tests/reliability/rd_mass_points.py` the old `h` was 0.475 on every
+  draw against R's 0.15 to 0.35. Now as R (to 1e-12 on those draws).
+- **Changed**: a preliminary fit in the bandwidth selector whose window
+  has fewer distinct running-variable values than coefficients raises
+  `DataInsufficient` (`sp.rdrobust` falls back to its legacy selector with a
+  recorded warning, as for other degenerate data), and the estimator
+  refuses a rank-deficient `h` / `b` window with `NumericalInstability`.
+  Both used to return numbers from a pseudo-inverse (R does too). A
+  constant outcome raises `DataInsufficient` in the selector.
+- **Changed** (`sp.rddensity`): `n_eff` counted one observation short when
+  the cutoff is not zero and an observation sits exactly at distance `h`
+  (now as R); a side with too few distinct points gives NaN densities
+  instead of numbers from an underdetermined fit; estimates at `p >= 3`
+  move by up to 2e-7 (p = 3, 4) and 1e-4 (p = 6, 7), equally close to R.
+  `lpdensity_numbers` refuses a bandwidth <= 0, `v > p` and unknown kernel
+  names (they fell back to Epanechnikov).
+- **Changed** (`lprobust` selectors): last-digit changes, up to 2e-9 at
+  `p = 1` and 1.5e-6 in ill-conditioned `p = 3` cases; a 50-digit
+  recomputation agrees with the new values (see `lprobust.md`).
+  `bwcheck=0` and exactly identified pilot windows now raise
+  `DataInsufficient`, as R.
+- **Changed** (`sp.rdplot` numbers): duplicated covariates are dropped with
+  a warning and `coef_covs` lists the kept columns (as R); a side with one
+  observation raises `DataInsufficient`; invalid `nbins` / `scale` / `p` /
+  `ci` / weights raise typed errors; a non-integer `scale` uses
+  `ceil(scale * J)`.
+- Open items for the owner: R 4.0.0 maps `vce='hc2'`/`'hc3'` with
+  `cluster=` to its CR2 / CR3 estimators; StatsPAI keeps leverage-scaled
+  residuals with the CR1 factor (0.07% to 0.6% of the SE apart on the
+  fixtures tried). `sp.rddensity` still reports T = 0, p = 1 when the
+  statistic cannot be computed (R: NA).
+
+### `sp.scdata` / `sp.scest` / `sp.scpi`: clean-room rewrite
+
+- **Changed**: the scpi family (`synth/scpi.py` and its private
+  `_scpi_inference.py` / `_scpi_solvers.py`, plus the new `_scpi_insample.py`,
+  `_scpi_simulate.py` and `_scpi_qp.py`) is reimplemented from scratch. The previous code
+  described itself as a port of R `scpi` (GPL-3; license-provenance audit
+  row H1). The new code was written from Cattaneo, Feng and Titiunik (2021),
+  the scpi JSS article (2025), the staggered-adoption paper and its
+  supplement, the R help pages, this repository's tests and fixtures, and
+  R `scpi` 4.0.1 run as a black box; the specification and the evidence for
+  every convention are in `docs/dev/cleanroom/scpi.md`. Signatures and
+  result fields are unchanged. Against R, fed R's weights and draws, the
+  bounds agree within R's own solver tolerances on 110 of 113 black-box
+  panels (the other three are R solver artefacts, documented). New fixture
+  `tests/reference_parity/test_scpi_cleanroom_parity.py` (17 configurations
+  on three committed panels) pins the conventions the papers leave open:
+  rho rules, the radii of the simulation constraint set, HC2 / HC4 leverage,
+  residual designs, levels, and constant out-of-sample designs.
+- **⚠️ Correctness**: `sp.scpi(w_constr='L1-L2')` in-sample bounds (and the
+  combined and joint bounds built on them) were off R by 1.6e-4 to 6.3e-3 on
+  eight of 26 black-box panels and by 1.4e-2 on the new fixture's short
+  panel; they now agree with R within its solver tolerance (5e-6 here). Other
+  constraints are unchanged (old and new agree to 1e-10 on the Germany
+  fixture and to 1e-13 on seeded runs, same draw stream).
+- **Fixed**: in-sample problems on ill-conditioned designs that the
+  previous code left unsolved (NaN draws) or handed to SLSQP are solved
+  exactly (on one test panel: 294 SLSQP fallbacks and 11 failed draws
+  before, none now; the solved values agree to 7e-13).
+
+### Licence provenance: permissive notices and the MEDIUM audit rows
+
+Follow-up to `docs/dev/2026-10-20-license-provenance-audit.md`. Clean-room
+records are in `docs/dev/cleanroom/`.
+
+- **Added**: `THIRD_PARTY_NOTICES.md` now carries the copyright line and
+  licence text of every permissively licensed implementation StatsPAI code
+  follows (fect, interflex, hdm, TwoWayFEWeights, did2s, DIDmultiplegtDYN,
+  bacondecomp, DiSCos, randomizr, ivDiag, cdgd, mbreaks, didFF, robomit,
+  csdid, synthdid under its BSD-3 option, mgwr, rdd), copied from the
+  packages' licence files.
+- **Changed (no numeric change)**: re-implemented from published formulas
+  or documentation, with the previous outputs recorded as a black box and
+  matched: `sp.oster_bounds` / `sp.oster_delta` exact solution (Oster 2019
+  and the MIT R package robomit; 4,000 + 12,000 recorded cases to 6e-13),
+  `sp.ridge` (MASS used as a black box; 22 recorded calls to 1.4e-13),
+  the sensemakr robustness value and benchmark bounds (Cinelli and Hazlett
+  2020), the Barnard-Rubin df of `sp.mice` pooling, grf observation
+  weights, the CR2 symmetric matrix power and the mode-based-estimate
+  bandwidth (Hartwig et al. 2017, eq. 7). Docstrings of the spatial GMM,
+  survey, DiSCos quantile, Yun and Gelbach code now cite the papers
+  instead of naming R / Stata internals.
+- **Changed (clean-room rewrites, A-class rows)**: `sp.psmatch2(...)
+  .pstest()` (pstest help file, Rosenbaum-Rubin 1985, Rubin 2001), the
+  weak-IV-robust AR / K / J / CLR tests behind `sp.weakrobust` (papers,
+  weakiv help file; Stata parity 1.1e-13), and psmatch2's kernel / radius /
+  llr matching, analytic SE and the lpoly smoother (help file, Stata
+  manuals; Stata parity 3.3e-15). Previous outputs recorded as a black box
+  agree to <= 1.8e-13, except nine local-linear matches with the normal
+  kernel and bandwidths 0.001-0.02 on nearly collinear local designs
+  (ATT moves by up to 4.5e-8; the previous code was itself up to 1.9e-6
+  from the exact answer).
+- **Changed (clean-room rewrite, row M2)**: `sp.lee_bounds`'s Stata
+  `leebounds` emulation (`trimming='leebounds'`, `covariates=`, `weights=`)
+  was re-implemented from Lee (2009), Tauchmann's documentation and
+  black-box Stata runs. 422 recorded results on 32 data sets agree to
+  7.7e-14; Stata fixtures as before (bounds 3.3e-15).
+  `model_info['leebounds_ntall']` is renamed `between_cell_divisor` (the
+  old key is kept as a deprecated alias).
+- **⚠️ Correctness**: `sp.lee_bounds(trimming='leebounds')` rounded a
+  trimming threshold below 1e-5 in absolute value to 16 significant
+  digits; Stata stores such numbers with 12 (scientific notation), so on
+  outcomes measured in very small units the emulation missed Stata
+  `leebounds` by up to 2.7% on a bound. It now matches (8e-11 on six such
+  outcome sets). No other trimming and no previous fixture changes.
+- **Fixed**: grf-style observation weights accept string cluster labels
+  (a `TypeError` before).
+- **Fixed**: `pstest()` with a constant or collinear covariate counted it
+  in the LR chi-square degrees of freedom; Stata and now StatsPAI use the
+  covariates the probit keeps (p 1.497e-14 against 7.82e-14 on a 400-row
+  sample). Rubin's B and R now match Stata to ~1e-14 (was 1e-9).
+- **Fixed**: the weak-IV LM helpers refuse fewer instruments than
+  regressors, a malformed `b0` and fewer clusters than instruments with
+  typed errors (NaN or NumPy errors before; no public entry point reaches
+  them); the CLR p-value has its correct limits at CLR = inf and rk = inf.
+- **⚠️ Correctness (approximation table)**: the Hansen (1997) response
+  surface behind `sp.structural_break(method='sup-f')` p-values was a
+  transcription of Hansen's unlicensed `pv_sup` table (also in GPL
+  `strucchange`). The paper prints only part of it, so StatsPAI now
+  recomputes it by simulation from the paper's description
+  (`scripts/generate_hansen_supf_table.py`, seed 19970101, 200,000
+  replications). The p-values move by at most 0.0006 for p < .01, 0.0021
+  for p <= .10 and 0.0076 above (against R `strucchange` / Stata `estat
+  sbsingle`): within twice the approximation error Hansen reports for his
+  own table, and checked against an independent simulation to be as
+  accurate as the original table. `hansen_supf_pvalue` now refuses `k` outside 1..40 or
+  non-integer (a `KeyError` / silent truncation before) and a trimming
+  that is neither a `pi_0` in (0, 0.5] nor a `lambda >= 1` (0.5 < pi_0 < 1
+  returned a negative p-value).
+
+### `sp.panel_match`: clean-room rewrite
+
+- **Changed**: `sp.panel_match` is reimplemented from scratch
+  (`did/pmatch.py` + `did/_pmatch_{prep,sets,refine,infer}.py`; the old
+  `did/panelmatch.py` and `did/_panel_match_*.py` are deleted). The first
+  version had been written by an agent who had read R PanelMatch's GPL-3
+  source; the new code was written only from Imai, Kim and Wang (2023), the
+  PanelMatch help pages and vignette, this repository's tests and fixtures,
+  and PanelMatch 3.1.5's outputs on our data (black box). Signature and
+  result fields are unchanged. On 640 black-box comparisons with the first
+  version (sets, weights, estimates, analytic SEs, balance, placebo) and on
+  seeded bootstrap draws, outputs are identical except the ATC item below.
+  Four new R fixture cases (`atc_ps`, `psm_ties`, `gaps_exact`,
+  `art_restrict`); the existing cases are byte-identical on regeneration.
+- **⚠️ Correctness**: ATC propensity weighting (`qoi='atc'` or the ATC half
+  of `qoi='ate'`, with `refinement='ps_weight'` / `'cbps_weight'`) weighted
+  the treated controls by the odds of being treated, i.e. away from the
+  untreated observations they stand in for. That is R PanelMatch 3.1.5's
+  output, which the first version reproduced; on the `atc_ps` fixture it
+  widens the standardised gap in x1 at t from -0.82 (unrefined) to -1.28.
+  The weights are now the odds of being the matched observation, as for
+  the ATT and ART (-0.35 on the same fixture). R's weights are rebuilt as
+  the reciprocal of ours in a test. Unreleased function, so no migration
+  note.
+- **Added**: `model_info['propensity_scores']` (score of each unit-period a
+  propensity refinement used). `ps_match` keeps controls whose score ties
+  the treated one, where R drops them (and gives a set whose controls all
+  tie zero weights); pinned by an identity on the `psm_ties` fixture.
+  A covariate that is not a column or `lag(x, k)` of one raises
+  `MethodIncompatibility`, a missing column `ColumnNotFound`.
+
+### `sp.scest(treat=)`: several treated units with staggered adoption
+
+- **Added**: `sp.scest(..., treat='<0/1 column>', effect=, anticipation=)` fits one synthetic control per treated unit on its periods before adoption (less `anticipation`), with the never-treated units as donors, and reports the gaps by unit and period (`effect='unit-time'`), each unit's average (`'unit'`) or the average across units at horizons every unit reaches (`'time'`); `treated_unit=` may list a subset of treated units. Written from the R `scpi` help pages (no source); R `scpi` 4.0.1 (`scdataMulti` + `scest`, GPL-3) was used only as a black box on a committed staggered panel: R's outputs equal this construction applied to R's weights to 1e-12, R's weights lie within its solver's 1e-8 gap of the exact per-unit optimum, `ols` / `lasso` weights and the ridge radius agree to 1e-9 / 1e-10 (`tests/reference_parity/test_scest_multi_parity.py`). `treated_unit=` and `treatment_time=` are now optional (needed without `treat=`); the single-unit path is unchanged.
+
+### Schemas: `str | list[str]` parameters are exported as `anyOf`
+
+- **Fixed**: the schema generator collapsed any union containing a sequence to `{"type": "array"}`, so the 176 parameters (117 functions) annotated `str | list[str]` (e.g. `sp.weakrobust(endog=)`, `sp.dml(cluster=)`, `sp.predictions(by=)`, `sp.hdfe_ols(cluster=)`) told agents and MCP clients that a single column name was invalid. They are now `anyOf` a string (with the scalar enum, if any) and an array (with its item type and item enum), plus the other explicit scalar members (`int`, `float`, `bool`) and `object` for a `dict` member (`registry.py::_union_with_scalars`). `None`, arrays, frames and callables add no branch. The CLI reads the branches; `tests/test_schema_union_anyof.py`.
+
+### `sp.breakdown_m` default relative-magnitude path scans for the first crossing
+
+- **⚠️ Correctness (tolerance level)**: `sp.breakdown_m(method='relative_magnitude')` with the default C-LF set bisected a doubling bracket, which assumes the set is nested in Mbar. The test-inverted set need not be, so a later crossing could be returned. It now uses the log-grid scan plus bisection already used for every other restriction (`_first_inclusion`) and reports the first Mbar at which the set contains zero, to 1e-3 relative (it was 1e-3 absolute). On the six fixture cases the sets are nested and the values move by at most 9e-4 (e.g. 1.95312 to 1.95277); the call costs about three times as many set evaluations. Evidence: R HonestDiD 0.2.8's C-LF sensitivity table excludes zero at 0.5, 0.9 and 0.97 Mbar* and contains it at 1.03, 1.1 and 1.5 Mbar* on every case (`tests/reference_parity/test_honest_breakdown_rm_clf_R.py`; C-LF is simulated on both sides, so a stochastic screen).
+
+### `sp.liml(robust='many_weak')`: many-instrument standard errors
+
+- **Added**: `robust='many_weak'` on `sp.liml` (LIML and Fuller): the variance of Hansen, Hausman and Newey (2008, section 2), Bekker's (1994) term plus the third- and fourth-moment terms for non-normal homoskedastic errors, with the leverages of the instrument projection (`regression/_many_iv_se.py`; bib keys `hansen2008estimation`, `bekker1994alternative`, verified via Crossref, doi.org and OpenAlex). Evidence: identity with the partialled-out form; a 1000-replication many-weak design (K = 100, n = 500, skewed errors) covers at 0.953 against 0.864 for the classical SE. R `ivmodel` 1.9.1 `manyweakSE=TRUE` gives a different number; it is reproduced to 1e-10 by the same formula with the leverages of the regressors `[D, X]` instead of the instruments, which is not the paper's quantity and is recorded as a documented difference (T4) rather than copied (`tests/test_liml_many_weak_se.py`; ivmodel used as a black box). Existing `robust=` values are unchanged.
+
+### `sp.margins` / `avg_slopes` after `sp.fepois`: standard errors with the effects as parameters
+
+- **Changed** (unreleased refusal replaced): averages after `sp.fepois` (or `sp.feglm(family='poisson')`) that depend on the absorbed effects (`sp.margins` AMEs, `sp.margins_at` and its contrasts, `sp.contrast`, `sp.pwcompare`, `sp.avg_slopes` / `avg_predictions` / `avg_comparisons`, `by=` averages) now get delta-method standard errors that count the effects as parameters, as Stata's `margins` after `poisson y x i.g` and after `ppmlhdfe ..., d` (`postestimation/_fe_delta.py`: Frisch-Waugh partitioning of the Poisson information, model-based / robust / one-way clustered, the fit's own small-sample factor read off its coefficient covariance). Equal to Stata 18 to 1e-8 on a one-way fixture and 1e-6 on a two-way, weighted one after that scalar factor, plus a closed-form identity (`tests/test_margins_fe_delta.py`). Still refused: unit-level quantities, `method='mem'`, two-way clustering, and logit / probit / OLS-predictive margins with absorbed effects. Point estimates are unchanged.
+
+### `sp.sac` full-information standard errors
+
+- **⚠️ Correctness**: `sp.sac` reported the regression SEs as `sigma2 (X~'X~)^-1`, treating rho and lambda as known, and the rho / lambda SEs from the diagonal of a numerical Hessian of the concentrated likelihood. Both were too small (the constant's SE 0.109 against Stata's 0.344 on the rook-grid fixture; rho 0.103 against 0.189). The fit now uses the same full-information maximum likelihood as `sp.gns` (shared in `spatial/models/_fiml.py`): standard errors invert the observed information in `(b, rho, lambda, sigma2)`, as Stata `spregress, ml dvarlag(W) errorlag(W)` (default `vce(oim)`). Estimates, OIM SEs, sigma2 and its SE equal Stata 18 to 1e-6 and the log-likelihood to 1e-12 on two fixtures (`tests/reference_parity/test_spatial_sac_Stata_parity.py`). The point estimates also move: on the asymmetric-graph fixture the old optimiser stopped 0.024 log-likelihood units below the maximum (lambda 0.6588 against 0.6595). `model_info` gains `vcov`, `sigma2`, `se_sigma2`, `loglik`.
+
+### Local-projection extensions and the Dumitrescu-Hurlin test rewritten clean-room
+
+The IV, state-dependent and panel local projections of `sp.local_projections` and the panel test of `sp.granger_causality(id=, time=)` were first written after reading `lpirfs` and `plm` source (both GPL). They are rewritten from the method definitions, the packages' help pages and their outputs only (`timeseries/_lpx_*.py`, `timeseries/_dh_granger.py`; the old `_lp_*.py` / `_panel_granger.py` are deleted). API, result fields and every fixture row are unchanged: `lpirfs` 0.2.5, `plm` 2.6 and Stata 18 `lpirf` / `xtgcause` to 1e-11 or better. The original direct and Cholesky paths are the pre-extension code, byte-identical.
+
+- **⚠️ Correctness**: the state-dependent projection ignored `dfk=` and `common_sample=` with an observed shock, and `vce=` / `dfk=` with `identification='lpirfs_cholesky'` (Newey-West bands whatever was asked). All are applied now. New fixture rows: `lpirfs::lp_nl(use_nw = FALSE)` equals `vce='ols'` on the Cholesky path, `lp_nl_iv(lag_switching = FALSE, use_nw = FALSE, trend = 2)` the observed-shock path, and `contemp_data` the `controls=` path (one coefficient, not one per regime).
+- **⚠️ Correctness**: an excluded instrument that is also a control (or a combination of the included regressors) made the 2SLS projection either raise numpy's `LinAlgError` or return numbers off by up to 0.4 from an ill-conditioned inverse. It is now dropped with an `AssumptionWarning` (`diagnostics['dropped_instruments']`), and the fit equals the one without it to 1e-12; if no excluded instrument is left the call is refused.
+- **Changed**: arguments that belong to another design are refused instead of ignored: `gamma=` / `hp_lambda=` / `state_transform=` / `lag_state=False` without `state=`, `panel_effect=` / `diff_shock=` without `id=` / `time=`, and on panel projections `dfk=`, `trend=`, `common_sample=` and `nw_lags=` other than with `vce='driscoll_kraay'`. A horizon whose regressors reproduce the outcome exactly (e.g. the outcome among the controls at `h = 0`) is refused; its standard errors were rounding noise.
+- **Added**: the Dumitrescu-Hurlin per-unit Wald statistics and p-values are pinned to Stata `xtgcause`'s `r(Wi)` / `r(PVi)` (the p-value refers `W_i / K` to `F(K, n_i - 2K - 1)`; `plm` reports the `chi2(K)` value). Panel IV projections report `first_stage_f` by horizon under the projection's variance, as the single-series ones do.
+
+### Owner decisions of 2026-10-20: defaults, deprecations, MCP text block, `sp.reset_spec_counter`
+
+Recorded in `docs/dev/2026-10-20-owner-decisions.md`; migration notes in `MIGRATION.md`. Only the first item changes numbers.
+
+- **⚠️ Correctness**: the string `'rlasso'` (and `'rigorous_lasso'`) in a classifier role (`sp.dml` `irm` / `iivm` `ml_m` and `ml_r`, `sp.dml_did(ml_m=)`, `sp.dml_panel` with a binary treatment) now resolves to `sp.RlassologitClassifier`, the logistic rigorous Lasso that `hdm` fits for propensities (`rlassologit`). It was `sp.RlassoClassifier`, a linear-probability fit clipped to `[clip, 1 - clip]`, whose clipped rows can carry inverse weights of 1000. Estimates with that alias change; regressor roles keep `sp.RlassoRegressor`, and `'rlasso_lpm'` selects the old classifier. Test: `ml_m='rlasso'` equals `ml_m='rlassologit'` and `'rlasso_lpm'` equals `sp.RlassoClassifier()` exactly (`tests/test_rlasso.py`).
+- **Changed**: `sp.causal_forest(n_jobs=)` defaults to `-1` (all cores; was `1`), and `n_jobs` is an explicit parameter of `sp.causal_forest` and registered. Outputs are byte-identical for any thread count (pinned by `tests/test_treatment_effects_oct19_fixes.py` and `tests/test_owner_decisions_oct20.py`). Core API snapshot updated with the MIGRATION acknowledgement.
+- **Deprecated**: `sp.hdfe_ols` with two or more cluster variables and no `cluster_df=` warns (`FutureWarning`) that the default multi-way small-sample factor moves from `'per_term'` (R `sandwich::vcovCL`) to `'min'` (Stata `reghdfe`, R `fixest`) in a later minor release. Standard errors are unchanged in this release.
+- **Deprecated**: `sp.sun_abraham` without `aggregation=` warns (`FutureWarning`) that the headline `.estimate` moves from the equal-weight event-time average to the cell-weighted ATT of `fixest::summary(agg = "att")` (`aggregation='fixest_att'`). Numbers unchanged; `sp.did(method='sun_abraham')` now passes a missing `aggregation` through, so it warns too. Track A module 05 already passes `aggregation='fixest_att'`.
+- **Deprecated**: `sp.bcf` warns (`FutureWarning`) that it will route to `sp.bart_causal(method='bcf')`. Numbers unchanged; `sp.bcf_ordinal` and `sp.bcf_factor_exposure` call the same fit without the notice and are not affected by the planned rerouting.
+- **Changed**: `matplotlib>=3.5` is a core dependency (still imported only when a figure is drawn; `import statspai` does not load it). seaborn and plotly stay in `[plotting]`.
+- **Changed**: `sp.binscatter(method='classic', controls=...)` warns (`AssumptionWarning`) that residualize-then-bin is not consistent for `E[y | x, controls]` when `x` and the controls are related, suggests `method='binsreg'`, and records it in `bin_data.attrs['diagnostics']`. The default stays `'classic'`.
+- **Added**: `sp.reset_spec_counter(outcome=None)` forgets the session's specification-search count (the `specification_search` violation) and returns what it cleared; callable as an MCP tool by name or through `call_function`. The violation's recovery hint names it.
+- **Added**: the MCP server's text block of a successful `tools/call` can be a few summary lines instead of the JSON of `structuredContent` again: `STATSPAI_MCP_TEXT=summary` or `statspai-mcp --text summary` (`mcp_server.set_text_mode`). The default stays `full` for clients that ignore `structuredContent`. Measured savings in `docs/dev/modules/agent_mcp.md`.
+
+### Classifier learners in DML, metalearners, causal forest; `sp.RlassoClassifier` as a propensity
+
+- **⚠️ Correctness**: `sp.dynamic_dml(model_t=<classifier>)` (or `model_y=`) residualised on the classifier's hard 0/1 label from `predict`, so the residual was `T - 1{p > 0.5}`, not `T - E[T | state]`. A classifier on a 0/1 target now gives P(T = 1), and a classifier on any other target is refused, as in `sp.dml`. Estimates with a classifier learner change; the default `RidgeCV` and any regressor are byte-identical.
+- **⚠️ Correctness**: `sp.RlassoRegressor`, `sp.RlassoClassifier` and `sp.RlassologitClassifier` ignored `sample_weight` in `fit` (the rigorous Lasso has no observation weights). They now raise `TypeError`, so a weighted `sp.dml` fit warns that the nuisance is fitted unweighted (it was silently unweighted before; numbers unchanged), `sp.SuperLearner(sample_weight=)` refuses the learner, and `sp.ipw` / `sp.aipw(weights=, ps_learner=)` with one of them raises instead of returning an unweighted propensity.
+- **Fixed**: `sp.dml` (`irm` / `iivm` `ml_m`, `ml_r`; a classifier under `plr` / `pliv`), `sp.dml_did(ml_m=)`, `sp.dml_model_averaging`, `sp.metalearner` / `sp.auto_cate(propensity_model=)`, `sp.causal_forest(model_t=)` and `sp.conformal_counterfactual(propensity_model=)` raised `IndexError` with `sp.SuperLearner`, whose `predict_proba` is the `(n,)` vector of P(Y = 1), and indexed column 1 regardless of `classes_`. They now read the probability through `core/_learners.py`, which also maps a single-class `(n, 1)` output to 0 or 1. Test: a SuperLearner with a one-learner library equals that learner in every one of them to rtol 1e-9 (`tests/test_learner_proba_routing.py`). Outputs with the default learners and with scikit-learn classifiers are byte-identical.
+- **Changed**: `sp.RlassoClassifier.predict_proba` warns (`AssumptionWarning`) when its linear-probability prediction is clipped to `[clip, 1 - clip]`. On a design with ATE 1.2, `sp.ipw(ps_learner=sp.RlassoClassifier())` returned -1.23 (-2.19 on another draw) while logit, boosting and `sp.RlassologitClassifier` gave 1.07 to 1.24: about 3% of rows had a linear prediction outside [0, 1], a treated row clipped to 0.001 carried weight 1000, and two or three rows set the estimate. The classifier itself is right: intercept and coefficients equal `hdm::rlasso` on the 0/1 label to 1e-12 and its columns are [P(0), P(1)] (`tests/test_rlasso_classifier_propensity.py`, hdm 0.3.2). For a propensity use `sp.RlassologitClassifier`, as hdm's `rlassoLATE` uses `rlassologit`.
+
+### Leftovers from the 2026-10-20 probe (xtevent, data layer, translation)
+
+#### Fixed
+
+- `sp.xtevent` no longer raises `KeyError` when an event-time regressor is
+  collinear with the unit / period effects (typically the binned left
+  endpoint, constant within every unit when the window reaches past the
+  panel). As Stata `xtevent` 3.1.0 does, the term is omitted, reported as
+  0 with zero variance and enters the averages as 0; a `UserWarning` names
+  it and `model_info['omitted']` / the `is_omitted` column record it. Both
+  engines match Stata 18 to 1e-10 on a new fixture, with and without
+  clustering and with `trend_method='ols'`
+  (`tests/reference_parity/test_xtevent_omitted_Stata_parity.py`). A static
+  model whose policy is absorbed now raises `MethodIncompatibility`.
+- `sp.xtevent(proxy_iv=1)` (a scalar lead, Stata `proxyiv(1)`) raised
+  `TypeError`; it now equals `proxy_iv=[1]` and Stata. A missing external
+  instrument raises `ColumnNotFound` instead of `KeyError`.
+- `sp.honest_did(backend='r')` raised `KeyError('ci_lower')` when R
+  HonestDiD accepted no point of its grid (it returns `lb = Inf`,
+  `ub = -Inf`, which jsonlite drops). HonestDiD's default grid for the
+  relative-magnitude families is -/+ 20 sd around zero, so any estimate
+  more than about 20 SE from zero hits this. It now raises
+  `ConvergenceFailure` naming the cause, with a grid around the estimate in
+  `recovery_hint` / `diagnostics['suggested_grid']`; with that grid the
+  set equals the zero-centred one moved by the estimate
+  (`tests/test_honest_did_backend.py`).
+- `sp.collapse` (and `collapse` in `sp.stata`) returned an empty frame
+  silently when no row takes part (every weight zero or missing, or `cw`
+  dropping every row). Stata 18 stops with `no observations`, `r(2000)`,
+  and leaves the data alone; so do these now (`DataInsufficient`; `_rc` is
+  2000 under `capture`). A group whose weights are all zero is left out,
+  as in Stata (`tests/test_data_layer.py`).
+- `sp.from_r('weightit(...)')` was refused with guidance pointing to
+  `sp.ps_weights`, although `sp.weightit` exists. It now translates
+  `weightit(treat ~ x1 + ..., method = "glm" | "ps" | "cbps" | "ebal" |
+  "energy", estimand, focal, moments, int, d.moments)` to `sp.weightit`;
+  five translated lines reproduce the WeightIt 1.7.0 weights of the
+  `sp.weightit` parity fixture to 1e-8 (WeightIt is GPL: outputs only).
+  Arguments that change the weights and have no counterpart (`stabilize`,
+  `s.weights`, `by`, ...) are listed as untranslated. The
+  `synthdid_estimate` guidance now names `sp.synthdid_estimate`. The other
+  `R_GUIDANCE` and Stata `_UNTRANSLATED_GUIDANCE` entries were audited: none
+  has a translation handler or names a missing function.
+- ⚠️ Correctness: `sp.xtivreg(method='re')` refused an excluded instrument
+  that does not vary within panels, which Stata accepts. With no
+  time-varying excluded instrument Stata estimates `sigma_e` from the
+  within regression without the endogenous regressors; this now does the
+  same, with a warning that the variance components are then not
+  consistent (the coefficients remain a consistent IV estimator; prefer
+  `vce='robust'`) and `model_info['within_omitted']`. Too few time-varying
+  instruments for the endogenous regressors is refused (which one Stata
+  drops is not documented). Checking against Stata 18 found two balanced-
+  panel conventions the unbalanced fixture had not exercised: the
+  `sigma_e` degrees of freedom count only the regressors the within
+  regression uses, and the `sigma_u` between regression leaves out excluded
+  instruments constant within panels. Balanced panels with a time-invariant
+  regressor or instrument change (`sigma_e` by ~0.1% per time-invariant
+  regressor). Twelve new Stata 18 cases on a balanced and the unbalanced
+  panel agree to 1e-11 (`tests/test_xtivreg_stata.py`). One Stata artifact
+  is documented, not copied: with `vce(robust)` / `vce(cluster)` its `K`
+  counts a continuous time-invariant regressor (rounding noise in its
+  within transform) but not a dyadic one.
+- `sp.granger_causality(id=, time=)` (Dumitrescu-Hurlin) returned a NaN
+  headline p-value without a word when a unit has at most 5 + 3K periods.
+  Stata `xtgcause` stops there (`r(459)`) and R `plm::pgrangertest`
+  refuses `Ztilde`; this now raises `DataInsufficient` naming the
+  condition, the largest lag order the panel allows and the short units
+  (`tests/reference_parity/test_ts_causal_parity.py`). The threshold was
+  checked against both at T = 8 / 9 (K = 1) and 11 / 12 (K = 2).
+- ⚠️ Correctness: `sp.binscatter(method='binsreg')` on an `x` with few
+  distinct values selected the number of bins as if `x` were continuous;
+  the quantile knots then collapsed (one bin for a ten-value `x`). As the
+  binsreg help describes (`dfcheck(20 30)`, `masspoints(veryfew)`) and
+  Stata `binsreg` 2.2 does, an `x` with at most `30 + J_rot` distinct
+  values now gets one bin per value, dots and intervals from the `p = 0`
+  fit; dots and intervals match Stata to 1e-10 on a ten-value fixture
+  (`tests/test_binsreg_parity.py`; binsreg is GPL, used as a black box).
+  The cutoff uses our continuous-`x` rule of thumb, which is larger than
+  binsreg's mass-point-adjusted one, so between roughly 42 and 49 values
+  (n = 1000-2000) this gives one bin per value where binsreg selects
+  about ten; above the cutoff its mass-point adjustment is still not
+  implemented (warned, as before). The default `method` is unchanged.
+- `src/statspai/__init__.pyi` had drifted from the runtime namespace by
+  107 declarations (103 public names missing, e.g. `sp.ida`,
+  `sp.binned_residuals`; four pointing to modules that moved). Regenerated;
+  `scripts/generate_stub.py --check` and a test in
+  `tests/test_type_stub.py` now compare the stub's declarations with
+  `sp.__all__`, so it cannot drift silently again.
+- ⚠️ Correctness: `sp.wild_cluster_boot(cluster='firm', bootcluster='st')`
+  with bootstrap clusters that cut across the one-way error clusters drew
+  the weights per `st` (2^8 = 256 draws on the probe data, p = 0.047)
+  where Stata `boottest` draws them per firm-by-state cell (p = 0.000):
+  its `bootcluster(st)` and `bootcluster(st firm)` give the same p-value.
+  The weights are now drawn for the intersections, with a warning; a
+  bootstrap clustering nested in one of the error clusterings is used as
+  given (the multi-way case was already right), and one nested in none of
+  them that is coarser, where boottest fails with a Mata error, is refused
+  (`MethodIncompatibility`). Nine enumerated (2^9) p-values match boottest
+  exactly (`tests/reference_parity/test_wcb_bootcluster_parity.py`).
+
+#### Evidence notes (no numeric change)
+
+- `sp.panel_match`: the standard errors (analytic and bootstrap) grow when
+  a period shock common to every unit is added, while the estimate does
+  not change. R PanelMatch 3.1.5 gives the same analytic SEs on the same
+  data to 1e-12 and its bootstrap SE moves the same way, so this is the
+  reference's behaviour, reproduced and now documented (docstring,
+  `docs/dev/modules/did.md`, a pinned test). Not changed pending the
+  owner's decision on the clean-room rewrite.
+
+### Learners and input checks in the treatment-effect estimators; `sp.xttobit` / `sp.xtintreg` fixes
+
+No existing number changes.
+
+- **Fixed**: `sp.aipw(ps_learner=)`, `sp.ipw(ps_learner=)`, `sp.ltmle(g_learner=)` raised `IndexError` and `sp.lmtp(ratio_learner=, outcome_learner=)` raised scikit-learn's clone `TypeError` when the learner was `sp.SuperLearner`, whose `predict_proba` returns the `(n,)` vector of P(Y = 1) and which had no `get_params`. The probability of class 1 is now read in one place (`core/_learners.py`): an `(n,)` vector as is, an `(n, 2)` array by its `classes_`, anything else refused with a typed error. `sp.SuperLearner` gains `get_params` / `set_params` / `classes_`, so `sklearn.base.clone` works on it; learners without `get_params` are deep-copied in every estimator (lmtp used to refuse them). Test: a SuperLearner with a one-learner library equals that learner in all four estimators (`tests/test_learner_types_te.py`). scikit-learn's `StackingClassifier`, pipelines, `sp.HALClassifier` and `sp.RlassoClassifier` already worked.
+- **Fixed**: `sp.bart_causal` with a label-coded treatment (`'ctl'` / `'trt'`) raised numpy's `could not convert string to float`; it now raises the same `MethodIncompatibility` as `sp.aipw` / `sp.ipw` / `sp.dml` / `sp.tmle`. Boolean treatments give the 0/1 result.
+- **Fixed**: `GroupSequentialResult.decision([nan])` returned `'continue'` (NaN compares false with every bound) and `[inf]` returned `'stop: efficacy'`; a non-finite or non-numeric z is now refused.
+- **Fixed**: `sp.xttobit(ll=, ul=)` accepted `ll >= ul` (Stata 18 runs `ll(2) ul(1)` to "convergence not achieved" with a meaningless table and stops `ll(2) ul(2)` with r(504)); it now refuses.
+- **Fixed**: `sp.xttobit` / `sp.xtintreg` raised `IndexError` on a perfectly collinear regressor. They now omit the later member of the dependent set with Stata's note (`core/_collinear.py`, as `sp.tobit` / `sp.intreg`) and list it in `model_info['omitted']`; estimates, log-likelihood and (for xttobit) standard errors equal Stata 18's `xttobit y x1 x2 x3` / `xtintreg lo hi x1 x4 x2` with `x3 = x1 + x2`, `x4 = 2*x1` at 1e-6 (`tests/test_xttobit_stata.py`, fixture do-file extended).
+- **Changed**: `sp.xtintreg` is about 2.3 times faster (2.8 s to 1.2 s on the 540-row test panel; xttobit 0.4 s): each interval row evaluates only the tail form it keeps instead of both. Outputs are byte-identical to before on the Stata fixture and a second panel.
+
+### Stata translation: `stteffects`, `didregress aggregate()`, classical `wyoung`; `sp.egen`
+
+#### Added
+
+- `sp.from_stata` / `sp.stata` translate `stteffects ra | wra | ipw |
+  ipwra` to `sp.stteffects` (equations read by position; `lnormal` ->
+  `dist='lognormal'`, `probit` treatment model, constant-only censoring
+  model `(, weibull)`, `atet`, `pomeans`, `level()`). Fifteen lines run
+  through `sp.stata` reproduce Stata 18
+  (`tests/test_stata_translation_stteffects.py`). `ipwra, atet` is
+  translated with `atet` flagged (`complete=False`, `sp.stata` refuses):
+  Stata averages over the whole sample, `sp.stteffects` over the treated.
+  `noconstant`, `gamma` and `hetprobit` are refused.
+- `didregress` / `xtdidregress ..., aggregate(dlang | dlang, varying |
+  standard)` translate to `sp.didregress(aggregate=...)`, with
+  `dlang_df='stata'` for the Donald-Lang fits so the interval uses Stata's
+  degrees of freedom; the ten Stata 18 reference lines run through
+  `sp.stata` to 1e-10 (`tests/test_stata_translation_didregress_aggregate.py`).
+  `aggregate(dlang)` with `vce(cluster)` or `wildbootstrap` is refused, as
+  Stata refuses it.
+- `sp.westfall_young(robust=False)` (or `vce='ols'`): the classical OLS
+  t-statistic, as Stata `regress` without options; the default (HC1 / CR1)
+  is unchanged. `wyoung ..., cmd(regress OUTCOMEVAR d x)` with no SE option
+  now translates (`robust=False`) instead of being refused. Coefficients,
+  t and analytic p-values equal Stata `wyoung` to 1e-12 on a stratified and
+  a completely randomized design; the adjusted p-values agree within Monte
+  Carlo error of wyoung's 20,000 draws
+  (`tests/reference_parity/test_westfall_young_wyoung_parity.py`; wyoung
+  used as a black box).
+- `sp.egen(data, fcn, x, by=, where=, ...)`: Stata's `egen` as a public
+  function (statistics by group, `rank` with `field` / `track`, `std`,
+  `seq`, `group` / `tag`, row functions, `anycount` / `anymatch`, `cut`),
+  returning a double-precision Series. It is the implementation the `egen`
+  step of `sp.stata` already used, moved to `utils/egen.py`; `sp.stata`'s
+  behaviour is unchanged. 42 commands match Stata 18 to 1e-12
+  (`tests/test_egen_public.py`).
+
+- `sp.stata` reads the panel declaration `sp.xtset` stores on the data
+  (`df.attrs`), as Stata's `use` restores a dataset's `xtset`: `L.x` /
+  `F.x` / `D.x` work without an `xtset` line, and the data are sorted by
+  panel and time as `xtset` sorts them (`_n` is Stata's). `use` of a frame
+  passed in `files=` restores its declaration; a declaration naming
+  columns the data no longer have is ignored with a warning. Lags, `_n` and
+  `regress y L.x D.x` match Stata 18 on an unsorted gapped panel
+  (`tests/test_stata_xtset_attrs.py`).
+
+- Guide `docs/guides/data_layer.md` (in the mkdocs nav): `sp.xtset`, lags /
+  leads / differences when periods are missing, time-series and
+  factor-variable terms in formulas and in `sp.stata`, `sp.reshape`,
+  `sp.collapse`, `sp.egen`. Every block is executed by
+  `tests/test_data_layer_guide.py`, which compares the printed output with
+  the guide.
+
+#### Fixed
+
+- `sp.rank` docstring: Stata's `field` is `method='min', ascending=False`
+  and `track` is `method='min'` (it said `'min'` -> `field`, `'dense'` ->
+  `track`); checked in Stata 18. No numbers change.
+
+### `sp.ltmle_msm`: working marginal structural models
+
+#### Added
+
+- `sp.ltmle_msm(data, y, treatments, covariates_time, regimes,
+  summary_measures, msm_terms=, baseline=, censoring=, msm_weights=,
+  weights=)`: longitudinal TMLE of a logistic working marginal structural
+  model over a set of static, dynamic (callable) or per-unit regimes -- R
+  `ltmle::ltmleMSM` with one final outcome node. Per-regime sequential
+  regressions, one fluctuation per node shared by all regimes (covariates
+  the working-model design, weights `h(d) / g`), the projection fitted to
+  the targeted means, influence-curve SEs, and the IPTW estimate alongside.
+  Equals ltmle 1.3-0 (GPL-2, used as a black box) to 1e-8 on nine
+  configurations (static, equal / user / empirical projection weights, a
+  baseline term, censoring, a continuous outcome, observation weights, a
+  dynamic regime, a duplicated regime;
+  `tests/reference_parity/test_ltmle_msm_parity.py`). Pooling over several
+  outcome nodes (`final.Ynodes`) and `variance.method='tmle'` are not
+  implemented.
+
+### Replicate-weight survey designs
+
+#### Added
+
+- `sp.svrepdesign(data, repweights=, weights=, type=)` declares a design
+  by its replicate weights (BRR, Fay, JK1, JKn, JK2, bootstrap, ACS /
+  successive difference, other) and `sp.as_svrepdesign(design, type=)`
+  builds JK1 / JKn / BRR / Fay weights from a strata / PSU design. The
+  statistic is recomputed with every replicate's weights; the variance is
+  `scale * sum_r rscales_r (theta_r - c)^2` with R `svrepdesign`'s
+  `scale` / `rscales` / `mse` per type and df = rank of the replicate
+  weights minus one. Accepted by `sp.svymean` / `svytotal` / `svyglm` and,
+  through `design=`, by `sp.regress`, `logit`, `probit`, `ipw`, `aipw`,
+  `tmle`, `ltmle`, `cox`, `did_2x2`, `callaway_santanna` and `sp.did`;
+  the other `design=` estimators refuse a replicate design with a typed
+  error. Equal to R survey 4.5 (`svrepdesign` + `svymean` / `svytotal` /
+  `svyglm` / `svycoxph` with Breslow ties / `withReplicates` of IPW and of
+  `did::att_gt`) on seven replicate designs, and to Stata 18 `svy brr` /
+  `svy jackknife` (`tests/reference_parity/test_survey_replicate_parity.py`).
+  JKn and JK1 weights built by `as_svrepdesign` are R's `as.svrepdesign`
+  weights exactly; BRR / Fay use a Sylvester Hadamard matrix (fully
+  balanced, not R's half-samples). Documented differences: Stata reports
+  #replicates - 1 as the BRR df; Stata's `svy bootstrap` divides by R
+  (`scale=1/R` reproduces it); on Cox fits with Efron ties R's
+  `svycoxph` keeps a replicate's deleted rows with a negligible weight,
+  which its tie fractions count (SEs ~3e-4 apart; the test reproduces R's
+  numbers that way). Stata `svy` keeps replicate estimates in float unless
+  `saving(, double)` is used, which moves its e(V) by ~1e-7.
+### `sp.xtregar`: fixed- and random-effects regression with an AR(1) disturbance
+
+#### Added
+
+- `sp.xtregar(data, y=, x=, id=, time=, method='re'|'fe', rhotype=, rhof=,
+  twostep=, lbi=)` is Stata's `xtregar` on unbalanced panels with gaps in
+  the time index: `rho` from iterated Prais-Winsten on the demeaned data
+  without a constant (every `rhotype`: `dw`, `regress`, `freg`, `tscorr`,
+  `theil`, `nagar`, `onestep`) or fixed; Baltagi and Wu's transformation
+  (`rho^d` across a gap of `d` periods); the within estimator or Baltagi
+  and Wu's GLS; the modified Bhargava et al. Durbin-Watson and LBI
+  statistics. Against Stata 18 MP on 29 runs (every rhotype, iterated and
+  two-step, fixed rho, LBI, gap-free subset): coefficients, standard
+  errors and every reported scalar agree to 1e-15
+  (`tests/test_xtregar_stata.py`). Conventions pinned along the way:
+  `theil` and `nagar` count the constant in `k` and divide by the number
+  of consecutive pairs; the `F` test of `u_i = 0` uses the transformed
+  constant in the pooled model.
+- Two departures, both documented: the fixed-effects `_cons` standard
+  error is divided by `1 - rho` like the coefficient (Stata leaves it
+  undivided, about 2.5 times too small at `rho = 0.6` by simulation), and
+  the random-effects Wald test has `p` degrees of freedom (Stata labels it
+  `chi2(p + 1)`).
+
+### Evidence notes (no numeric change)
+
+- `sp.xtintreg`: the 0.5% gap in `se(sigma_e)` against Stata is Stata's
+  analytic Hessian under adaptive quadrature, which differs from the
+  curvature of its own likelihood (finite differences of Stata's `e(ll)`
+  give our number); with `intmethod(ghermite) intpoints(100)` Stata's
+  standard errors match ours to 1e-10.
+- `sp.group_sequential`: expected sample sizes match Stata `gsdesign` to
+  1e-7 for efficacy-only and binding designs. For nonbinding futility
+  Stata adds efficacy crossings computed with futility ignored to futility
+  crossings computed with futility followed, so its weights sum to more
+  than one (its futility-only ESS1 exceeds `N_max`); ours follows the
+  futility rule. Both are now tested.
+
+### `design=` on `sp.ltmle` and `sp.match`
+
+#### Added
+
+- `sp.ltmle(..., design=sp.svydesign(...))`: the design weights as
+  observation weights and the survey linearisation of the influence curve
+  (`IC / n`) over strata / PSUs / fpc, with t intervals on the design df;
+  `detail` also carries the design SEs of the two regime means. Equals R
+  `ltmle` 1.3-0 influence curves + `survey::svyrecvar` on 12 configurations
+  (`tests/reference_parity/test_ltmle_design_parity.py`).
+- `sp.match(..., design=)` for nearest-neighbour ATT / ATC: the design
+  weights as MatchIt `s.weights` and the survey linearisation of the
+  matched-sample regression with the matched rows as a domain of the full
+  design -- R `MatchIt` 4.7.2 + `svyglm(y ~ d, subset(design, matched))`,
+  equal to 1e-8 on 12 configurations
+  (`tests/reference_parity/test_match_design_parity.py`). Other matching
+  methods have no influence function and are refused with a typed error
+  pointing to `sp.ipw` / `sp.aipw` / `sp.tmle(design=)`.
+
+### Survey designs reach `sp.did`; PH test for weighted Cox fits
+
+#### Added
+
+- `sp.did(..., design=sp.svydesign(...))` forwards the design to
+  `sp.did_2x2` (`method='2x2'` / `'classic'` / `'twfe'`) and
+  `sp.callaway_santanna` (`method='cs'`, panel, analytic SEs); the numbers
+  are those of the two estimators' `design=` paths (R `survey` /
+  `did` parity in `tests/reference_parity/test_survey_did_parity.py`, now
+  also through the dispatcher). Other methods and `aggregation=` are
+  refused with a typed error (`sp.aggte` has no design variance; the CS
+  design fit already reports the simple ATT and the event study).
+- `CoxResult.ph_test()` on fits with `weights=` and / or `start=`
+  (counting-process data): the score test of R `survival::cox.zph`, equal
+  to it on 14 weighted, delayed-entry, time-varying and stratified fits
+  under both tie rules and the four time transforms (relative 1e-6;
+  `tests/reference_parity/test_cox_zph_weighted_parity.py`). These fits
+  used to raise. The time transform ignores the weights and the
+  information is model-based whatever variance the fit reports, as
+  `cox.zph` does (read from its outputs; survival is LGPL, used as a black
+  box). `method='approx'` stays unweighted / right-censored only; fits
+  with `design=` are refused. Weighted fits now also carry
+  `model_info['ph_test']`, so `result.violations()` can flag them.
+
+### `sp.lmtp(censoring=, estimator='sdr')`
+
+#### Added
+
+- `sp.lmtp(..., censoring=[...])`: right censoring (indicator after each
+  treatment, 1 = observed, monotone). The policy also prevents censoring;
+  one classifier per time point stacks the natural rows still observed
+  against the policy rows at risk, which gives the censoring-adjusted
+  density ratio; censored units drop out of later regressions. Variables
+  after a unit's censoring may be missing. With censoring the
+  natural-course reference in `model_info` is the same estimator under the
+  identity policy.
+- `sp.lmtp(..., estimator='sdr')`: the sequentially doubly robust
+  estimator (doubly robust pseudo-outcomes, unbounded predictions, the
+  estimate is the mean of the influence function).
+- Both equal R `lmtp` 1.5.4 (`lmtp_tmle` / `lmtp_sdr`, AGPL, used as a
+  black box) with `SL.glm` learners and `folds = 1`: density ratios to
+  1e-12, estimates and SEs to 2e-7 relative (R glm's tolerance), on point
+  and two-period designs with and without censoring
+  (`tests/reference_parity/test_lmtp_parity.py`). The uncensored TMLE path
+  is bit-identical to before.
+
+### `sp.weightit(method='energy')`
+
+#### Added
+
+- Energy balancing for binary and multi-category treatments
+  (`sp.weightit(..., method='energy')`, Huling and Mak 2024): non-negative
+  weights minimising the energy distance between each weighted group and
+  the full sample (ATE; with `improved=True`, the default, also between
+  pairs of groups) or the focal group (ATT / ATC), with `lam=`, `dist=`
+  (`'scaled_euclidean'`, `'mahalanobis'`, `'euclidean'`), `min_w=` and exact
+  mean balance through `moments=` / `interactions=`. The quadratic
+  programme is solved exactly by an active-set iteration on the optimality
+  conditions (no new dependency). Weights equal R WeightIt 1.7.0 (GPL,
+  used as a black box) to 1e-9 on 15 specifications; on a flat programme
+  where WeightIt's OSQP stops early, the objective values agree to 1e-11
+  and ours is the lower
+  (`tests/reference_parity/test_weightit_energy_parity.py`). Continuous
+  treatments are refused. `moments=` now defaults to `None` (1 for
+  `cbps` / `ebal`, as before; 0 for `energy`).
+
+### `sp.ipw(ps_learner=)`
+
+#### Added
+
+- `sp.ipw(..., ps_learner=, cross_fit=True, n_folds=5)`: any scikit-learn
+  style classifier (or `sp.SuperLearner(task='classification')`) for the
+  propensity score, cross-fitted by default; every bootstrap replicate
+  refits it and keeps each copy of a unit in that unit's fold. The
+  stacked sandwich, `design=` and `propensity=` are refused with a
+  learner, and `cross_fit=False` warns. An unpenalised logistic learner
+  reproduces the default to 1e-6 (estimate and bootstrap SE); a spline
+  logit recovers a constant effect the linear logit misses
+  (`tests/test_ipw_ps_learner.py`). Weighting alone is not doubly robust;
+  the docstring points to `sp.aipw(ps_learner=)`.
+
+### Honest DiD: `sp.breakdown_m` for every restriction; module split
+
+#### Added
+
+- `sp.breakdown_m(..., honestdid_method=, bias_direction=,
+  monotonicity_direction=)` and `method='smoothness_relative_magnitude'`:
+  the breakdown value of every restriction set `sp.honest_did` offers (sign
+  and shape restrictions, `Delta^SDRM`, and the test-inverted intervals
+  under smoothness). It is the first `M` at which the set `sp.honest_did`
+  reports contains zero, found by a log-grid scan and bisection, because
+  these sets are not nested in `M` (R `HonestDiD`'s own `Delta^RMNB` set
+  contains zero at `Mbar = 0.0026`, excludes it at `0.0052` and contains it
+  again at `0.01` on the test input). R `HonestDiD` has no breakdown
+  function; with `method = "Conditional"` its sensitivity grid excludes
+  zero at `0.997 M*` and contains it at `1.003 M*` for all ten restrictions
+  tested (`tests/reference_parity/test_honest_breakdown_R_parity.py`);
+  near-noiseless designs recover the identified-set crossing
+  (`tests/test_honest_breakdown_restrictions.py`). Where the pre-period
+  coefficients reject the restriction at small `M` (empty set), it warns.
+  The default paths (the FLCI under smoothness, C-LF under relative
+  magnitudes) are unchanged.
+
+- `sp.xtevent_smpath(result, postwindow=None, maxorder=10, level=0.95)`:
+  the "least wiggly" confound path that Stata `xteventplot, smpath(line)`
+  draws after `xtevent` (the lowest-degree polynomial through the
+  normalised coefficient inside the Wald region, with the smallest leading
+  coefficient), solved in closed form. The least Wald statistic at each
+  degree and the critical value equal Stata 18's (to the 9 digits it
+  prints), so the degree chosen is the same; the path is a screen against
+  Stata's numerical optimiser (within 1e-7 on four designs, 2e-4 on a fifth,
+  where the closed form has the smaller leading coefficient)
+  (`tests/reference_parity/test_xtevent_smpath_Stata_screen.py`).
+
+#### Changed
+
+- `did/honest_did.py` (1,944 lines) and `did/_arp.py` (895) are split by
+  concern into `_honest_common` / `_honest_r` / `_honest_breakdown` /
+  `_honest_moments` and `_arp_sets`; every name is still importable from
+  its old module. Outputs are byte-identical (Track A 10 / 16 / 21 / 84 and
+  a 375-call probe).
+
+#### ⚠️ Correctness
+
+- `sp.honest_did(method='smoothness', honestdid_method='Conditional' |
+  'C-LF')` (and the sign / shape variants) reported an empty set (`NaN`
+  bounds, `rejects_zero=False`) when the estimate lay more than the
+  identified set's half-width plus 20 standard deviations from zero:
+  HonestDiD's default grid is centred at zero and accepted nothing (R
+  returns `NA` there). The grid now moves to the estimate in that case, as
+  the relative-magnitude family already did; every other set is unchanged.
+
+### Re-probe of the functions added or changed on 2026-10-19/20
+
+Boundary probes (known-truth simulations, missing values, label columns,
+single clusters, polars and the MCP path) of the ~60 functions from that
+batch, then a re-run of the 2026-10-19 agent-native audit.
+
+#### ⚠️ Correctness
+
+- `sp.dose_response(method='dr')` called without models received the GPS
+  default (gradient boosting) for the treatment mean, and its variance
+  model was fitted on in-sample residuals, so the density collapsed: on
+  `E[Y(t)] = sin(t)` the curve ran from -71 to 697. The DR curve now uses
+  its documented linear default and cross-fitted (honest) residuals for the
+  variance; every grid point is within 3 SEs of the truth on that design
+  (`tests/test_dose_response_dr.py`). An unfitted sklearn ensemble passed
+  as a model also crashed on truth testing (`dose_response`,
+  `conformal_ite`).
+- `sp.ologit` / `sp.oprobit` / `sp.gologit` sorted the labels of an
+  ordered `pd.Categorical` outcome alphabetically, scrambling it; the
+  declared order is now used (identical to the fit on integer codes).
+- `sp.lee_bounds(weights=)` kept zero-weight rows in the mean-one
+  rescaling and in N: analytic SEs were `sqrt(n_positive / n)` too small
+  and `n_obs` counted them. They are dropped with a warning.
+- `sp.sar` / `sem` / `sdm` / `sac` / `sdem` / `gns` (maximum likelihood)
+  report z statistics and normal intervals, as Stata `spregress, ml`; they
+  used t(n - k). Estimates and SEs are unchanged; intervals now equal Stata
+  18's on the same data (`tests/test_spatial_ml_z_inference.py`).
+- `sp.augsynth(progfunc='none', scm=False)` returned the average of
+  uniform donor weights (6.878 on the probe panel); R
+  `augsynth(progfunc = "None", scm = FALSE)` returns the SCM estimate
+  (3.334), as the docstring says. Without the ridge augmentation the fit
+  is now SCM whatever `scm=` says.
+- `sp.sun_abraham` / `sp.did_imputation` reported `n_obs = len(data)`
+  after dropping rows with a missing outcome; `n_obs` now counts the rows
+  used.
+- `sp.l1_imbalance(weights=)` set its bins after dropping zero-weight rows,
+  so an after-matching L1 used other cells than the before-matching one
+  (0.150 instead of 0.104 after k2k). Bins come from every complete row.
+- `sp.msprt` with the plug-in variance rejected 9.5% of null experiments
+  at a nominal 5% (the first looks used 2 observations per arm). The
+  default `min_per_arm` is now 10 with the plug-in variance (2.5-3.0% in
+  simulation) and 1 with `sigma=`.
+- `sp.spillover` dropped rows with a missing outcome before computing peer
+  exposure, so their treatment vanished from their cluster-mates'
+  exposure. Exposure now uses every unit; such rows leave only the
+  contrasts (with a warning), and a missing treatment or cluster is refused.
+
+#### Fixed
+
+- `sp.margins` / `sp.margins_at(vcov=False)` ignored the flag after LDV
+  models (intreg, ologit, gologit, heckprobit).
+- Typed errors instead of raw numpy / pandas ones, or silent acceptance:
+  `heckprobit` with an outcome constant on the selected rows (used to
+  report convergence with SE 3e30); panel `local_projections` and
+  `xtivreg` / `iv_wild_bootstrap` with one cluster (SE ~1e-16 or
+  ZeroDivisionError); `iv_wild_bootstrap` with `data` in another row order
+  than the fit (silently mismatched clusters); `xtpcse` with collinear
+  regressors or no consecutive periods for `ar1`; panel
+  `granger_causality` with a series constant within a unit;
+  `wild_cluster_boot(bootcluster=)` naming a missing column; spatial ML
+  formulas with `C()` / expressions or missing values; `causal_impact`
+  with missing values, duplicated periods, collinear covariates or an
+  incomparable `intervention_time`; `bacon_decomposition(covariates=)`
+  with a categorical, time-invariant or duplicated covariate (was
+  misdiagnosed as "treatment collinear"); label-valued treatments in
+  `mediate`, `four_way_decomposition`, `lee_bounds`, `mediate_paths`,
+  `stteffects`, `l1_imbalance`; negative durations and event codes other
+  than 0/1 in `kaplan_meier` / `cox` / `rmst` / `logrank_test`;
+  `search_functions(category=)` with an unknown category (returned []).
+- Rows dropped for a missing weight are now announced (`ebalance`,
+  `match(sampling_weights=)`, `finegray`, `cox`, `kaplan_meier`, `rmst`).
+- `sp.binscatter(method='binsreg', ci=True)` crashed when a bias-corrected
+  interval excluded its dot; intervals are drawn as segments.
+- `sp.coefplot(drop='Intercept')` (a string) was read letter by letter.
+- `sp.ida` accepts a CPDAG sent as `DataFrame.to_dict()` (the MCP form).
+- `match(method='cem', k2k=True)`: pandas FutureWarning on the cell column.
+- MCP: `call_function` folds arguments sent next to `function` instead of
+  under `arguments`; a `result_id` call to a function without `data=`
+  (slopes, hypotheses, predictions ...) no longer fails when the request
+  also carries `data_path`.
+
+#### Agent discovery
+
+- `search_functions`: "entropy balancing" ranks `sp.ebalance` first, the
+  Chinese term for weak instruments reaches the weak-IV diagnostics, and
+  `synthdid` (the R package name) resolves to `sp.sdid`.
+- Card examples: the 30 functions added in the batch and 31 that gained
+  parameters now carry examples that build their own data and run as
+  written (`tests/test_card_examples.py` runs all of them); before, every
+  one failed with `NameError`.
+
+### `sp.mediate(design=)`
+
+#### Added
+
+- `sp.mediate(..., design=sp.svydesign(...), inference='robust')`: the
+  design's weights and the design-based (linearisation) variance of the
+  stacked estimating equations, through the shared
+  `survey.linearization.design_vcov`, with `t` intervals on the design
+  degrees of freedom. Stata `svy` does not support `mediate`; with PSUs and
+  no strata the SEs equal Stata 18 `mediate [pw=w], vce(cluster psu)`
+  times `sqrt(G / (G - 1))`, the survey factor Stata's `mediate` omits
+  (`tests/reference_parity/test_mediate_design_Stata_parity.py`).
+  `sp.lee_bounds` has no `design=` (its bounds have no influence function
+  here); use `weights=` with the bootstrap.
+
+### Spatial: random-effects panel, SDEM and GNS
+
+#### Added
+
+- `sp.spatial_panel(..., effects='re')`: random unit effects by full
+  maximum likelihood (with a constant), for `model='sar' | 'sem' | 'sdm'`
+  and the new `model='sac'` (spatial lag and spatial error, random effects
+  only) -- the model of Stata `spxtregress, re`. Estimates, `sigma_u` /
+  `sigma_e` (`result.variance_components`) and OIM standard errors equal
+  Stata 18 to 1e-6 on all four specifications
+  (`tests/reference_parity/test_spatial_panel_re_Stata_parity.py`).
+- `sp.sdem(W, data, formula)` (spatial Durbin error) and `sp.gns(...)`
+  (general nesting: lags of `y`, `X` and the error) by maximum likelihood
+  with OIM standard errors; equal Stata 18 `spregress, ml` to 1e-6 on a
+  symmetric and an asymmetric weights matrix
+  (`tests/reference_parity/test_spatial_durbin_error_Stata_parity.py`).
+
+### Instruments from a DAG; `sp.ida`
+
+#### Added
+
+- `sp.dag(...).instrumental_variables(exposure, outcome, ancestral=True)`
+  lists the instruments a causal DAG implies, each with the smallest
+  conditioning set: the ancestral instruments R
+  `dagitty::instrumentalVariables` lists (equal instrument sets on 200
+  random DAGs with latent confounders; both packages' conditioning sets
+  checked against the definition by d-separation), or with
+  `ancestral=False` also those that need a collider in the conditioning
+  set (`tests/reference_parity/test_dag_instruments_dagitty_parity.py`).
+- `sp.ida(data, cpdag, x, y, method='local' | 'global')`: IDA, the
+  possible causal effects of `x` on `y` across the DAGs of a CPDAG
+  (`sp.pc_algorithm` / `sp.ges` output), linear-Gaussian. The multisets
+  of effects equal R `pcalg::ida` to 1e-10 on 40 random graphs, both
+  methods (`tests/reference_parity/test_ida_pcalg_parity.py`). dagitty
+  and pcalg are GPL and were used as black boxes.
+
+### `sp.mediate(weights=)`
+
+#### Added
+
+- `sp.mediate(..., weights='w')`: sampling weights in both models
+  (weighted least squares / weighted likelihood) and in the
+  potential-outcome means, with the weighted sandwich for
+  `inference='robust'` and a weight-carrying case bootstrap for
+  `'bootstrap'`; `'delta'` refuses. Every outcome / mediator pair the
+  potential-outcome estimator supports takes weights. Effects and SEs
+  equal Stata 18 `mediate [pw=w]` to 1e-9 on linear / logit / probit model
+  pairs (`tests/reference_parity/test_mediate_weights_Stata_parity.py`).
+
+### `sp.lee_bounds(weights=)`
+
+#### Added
+
+- `sp.lee_bounds(..., weights='w')`: sampling weights in the retention
+  rates, the trimming quantile (Stata `_pctile` with probability weights),
+  the mass kept at a tied threshold, the means and the analytic variance,
+  as Stata `leebounds [pw=w]` computes them. Needs `trimming='leebounds'`
+  (which also stores the weights and `y^2` in single precision, as
+  `leebounds` does) or `'exact'`; refused with `covariates=`. On four
+  settings the bounds, the trimming share and the `cieffect` interval's
+  inputs equal Stata 18 to 1e-12 and the SEs to 1e-8
+  (`tests/reference_parity/test_lee_bounds_weights_Stata_parity.py`). One
+  documented difference: without a tie at the threshold, `leebounds` leaves
+  the weights out of one variance term of its upper trimmed mean; we weight
+  it, and the test rebuilds Stata's SE from the unweighted term.
+  `model_info['threshold_tie']` says which side took the tied branch.
+  `sp.from_stata('leebounds y d [pw=w], ...')` now translates.
+
+### `sp.gologit`: generalized ordered logit / probit (partial proportional odds)
+
+#### Added
+
+- `sp.gologit(data, y, x, pl=, npl=, link='logit' | 'probit', vce=)`, the
+  model of Stata's user-written `gologit2`: `Pr(Y > c_j) = F(a_j +
+  x'b_j)` with free or parallel-lines coefficients per variable, gologit2's
+  coefficient layout (`'<category>:<variable>'`), a warning when the
+  unconstrained model predicts negative probabilities, and `sp.margins`
+  per outcome. Against gologit2 3.2.8 (used as a black box) coefficients,
+  standard errors and margins agree to 1e-6, gologit2's own convergence
+  tolerance (`tests/test_gologit_stata.py`); `pl=True` reproduces
+  `sp.ologit` (`a_j = -cut_j`).
+
+### `sp.xttobit` / `sp.xtintreg`: random-effects tobit and interval regression
+
+#### Added
+
+- `sp.xttobit(data, y, x, id, ll=, ul=)` and `sp.xtintreg(data, y_lower,
+  y_upper, x, id)`, Stata's `xttobit` / `xtintreg`: normal panel effect
+  integrated out by adaptive Gauss-Hermite quadrature (30 nodes by default,
+  centred at each panel's mode), `sigma_u`, `sigma_e`, `rho` and the
+  likelihood-ratio test against the pooled model. Against Stata 18 on 120
+  unbalanced panels: `xttobit` coefficients, standard errors, `sigma_u`,
+  `sigma_e`, log-likelihood and LR statistic to 1e-7; `xtintreg` estimates
+  and log-likelihood to 1e-7, standard errors within 0.5% (ours equal an
+  independent finite-difference Hessian of the likelihood to 1e-7; the
+  remaining gap is unexplained and recorded as an open item in
+  `docs/dev/modules/panel_multilevel.md`) (`tests/test_xttobit_stata.py`).
+
+### `sp.margins` after `fepois` / `feglm` refuses standard errors that ignore the fixed effects
+
+#### Changed
+
+- `sp.margins` / `sp.margins_at` / `sp.contrast` / `sp.pwcompare` after a
+  fit with absorbed fixed effects reported delta-method standard errors
+  holding the estimated effects fixed whenever the quantity depends on them
+  (any margin after `sp.fepois` / `sp.feglm`, predictive margins after
+  `sp.feols`). On `tests/fixtures/margins_fe/fep.csv` that gave 0.121 for
+  the AME after `fepois` with clustered errors, where Stata reports 0.106
+  after both `poisson y x i.g, vce(cluster g)` and `ppmlhdfe ..., d
+  vce(cluster g)`. They now raise `MethodIncompatibility`, as R
+  marginaleffects does on a fixest model; `vcov=False` (new on `margins` /
+  `margins_at`) returns the estimates without the standard-error columns.
+  Slopes and contrasts of linear models keep their standard errors. Fitting
+  the effects as `C(g)` terms reproduces Stata's number
+  (`tests/test_margins_fe_refusal.py`).
+
+### Weighting for multi-category and continuous treatments: `sp.weightit`, `sp.bal_tab`
+
+#### Added
+
+- `sp.weightit(data, treat, covariates, method=, estimand=)`: balancing
+  weights for binary, multi-category and continuous treatments in one
+  call (the R `WeightIt` workflow). `method='glm'` inverts a
+  (multinomial) logit propensity score, or for a continuous treatment
+  takes the normal density ratio; `'cbps'` is the just-identified
+  covariate balancing propensity score for categorical treatments;
+  `'ebal'` is entropy balancing (each arm to the full-sample or focal
+  means; for a dose, zero weighted treatment-covariate covariance with
+  `moments=` / `interactions=` / `d_moments=`). Estimands ATE, ATT (with
+  `focal=`), ATC, ATO, ATM where defined. Weights equal WeightIt 1.7.0 to
+  1e-9 in 23 configurations; the multinomial `glm` fits to 2e-7 because
+  WeightIt's optimizer stops at a score of 1e-6 (ours is the MLE to
+  1e-11). WeightIt's continuous CBPS (a GMM criterion that does not reach
+  exact balance) is not offered.
+- `sp.bal_tab(data, treat, covariates, weights=)`: cobalt-style balance
+  for the same three treatment types: standardized mean differences on
+  unweighted standard deviations, raw differences for binary covariates,
+  variance ratios, KS statistics, pairwise (or each-versus-all)
+  comparisons for multi-category treatments with the maximum as the
+  summary, Pearson and Spearman treatment-covariate correlations for a
+  continuous treatment, and effective sample sizes. Equals cobalt 4.6.2
+  to 1e-9 on eleven settings.
+  `tests/reference_parity/test_weightit_cobalt_parity.py`.
+- WeightIt and cobalt (GPL) were used as black boxes: their
+  documentation and outputs only.
+- `sp.ebalance(weights=)`: sampling (survey) weights, WeightIt's
+  `s.weights`. They are kept separate from `base_weights=` (the entropy
+  reference): the balancing targets become the sampling-weighted moments
+  of the target group, the reweighted arm is balanced in the
+  sampling-weighted sense and both outcome means carry the weights. The
+  M-estimation variance weights every estimating function by them.
+  Estimate and standard error equal `WeightIt::lm_weightit(vcov =
+  "asympt")` for ATT / ATE / ATC with and without base weights (12
+  settings; estimate 2e-9, SE 1e-7).
+  `tests/reference_parity/test_ebalance_sweights_parity.py`.
+- `sp.match(sampling_weights=)`: survey weights in nearest-neighbour
+  matching, MatchIt's `s.weights`: the propensity score is the logit
+  weighted by them, matching is unchanged, and the effect is the
+  weighted difference in means of the matched sample with weights
+  `matching weight * sampling weight`; standard error clustered on
+  matched sets without replacement and HC3 with replacement (the recipe of
+  MatchIt's vignettes). Score, matched pairs, estimate and SE equal
+  MatchIt 4.7.2 + sandwich in four settings (score 5e-9: R glm's
+  tolerance; estimate and SE 1e-9).
+  `tests/reference_parity/test_match_sweights_parity.py`. `weights=` stays
+  the frequency weight it was. k:1 matching without replacement can pick
+  different sets from MatchIt when controls run short (MatchIt assigns
+  the k-th controls in a later round); that is a property of the
+  matching, unchanged here.
+- `sp.ltmle(weights=)`: observation (sampling) weights, R ltmle's
+  `observation.weights`, in every regression, the fluctuations, the
+  plug-in mean and the influence curve. Equals ltmle 1.3-0 to 1e-10 with
+  and without censoring, binary and continuous outcomes.
+  `tests/reference_parity/test_ltmle_weights_parity.py`.
+- MatchIt, sandwich and ltmle (GPL) were used as black boxes.
+
+### Two-way cluster DML: `sp.dml(cluster=[c1, c2])`
+
+#### Added
+
+- `sp.dml(cluster=[c1, c2])`: two-way cluster-robust DML (Chiang, Kato,
+  Ma and Sasaki 2022, as DoubleML implements it) for PLR, IRM, PLIV and
+  IIVM. Each cluster dimension is split into `n_folds` folds; the
+  `n_folds**2` cells test units in fold `k` of one dimension and `l` of
+  the other and train on units sharing no cluster with them; the estimate
+  solves the cell-weighted score and the variance sums the two
+  dimensions' within-cell cluster scores. `fold_indices` takes an `n x 2`
+  array of per-dimension folds. Estimate and SE equal Python DoubleML
+  0.11.3 to 1e-15 given the same folds for all four models.
+  `tests/reference_parity/test_dml_twoway_cluster_doubleml_parity.py`.
+  One-way `cluster=` is unchanged.
+
+### Bayesian causal forest: `sp.bart_causal`
+
+#### Added
+
+- `sp.bart_causal(data, y, treat, covariates, method='bcf' | 'bart')`:
+  posterior-sampling Bayesian tree models for a binary treatment on the
+  `sp.bart` engine. `'bcf'` is the Bayesian causal forest of Hahn, Murray
+  and Carvalho (2020): a prognostic forest with the propensity score, a
+  separate effect forest with a stronger tree prior, half-Cauchy and
+  half-normal scale priors. `'bart'` is one BART response surface with
+  effects as prediction differences (bartCause's default response model).
+  Posterior of the ATE / ATT / ATC and of every individual effect,
+  several chains with split R-hat. Evidence: known truth
+  (`tests/test_bart_causal.py`) and a seed screen against R bcf 2.0.2 and
+  bartCause 1.0.10, eight seeds a side (tier S, not parity): BCF ATE
+  posterior means 0.06 posterior SDs apart, SDs within 1.2%; BART 0.02
+  posterior SDs apart, SDs within 0.6%, with the prior of `dbarts::bart2`
+  that bartCause calls (75 trees, cut points equally spaced over each
+  covariate's range: the `method='bart'` defaults, `n_trees_control=None`
+  and the new `cut_grid='auto'`; 200 trees on quantile cut points left a
+  0.21 posterior-SD gap).
+  `tests/reference_parity/test_bart_causal_seed_screen.py`. bcf,
+  bartCause and dbarts (GPL) were used as black boxes.
+- The `sp.bart` backfitting kernel takes per-observation precision
+  weights; `sp.bart` passes ones and its draws are unchanged bit for bit.
+- `sp.bcf` is unchanged (the ensemble approximation); its warning now
+  points to `sp.bart_causal(method='bcf')`.
+
+### CEM k2k and the L1 imbalance
+
+#### Added
+
+- `sp.match(method='cem', k2k=True)`: 1:1 matching without replacement on
+  the Mahalanobis distance inside each coarsened cell, in data order
+  (R MatchIt's `method = "cem", k2k = TRUE`); unmatched units drop out.
+  Pairs and ATT equal MatchIt 4.7.2 given the same cells.
+  `tests/reference_parity/test_cem_k2k_parity.py`.
+- `sp.l1_imbalance(data, treat, covariates, weights=)`: the multivariate
+  L1 statistic of Iacus, King and Porro (2011) on a coarsening of the
+  covariates (equal-width bins, Sturges by default), weighted or not;
+  identities (0 for identical arms, 1 for disjoint cells, a hand
+  computation) are tested. R cem's `imbalance()` coarsens differently by
+  default, so its numbers are comparable only under the same coarsening.
+
+### CLAN in `sp.gate_test`
+
+#### Added
+
+- `sp.gate_test(..., clan=[cols])`: classification analysis of the
+  generic-ML framework, the mean of each column in every CATE group and
+  the most-minus-least difference with its Welch standard error
+  (`clan_table`). Equals R `GenericML::CLAN` 0.2.3 (GPL, black box)
+  given the same groups to 1e-12.
+  `tests/reference_parity/test_clan_genericml_parity.py`.
+
+### Machine-learning nuisances in `sp.aipw`
+
+#### Added
+
+- `sp.aipw(ps_learner=, outcome_learner=)`: any scikit-learn style
+  classifier / regressor (including `sp.SuperLearner`) for the propensity
+  score and the per-arm outcome regressions, cross-fitted, with the
+  influence-function standard error (`se_method='sandwich'` is refused;
+  `cross_fit=False` warns). Logistic / linear learners reproduce the
+  default fit to 1e-6; gradient boosting recovers an effect the linear
+  models miss on a nonlinear design (`tests/test_aipw_learners.py`).
+
+### Modified treatment policies and learners in longitudinal TMLE
+
+#### Added
+
+- `sp.lmtp(data, y, treatments, shift=, covariates_time=, baseline=)`: the
+  mean outcome under a modified treatment policy (`A + delta`, or any
+  function of the natural treatment value) by sequential TMLE, with
+  density ratios from the stacked-data classifier and the effect against
+  the natural course (`model_info['effect']`, R `lmtp_contrast`). Equals
+  R `lmtp::lmtp_tmle` 1.5.4 (SL.glm learners, `folds = 1`) to 3e-7 for
+  point and two-period designs with continuous and binary outcomes;
+  density ratios to 1e-9. Conventions found on outputs: ratios trimmed at
+  the 0.999 quantile of the whole ratio matrix, a linear regression for
+  every pseudo-outcome except a binary final outcome.
+  `tests/reference_parity/test_lmtp_parity.py`. lmtp (AGPL) was used as
+  a black box. Censoring and the SDR estimator are not implemented.
+- `sp.ltmle(q_learner=, g_learner=)`: any regressor / classifier (e.g.
+  `sp.SuperLearner`) for the outcome and treatment / censoring models in
+  place of the main-terms logistic fits. A logistic `g_learner` reproduces
+  the default to 1e-8; with gradient boosting the estimate recovers a
+  nonlinear truth that the default misses
+  (`tests/test_ltmle_learners.py`). `ltmleMSM` is not implemented.
+
+### Doubly robust dose-response curve: `sp.dose_response(method='dr')`
+
+#### Added
+
+- `sp.dose_response(method='dr')`: the doubly robust curve of Kennedy, Ma,
+  McHugh and Small (2017), a local linear regression of the pseudo-outcome
+  `(Y - mu(X, T)) / pi(T | X) * mean_j pi(T | X_j) + mean_j mu(X_j, T)` on
+  the treatment, with cross-fitted nuisances (`n_folds`), a normal
+  treatment density (mean and variance regressions), the bandwidth that
+  minimises the smoother's leave-one-out risk (or `bandwidth=`) and robust
+  local-linear bands on the pseudo-outcomes. Evidence: the curve covers
+  the smoothed truth within its bands when either the outcome model or
+  the treatment density is right (`tests/test_dose_response_dr.py`), an
+  infinite-bandwidth identity, and a shape screen against R
+  `npcausal::ctseff` (GPL, black box; interior correlation 0.999, not
+  parity: its nuisances, density and smoother differ). The default
+  `method='gps'` is unchanged.
+
+### Multi-action policy trees: `sp.policy_tree` on three or more arms
+
+#### Added
+
+- `sp.policy_tree` grows a multi-action tree when the treatment has more
+  than two levels (or two levels not coded 0/1), or when `scores=` is an
+  `n x A` reward matrix: each leaf assigns one level, the depth <= 2
+  search is exact on the reward matrix (`policytree::policy_tree(X,
+  Gamma)`), and the internal rewards are cross-fitted AIPW scores of
+  every arm. Given the reward matrix, every row's assigned action equals
+  R policytree 1.2.4 in five settings (three and four actions, depth 1
+  and 2, minimum leaf sizes 1 / 10 / 20, tied covariates).
+  `tests/reference_parity/test_policytree_multi_action_parity.py`. Before
+  this a three-arm treatment raised a plain `ValueError`. `split_step >
+  1` thins the grid by distinct value, not by sample as policytree's
+  `split.step` does; the docstring no longer calls them the same.
+
+### `sp.mediate_paths`: path-specific effects with ordered mediators
+
+#### Added
+
+- `sp.mediate_paths(data, y=, treat=, mediators=['m1', 'm2', ...],
+  covariates=, interaction=True, outcome_model='linear' | 'logistic',
+  ps=False)` splits the total effect of a binary treatment into a direct
+  effect and one effect through each of several causally ordered
+  mediators (a mediator may affect later ones; a block of columns can
+  form one mediator). Both decompositions (Type I and Type II), the pure
+  imputation estimator and, with `ps=True`, the imputation-based weighting
+  estimator of Zhou and Yamamoto [@zhou2023tracing], with a nonparametric
+  bootstrap. Point estimates equal R `paths` 0.1.2 (GPL, used as a black
+  box) to 1e-12 with linear outcome models and to R `glm`'s convergence
+  with logistic ones, on five settings
+  (`tests/reference_parity/test_mediate_paths_parity.py`); a linear
+  structural model checks the path effects against products of
+  coefficients. Reference verified via Crossref and doi.org.
+
+### Stata factor-variable and time-series terms in formulas
+
+#### Added
+
+- Formulas read Stata's factor-variable terms: `sp.regress("y ~ i.g##c.x",
+  df)` is `regress y i.g##c.x` (also `i.g#c.x`, `ib2.g`, `c.x##c.x`,
+  `1.post`, `i.a##i.b`, `c.(x z)#i.g`), through the same translation as
+  `sp.from_stata`; coefficients equal Stata 18. Before, `#` failed with
+  patsy's "comments are not allowed".
+- After `sp.xtset(df, id=, time=)`, `L.x`, `L2.x`, `F.x`, `D.x` and
+  `L(1/3).x` in a formula are Stata's gap-aware operators (columns `x_L1`,
+  `x_D1` ...) for every estimator that builds its design from the data
+  (`sp.regress`, `sp.logit`, `sp.glm` ...); the other parsers (`sp.feols`,
+  IV, panel) refuse them with the `sp.lag` spelling. Terms that mix Stata
+  notation into formula operators (`i.g*x`) are refused with the right
+  syntax.
+
+#### Fixed
+
+- The translation reached the fixed-effects part of `sp.feols` /
+  `sp.fepois` / `sp.feglm` formulas and turned reghdfe's absorbed slope
+  `y ~ d | county + i.pref#c.year` into a `SyntaxError`. The part after
+  `|` is now left to the fixest layer (varying slope, as before), and the
+  varying-slope route reads regressor-side `i.g#c.x` with its own Stata
+  parser, so `y ~ d + i.prov#c.x | county + i.pref#c.year` equals the fit
+  with the slopes written as columns.
+
+### ⚠️ Correctness: `sp.panel(vce='wild')` with clusters that cut across entities
+
+#### ⚠️ Correctness
+
+- `sp.panel(method='fe', vce='wild', cluster=c)` bootstrapped the
+  entity-demeaned design, which is valid only when every entity lies in one
+  cluster. With clusters that cut across entities it now re-absorbs the
+  entity effects in each draw (the engine `sp.hdfe_ols(wild=True)` uses,
+  fixed in bc97a0fd for `sp.wild_cluster_boot`). p-values equal Stata
+  `boottest` after `areg ..., absorb(id) vce(cluster c)` exactly (all 4096
+  Rademacher draws enumerated), the confidence-set bounds to 0.3% of the
+  width (`tests/test_panel_wild_boottest.py`). Before, an 8-cluster version
+  of the same design gave p = 0.0625 / 0.117 against boottest's 0.078 /
+  0.180. Point estimates and CR1 standard errors are unchanged; so is the
+  default (clustering on the entity).
+### `weights=` where it was missing
+
+#### Added
+
+- `sp.finegray(weights=)`: sampling weights in the Fine-Gray model. The
+  censoring Kaplan-Meier, the risk sets and the event counts are weighted,
+  and the robust variance uses the weighted score residuals including the
+  censoring term. With `small_sample=True`, coefficients, covariance and log
+  pseudo-likelihood equal Stata 18 `stcrreg` after `stset ... [pw=]` (both
+  causes, two weight vectors; `tests/reference_parity/
+  test_finegray_weighted_stata_parity.py`, Stata used as a black box).
+  `vce='model'` is refused with weights.
+- `sp.gformula_mc(weights=)`: weighted confounder and outcome models and
+  baseline draws proportional to the weight. On an informative sample whose
+  unweighted g-formula is 0.76 too high, the weighted one recovers the
+  population mean within one bootstrap SE (known-truth test).
+- `sp.causal_impact(weights=)` and `sp.sar(weights=)` raise
+  `MethodIncompatibility` with the reason instead of `TypeError`: one time
+  series has no sample of units to weight, and the spatial-lag likelihood is
+  a joint one over all areas.
+
+### ⚠️ Correctness: `sp.mi_estimate` complete-data df; `binscatter(method='binsreg')`; labels in `sp.sumstats`
+
+#### Fixed
+
+- ⚠️ `sp.mi_estimate` took the complete-data degrees of freedom of the
+  Barnard-Rubin small-sample df from `df_resid` (`n - k`) whatever the fit.
+  It now takes the df of the fit's own t reference, as Stata `mi estimate`
+  reads `e(df_r)`: `G - 1` after a clustered `sp.regress` (before: `n - k`,
+  so the df were 140 / 77 / 23 where Stata reports 8.1 / 5.7 / 9.3 on the
+  test data, and p-values and intervals were too narrow), and Rubin's
+  large-sample df after `sp.logit` / `sp.poisson` and other z-based fits
+  (before: small-sample df with `n - k`). Point estimates and the total
+  variance are unchanged; `df`, `pvalues`, the intervals and
+  `fmi_barnard_rubin` change for those fits. Matches Stata 18 `mi estimate`
+  for `regress`, `regress, vce(cluster)` and `logit`
+  (`tests/test_mi_estimate_dfcom.py`).
+
+#### Added
+
+- `sp.binscatter(..., method='binsreg')`: the binscatter of
+  `cattaneo2024binscatter` as R `binsreg` 2.2 computes it. Covariates enter
+  the regression with the bin indicators and each dot is the bin's
+  coefficient at the mean of the covariates (not residualized bin means);
+  quantile bins (type-2 quantiles, intervals closed on the right);
+  `n_bins=None` selects the IMSE-optimal number by the direct plug-in rule
+  started from the rule of thumb; `ci=True` gives robust bias-corrected
+  intervals from a continuous piecewise-linear fit; `cb=True` the uniform
+  band with a simulated sup-t critical value (`nsims=`, `simsgrid=`,
+  `seed=`). Selected number of bins equal to R `binsregselect` on 40
+  designs, dots and intervals to 1e-10; the band's critical value is
+  simulated in both (screened, not certified). R `binsreg` (GPL-3) was used
+  as a black box: outputs only. The default `method='classic'` is
+  unchanged.
+
+#### Changed
+
+- `sp.sumstats` shows the variable labels stored on the data
+  (`sp.label_var`, a labelled `.dta`) and the value labels of `by` as panel
+  headers; `use_labels=False` shows the column names. `labels=` and
+  `by_labels=` still override them.
+
+### `sp.feglm`: fixed-effects negative binomial and bias-corrected logit / probit
+
+#### Added
+
+- `sp.feglm(family='negbin')`: NB2 regression with high-dimensional fixed
+  effects estimated as parameters, the model R `fixest::fenegbin` fits.
+  The dispersion `theta` is estimated jointly (IRLS for the slopes and
+  effects alternating with Newton steps on `log theta`); it and its
+  standard error are in `model_info['theta']` / `['theta_se']`. Variance:
+  inverse observed information of the slopes and `theta` with the effects
+  profiled out (`'iid'`), sandwich (`'hetero'`), one- and two-way clusters,
+  with fixest's small-sample factors. Groups with only zero outcomes and
+  singletons are dropped, as fixest's `perfect_fit`. Coefficients, `theta`
+  and log likelihood equal fixest 0.14 to 1e-8 and `MASS::glm.nb` with the
+  effects as dummies to 1e-9; standard errors equal fixest to 1e-6 in nine
+  settings, including clusters nested in the effects (where fixest counts
+  `theta` in `K`); weighted fits equal `glm.nb(weights=)` (fenegbin takes
+  no weights). `tests/reference_parity/test_fenegbin_parity.py`.
+- `sp.feglm(family='logit' | 'probit', bias_correction=True)`: the
+  analytical incidental-parameter bias correction for unit (and period)
+  effects with strictly exogenous regressors (Fernandez-Val and Weidner
+  2016; R `alpaca::biasCorr(L = 0)`), written from the published formulas.
+  The variance is evaluated at the corrected slopes with the effects
+  re-estimated there, without small-sample factors, as alpaca reports it
+  (`'iid'`, `'hetero'`, one-way clusters). Slopes, uncorrected slopes and
+  standard errors equal alpaca 0.3.5 to 1e-7 for logit and probit with one
+  and two effects. `model_info['coef_uncorrected']` / `['bias_shift']`
+  keep the uncorrected fit. `tests/reference_parity/test_feglm_biascorr_parity.py`.
+- R fixest, MASS and alpaca (GPL) were used as black boxes: their outputs
+  and documentation only.
+
+
+### ⚠️ Correctness: unconverged fixed-effect projections are finished exactly; faster clustering and CSV reading
+
+#### Fixed
+
+- `sp.feols` (native engine) and `sp.hdfe_ols` ignored the convergence flag
+  of the alternating projections. On poorly connected fixed-effect graphs
+  (a chain of firms linked by a few movers, with groups of one) they stopped
+  at the sweep limit and reported the slope that far: 0.51932 against the
+  dummy-variable regression's 0.51983 on an 800-firm chain, with no warning
+  (`hdfe_ols` set `converged=False` and said nothing). The columns the
+  projections leave unconverged are now residualised by a sparse direct
+  solve of the normal equations (one effect eliminated, the Schur complement
+  factorised; `fast/_fe_direct.py`), so the fit equals R
+  `lm(y ~ x + factor(id) + factor(firm))` to 1e-12; `model_info['fe_solver']`
+  / `absorber.fe_solver` say which solver finished. If the direct solve
+  fails too, `NumericalInstability` is raised with a remedy. pyfixest's
+  "Demeaning failed after N iterations" on the delegated path is now a
+  `NumericalInstability` with a remedy. Fits whose projections converge are
+  unchanged. `tests/test_fe_direct_fallback.py`.
+
+#### Changed
+
+- `sp.regress(cluster=[a, b])` (and every caller of
+  `inference.jackknife.two_way_vcov_ols`) built each cluster's score with a
+  row mask per cluster, O(n G): 10 s for 100k rows and 5,000 clusters, and
+  minutes at a million rows. The meat is now one `bincount` pass per column
+  (1.2 s at a million rows). `core._numba_kernels.cluster_meat` (one-way
+  `sp.regress`) no longer sorts the rows by cluster before summing: labels
+  are factorised and summed in one pass, 0.03 s against 0.29 s on two million
+  rows and five columns, independent of row order and thread count; the
+  Rust sorted-block kernel is no longer on this path because the sort it
+  needs cost more than the sum. Results agree with the previous ones to
+  rounding: 1e-15 on well-conditioned designs; on Track A's
+  `14_ols_cluster` (a `year` regressor in the thousands) the standard
+  errors moved by up to 1.1e-9 relative, two of three closer to R's, and
+  the committed `14_ols_cluster_py.json` was regenerated (logged in
+  `docs/dev/jss_review_changes.md`).
+- `sp.read_data` reads a CSV / TSV file over 4 MB with pyarrow when it is
+  installed and the call passes no reader keywords beyond `sep` / `usecols`:
+  about 4x faster (0.5 s against 2.1 s on two million rows), same columns
+  and types (checked against pandas on the first 2,000 rows, pandas taking
+  over on any difference or parse error), dates left as text, missing text
+  cells `NaN`. Decimals are now rounded to the nearest double; pandas'
+  default converter was one unit in the last place off for about a third
+  of the values of a `repr`-written file. `tests/test_read_data_csv_fast.py`.
+
+### Stata data layer: `sp.xtset`, `sp.lag` / `lead` / `diff`, `sp.reshape`, `sp.collapse`
+
+#### Added
+
+- `sp.xtset(df, id=, time=, delta=)` declares the panel and time variables
+  (stored in `df.attrs`) and returns Stata's description: strongly / weakly
+  balanced or unbalanced, gaps, first and last period (`r(balanced)`,
+  `r(gaps)`, `r(tmin)`, `r(tmax)` of Stata 18 on the same rows).
+- `sp.lag` / `sp.lead` / `sp.diff` are Stata's `L.` / `F.` / `D.`: read from
+  the time variable within panel, missing where a period is absent, for any
+  row order; `delta=` and pandas `Period` time columns are supported. Checked
+  against Stata 18 on an unsorted, unbalanced panel with gaps.
+- `sp.reshape(df, 'wide' | 'long', stubs=, id=, j=, string=)` and
+  `sp.collapse(df, "(mean) x (sum) t=y", by=, weights=, weight_type=, cw=)`
+  follow Stata's row and column order, statistics, weight definitions and
+  refusals (Stata 18 reference numbers in `tests/test_data_layer.py`).
+- `sp.stata(..., return_data=True)` returns `StataRun(output, data)`, the
+  dataset as the commands left it; data still preserved at the end are
+  restored first, as at the end of a Stata do-file.
+
+#### Changed
+
+- The `reshape`, `collapse` and time-series-operator code of `sp.stata` now
+  lives in `statspai.utils` (`reshape.py`, `collapse.py`, `tsops.py`); the
+  translator imports it, so there is one implementation. `sp.stata` output
+  is unchanged.
+
+### `sp.xtpcse`: panel-corrected standard errors (Beck-Katz)
+
+#### Added
+
+- `sp.xtpcse(data, y, x, id, time, correlation='independent' | 'ar1' |
+  'psar1', rhotype=, np1=, hetonly=, independent=, pairwise=, nmk=)`,
+  Stata's `xtpcse`: OLS or Prais-Winsten coefficients with standard errors
+  for disturbances heteroskedastic and contemporaneously correlated across
+  panels, casewise or pairwise covariance on unbalanced panels. All 23
+  option combinations tested match Stata 18 to 1e-12 on a balanced and an
+  unbalanced panel with gaps (`tests/test_xtpcse_stata.py`). On unbalanced
+  panels the common AR(1) coefficient weights each panel by its number of
+  consecutive pairs (one more with `np1`), which is what Stata computes.
+### `sp.four_way_decomposition`: logistic / Poisson outcomes, logistic mediators
+
+#### Added
+
+- `sp.four_way_decomposition(..., yreg='linear' | 'logistic' | 'poisson',
+  mreg='linear' | 'logistic', covariate_values={...})`: the four-way
+  decomposition for binary and count outcomes and binary mediators, on the
+  excess-relative-risk scale for log-linear outcomes (`detail['total_rr']`
+  is the ratio). Standard errors now cover the proportions too
+  (`se['prop_cde']` ... `se['prop_eliminated']`, `med4way`'s `p_*`,
+  `op_m`, `op_ati`, `op_e`), and `proportions` gains `mediated`,
+  `interaction` and `eliminated`. Estimates and SEs equal Stata `med4way`
+  2.3.2 to 1e-7 on eight settings (`vce='ml'`), and the `vce='ols'`
+  estimates equal R CMAverse 0.1.0 to 1e-8
+  (`tests/reference_parity/test_four_way_nonlinear_parity.py`; both
+  references GPL, used as black boxes). A Poisson-outcome case is checked
+  against simulated potential outcomes.
+- `sp.from_stata` / `sp.stata` translate `med4way y a m [c...], yreg()
+  mreg() a0() a1() m() [c()]` for those models.
+
+#### Changed
+
+- When the total effect is zero up to rounding, the proportions are NaN
+  with a warning (they were reported as 0).
+
+### `sp.xtivreg`: panel IV (random-effects G2SLS / EC2SLS, within, between)
+
+#### Added
+
+- `sp.xtivreg(data, y, x, endog, instruments, id, method='re' | 'fe' |
+  'be', ec2sls=, nosa=, vce=)`, Stata's `xtivreg`: feasible-GLS 2SLS with
+  Swamy-Arora (default) or Baltagi-Chang (`nosa=True`) variance components
+  and G2SLS (default) or EC2SLS (`ec2sls=True`) instruments, within 2SLS
+  with the `(N - K) / (N - n - K + 1)` correction, between 2SLS;
+  conventional or cluster-robust variance (`vce='robust'` clusters on the
+  panel, as Stata). Coefficients, standard errors, `sigma_u`, `sigma_e`,
+  `rho` and the three R-squared match Stata 18 to 1e-12 on an unbalanced
+  panel for all eight variants (`tests/test_xtivreg_stata.py`). Three
+  conventions were pinned against Stata's output where its manual is
+  ambiguous or says otherwise (unweighted between regression, `K` in the
+  within variance, the EC2SLS constant); see
+  `docs/dev/modules/panel_multilevel.md`.
+
+### ⚠️ Correctness: `sp.lee_bounds` estimation sample; `leebounds` translated
+
+#### Fixed
+
+- `sp.lee_bounds` now drops the rows Stata `leebounds` drops: a missing
+  treatment or selection indicator, or a selected unit with a missing
+  outcome (with a warning naming the counts). Before, a selected row with a
+  missing outcome made both bounds NaN, a missing selection indicator
+  raised an unrelated error, and a missing treatment entered the analytic
+  standard errors (about 1% too small on the test data). Indicators coded
+  other than 0/1 now raise `MethodIncompatibility` instead of `IndexError`.
+  Bounds, analytic SEs and the `cieffect` interval equal Stata 18
+  `leebounds` v1.5 to 1e-8 on 21 settings
+  (`tests/reference_parity/test_lee_bounds_missing_Stata_parity.py`).
+- The audit's lower-bound mismatch (0.1358 against 0.1304, upper matching)
+  did not reproduce as an `sp` bug: Stata's `import delimited` stores the
+  outcome as float32 by default, and with `leebounds`' 16-digit threshold
+  macro that rounding moves the lower bound by up to 0.01. On the same
+  bytes (`asdouble`, or float32 on both sides) `trimming='leebounds'`
+  matches to 1e-15; the float32 case is the committed fixture of
+  `tests/reference_parity/test_lee_bounds_leebounds_Stata_parity.py`.
+
+#### Added
+
+- `sp.lee_bounds(selection=None)`: without a selection column a unit is
+  selected when its outcome is observed (`leebounds` without `select()`).
+- `sp.from_stata` / `sp.stata` translate `leebounds y d [, select() tight()
+  cieffect vce(analytic | bootstrap, reps()) level()]` to
+  `sp.lee_bounds(trimming='leebounds', ...)` (it was refused). `cieffect`
+  searches the Imbens-Manski critical value on a 0.001 grid and
+  `sp.lee_bounds` solves for it, so that interval can differ by up to 0.001
+  standard errors. With `tight()`, `leebounds` keeps rows whose covariate
+  is missing in the untrimmed arm's mean; `sp.lee_bounds` drops them and
+  says so.
+
+### Local projections with instruments, regimes and panels; proxy SVAR
+
+#### Added
+
+- `sp.local_projections(..., instruments=[...])` fits each horizon by
+  two-stage least squares with the shock endogenous (`lpirfs::lp_lin_iv`,
+  `use_twosls=TRUE`), reporting the first-stage F by horizon and warning
+  below 10. The same explicit design without instruments takes `lags=`
+  (int or list), `endog_order=` (the lagged system), `trend=`, `vce=`
+  (`'hac'`, `'robust'`, `'ols'`), `dfk=` and `common_sample=`; with
+  `common_sample=True` it is Stata 18 `lpirf`'s dynamic multiplier of an
+  `exog()` variable under every `vce()` and `dfk`. Passing none of these
+  leaves the existing two paths unchanged.
+- `state=` gives state-dependent projections (`lpirfs::lp_nl_iv` for an
+  observed shock, `lp_nl` with `identification='lpirfs_cholesky'`):
+  logistic or indicator regime weights, optional Hodrick-Prescott cycle,
+  and a per-horizon Wald test that the two regime responses are equal
+  (new `StateDependentLPResult`).
+- `id=` / `time=` give panel projections (`lpirfs::lp_lin_panel`): unit,
+  period or two-way fixed effects or pooled OLS, differenced shock,
+  instruments, and unit-clustered (default), Driscoll-Kraay or
+  homoskedastic errors.
+- `sp.svar(fit, proxy=m, proxy_target=, proxy_scale=, proxy_block_length=)`
+  identifies one shock with an external instrument (a proxy SVAR), with a
+  residual-based moving block bootstrap for `irf(ci='bootstrap')`, FEVD
+  shares of the full forecast-error variance and the robust first-stage F.
+  ⚠️ The first version on main (612557ee, never released) used the
+  Mertens-Ravn wild bootstrap, one Rademacher sign per period on the
+  residual and the proxy. The sign cancels in `u_t m_t`, so the
+  covariance that identifies the shock never varied across replicates: on
+  the simulated design of the tests its 95% bands covered the true impact
+  response in 17-19% of samples, with standard errors about a ninth of
+  the sampling SD (Jentsch and Lunsford 2019 show the same for this
+  bootstrap). The block bootstrap matches the robust 2SLS standard error
+  of the impact ratio and covers at about the nominal rate.
+- `SVARResult.historical_decomposition()` splits every variable into a
+  shock-free baseline and accumulated shock contributions (R `svars::hd`).
+- `sp.granger_causality(data=, caused=, causing=, lags=, id=, time=)` is
+  the Dumitrescu-Hurlin panel test (`W_bar`, `Z_bar`, `Z_tilde`).
+- `sp.from_stata` translates `lpirf y, exog(x)` with `lags()`, `step()`,
+  `vce(ols | robust | hac nwest [#])`, `dfk`, `level()`; the other `lpirf`
+  forms and `ivlpirf` (absent from Stata 18) are refused with the call to
+  write.
+- Evidence: `tests/reference_parity/test_ts_causal_parity.py`, 1e-12 or
+  better against `lpirfs` 0.2.5, `plm` 2.6 (GPL packages used as black
+  boxes), `svars` 1.3, Stata 18 `lpirf` and `xtgcause`; the proxy SVAR
+  against the 2SLS identity, a long simulated sample, the HC0 2SLS
+  standard error and a coverage screen.
+- `sp.vcov(lp, vce)` / `sp.vcov_compare` re-report a local projection
+  under another `vce=`: the call is recorded, and an impulse-response
+  result is read as one estimate per horizon (per regime for `state=`).
+  The refit equals `sp.local_projections(..., vce=vce)` bit for bit.
+
+### Experiments: group sequential designs, always-valid tests, CUPED, simulation power
+
+#### Added
+
+- `sp.group_sequential(n_looks=, information=, alpha=, power=, side=,
+  efficacy=, futility=, binding=, n_fixed=)`: stopping boundaries and the
+  maximum-information ratio of a group sequential trial, with the boundary
+  families and conventions of Stata 18 `gsbounds` (classical O'Brien-Fleming,
+  Pocock, Wang-Tsiatis with Pampallona-Tsiatis futility; Lan-DeMets error
+  spending of O'Brien-Fleming and Pocock type, Kim-DeMets, Hwang-Shih-DeCani;
+  nonbinding or binding futility; one- or two-sided). `.decision(z)` applies
+  the bounds. On 117 designs every bound and the information ratio equal
+  `gsbounds` to 3e-7 when Stata's tolerances are tightened
+  (`intpointsscale(60) infotol(1e-12)`); at its default `infotol(1e-6)`
+  Stata's futility bounds sit up to 3e-5 from the exact solution
+  (`tests/reference_parity/test_group_sequential_stata_parity.py`).
+  `expected_info_h0` / `_h1` equal Stata's `ESS0` / `ESS1` to 1e-7 for
+  efficacy-only and binding designs; for nonbinding futility Stata's ESS
+  follows a rule we could not reproduce (open item, see
+  `docs/dev/modules/experiments_interference.md`). `sp.from_stata` now
+  translates `gsbounds` and answers `gsdesign` with the two-line recipe.
+- `sp.msprt(data, y, treat, tau=, sigma=, time=)` and `sp.msprt_lambda`:
+  always-valid p-values and confidence sequences of the normal-mixture SPRT
+  (Johari et al. 2022) for continuously monitored A/B tests. No
+  deterministic reference exists; the closed form equals its defining
+  integral to 1e-9 and Monte Carlo checks confirm the type I error and the
+  uniform coverage stay at alpha under continuous monitoring (S-level).
+- `sp.cuped(data, y, treat, covariates, method='cuped' | 'cupac' | 'lin')`:
+  CUPED variance reduction (Deng et al. 2013), CUPAC with an out-of-fold
+  learner, or Lin's interacted regression; inference is
+  `sp.difference_in_means` on the adjusted outcome.
+- `sp.power("simulation", n=, dgp=, estimator=, n_sims=, seed=, term=)`:
+  Monte Carlo power, bias, RMSE and coverage (with Monte Carlo standard
+  errors) of any estimator on a user data-generating process.
+- `sp.westfall_young` checked against Stata `wyoung, permute()` (Reif,
+  SSC): coefficients, HC1 / CR1 t-statistics and analytic p-values agree to
+  1e-12 on a stratified and a cluster-randomized design; the adjusted
+  p-values (exact here, 20,000 draws in wyoung) agree within Monte Carlo
+  error (`tests/reference_parity/test_westfall_young_wyoung_parity.py`).
+  `sp.from_stata` translates the permutation form of `wyoung` (robust or
+  clustered `regress`, stratum effects exactly when `strata()` is given)
+  and refuses the bootstrap form, classical SEs, `subgroup()` and
+  `controls()` with the reason.
+- `sp.power("ttest" | "twomeans" | "onemean" | "pairedmeans", ...)` routes
+  to `sp.power_ttest`; `sp.power` accepts `delta=` for `effect_size=`, and
+  `sp.power_ttest` accepts `effect_size=`, `power_target=` and `sigma=` for
+  `delta=`, `power=` and `sd=`.
+
+### `sp.xtevent`: trend adjustment and proxy-IV estimation
+
+#### Added
+
+- `sp.xtevent(..., trend=-3, trend_method='gmm' | 'ols')` removes a linear
+  pre-event trend as Stata `xtevent, trend()` does, and
+  `sp.xtevent(..., proxy=['x'], proxy_iv='select' | [leads] | ['w'])` is
+  the Freyaldenhoven-Hansen-Shapiro proxy-IV estimator (Stata `proxy()` /
+  `proxyiv()`, 2SLS with unit effects as `xtivreg, fe`). Coefficients,
+  SEs, N and the normalised event times equal Stata `xtevent` 3.1.0 to
+  1e-9 on eleven settings
+  (`tests/reference_parity/test_xtevent_extensions_Stata_parity.py`). When
+  the trend starts after the window start, Stata's adjusted covariance
+  attaches the trend weights to the wrong coefficient; ours follows the
+  delta method (the test reproduces Stata's numbers from the misplaced
+  weights). Not done: the smoothest-path plot (`xteventplot, smpath`).
+
+### `sp.bacon_decomposition(covariates=)`
+
+#### Added
+
+- `sp.bacon_decomposition(..., covariates=[...])` decomposes the TWFE
+  coefficient with time-varying controls (Goodman-Bacon 2021, Section 5)
+  into `omega * beta_within + (1 - omega) * sum(weight * estimate)` over
+  between-group pairs, as R `bacondecomp` does with controls; the result
+  adds `omega`, `beta_within` and `beta_between`. Every pair's weight,
+  estimate and type, omega and the within estimate equal `bacondecomp`
+  0.1.1 to 1e-10 (`tests/reference_parity/test_bacon_controls_R_parity.py`)
+  and the identity holds to 1e-12. Without `covariates` nothing changes.
+
+### ⚠️ Correctness: `sp.from_stata` / `sp.stata` two-way clustered `reghdfe`
+
+#### Fixed
+
+- `reghdfe ..., absorb(...) cluster(a b)` was translated to
+  `sp.hdfe_ols(cluster=['a', 'b'])`, whose multi-way variance scales each
+  term by its own G/(G - 1); reghdfe scales every term by G_min/(G_min - 1).
+  The translation now passes `cluster_df='min'` and reproduces Stata 18
+  reghdfe 6 to 1e-8 (x1 standard error 0.06525, previously 0.06151, on the
+  holdout data with a three-level second cluster). One-way clustering is
+  unchanged. `tests/test_stata_translation_pweights.py`.
+
+### `sp.didregress(aggregate=)`: Donald-Lang and standard aggregation
+
+#### Added
+
+- `sp.didregress(..., aggregate='dlang' | 'dlang_varying' | 'standard')`
+  fits the DiD on group-period cells as Stata 18 `didregress` /
+  `xtdidregress` `aggregate()` does (Donald and Lang 2007): covariates
+  that vary within cells are removed first (one slope, or a regression per
+  cell with `'dlang_varying'`), then the cell outcomes are regressed on
+  the treatment, cell-level covariates and group and period effects, with
+  the OLS variance (`dlang`) or group-clustered variance (`standard`). The
+  ATET and standard error equal Stata to 1e-10 on ten settings
+  (`tests/reference_parity/test_didregress_dlang_stata.py`). The dlang t
+  reference uses the residual degrees of freedom of the cell regression;
+  Stata leaves the group effects out of that count, and `dlang_df='stata'`
+  reproduces its intervals.
+
+### `sp.panel_match`: matching on treatment history (R PanelMatch)
+
+#### Added
+
+- `sp.panel_match` estimates the effect of a binary treatment that can
+  switch on and off by matching each switch to the units with the same
+  treatment history over the previous `lag` periods (Imai, Kim and Wang
+  2023), refining the match on covariates (`refinement=` Mahalanobis,
+  propensity-score or CBPS weighting / matching, or none; lagged
+  covariates as `'lag(y, 1:4)'`), and averaging a weighted DiD over the
+  matched sets at each lead. `qoi=` ATT, ATC, ATE or ART; unit bootstrap
+  or the conditional / unconditional analytic standard errors;
+  `exact_match=`, `forbid_treatment_reversal=`, `restrict_control_period=`,
+  standardised covariate balance before and after refinement, and a
+  placebo test (`placebo_test=True`). Matched sets, weights, estimates,
+  analytic standard errors, balance and placebo estimates equal R
+  `PanelMatch` 3.1.5 to 1e-10 on fifteen settings
+  (`tests/reference_parity/test_panel_match_R_parity.py`); the places
+  where R's output is wrong are documented, two of them pinned by identities
+  (`docs/dev/modules/did.md`).
+
+### Complex survey designs on the causal estimators (`design=`)
+
+#### Added
+
+- `design=SurveyDesign` (from `sp.svydesign`: weights, strata, PSUs, fpc,
+  lonely-PSU rule) on `sp.ipw`, `sp.aipw`, `sp.tmle`, `sp.dml`,
+  `sp.did_2x2`, `sp.callaway_santanna`, `sp.msm`, `sp.cox`,
+  `sp.kaplan_meier`, `sp.regress`, `sp.logit` and `sp.probit`. The fit uses
+  the design weights and every standard error is the Taylor linearisation
+  of the estimator's influence function over strata, PSUs and the finite
+  population correction, through one shared helper
+  (`statspai.survey.linearization.design_vcov`, R `survey::svyrecvar` for a
+  one-stage design, calibration included); intervals use t with the design
+  degrees of freedom (#PSU - #strata), as Stata `svy`.
+- Evidence against R survey 4.5 on frozen fixtures
+  (`tests/reference_parity/test_survey_causal_parity.py`,
+  `test_survey_did_parity.py`): the helper equals `svyrecvar` on ten
+  designs and a raked one; `ipw` / `aipw(se_method='sandwich')` equal the
+  Binder linearisation of the stacked estimating equations written out in
+  R (closed-form Jacobian checked against `numDeriv`); `regress` / `logit`
+  equal `svyglm`; `cox` equals `svycoxph`; `kaplan_meier` equals
+  `svyrecvar` of `resid(survfit, type = "surv")`; `callaway_santanna`
+  equals `svyrecvar` of R `did`'s `inffunc` (cells, simple and dynamic
+  aggregates); `msm` equals the `ipw::ipwtm` + `svyglm` recipe; all to
+  1e-13 or better. `tmle` (R `tmle` influence curves) and `dml` with an
+  IRM logit propensity agree to 1e-8 (glm convergence).
+- `sp.dml(design=)` forms its cross-fitting folds over whole PSUs.
+  `design=` is refused with a typed `MethodIncompatibility` together with
+  `weights=` / `cluster=`, with a bootstrap (that needs replicate weights),
+  on the unbalanced / repeated-cross-section CS paths, and when the panel
+  unit's weight, stratum or PSU varies over time. `sp.aggte` and the
+  event-study covariance behind `sp.honest_did` refuse a `design=` CS fit
+  rather than rebuild its variance without the design.
+- `design=None` leaves every estimator's output unchanged.
+
+#### Changed
+
+- `docs/guides/survey_ph.md`: section 4 documents `design=`; the scope note
+  that called the survey estimators "not parity-certified against
+  svyglm" and the "no survey-weighted Cox" gap are removed (both have R
+  parity tests).
+
+### Design guardrails on `sp.feols` / `fepois` / `regress` / `hdfe_ols` / `panel`
+
+#### Added
+
+- A 0/1 treatment that switches on at different dates under unit and time
+  fixed effects is now flagged: `result.violations()` carries
+  `staggered_twfe` with the share of the Goodman-Bacon weight on
+  already-treated controls, an `AssumptionWarning` is issued, and the MCP
+  payload's `next_calls` lead with a ready `did` call (Callaway-Sant'Anna on
+  the same column) and `bacon_decomposition`. The share is computed from
+  cohort x period counts, without a regression, and equals
+  `sp.bacon_decomposition(...)['already_treated_control_weight_share']`
+  (to 1e-12 on random balanced designs, including always-treated units).
+  A single adoption date, a 2x2 DiD and event-study dummies are not flagged.
+- A treatment constant within each level (or level x period cell) of a
+  column coarser than the standard errors (HC1 / iid, or clusters nested in
+  it) is flagged as `treatment_cluster_level`, with a ready refit clustered
+  at that level. Clustering at the level or a coarser one containing it,
+  clusters that cross it (units x periods) and treatments that vary within
+  it are not flagged.
+- Each user-level fit of these five functions and each `sp.spec_curve` run
+  records its specifications; `model_info['multiplicity']` (and
+  `sp.audit(...)['multiplicity']`) gives the number of distinct
+  specifications of the outcome fitted in the session, and from 5 on
+  `violations()` carries `specification_search` (`info`; `warning` from 20).
+- Estimates and standard errors are unchanged. Regressions run inside
+  another StatsPAI function are not checked or counted.
+  `core/_design_guardrails.py`, `core/_spec_counter.py`;
+  `tests/test_design_guardrails.py`.
+
+### `sp.fect`: placebo, carryover and leave-one-period-out tests
+
+#### Added
+
+- `placebo_period=`, `carryover_period=` and `loo=True` run fect's
+  diagnostic tests (`placeboTest`, `carryoverTest`, `loo`): the chosen
+  untreated cells leave the fit and their out-of-sample effect is tested
+  for zero and for equivalence (TOST, bound `tost_threshold`, default
+  `0.36 * sqrt(sigma2)`). With `vce=` set, `model_info['pretrend_test']`
+  carries fect's pre-trend F test, its equivalence version and the TOST
+  p-value (`f_threshold=`, `proportion=`, `pre_periods=` as in fect).
+  With `vce='jackknife'` (deterministic) every number matches fect 2.4.1
+  to 1e-8 or better (`tests/reference_parity/test_synth_family_R_parity.py`)
+  except one documented departure: fect builds the F statistic from
+  `cov()` of the raw leave-one-unit-out replicates, which understates the
+  jackknife covariance by `(n - 1)^2 / n`, so fect's F is that factor
+  larger (16.0 against 0.73 on the test panel, a spurious rejection of
+  parallel trends). StatsPAI uses the jackknife covariance; the test pins
+  the exact ratio.
+- The resampling loop moved to `synth/_fect_tests.py` unchanged (same
+  draws for a given `seed`); point estimates without the new options are
+  unchanged (Track A module 86 reproduces its committed result).
+
+### `sp.sdid(treated_unit=...)` takes covariates and `se_method='noinference'`
+
+#### Added
+
+- With `treated_unit=` / `treatment_time=`, `covariates=` (with
+  `covariate_method='projected' | 'optimized'`) and
+  `se_method='noinference'` used to raise and send the user to `treat=`.
+  The block design is now run through the `treat=` path with a 0/1 column
+  built from the two arguments; the interfaces agree to 1e-15 without
+  covariates. One treated unit with covariates reproduces R
+  `synthdid_estimate(X=)` (-17.561000491802, 1e-11) and Stata `sdid`'s
+  `e(tau)`; tests in `test_sdid_optimized_covariates.py` and
+  `test_sdid_staggered_parity.py`. The jackknife SE already matched R
+  `synthdid_se(method = "jackknife")` (1e-9, `test_did_synth_R_parity.py`)
+  and Stata `vce(jackknife)` (1e-10, `test_sdid_staggered_parity.py`);
+  unchanged.
+### `sp.margins` after mlogit / ologit / oprobit / tobit / heckman / ivprobit; `sp.heckprobit`, `sp.intreg`
+
+#### Added
+
+- `sp.margins` and `sp.margins_at` work after `mlogit`, `ologit`,
+  `oprobit`, `tobit`, `heckman(method='ml')`, `ivprobit` (ML) and the new
+  `sp.heckprobit`, with Stata's `predict()` statistics through a new
+  `predict=` argument and Stata's defaults: one row per variable and outcome
+  after the multiple-outcome models (`category=` restricts them, Stata
+  `predict(outcome(#))`); `xb`, `e(a,b)`, `ystar(a,b)`, `pr(a,b)` after
+  tobit; `xb`, `ycond`, `yexpected`, `psel`, `xbsel` after heckman;
+  `xb` (Stata 18's default), `pr` (the average structural function,
+  conditional on the observed reduced-form errors) and `pr fixedasf` after
+  ivprobit; `pmargin`, `p11` ... `p00`, `psel`, `pcond` after heckprobit.
+  Factor variables are discrete changes, `method='mem'` is Stata's
+  `atmeans`, `margins_at(contrast=)` is `contrast(atcontrast(r))`, and fits
+  with `weights=` average with them. Delta-method standard errors use the
+  full ML covariance on the estimation scale. Before, `sp.margins` refused
+  mlogit / ologit / ivprobit, and failed on tobit (it looked for a data
+  column named `sigma`) and heckman.
+  Evidence: `tests/test_ldv_margins_stata.py` against Stata 18 MP on 25
+  dy/dx tables and 7 predictive-margin tables, point estimates to ~1e-10.
+  Stata's numerical derivatives leave a few 1e-7 in some of its standard
+  errors (tobit `pr()`, ivprobit `pr`, heckprobit `p11`); there ours are
+  within 1e-8 of a complex-step derivative of the closed form.
+- `sp.heckprobit`: probit with sample selection by ML (Stata `heckprobit`),
+  `vce=` oim / robust / cluster, `weights=`, Wald and LR tests of
+  `rho = 0`. Coefficients and standard errors match Stata 18 to 1e-9.
+- `tobit` and `heckman` results keep their estimation-scale parameters and
+  full covariance (`result._ml_state`) for the above.
+- `sp.intreg`: interval regression by ML (Stata `intreg lo hi x`), with
+  exact, left-, right- and interval-censored rows, `vce=` oim / robust /
+  cluster, `weights=`, `formula='lo + hi ~ x + C(g)'`; `sp.margins` takes
+  the tobit statistics after it. Coefficients, standard errors, counts
+  and log-likelihood match Stata 18 to 1e-9 (`tests/test_intreg_stata.py`);
+  with one censoring point it reproduces `sp.tobit`.
+
+#### Changed
+
+- `sp.avg_slopes` / `avg_predictions` / ... and `sp.contrast` /
+  `sp.pwcompare` after these models raise `MethodIncompatibility` pointing
+  to `sp.margins(predict=...)` / `sp.margins_at`; on tobit they used to fail
+  with a misleading missing-column error.
+- `sp.biprobit` evaluates the bivariate normal CDF over `arcsin(r)` (shared
+  with `sp.heckprobit`). Results move by less than 1e-10 unless `|rho|`
+  exceeds 0.95; at `|rho|` = 0.99 the old rule was off by 9e-7 in the CDF.
+
+### `sp.augsynth`: several treated units, `progfunc`, `scm`, `fixedeff`, covariates
+
+#### Added
+
+- `treated_unit=` accepts a list of units that share `treatment_time`; they
+  are fitted as one treated unit whose path is their average, as
+  `augsynth::augsynth` (`single_augsynth`) does. A list used to fail with
+  a raw NumPy broadcast error. Different dates raise
+  `MethodIncompatibility` pointing to `sp.staggered_synth` (multisynth).
+- `progfunc='ridge' | 'none'`, `scm=` and `fixedeff=`, following augsynth.
+  augsynth's other outcome models (`EN`, `RF`, `GSYN`, `MCP`, `CITS`,
+  `CausalImpact`, `seq2seq`) raise `MethodIncompatibility` listing the
+  supported values. The R bridge (`backend='r'`) still runs only the
+  single-unit Ridge specification and refuses the new options.
+- All of it matches augsynth 0.2.0 to 1e-13 (one CV case at lambda = 1e-5:
+  1e-10) on eight cases with fixed and CV-chosen lambda
+  (`tests/reference_parity/test_synth_family_R_parity.py`).
+
+#### ⚠️ Correctness
+
+- `covariates=` was accepted and silently ignored by the native path. It now
+  balances the covariates as augsynth's default (`residualize = FALSE`):
+  per-unit pre-period means, centred at the donor mean, rescaled to
+  `sd(X_c)` and appended to the outcome columns. Calls that passed
+  `covariates=` get different weights and estimates; calls without it are
+  unchanged (Track A module 18 reproduces its committed result exactly).
+
+### Weak-IV-robust tests with several endogenous regressors and clustered errors
+
+#### Added
+
+- `sp.weakrobust` reproduces Stata `weakiv` when given `cluster=`,
+  `test_vcov=` (`'classic'` / `'robust'` / `'cluster'`), a list of
+  endogenous regressors, `subset=` or `project=`: AR, K, J, K-J and CLR
+  (with its conditioning rank statistic) in weakiv's LM form, equal to
+  weakiv 2.4.07 to 1e-12 under i.i.d., robust and cluster variances for one
+  and two endogenous regressors, with AR / K / CLR confidence sets (unions
+  of intervals, infinite endpoints when unbounded) for one regressor; Stata's
+  own p-value at every StatsPAI endpoint is 0.05
+  (`tests/reference_parity/test_weakiv_stata.py`). With several regressors,
+  `subset=` gives the subset AR test and set for a coefficient and
+  `project=` the projection of the joint AR set, both i.i.d. only as in
+  Stata. Differences from weakiv, documented in the docstring: the CLR
+  p-value is the exact conditional integral (weakiv: a 20-node Simpson rule
+  for one regressor; for several, a simulation that draws AR and K
+  independently although AR = K + J); the sets invert the reported LM
+  tests (weakiv's closed-form i.i.d. AR / K intervals invert the Wald form);
+  projection minimises over the whole real line rather than a user grid.
+  Without these arguments, one-regressor output is unchanged (the R
+  `ivmodel` convention).
+- `sp.anderson_rubin_test(endog=[...], h0=[...])`: joint AR F test of
+  several endogenous coefficients in the classic / HC / cluster / absorb
+  forms; at `h0 = 0` it equals `ivreghdfe`'s `e(arf)` to 1e-9. Both
+  functions raised `TypeError: unhashable type: 'list'` on a list before.
+
+### `sp.hdfe_ols` IV: rank statistics with several endogenous regressors
+
+#### Fixed
+
+- With two or more endogenous regressors `sp.hdfe_ols("y ~ x | fe | d1 + d2
+  ~ z...")` reported the Kleibergen-Paap rk Wald F, the
+  under-identification LM and the Cragg-Donald F as NaN. They are now the
+  `ranktest` statistics on the FE-swept first stage, equal to Stata
+  `ivreghdfe`'s `e(rkf)`, `e(idstat)` and `e(cdf)` to 1e-9 under cluster,
+  robust and iid variances, over- and just-identified
+  (`tests/reference_parity/test_hdfe_iv_ivreghdfe.py`). Single-endogenous
+  output is unchanged.
+
+### ⚠️ Correctness: `sp.causal_impact` intervals include parameter uncertainty
+
+- ⚠️ `sp.causal_impact`'s standard error, interval and p-value treated the
+  regression coefficients and the plug-in variance parameters as known.
+  In 200 null replications per design its 95% interval covered 79.5%
+  (n_pre 40, AR(1) error rho 0.6), 70.5% (n_pre = n_post = 30), 57.5%
+  (rho 0.9), 90.5% (rho 0.2, n_pre 80) and 65% (four covariates). The
+  standard error is now that of the error of the forecast actually made,
+  `u_post - L u_pre` (the regression coefficients cancel exactly), under
+  an AR(1)-plus-noise error covariance fitted by REML on the pre-period,
+  with a t quantile (`model_info['df']`): 93.5%, 94%, 89.5%, 92% and 94% on
+  the same draws (`tests/reference_parity/test_causal_impact_uncertainty.py`).
+  Point estimates and the KFAS-pinned filter are unchanged; the old values
+  are kept as `model_info['se_avg_conditional']` /
+  `['se_total_conditional']`; `detail['effect_se']` and the pointwise
+  bands use the new variance; `model_info['error_model']` holds the REML
+  fit. The separate `synth/bsts.py` implementation (a local-level model,
+  `sp.bsts_synth`) is a different model and was not changed.
+- (2026-10-20, same release) The critical value of the average and
+  cumulative effect now also carries the uncertainty of the REML error
+  model: a two-pass parametric bootstrap-t (`n_boot=199` draws per pass,
+  `seed=0`; new parameters) that first corrects the small-sample bias of
+  the AR(1) coefficient and noise share, then simulates the studentised
+  forecast error with the error model re-fitted on every draw
+  (vectorised grid REML, `causal_impact/_uncertainty.py`). The interval
+  uses the larger of that quantile and the t quantile (`model_info['crit']`,
+  `['crit_method']`), the p-value the larger of the two. Coverage on the
+  same five designs: 94.5%, 94.5%, 93% (rho 0.9, was 89.5%), 92.5% and
+  95%. `n_boot=0` restores the t quantile; a call takes about one second
+  longer.
+
+### `sp.staggered_synth` solves 300-unit panels in about a second
+
+#### Changed
+
+- The multisynth weight QP no longer forms the dense
+  `(sum_j n0_j) x (sum_j n0_j)` Hessian. The same primal active-set
+  iteration now works block by block, folds the pooled term (rank
+  `n_lags`) back in through a small Schur complement, and refactors a
+  block only when its free set changes (`synth/_multisynth_qp.py`). On a
+  300-unit, 10-period staggered panel (about 17,000 stacked weights) the
+  point estimate takes about 1.5 s instead of not finishing; 80 units go
+  from 3.6 s to 0.07 s. Weights agree with the former solver to about
+  1e-11 across 1,960 fits (separate / pooled, `nu` in {0, 0.4, auto},
+  ridge on and off, `fixedeff`); the R multisynth parity tests are
+  unchanged. Where the optimum is not unique (`nu=1` without ridge) the
+  solver can return a different optimal weight vector with the same
+  objective value.
+
+### `sp.spillover` says which contrasts it computes
+
+#### Fixed
+
+- `sp.spillover` was labelled "Hudgens & Halloran (2008)" and described as
+  IPW. It computes differences in means between own-treatment x
+  peer-exposure cells split at the median positive exposure; the method
+  label, estimand, docstring and registry card now say so, and
+  `model_info` adds the threshold, `cell_sizes` and the estimand
+  formulas. Point estimates are unchanged; standard errors change only
+  where a bootstrap replicate had an empty cell (see below).
+  Three silent behaviours now fail loudly: `covariates=` (ignored before)
+  and an unknown `exposure_fn` (fell back to `'fraction'`) raise
+  `MethodIncompatibility`; an empty cell (reported as an effect of 0)
+  raises `DataInsufficient`, and bootstrap replicates with an empty cell
+  are dropped and counted (`n_boot_dropped`) instead of entering as 0.
+
+### `sp.ml_bounds` documents what it computes
+
+#### Fixed
+
+- `sp.ml_bounds` was described as "ML-enhanced" bounds that tighten as the
+  outcome models improve, citing a counterfactual-density paper and an
+  arXiv placeholder. By iterated expectations its covariate-averaged
+  worst-case bounds are exactly the Manski (1990) interval, width
+  `y_max - y_min` for every learner; the cross-fitted midpoint differs from
+  the plain-means one only by estimation noise. Docstrings, summary and
+  `method` label (`"Worst-case (Manski) ATE bounds, cross-fitted plug-in"`)
+  now say so, the unverified references are gone, and a test pins the
+  identity. Numbers are unchanged.
+
+### Honest DiD: sign, shape and second-difference restrictions, natively
+
+- `sp.honest_did(bias_direction=, monotonicity_direction=)` and
+  `method='smoothness_relative_magnitude'`: R HonestDiD's sign
+  restrictions (Δ^SDPB / SDNB, Δ^RMPB / RMNB, Δ^SDRMPB / SDRMNB), shape
+  restrictions (Δ^SDI / SDD, Δ^RMI / RMD, Δ^SDRMI / SDRMD) and relative
+  magnitudes of second differences (Δ^SDRM, "deviation from linear
+  trend"), without R. Smoothness now also runs `honestdid_method=
+  'Conditional'`, `'C-F'` (conditional-FLCI hybrid, the default once a
+  sign or shape restriction is given) and `'C-LF'` natively; before they
+  needed `backend='r'`. `backend='r'` passes the new restrictions to
+  HonestDiD. `sp.honest_did_from_moments` takes the same arguments; the
+  table's `attrs['delta']` names the set as HonestDiD does.
+- Evidence (`tests/reference_parity/test_honest_restrictions_R_parity.py`,
+  HonestDiD 0.2.8): `'Conditional'` accepts the same grid points as
+  HonestDiD (1e-12) for every restriction on correlated and
+  one-post-period event studies, with the same default grids; `'C-F'`
+  within one grid step (its grid is the alpha/10 FLCI, whose centre the
+  two FLCI solvers pin to ~1e-5); `'C-LF'` inside the native bound's spread
+  over ten seeds of its simulated first stage. The C-F grid ends sit on the
+  first-stage boundary, where the verdict was decided by rounding; they are
+  now rejected by the first stage (HonestDiD rejected one, StatsPAI accepted
+  it, on the same inputs). With one pre-period HonestDiD's monotonicity matrix imposes
+  delta_{-2} <= delta_0 instead of delta_{-2} <= 0 (an R `1:0` loop); the
+  native matrix follows the definition.
+
+### `sp.mediate(interaction=True)` works under the default inference
+
+#### Fixed
+
+- `sp.mediate` with `interaction=True`, a logit / probit mediator, a
+  non-linear outcome model or `treat_values=` raised
+  `MethodIncompatibility` under the default `inference='bootstrap'`. The
+  default now bootstraps the potential-outcome estimator (case resampling,
+  `n_boot`, `seed`; bootstrap standard errors, percentile intervals,
+  `pvalue_method` as before), as R `mediation::mediate(boot = TRUE)` does.
+  Point estimates equal `inference='robust'`'s; the ACMEs equal R
+  mediation 4.5.1's `d1` / `d0` to 1e-9
+  (`tests/reference_parity/test_mediate_po_bootstrap.py`). The draws are in
+  `model_info['boot_draws']`. `inference='delta'` still refuses these
+  models.
+
+### Survival: case weights, counting-process data, robust-variance conventions
+
+#### Added
+
+- `sp.cox(weights=, start=, ssc=, weights_as=)`. `weights=` fits the
+  weighted partial likelihood of R `coxph(weights=)` (each Efron term of an
+  event time carries the mean weight of its deaths); `weights_as='sampling'`
+  (Stata `[pw=]`) asks for the robust variance. `start=` takes
+  counting-process rows `(start, stop]` for delayed entry and time-varying
+  covariates (R `Surv(start, stop, event)`, Stata `stset, time0()` /
+  `enter(time v)`). `ssc='r'` gives coxph's robust / clustered variances
+  (no factor), `ssc='stata'` stcox's (`N/(N-1)` robust, `G/(G-1)`
+  clustered); not given, the old behaviour is kept. With weights or entry
+  times the concordance is computed over the risk sets, as R
+  `concordance()` does. Coefficients, SEs, log partial likelihood and
+  concordance match `coxph` to 1e-10 on 16 configurations, and `stcox` to
+  1e-7 on 8 (`tests/reference_parity/test_survival_weighted_parity.py`).
+- `sp.kaplan_meier(weights=, start=, cluster=, se_method=)`: weighted and
+  delayed-entry Kaplan-Meier with the infinitesimal-jackknife (robust)
+  variance of `survfit(robust=TRUE)`, R's default with non-integer weights
+  or a cluster. Survival, SE and intervals match `survfit` to 1e-12 on six
+  configurations.
+- `sp.stteffects(method='ra' | 'wra' | 'ipw' | 'ipwra', estimand='ATE' |
+  'ATET')`: treatment effects on mean survival time from Weibull /
+  exponential / log-normal outcome and censoring models and a logit / probit
+  treatment model, solved as stacked estimating equations with the robust
+  sandwich, as Stata's `stteffects`. Ten configurations match Stata 18 to
+  1e-9 (estimates) and 1e-7 (SEs)
+  (`tests/reference_parity/test_survival_causal_parity.py`). One
+  documented departure: Stata's `ipwra, atet` averages the outcome models'
+  predictions over the whole sample (its equations 15e-15f), which estimates
+  the ATE under a correct outcome model; `sp.stteffects` averages over the
+  treated (shown on a known-truth DGP in the same test file).
+- `sp.rmst(group=, tau=, weights=, cluster=)`: restricted mean survival time
+  per group with the difference and the RMST / RMTL ratios. Unweighted it
+  is `survRM2::rmst2` (to 1e-12); with IPT weights it is the
+  confounder-adjusted RMST with the infinitesimal-jackknife SE of R
+  `residuals(survfit, type = "rmst")` (to 1e-12).
+- `sp.kaplan_meier(se_method='xie_liu')`: the variance `adjustedCurves`
+  reports for IPTW Kaplan-Meier curves (Greenwood with the effective number
+  at risk), matching `adjustedsurv(method = "iptw_km")` to 1e-12.
+- `sp.msm(censor=, censor_covariates=)`: stabilized inverse-probability-of-
+  censoring weights for person-period data with dropout (pooled logistic
+  models, cumulative product over periods), multiplied into the treatment
+  weights. Weights, coefficients and SEs match R `ipw::ipwtm(type =
+  "first")` + `ipwtm(type = "all")` + `vcovCL` to 1e-6
+  (`tests/reference_parity/test_msm_censoring_parity.py`); on a DGP with
+  informative dropout the weighted slope is within 3 SE of the truth where
+  the complete-case slope is 2.8 SE off.
+- `sp.stata` reads `stset t [pw=w], failure(d) time0(t0) id(i)` /
+  `enter(time t0)` for `stcox`; `stcox, vce(robust)` and `vce(cluster)` now
+  translate (`ssc='stata'`; the robust one used to be refused). `sp.from_r`
+  translates `coxph(cluster =)`, `+ cluster(id)`, `id =` with `robust =
+  TRUE`, `weights =` and `Surv(start, stop, event)` (the cluster used to be
+  dropped).
+
+#### Changed
+
+- `sp.cox(weights=...)` with non-integer weights and the model-based variance
+  warns: that variance reads the weights as frequencies.
+- `CoxResult.ph_test()` refuses weighted and counting-process fits
+  (`MethodIncompatibility`) instead of testing them as unweighted
+  right-censored data.
+
+### Treatment effects: MatchIt-style matching constraints, entropy-balancing estimands, louder failures
+
+#### Added
+
+- `sp.match(method='nearest', exact=, covariate_calipers=, mahvars=)`: match
+  only within cells of equal values, within per-variable calipers, or on the
+  Mahalanobis distance of `mahvars` inside a propensity-score caliper -- R
+  `MatchIt::matchit(exact =, caliper = c(x = ...), mahvars =)`. On eight
+  configurations the matched pairs equal MatchIt 4.7.2's row by row and the
+  ATT agrees to 1e-14
+  (`tests/reference_parity/test_matchit_constraints_parity.py`).
+- `sp.ebalance(estimand='ATE' | 'ATC', base_weights=)`: each arm balanced to
+  the pooled sample, or the treated to the controls; base weights are the
+  entropy reference (Stata `ebalance, basewt()`, WeightIt `base.weights`).
+  Estimates and M-estimation standard errors match
+  `WeightIt::lm_weightit(vcov = "asympt")` to 1e-9 / 1e-7 on 15 cases
+  (`tests/reference_parity/test_ebalance_estimand_parity.py`). The ATT
+  numbers are bit-identical to before.
+- `sp.optimal_match` with fewer controls than treated matches every control
+  and leaves the rest of the treated unmatched with a warning, as MatchIt
+  does (it used to raise); `n_unmatched_treated` records how many, and the
+  summary labels the estimate as the effect on the matched treated.
+- `sp.sensemakr` returns a `SensemakrResult`: still a `dict` (every key and
+  `isinstance(r, dict)` work as before), with attribute access,
+  `summary()`, `to_dict()` / `to_latex()` / `cite()`, and `treat`, `alpha`,
+  `n_obs`, `df_resid` keys.
+
+#### Changed
+
+- `sp.match` refuses a keyword the chosen method does not take with a typed
+  error (`MethodIncompatibility`, still a `TypeError`) that names the right
+  spelling: `bias_correction=` is `bias_adjust=` for `method='nnmatch'`, and
+  the reverse for nearest-neighbour matching.
+- `sp.tmle(weights=)` with the default Super Learner library leaves out the
+  k-nearest-neighbour learners, which cannot take weights, and warns; it used
+  to stop with an error. A library you pass is still used as given.
+- `sp.dml(model='irm' | 'iivm')` warns with the number of cross-fitted
+  propensity scores it clipped, and records `n_clipped` / `clip_share` in
+  `model_info['diagnostics']` (as `sp.aipw` and `sp.tmle` already did).
+- `sp.rosenbaum_bounds(data=, pair_id=)`: a pair with two treated or two
+  control rows is a `MethodIncompatibility` pointing to `sp.weighted_rank`
+  (it was a pandas reshape error); a pair that lost a row is dropped with a
+  warning instead of silently.
+- `sp.bcf` warns on every call (`BCFApproximationWarning`) that it is a
+  random-forest + boosting approximation with bootstrap intervals, not
+  Bayesian Causal Forest; its method label now says so. Numbers unchanged.
+- `sp.dose_response` warns when both models are left at their gradient-
+  boosting defaults (noisy, usually non-monotone curves) and reports
+  `model_info['curve_monotone']`. The default is kept: on a linear confounded
+  design the Hirano-Imbens quadratic was far more biased (+1.27 against
+  -0.13 for the default, truth about 1.9).
+
+#### ⚠️ Correctness
+
+- `sp.cbps`, `sp.ipw`, `sp.aipw`, `sp.tmle`, `sp.ebalance`,
+  `sp.optimal_match`, `sp.cardinality_match` and `sp.rosenbaum_bounds`
+  refuse a treatment that is not coded 0/1 with `MethodIncompatibility`.
+  `sp.cbps` used to return a number for a 0/2 or continuous column (6892 and
+  -122.9 in the audit); `sp.tmle` accepted a column such as {0.5, 1}
+  because it rounded the codes before checking; `sp.optimal_match` read a
+  0/2 column as having no treated units.
+
+
+### ⚠️ Correctness: `sp.ges` is Greedy Equivalence Search
+
+- ⚠️ `sp.ges` now searches equivalence classes with Chickering's (2002)
+  `Insert` / `Delete` operators and re-completes the CPDAG after every
+  step (Meek's rules). It used to add and remove single edges in DAG space
+  and then call every edge outside a v-structure undirected, so compelled
+  edges below a collider (`Z -> W` in `X -> Z <- Y, Z -> W`) came back as
+  `Z - W` and the search could stop short of the GES optimum. Against
+  `pcalg::ges(phase = c("forward", "backward"))` on 30 random
+  linear-Gaussian graphs it matched 11; it now matches all 30, mark for
+  mark (`tests/reference_parity/test_ges_pcalg_parity.py`). The provenance
+  call is no longer wrapped in a bare `except Exception: pass`.
+
+### ⚠️ Correctness: `sp.msm` no longer truncates the weights by default
+
+- ⚠️ `sp.msm(trim=)` defaults to `0.0` (was `0.01`), as R `ipw::ipwtm`
+  (`trunc = NULL`). Truncating at the 1st / 99th percentiles changes the
+  pseudo-population, so the slope is no longer the MSM parameter, and
+  nothing in the result said so: on a design with strong time-varying
+  confounding (true slope 1.0) the old default averaged 1.15 over 20
+  replications against 0.99 untruncated. With `trim > 0` the untruncated
+  fit is now computed too and stored in `model_info['truncation']`
+  (`estimate_untruncated`, `se_untruncated`, `shift`, `shift_in_se`,
+  `n_weights_changed`), and an `AssumptionWarning` fires when the two
+  differ by more than 0.25 SE. `ipwtm(trunc = 0.01)` parity is unchanged
+  with `trim=0.01` passed explicitly.
+
+### ⚠️ Correctness: `sp.did_imputation` joint lead-and-horizon covariance
+
+- ⚠️ With BJS pre-trend leads (`pretrend_method='bjs'`, the default when
+  `horizon=` has negative values or `pretrends=` is set), the event-study
+  covariance now carries the lead-horizon cross block. Both blocks are
+  linear in the outcome; the cross block is the sum over clusters of the
+  products of their scores, which is how Stata `did_imputation` builds
+  `e(V)`. StatsPAI set it to zero and flagged the matrix block-diagonal, so
+  `sp.honest_did` fell back to its worst-case-bias interval and
+  `sp.uniform_bands` to Sidak on every BJS fit; both now use the joint
+  matrix (`sp.event_study_vcov(fit).joint` is `True`).
+- ⚠️ The lead standard errors use `reghdfe`'s observation and cluster
+  counts: singleton units of the auxiliary regression (one untreated
+  period) are dropped before the dof adjustment, as `reghdfe` (and so Stata
+  `did_imputation`) does. Coefficients do not change. On mpdta with
+  `pretrends(3)` the 125 counties first treated in 2004 are singletons and
+  the lead variances were 0.1% too small. Panels without such units (Track
+  A module 84) are unchanged.
+- Evidence: `tests/reference_parity/test_did_imputation_pretrend_vcov_Stata_parity.py`,
+  Stata 18 `did_imputation, horizons(0/3) pretrends(3)` on mpdta: lead
+  block 1e-13, horizon block 7e-10, cross block 2e-8 (reghdfe's solver
+  tolerance).
+
+### Faster relative-magnitudes Honest DiD
+
+- `sp.honest_did(method='relative_magnitude')` enumerates the vertices of
+  each piece's dual polytope in one batched solve (a determinant bound
+  settles most bases without an SVD) and shares them with the
+  least-favourable critical value. 7 pre / 7 post periods: 34 s to 6 s;
+  with the post-period average as target, 104 s to 15 s. Identical sets
+  (the HonestDiD parity tests are unchanged at 1e-12).
+
+### Discovery: Stata / R command names, paraphrases, `limit=`
+
+- `sp.search_functions` ranks the function a Stata command or R function
+  translates to first: `csdid` / `att_gt` -> `callaway_santanna`,
+  `reghdfe` / `ivreghdfe` -> `hdfe_ols`, `ivreg2` -> `iv`, `boottest` ->
+  `wild_cluster_boot`, `bacondecomp`, `did2s`, `matchit`, and
+  `eventstudyinteract` / `fixest::sunab` -> `sun_abraham`. The index is read
+  from the `sp.from_stata` / `sp.from_r` translator tables
+  (`_discovery_commands.py`); hits carry `matched_command`. `sp.csdid`
+  now raises an `AttributeError` that names `sp.callaway_santanna` (it
+  suggested `sp.sdid`). On 31 common command names the translator's target
+  (or the function of that name) ranked first for 16 and in the top 3 for
+  17; it now ranks first for all 31.
+- Paraphrased questions ("treatment adopted at different times", "only one
+  treated unit ... donors", "first stage F statistic is small", "score
+  cutoff") reach the design's entry point; a 12-query eval set
+  (`tests/test_discovery_paraphrase.py`) went from 0 to 12 top-3 hits.
+- `sp.search_functions(query, limit=10, category=None)`: like the MCP tool,
+  the Python function returns the top 10 by default; `limit=None` returns
+  every match as before.
+- MCP `curated` profile: lists `feols`, `iv`, `match`, `sun_abraham` and
+  `sdid`; `nbreg` / `xtnbreg` are no longer advertised there (still
+  callable by name with their hand-written schema, and listed under
+  `full`). `tools/list` grows from 42 to 45 tools, 81.6 KB to 87.1 KB
+  (about 20.4k to 21.8k tokens at 4 bytes a token); `core` is unchanged.
+- MCP `describe_function` sends the parameters once, as the JSON schema
+  (it sent the registry `params` list and the schema, whose composed
+  description also repeated the card): 82.4 KB to 51.0 KB over
+  `callaway_santanna` / `feols` / `rdrobust` / `dml` / `synth`.
+- MCP tools accept `detail="full"` as a spelling of `"agent"` (the fullest
+  payload); it was refused as an invalid argument.
+- Agent-card examples of the 70 audited entry points run as written
+  (`statspai/_card_examples.py`): each loads a bundled dataset (the real
+  Castle Doctrine, Prop 99, LaLonde, Lee Senate and Card extracts where
+  the design fits) or a `sp.dgp_*` simulator and uses the parameter names
+  the schema lists. Before, most assumed a `df` with columns no dataset
+  has. `tests/test_card_examples.py` executes all 70.
+- `next_steps()` on `sp.feols` / `sp.regress` / IV fits follows the variance
+  estimator already used: no "re-estimate with robust SEs" on a clustered
+  or robust fit, `vcov='hetero'` through `sp.feols` for an iid `feols` fit,
+  and a wild cluster bootstrap when there are fewer than 30 clusters. Every
+  `sp.feols` result was also handed the IV checklist (first-stage F,
+  over-identification, Kitagawa) because `"iv"` is a substring of
+  `"ols (statspai native)"`; IV is now matched on whole words.
+- `sp.recommend` on a panel passed without `id=` / `time=` reads the layout
+  with `sp.detect_design` (and refuses when two layouts fit equally well);
+  it used to profile the panel as a cross-section and offer the unit,
+  period and cohort columns as covariates. Columns that encode the unit or
+  the adoption timing (`first_treat`, a cohort index, another unit code)
+  are never default covariates, also under a declared cross-sectional
+  design. The `sp.regress` code it emits put quoted column names inside
+  the formula (`'y ~ d + 'x1', 'x2''`) and did not parse.
+- `sp.aipw` records its unclipped fitted propensity, so `violations()`
+  reports weak overlap as it does for `sp.ipw` (it reported nothing).
+- MCP reproduction bundles hold the standard error and interval as well
+  as the estimate (headline and every coefficient). The bundle looked for
+  `std_error` where the payload says `se`, so a re-run with another
+  variance estimator passed as reproduced.
+- R argument names are accepted: `sp.callaway_santanna(yname=, tname=,
+  idname=, gname=, xformla=, weightsname=, est_method=, alp=)`,
+  `sp.aggte(alp=, biters=)`, `sp.drdid(yname=, tname=, idname=, dname=,
+  estMethod=, weightsname=)` (R `DRDID::drdid`), and
+  `sp.event_study(first_treat=)`.
+
+
+### ⚠️ Correctness: `sp.rdrobust` fuzzy bandwidth with covariates
+
+- ⚠️ `sp.rdrobust(fuzzy=..., covs=...)` with an automatic bandwidth: `h`
+  now equals R / Stata `rdrobust`'s. The parser demeaned `covs` before the
+  bandwidth cascade, and the fuzzy cascade at `nu = 0` builds its
+  delta-method weights from each side's levels at the cutoff, which move
+  with the covariates' location. `h` (and so every estimate) was 4e-3 to
+  5e-3 (relative) off on covariates with non-zero means; `b`, all sharp
+  bandwidths and all fixed-`h` estimates were already exact, and
+  standardised covariates (the earlier fuzzy fixture) were unaffected.
+  New fixture `tests/reference_parity/test_rd_fuzzy_covs_level_R_parity.py`
+  (p = 1, p = 2, cluster, hc1, cerrd, msetwo; rdrobust 4.0.0, rel 1e-6).
+
+### Staggered DiD: one set of input checks, anticipation in `sun_abraham` and `did_imputation`
+
+The 2026-10-19 audit found the staggered estimators handling the same bad
+input in different ways: a cohort column that changes within a unit gave
+three different estimates from `callaway_santanna`, `sun_abraham` and
+`did_imputation` with no warning, and a cohort treated from the first
+period gave `sun_abraham` zero standard errors. The checks now live in
+`did/_validate.py` and are shared.
+
+#### Added
+
+- `sp.sun_abraham(anticipation=, ref_p=)`: the reference period becomes
+  `-1 - anticipation` (fixest `sunab(ref.p = )`), the anticipation effects
+  are estimated and left out of the pre-trend test and the post-treatment
+  average. Matches `fixest::sunab` to 1e-11 with one or two reference
+  periods and a covariate.
+- `sp.sun_abraham(i=None)` fits repeated cross sections with cohort fixed
+  effects and HC1 standard errors, `feols(y ~ sunab(g, t) | g + t,
+  vcov = "hetero")` (1e-11).
+- `sp.did_imputation(shift=)`, Stata `did_imputation, shift()`: treatment
+  is moved `shift` periods earlier and horizons are counted from the
+  shifted date. Matches Stata 18 to 4e-8 (reghdfe's tolerance).
+- `sun_abraham` names its headline (`model_info['headline']`) and prints
+  the other aggregation next to it (`other_aggregation`): the default
+  `.estimate` is the equal-weight mean of the post-treatment event-time
+  effects, not fixest's `summary(agg = "att")`, which is
+  `aggregation='fixest_att'` and always in `model_info['att_fixest_att']`.
+- `callaway_santanna` / `aggte` results carry `model_info['inference_note']`
+  when the intervals are analytic or pointwise, saying that R
+  `did::att_gt` defaults to `bstrap = TRUE, cband = TRUE` and how to get
+  that. The defaults are unchanged.
+- `sun_abraham`, `did_imputation`, `gardner_did`, `stacked_did` and
+  `etwfe` warn (`AssumptionWarning`) when the treated observations fall in
+  fewer than ten clusters, as `callaway_santanna` already did.
+
+#### Changed
+
+- A cohort (first-treatment) column that takes more than one value within
+  a unit is refused (`MethodIncompatibility`) by `callaway_santanna`
+  (panel), `sun_abraham`, `did_imputation`, `gardner_did`, `stacked_did`
+  and `etwfe` (panel), as R `did` does. NaN, inf and 0 all mean never
+  treated and do not count as different values.
+- Several rows per (unit, period) are kept by the regression estimators
+  (the unit may be a group with individuals sampled each period, as in
+  Stata `did_imputation` and fixest) but now raise a
+  `RepeatedUnitPeriodWarning`, since an accidental many-to-one merge looks
+  the same and understates the standard errors. `callaway_santanna` still
+  refuses them.
+- `sun_abraham` with no never-treated unit raises `DataInsufficient` whose
+  hint points to `control_group='lastcohort'` / `control_cohort=`.
+- `sp.fect(n_boot=)` defaults to `None` (200 when bootstrapping); passing
+  it without `vce='bootstrap'` now warns instead of silently returning no
+  standard errors.
+
+#### Fixed
+
+- ⚠️ `sp.sun_abraham` with a cohort that has no row in the reference
+  period (treated in or before the first period of the panel): the
+  cohort's interaction cells are collinear with its own fixed effects, and
+  every post-period estimate came back with standard error 0 and p = 1,
+  with the unidentified cohort's late relative times reported as effects.
+  Such cohorts are now dropped with a warning
+  (`model_info['dropped_unidentified_cohorts']`), and the fit equals
+  `fixest::sunab` on the panel without them to 1e-11
+  (`tests/reference_parity/test_did_validation_parity.py`).
+- ⚠️ `sp.etwfe` and `sp.stacked_did` drop cohorts treated in or before the
+  first period, with a warning (`model_info['dropped_always_treated']`).
+  ETWFE's cohort x period cells for such a cohort are collinear with its
+  fixed effect and the dropped cell's treated period became a comparison
+  (on the audit panel the ATT was 2.892 with the cohort and 2.930 without;
+  R `etwfe` gives 2.86 and 2.93); a stacked sub-experiment for such a
+  cohort has no reference period.
+
+### Translators: `[pweight=]` implies `vce(robust)`; one `dropped` key; new mappings
+
+#### Fixed
+
+- ⚠️ `sp.from_stata` / `sp.stata`: a command with `[pweight=]` and no
+  `vce()` ran with the non-robust variance for `reghdfe`, `ivreghdfe`,
+  `ivregress`, `ivreg2`, `xtreg, fe` and `glm` (the translator only added
+  a robust variance where the sp function has a `robust=` argument).
+  Stata gives these commands the variance of `vce(robust)` (`xtreg, fe`:
+  `vce(cluster panelvar)`); `reghdfe y x1 x2 [pw=w], absorb(g)` had an x1
+  standard error 7% too large, `xtreg y x [pw=w], fe` one 21% too small.
+  The translator now adds `vce(robust)` to such commands before
+  translating them, so each command's own `vce(robust)` mapping applies;
+  weighted robust `reghdfe` / `ivreghdfe` go to
+  `sp.feols(vcov='hetero', fixef_rm='singleton')`, since `sp.hdfe_ols`'s
+  robust variance is unweighted. `glm [pw=]` now uses Stata's N/(N-1)
+  (`robust='robust'`, was HC1). Checked against Stata 18 (reghdfe 6,
+  ivreghdfe, ivreg2); three `[pweight=]` rows added to the translation
+  holdout. `newey` / `prais` / `rdrobust` / `xtnbreg` with `[pw=]`, which
+  Stata refuses, are refused. `qreg [pw=]` printed a call without the
+  weights (`arguments` had them).
+- `sp.from_r`: `feols(y ~ sunab(cohort, period) | unit + period)` produced
+  a call that crashed; it now maps to
+  `sp.sun_abraham(share_variance=False)`, which reproduces fixest 0.14's
+  coefficients and clustered standard errors to 1e-9. `rdrobust(covs =
+  cbind(df$z1, df$z2))` (and `df[, c(...)]`) was dropped; it is translated.
+  `cluster = ~a + b` is two clustering variables.
+
+#### Added
+
+- Both translators return `dropped` (everything the call leaves out:
+  options or arguments, and an unapplied `if` / `in`) and `complete`
+  (`True` only when nothing was dropped). `untranslated_options`,
+  `unapplied_sample` (Stata) and `untranslated_arguments` (R) stay.
+- `sp.from_stata` / `sp.stata` translate `stcox` (Breslow ties unless
+  `efron`, as Stata), `stcrreg` (`sp.finegray(small_sample=True)`),
+  `eventstudyinteract` (`sp.sun_abraham`; `sp.stata` runs it only when
+  the varlist is every relative-period indicator but -1) and `power
+  twomeans | onemean | pairedmeans` (`sp.power_ttest`), each checked
+  against Stata 18. `xtabond2`, `leebounds`, `lpirf`, `rwolf`, `wyoung`
+  and `spregress` are refused with the sp function to call instead.
+  `sp.stata` refuses a survival fit whose event variable has codes the sp
+  call would read differently from `stset` / `compete()`.
+- `sp.from_r` translates `AER::ivreg` / `ivreg::ivreg` (`sp.iv`),
+  `survival::coxph` (`sp.cox`), `pwr::pwr.t.test` (`sp.power_ttest`; pwr's
+  per-group n is the total here), `survey::svydesign` / `svyglm`
+  (`dof='residual'`, R's reference distribution), `lmtest::coeftest` with
+  `sandwich::vcovHC` / `vcovCL` (`sp.vcov`; `vcovHC`'s default is HC3),
+  `etwfe::etwfe` / `emfx`, `did::aggte`, `did_multiplegt_dyn`
+  (`se_method='analytic'`, `effects` written out) and `modelsummary`,
+  each run against the R package on the same data. `weightit`,
+  `synthdid_estimate`, `mediation::mediate`, `CausalImpact`, `lagsarlm`,
+  `pcalg::pc` and `mr_ivw` are refused with the sp call to make
+  (`R_GUIDANCE`). `pkg::fn(...)` is accepted.
+
+### Output layer: exports with their defaults, and honest table rows
+
+#### Fixed
+
+- `CausalResult.to_word(path)` (every causal estimator, `sp.qreg`,
+  `sp.tobit` ...) crashed with its own default `digits=None`; it now uses
+  the `"auto"` precision of `to_latex` / `to_markdown`. A new contract test
+  calls `summary` / `to_latex` / `to_markdown` / `to_word` / `to_excel` /
+  `cite` / `to_dict` / `sp.regtable` with defaults on 49 estimators.
+- `sp.regtable` / `sp.esttab` / `sp.modelsummary` on a result without
+  coefficients (`OaxacaResult`, `KMResult`, `VARResult`, `LPolyResult` ...)
+  raise `MethodIncompatibility` with a recovery hint instead of
+  `AttributeError: ... no attribute 'params'`.
+- ⚠️ "Cluster SE" said `No` for clustered `sp.feols` / `sp.fepois` /
+  `sp.feglm` columns (`cluster=` or `vcov={"CRV1": ...}`) and for
+  `sp.hdfe_ols(cluster=)`; it now names the cluster variable(s).
+  `sp.hdfe_ols` columns also get their FE rows and R².
+- ⚠️ "Mean of Y" printed `-0.000` for every fixed-effect column (it averaged
+  the demeaned outcome); it is now the outcome mean on the estimation
+  sample.
+- An unknown `stats=` name printed an empty row; it now raises
+  `MethodIncompatibility` with a did-you-mean. `n_obs`, `r_squared`,
+  `adj_r_squared`, `pseudo_r2`, `loglik`, `DV mean` are recognised, and
+  `Cluster` / `FE` / `First-stage F` (rows the indicator block prints) are
+  accepted without adding an empty row.
+- `sp.modelsummary(output="table.tex")` (or `.html` / `.md` / `.txt` /
+  `.csv`) wrote nothing and returned text; it writes the file. A misspelt
+  `output=` raises instead of returning text, as does
+  `sp.esttab(output="bogus")`. `sp.outreg2(filename="t.html")` wrote an
+  Excel workbook under that name; `.html` / `.md` / `.txt` now write the
+  rendering, an unknown extension or `format=` raises, and a bare name
+  still writes Excel.
+- `CausalResult.summary()` crashed when `model_info['pretrend_test']` was
+  `None` (`sp.sun_abraham(..., pretest='none')`, an event window without
+  leads); it now leaves the pre-trend line out.
+- `result.plot(type=...)` with an unknown type drew a coefplot (CausalResult),
+  or ignored `type` (`sp.rkd`, `sp.cox`); it raises
+  `MethodIncompatibility` listing the valid types. `type='synth'` is an alias
+  of `'both'`. `sp.rddensity(...).plot()` raised "'yerr' must not contain
+  negative values" (its headline is a T statistic, its `ci` a density
+  difference); it now draws the two boundary densities with their intervals.
+- `sp.sumstats` / `sp.balance_table` raised a raw `TypeError` on a string
+  or categorical column; each level now gets a row (the statistics of its
+  0/1 indicator, so `Mean` is the level's share, Stata `summarize i.var`).
+  The SMD of a level row in `sp.balance_table` follows R `cobalt`'s binary
+  convention, `(p_t - p_c) / sqrt((p_t(1-p_t) + p_c(1-p_c)) / 2)` (the
+  whole sample's `sqrt(p(1-p))` when both arms are constant), equal to
+  `cobalt::bal.tab(binary = "std", s.d.denom = "pooled")` to 1e-12 (cobalt
+  4.6.2 as a black box; `tests/test_owner_decisions_oct20.py`). Numeric
+  covariates, 0/1 numeric columns included, keep the sample-SD denominator.
+  Both take `filename=` (.xlsx / .docx / .tex / .html / .md / .txt / .csv)
+  and `output='markdown'`; an unknown `output=` (or `balance_table(test=)`)
+  raises instead of falling back to text.
+
+#### Added
+
+- `tidy()` / `glance()` on every result class built on the shared result
+  protocol (~360 classes): `tidy` reads the coefficient vector, the headline
+  estimate or the test statistic, and refuses with `MethodIncompatibility`
+  when there is none; `glance` is one row of the scalar fields.
+- `sp.bacon_decomposition`, `sp.evalue`, `sp.oster_bounds` and
+  `sp.mi_estimate` return result objects that are still `dict`s (same keys,
+  `isinstance(r, dict)`, JSON-serialisable) with `summary()` / `tidy()` /
+  `glance()` / `to_latex()` / `to_word()` / `cite()`; `sp.regtable` takes the
+  `mi_estimate` result (Rubin-pooled coefficients and SEs, `N`).
+- `booktabs=True` on `RegtableResult.to_latex`, `EconometricResults.to_latex`
+  and `CausalResult.to_latex` (`\toprule` / `\midrule` / `\bottomrule`; the
+  default keeps `\hline`).
+- `EconometricResults.plot()` (a coefplot); `sp.coefplot(drop=[...])`
+  (Stata `coefplot, drop(_cons)`; like Stata, the intercept is plotted unless
+  dropped) and a warning when the models' coefficients are on different
+  scales (OLS slopes beside logit log-odds or Poisson log-rates).
+
+#### Changed
+
+- Default summary rows: likelihood models that report a pseudo-R² (logit,
+  probit ...) show `Pseudo R²` and `Log-Lik.`; default rows that no column
+  can fill (`R² / Adj. R² / F` under a logit or a causal estimate) are
+  dropped. OLS tables are unchanged.
+- The table functions accept each other's argument spellings:
+  `sp.regtable(model_names=, mtitles=, coeflabels=, variable_labels=)`,
+  `sp.esttab(model_labels=, model_names=, mtitles=, coef_labels=)`,
+  `sp.modelsummary(model_labels=)`, `sp.outreg2(model_labels=,
+  coef_labels=, digits=)`. Passing both spellings raises `TypeError`.
+
+### Post-estimation after fixed-effects fits; wild bootstrap by estimator
+
+#### Added
+
+- `result.fixef()` after `sp.feols` / `sp.fepois` / `sp.feglm` with
+  absorbed effects: one Series per effect, normalised as R `fixest`'s
+  `fixef()` reports them (matches it to 1e-6 for one to three effects, IV,
+  Poisson and logit; `tests/reference_parity/test_fixest_postestimation_parity.py`).
+- `predict(newdata=...)` (alias of `data=`) on regression results.
+- `sp.hypotheses`: a list of hypotheses (one row each), and
+  `joint=True` / `joint=[names]` with `joint_test="f" | "chisq"` for one
+  Wald test of several restrictions, linear or not (Stata `testnl`;
+  marginaleffects' `joint=` to 1e-6).
+- `vcov=False` (marginaleffects' spelling) on `sp.predictions` /
+  `comparisons` / `slopes` and their `avg_` versions (estimates without
+  standard errors).
+- `sp.wild_cluster_boot` tests several coefficients jointly
+  (`variable=[...]`, `h0=[...]`) and clusters several ways
+  (`cluster=[a, b]`, `bootcluster=`), matching Stata `boottest`
+  p-values exactly in the enumerated regime
+  (`tests/reference_parity/test_wild_cluster_boot_dispatch_parity.py`).
+- `sp.iv_wild_bootstrap` is public (the WRE bootstrap behind
+  `sp.ivreg(vce='wild')`).
+- `sp.hdfe_ols(cluster_df='min')`: the multi-way small-sample factor of
+  Stata `reghdfe` and R `fixest` (reghdfe's SEs to 1e-10). The default
+  stays `'per_term'` (R `sandwich::vcovCL`) and is now recorded in
+  `cluster_info['cluster_df']`.
+
+#### Fixed
+
+- ⚠️ `predict(newdata)` after `sp.feols` / `sp.fepois` / `sp.feglm` with
+  absorbed effects left the effects out, and after `sp.fepois` /
+  `sp.feglm` returned the linear index instead of the mean. It now adds the
+  effects and applies the inverse link, as fixest's `predict`; an unseen
+  level gives NaN with a warning.
+- ⚠️ `sp.avg_slopes` / `avg_predictions` / `avg_comparisons` /
+  `sp.margins` after `sp.fepois` / `sp.feglm` read the model as linear
+  (the link was not recorded) and returned the coefficients as marginal
+  effects (0.286 against marginaleffects' 0.275 on the audit data). The
+  link is recorded and the effects enter the index, held at their
+  estimates, as marginaleffects does on a fixest model. Standard errors
+  that would ignore the effects' uncertainty (predictions; any quantity
+  of a non-linear model) are refused unless `vcov=False`, as
+  marginaleffects refuses them.
+- ⚠️ `sp.wild_cluster_boot` refit least squares whatever the model: after
+  `sp.ivreg` it bootstrapped the OLS coefficient, after `sp.logit` a linear
+  probability model. It now runs the bootstrap the estimator defines
+  (WRE after 2SLS, the score bootstrap after logit / probit / Poisson,
+  `sp.did`'s own wild bootstrap after a 2x2 DiD) and refuses other models.
+- ⚠️ `sp.feols(..., vce='wild')` with an IV part reported the OLS cluster
+  standard errors of the structural design (0.024 against the 2SLS 0.059
+  on the reference panel) with bootstrap p-values of the OLS coefficient.
+  The endogenous coefficients now get the WRE bootstrap and the others
+  keep their CRV1 inference.
+- ⚠️ The wild bootstrap after a fit with absorbed effects that are not
+  nested in the clusters (year effects with firm clusters) did not
+  residualise the bootstrap draws on the effects again, so its p-values
+  were those of another bootstrap (0.130 against Stata `boottest` after
+  `reghdfe`'s 0.146 on the reference panel). `sp.feols(vce='wild')` and
+  `sp.wild_cluster_boot` now match boottest exactly.
+- Tables from `sp.avg_slopes` and friends kept arrays in
+  `DataFrame.attrs`, so printing a wide table and `pd.concat` raised
+  "truth value of an array is ambiguous". The Jacobian is kept in a
+  wrapper that compares by value (`np.asarray(tab.attrs["jacobian"])`),
+  and a subset of rows is tested with its own rows.
+- `sp.vcov(fit, 'DK')` / `vcov='NW'` without the panel ids failed with
+  `KeyError: None`; they now raise a typed error naming
+  `vcov_kwargs={'time_id': ..., 'panel_id': ..., 'lag': ...}` (with them,
+  pyfixest's numbers equal fixest's `DK(L)` / `NW(L)`).
+
+### Singletons: the default of `fixef_rm` changes in 1.40
+
+- `sp.feols` / `sp.fepois`: `fixef_rm` defaults to `None`, which keeps
+  fixed-effect singletons as before and raises a `FutureWarning` when a fit
+  kept any. From 1.40 the default is `"singleton"` (drop them), the
+  default of R `fixest`, Stata `reghdfe` and pyfixest. See MIGRATION.md.
+  `sp.crossval`'s StatsPAI engine now drops singletons, as its fixest and
+  pyfixest engines do, so all three fit the same sample.
+
+### Multiple estimation and two-way clustered GLMs run natively
+
+#### Changed
+
+- `sp.feols` multiple estimation (`y1 + y2 ~ ...`, `sw()`, `sw0()`, `csw()`,
+  `csw0()`, `mvsw()`, on the regressors or the fixed effects) returns the
+  same list in the same order as before, fitted on the native engine when
+  every model is one it fits on complete rows; otherwise the whole call
+  still goes to pyfixest, so a list never mixes engines.
+- `sp.fepois` and `sp.feglm(family="logit" | "probit")` cluster two ways
+  natively (`{'CRV1': 'a + b'}`).
+
+#### Fixed
+
+- ⚠️ `sp.fepois` / `sp.feglm` with two-way clustering: when the
+  inclusion-exclusion covariance has a negative eigenvalue, fixest sets it
+  to zero (Cameron, Gelbach and Miller 2011); pyfixest does not for GLMs,
+  so these standard errors could differ from fixest's (5% for a logit on
+  the reference panel). The native fit applies the fix and matches
+  `fixest::feglm` / `fixest::fepois` to 1e-6
+  (`tests/reference_parity/test_feglm_native_fixest_parity.py`).
+
+### `sp.feols`: two-way clustering, `i()` terms and IV with fixed effects run natively
+
+The three most common `sp.feols` calls that still went to pyfixest now run
+on the native engine. One million rows, firm and year effects, against R
+`fixest` 0.14 (milliseconds, one thread / eight threads):
+
+| call | before (pyfixest) | now | fixest |
+| --- | ---: | ---: | ---: |
+| `vcov={'CRV1': 'firm + year'}` | 584 | 66 / 66 | 121 / 92 |
+| `y ~ x2 \| firm + year \| x1 ~ z` | 500 | 119 / 110 | 214 / 180 |
+| `y ~ i(rel, ref=-1) \| firm + year` | 313 | 121 / 96 | 307 / 144 |
+
+#### Changed
+
+- Two-way clustering (`{'CRV1': 'a + b'}`, Stata `cluster a b`): Cameron,
+  Gelbach and Miller's `V_a + V_b - V_ab` with fixest's factors (smallest
+  `G`, effects nested in any dimension left out of `K`) and its
+  eigenvalue fix; 48 configurations equal pyfixest's to 1e-6, the 24-cell
+  fixest grid passes, and the two-way cell agrees with fixest to 3e-13.
+- `i(factor, ref=v)` and `i(factor, var, ref=v)` (integer or string
+  factor, explicit reference) expand to dummies named as before
+  (`rel::-3`, `rel::-3:var`), in `sp.feols`, `sp.fepois` and `sp.feglm`.
+- IV with absorbed effects (`y ~ x | fe | d1 + ... ~ z1 + ...`): 2SLS on
+  the jointly residualised columns, with weights and every native
+  variance; several endogenous regressors work (pyfixest refused them).
+  The first-stage F is fixest's `ivwald1`. 24 cells (just / over
+  identified, two endogenous, iid / hetero / one- and two-way clusters,
+  weights) match R fixest to 1e-6
+  (`tests/reference_parity/test_feols_iv_native_fixest_parity.py`).
+
+#### Fixed
+
+- ⚠️ `sp.feols` IV: the robust and clustered first-stage F differed from
+  fixest's `ivwald1` when the panel had singletons (by 1% on the reference
+  panel), because pyfixest's first-stage refit dropped them while the IV
+  model kept them. The native fit uses the IV model's own sample.
+
+### Rust kernels installed by default; statspai-hdfe 0.9 runs every pass in parallel
+
+`pip install statspai` now installs `statspai-hdfe` on every platform it
+publishes a wheel for (Linux x86_64 / aarch64 with glibc or musl, macOS
+x86_64 / arm64, Windows x64 / ARM64), through an environment marker, so pip
+never compiles Rust; other platforms keep the NumPy / Numba paths. The
+crate (kernel API 3; 0.9.0 on PyPI since 2026-10-18, 0.9.1 since
+2026-10-20 with the same code and the musllinux aarch64 and Windows ARM64
+wheels added; StatsPAI requires 0.9.1 from this release)
+splits every pass over the rows into fixed chunks that
+run in parallel and are added in a fixed order, so fits are bit-identical
+at any thread count (checked at 1, 3 and 8 threads for feols, fepois,
+logit and probit with two and three fixed effects).
+
+Against R `fixest` 0.14 on the same CSV, eight threads, milliseconds
+(`benchmarks/hdfe/fixest_matrix.py`, minimum of five runs; one thread is
+in the section below):
+
+| call, one million rows | StatsPAI | fixest |
+| --- | ---: | ---: |
+| `sp.fepois`, firm + year | 100 | 278 |
+| `sp.fepois`, clustered | 125 | 291 |
+| `sp.feglm(family="logit")`, clustered | 130 | 325 |
+| `sp.feols`, ten regressors, clustered | 110 | 174 |
+| `sp.feols`, worker + firm + year | 264 | 340 |
+| `sp.fepois`, worker + firm + year | 1316 | 2327 |
+| `sp.feols`, firm + year, iid | 59 | 49 |
+
+StatsPAI is faster in 27 of the 30 cells at eight threads and in all 30 at
+one thread. The three it loses are plain `sp.feols` on exactly a million
+rows (iid, hetero, weighted): the regression takes 25 ms there, and the
+SHA-256 provenance fingerprint of the input frame (56 ms, frames up to a
+million rows) bounds the call. The fingerprint is kept as it is, because
+replication packs compare it across versions: it now hashes the frame's
+own buffer instead of a copy (the same digest), and
+`STATSPAI_PROVENANCE_HASH=0` skips it for loops of many fits on one frame
+(`data_hash` is then `None`; explicit `compute_data_hash` calls are not
+affected).
+
+#### Added
+
+- `statspai_hdfe.feglm_irls(..., family)` (API 3): the IRLS loop for
+  Poisson, logit and probit with absorbed effects; `sp.feglm`'s native
+  logit / probit use it when present and fall back to the Python loop on
+  API 2. `fepois_irls` is unchanged.
+- `rust/statspai_hdfe/src/par.rs`: chunked, order-fixed parallel loops
+  (scatter-adds into group sums, elementwise updates, reductions).
+
+#### Changed
+
+- `statspai-hdfe>=0.9.1,<1` is a core dependency on the platforms above;
+  the `rust` extra remains for building it elsewhere. The Windows ARM64
+  wheel is built on the native `windows-11-arm` runner (cross-compiling
+  from x64 fails without an ARM64 interpreter).
+- One- and two-fixed-effect demeaning, the cross-tab reweighting, and
+  every per-iteration pass of the IRLS (working response, cross products,
+  deviance, step-halving) run over row chunks in parallel. Rust results
+  move in the last digits relative to 0.8 (association of the sums); the
+  parity harnesses run without the extension, so no committed result
+  changes.
+
+### `sp.feols` / `sp.fepois` / `sp.feglm` run on StatsPAI's own engine
+
+`sp.feols`, `sp.fepois` and `sp.feglm` reached their numbers through
+pyfixest, an optional dependency, so the fast native kernels never served
+the most used entry points, and a plain `pip install statspai` could not
+run them. They now fit plain calls natively (`sp.fast.feols`,
+`sp.fast.fepois`, and a new binomial IRLS for logit / probit) and keep
+pyfixest for everything else. Track A module 67 (panel GLM) no longer
+calls pyfixest: the parity table counts 87 native modules and 2
+third-party ones (was 86 and 3).
+
+One million rows, firm and year effects, one thread, against R `fixest`
+0.14 on the same CSV (`benchmarks/hdfe/fixest_matrix.py`, minimum of five
+runs, Rust kernels installed), in milliseconds:
+
+| call | before (pyfixest) | now | fixest |
+| --- | ---: | ---: | ---: |
+| `sp.feols`, iid | 260 | 62 | 81 |
+| `sp.feols`, clustered | | 79 | 92 |
+| `sp.feols`, 10 regressors, clustered | | 176 | 293 |
+| `sp.fepois`, iid | 487 | 342 | 424 |
+| `sp.fepois`, clustered | | 367 | 468 |
+
+#### Changed
+
+- `sp.feols(backend=)` defaults to `'auto'` (was `'pyfixest'`);
+  `sp.fepois` gained the argument. `'auto'` fits `y ~ x1 + ... | fe1 + ...`
+  with numeric regressors, `vcov` in iid / hetero / one-way CRV1, no `ssc=`
+  and no extra pyfixest keyword natively, with the delegate's conventions
+  (singletons kept unless `fixef_rm='singleton'`, rows with missing values
+  dropped, the same degrees of freedom, p-values and R-squared). On 128
+  configurations (absorbed effects, vcov, weights, singletons, separation)
+  coefficients agree with pyfixest to 2e-7 relative and `sp.feols` standard
+  errors to 1e-6. Absorbed or collinear regressors, which fixest drops,
+  still go to pyfixest. `model_info['backend']` says which engine ran.
+  See MIGRATION.md.
+- `sp.fepois` on the native engine iterates IRLS to a relative deviance
+  change of 1e-10. At pyfixest's and fixest's 1e-8 stop the fixed effects,
+  and with them the standard errors, can sit 1e-5 from the optimum; the
+  native standard errors are within 3e-9 of it on every configuration
+  above (pyfixest's within 1.2e-5, fixest's 5e-8 on the reference panel).
+  It warns when it drops observations for separation, as pyfixest does.
+- `sp.feglm(family='logit' | 'probit')` gained `backend=` (default
+  `'auto'`) and fits natively under the same conditions (`weights=` is the
+  one extra keyword it takes natively; `family='gaussian'` stays with
+  pyfixest). It follows `fixest::feglm`: observations in a fixed-effect
+  group with only 0 or only 1 outcomes are dropped (with a warning),
+  Fisher-scoring variance, fixest's small-sample factors, normal p-values
+  (pyfixest used a t distribution). Against `fixest::feglm` at tight
+  tolerances on 32 configurations (logit / probit, one and two effects,
+  iid / hetero / clustered, weights) coefficients agree to 1.3e-13 and
+  standard errors to 1e-6; pyfixest's defaults sat 6e-5 to 1.4e-4 from
+  fixest's on the same panel.
+
+#### Fixed
+
+- Provenance hashing no longer adds its cost to every fit: the SHA-256 of
+  the input frame (45 ms of a 110 ms `sp.feols` on a million rows) runs on
+  a second thread while the estimator works, with the same digest.
+- `sp.fast.feols(vcov='cr1')`: the cluster scores are summed with
+  `bincount` instead of `np.add.at`, the cluster and fixed-effect codes are
+  reused instead of factorised again, and the nested-in-cluster check is
+  vectorised (it looped over rows in Python). 95 to 61 ms on a million
+  rows; results bit-identical on 66 configurations.
+- `sp.fast.demean` no longer re-factorises codes that are already dense
+  when no singleton was dropped, and returns them in `DemeanInfo.fe_codes`.
+- `sp.fast.fepois` no longer recounts each fixed effect's levels with
+  `np.unique` at the end of the fit (15 ms on a million rows).
+
+#### Added
+
+- `benchmarks/hdfe/fixest_matrix.py`: StatsPAI against R `fixest` on a
+  matrix of models (OLS iid / clustered / hetero / weighted / ten
+  regressors, Poisson, logit, a low-mobility three-way panel), sizes and
+  thread counts, on the same CSV bytes, with coefficient and SE agreement.
+
+### Rust kernels: shippable, safe, and faster than fixest
+
+The Rust kernels in `rust/statspai_hdfe` had never reached a user: StatsPAI
+builds as a pure-Python wheel, no wheel of the extension was published, no
+CI job built it or ran a test against it, and even the repository's own
+environment did not have it. This release makes it a separate, optional
+package and rewrites the kernels.
+
+On one million rows, one thread (`benchmarks/hdfe/RUST_KERNELS.md`):
+`sp.fast.feols` with firm and year effects takes 0.053 s (NumPy 0.144,
+fixest 0.078); with worker, firm and year effects and low mobility 0.63 s
+(NumPy 6.2, fixest 0.74); `sp.fast.fepois` on the latter 3.2 s (NumPy 23.9,
+fixest 4.6). Coefficients agree with the NumPy path to 3e-9.
+
+#### Added
+
+- **`pip install "statspai[rust]"`** installs `statspai-hdfe` (crate 0.8.0,
+  kernel API 2), published from `rust/statspai_hdfe` with abi3 wheels (one
+  per platform for every CPython >= 3.10). StatsPAI stays pure Python and
+  falls back to NumPy / Numba without it.
+- `sp.fast.backend_info()` says whether the kernels are in use and why not;
+  `sp.fast.set_num_threads()` / `sp.fast.get_num_threads()` size their pool
+  (initial size from `STATSPAI_NUM_THREADS`). `STATSPAI_SKIP_RUST=1` now
+  actually disables an installed extension (the variable was set across CI
+  but nothing read it).
+- `FeolsResult.fe_kernel` / `FePoisResult.fe_kernel` (also in `to_dict()`)
+  and `absorb_ols(...)["fe_kernel"]` record which kernel residualised.
+- `.github/workflows/rust-hdfe.yml`: `cargo test` and the Rust-path Python
+  tests on Linux, macOS and Windows with `STATSPAI_REQUIRE_RUST=1`; wheels on
+  demand; publication to PyPI only on an `hdfe-v*` tag. It replaces
+  `build-wheels.yml`, which had been inert since it was added.
+- `benchmarks/hdfe/rust_kernels_bench.py`.
+
+#### Changed
+
+- **New demean algorithm** (`demean_2d`, `demean_2d_weighted`): the
+  projection is solved in the space of the FE coefficients, as fixest does
+  (Berge 2018, `berge2018efficient`). Two FEs iterate on a sparse
+  cross-tabulation, so a sweep costs the number of distinct FE pairs rather
+  than the number of rows; with three or more, the two largest FEs form an
+  exactly solved block inside an accelerated outer loop. Results agree with
+  the NumPy path to within the stopping tolerance, not bit for bit.
+- `sp.fast.fepois` runs its whole IRLS in Rust with the FE structure built
+  once and every column warm-started from its previous FE coefficients.
+- `sp.hdfe_ols`, `sp.Absorber`, `sp.demean` and `sp.absorb_ols` use the
+  Rust kernels for plain FEs (`solver="map"`, no varying slopes) when they
+  are installed.
+- `cluster_meat` sums fixed blocks of clusters and adds them in order: the
+  cluster-robust meat of `sp.regress(cluster=)` is now the same bit for bit
+  at any thread count (it varied in the last digits from run to run).
+- `sp.fast.feols`, `sp.fast.fepois` and `sp.fast.event_study` raise
+  `NumericalInstability` when a regressor is absorbed by the fixed effects
+  or collinear with the others. They relied on the inverse of the normal
+  equations failing, which only happens for an exactly singular matrix; an
+  absorbed regressor comes back from any iterative residualisation as
+  rounding noise, and the estimates were then finite garbage.
+
+#### Fixed
+
+- Every Rust entry point validates its inputs and raises `ValueError`; the
+  crate was built with `panic = "abort"`, so an out-of-range FE code, a
+  non-contiguous array or `n = 0` killed the Python interpreter. Weighted
+  `sp.fast.feols` on data where singleton pruning drops every row did reach
+  that path; it now raises `DataInsufficient`.
+- The Rust Poisson IRLS added a silent ridge to a singular weighted design
+  and returned its coefficients; it now reports the design as singular and
+  `sp.fast.fepois` raises. A non-converged inner residualisation warns
+  (`ConvergenceWarning`).
+- The sort-plan cache of the weighted Rust dispatcher was keyed on the FE
+  arrays' address, size and end values and could hand back another
+  problem's permutation; the cache is gone with the sorted path.
+- `Absorber` reported `converged=True` when any column had converged; it is
+  now True only if every column did.
+- The Rust kernels ran on Rayon's global pool, which ignores
+  `OMP_NUM_THREADS` / `NUMBA_NUM_THREADS` and hangs in a forked child; they
+  now run on their own pool, rebuilt after `fork`.
+- Track C: `run_when_idle.sh` pins the Rust pool to one thread, and
+  `scripts/trace_perf_path.py` binds the crate's sources only to timings
+  that loaded it (`rust_loaded`), so editing the crate no longer stales
+  timings measured without it.
+
+### Panel R-squared, honest DiD on a varying base, rdrobust docs
+
+#### ⚠️ Correctness
+
+- **`sp.panel` labelled linearmodels' R-squared as if it were Stata's.**
+  After `method="fe"`, `"re"` and `"be"` the "R-squared (within)" and
+  "R-squared (between)" were linearmodels' 1 - SSR/SST quantities. On the
+  panel of `examples/notebooks/07-tutorial_panel_fe` the between value of
+  the fixed-effects fit was 0.4669 where `xtreg, fe` reports 0.8658, and
+  the within value of the random-effects fit was 0.4258 where `xtreg, re`
+  reports 0.4624. They are now Stata's squared correlations, with an added
+  "R-squared (overall)", and equal Stata 18 `e(r2_w)` / `e(r2_b)` /
+  `e(r2_o)` to 1e-14 on an unbalanced two-regressor panel
+  (`tests/test_panel_xtreg_rsquared.py`). The old values stay in
+  `model_info["r2_linearmodels"]`; `model_info["r2_convention"]` says
+  which definition a fit reports. Weighted fits, `twoway`, `pooled`, `fd`
+  and the CRE methods keep linearmodels' (Stata's `xtreg` has no
+  counterpart to match). Coefficients, standard errors and the headline
+  "R-squared" do not change.
+
+#### Fixed
+
+- `sp.honest_did` returned intervals for a `callaway_santanna(...,
+  base_period="varying")` event study without a word. Its pre-treatment
+  coefficients are one-period changes, not the pre-trend path the
+  smoothness and relative-magnitude restrictions bound; on mpdta every M up
+  to 0.0224 rejected zero. It now warns and sets
+  `attrs["base_period"] = "varying"` on the table. `sp.aggte` carries
+  `base_period` into its `model_info` so the check also sees aggregated
+  event studies.
+- The `sp.rdrobust` docstring gave the comb bandwidths as
+  `min(mserd, msetwo)` and `median(mserd, mseleft, mseright)`. The
+  selector computes `min(mserd, msesum)` and `median(msetwo, mserd,
+  msesum)` side by side, as R / Stata `rdrobust` do and as
+  `sp.rdbwselect` documents.
+
+### Example notebooks numbered in reading order
+
+#### Changed
+
+- The fourteen notebooks in `examples/notebooks/` carry a two-digit prefix
+  giving a suggested reading order: `01-statspai_vs_stata_5min` first, the
+  method tutorials as `02-tutorial_regression_se` through
+  `11-tutorial_hte_causal_forest`, then `12-reproduce_401k_doubleml`,
+  `13-tutorial_figure_editor` and `14-statspai_vs_stata_live`. Links in
+  `examples/README.md` and between notebooks follow the new names; old links
+  to the unprefixed files no longer resolve.
+
+### Evidence maps for dynamic panel GMM
+
+#### Added
+
+- `sp.validation_scope` maps for `sp.xtabond` and `sp.xtdpdsys`: model
+  (difference / Anderson-Hsiao / system with its h and IV-equation
+  variants), steps, robust, clustering, transform, collapse, GMM lag window,
+  regressors, lags of y and gapped panels, with 37 evidence rows against
+  Stata `xtabond` / `xtabond2` / `xtdpd` / `xtdpdsys`, R `plm::pgmm` and
+  `pdynmc`. Unreferenced configurations report as such (three or more lags
+  of y, h(1), `iv_equation='level'`, period dummies in difference GMM,
+  iterated / CUE, two-step with clusters coarser than the unit).
+- `logit` / `probit` maps gained the `perfect_prediction` dimension: no
+  reference covers `'keep'`.
+
+#### Fixed
+
+- `sp.xtabond(steps=2)` is the two-step estimator, identical to
+  `twostep=True`, but `model_info["twostep"]`, `["windmeijer"]` and the
+  method label said one-step. They now read the resolved step count
+  (`steps='iterated'` is labelled "Iterated GMM").
+- `sp.regtable(vcov=)` with a spelling no estimator knows (a typo) raises
+  again instead of keeping every column's fit-time standard errors under a
+  warning; a valid spelling a given estimator does not offer still warns
+  per column.
+
+### Windows gate in CI
+
+#### ⚠️ Correctness
+
+- `sp.ges`: the tie margin that keeps `i -> j` and `j -> i` (equal scores in
+  exact arithmetic) from being decided by rounding applied only against
+  zero, not between candidates, so the choice still came down to the last
+  bit. On a collider `X -> Z <- Y` the Windows full run (Python 3.12 / 3.13)
+  picked the reverse edge and returned a complete undirected triangle with
+  a spurious `X -- Y`. Every comparison now needs the margin; a test that
+  perturbs the score by 1e-13 reproduces the old failure and pins the fix.
+- Mixed-model standard errors (`sp.melogit` / `meglm` / `mepoisson` /
+  `meologit` and the variance components behind `sp.icc`): the observed
+  information is now a Richardson-extrapolated central-difference Hessian
+  (`h = 1e-3`) instead of a single stencil at `h = 1e-4`, whose rounding
+  error (about `eps * |loglik| / h^2`) differed by platform. The melogit
+  ICC standard error moves from 7e-7 to 6e-10 of Stata's on macOS (it was
+  1.3e-6 on Windows, over the 1e-6 budget); fixed-effect standard errors
+  move by 1e-8 to 5e-8 relative. Point estimates are unchanged.
+- `sp.test` after `robust='ewc'` reports "more restrictions than cosine
+  terms" before solving: with too few terms the restricted covariance is
+  singular in exact arithmetic, and whether the solve noticed depended on
+  the BLAS.
+- `sp.zinb` and `sp.hurdle(count_model="negbin")`: when the NB2 dispersion
+  estimate sits at its boundary (alpha * mean(mu) < 1e-4, the Poisson
+  limit), the standard errors no longer come from inverting a Hessian that
+  is singular in ln(alpha). That inversion returned rounding noise whose
+  sign depended on the platform: a NaN standard error for ln_alpha on
+  Linux and macOS, a finite one on Windows. Now ln_alpha's standard error
+  is NaN everywhere (with the usual warning and
+  `model_info["nonfinite_se_terms"]`), the other standard errors are
+  computed with alpha held at its estimate (they match the zero-inflated
+  or hurdle Poisson fit), and `model_info["dispersion_at_boundary"]`
+  records it. Away from the boundary nothing changes.
+
+#### Fixed
+
+- Generated files (`docs/parity.md`, `docs/evidence_inventory.*`, the Tier A
+  fixture lock, the JSS freeze manifest) sorted `Path` objects, which
+  compare case-insensitively on Windows, so they came out in a different
+  order there. They now sort by the POSIX path string.
+- Three tests assumed a POSIX platform or a full R library: the EViews
+  workbook fixture (Windows' `zipfile` rewrites `\\` in member names, and
+  pandas reads such files natively there), the NUL-truncation demonstration
+  (pandas' Arrow string dtype keeps the NUL), and the agent-bench R oracle
+  (skips without the `EValue` and `jsonlite` R packages).
+- `scripts/release_gate.py` compared its allowlist against Windows paths
+  (`src\...`) and failed there.
+- `examples/gmethods_timevarying.py` printed non-ASCII characters, which
+  crash a cp1252 Windows console.
+
+#### Added
+
+- `.github/workflows/windows.yml`: about 700 tests on Windows (Python 3.10
+  and 3.13) on every code push; a full Windows run on dispatch.
+
+### polars and Arrow input everywhere
+
+#### Added
+
+- Every `sp.*` function accepts a polars `DataFrame` / `LazyFrame` /
+  `Series`, a pyarrow `Table` / `RecordBatch`, or any object with the
+  Arrow PyCapsule stream or DataFrame interchange protocol, wherever it
+  takes a pandas object (`data=`, `newdata=`, positional frames). They are
+  converted to pandas at the call; results are unchanged, as a test checks
+  on `regress`, `logit`, `avg_slopes` and `callaway_santanna`. pandas
+  arguments reach the function as the same objects. New extra:
+  `statspai[polars]`. Guide: `docs/guides/dataframe_input.md`.
+
+### Frozen core API
+
+#### Added
+
+- The 32 everyday entry points (`sp.list_functions(core=True)`) now have a
+  frozen signature: `tests/core_api_snapshot.json` records them and
+  `tests/test_core_api_freeze.py` (also a pre-push hook) fails on a change
+  that breaks an existing call (a removed or renamed parameter without an
+  alias, a changed default, reordered positional parameters, a new
+  required parameter). Intended breaks are acknowledged against
+  `MIGRATION.md` with `scripts/core_api_snapshot.py --write --ack`.
+- Function cards and `x_statspai` schemas carry `api_contract`
+  (`frozen`, `deprecation-cycle`, `unstable`, `deprecated`).
+- `sp.help()` lists the core API first, grouped by task.
+
+#### Changed
+
+- The `stable` tier is described as what is enforced (breaking changes
+  only after a `DeprecationWarning` release), not as a locked signature.
+
+### Predictions, comparisons and slopes in the marginaleffects style
+
+#### Added
+
+- `sp.predictions`, `sp.avg_predictions`, `sp.comparisons`,
+  `sp.avg_comparisons`, `sp.slopes`, `sp.avg_slopes` and `sp.hypotheses`,
+  with R `marginaleffects`'s names and defaults (unweighted averages,
+  normal reference; `wts=True, df="model"` gives Stata's `margins`, and
+  then `sp.avg_slopes` equals `sp.margins`). They work after `regress`,
+  `logit`, `probit`, `cloglog`, `poisson`, `nbreg` and `glm`, differentiate
+  through interactions and transformed terms, and take an analytic
+  Jacobian for delta-method standard errors. Each table keeps the Jacobian,
+  so `sp.hypotheses(table, "b1 - b2 = 0")` tests rows with their joint
+  covariance. Against R `marginaleffects` 0.32.0 (black box, lm / logit /
+  probit / Poisson): estimates to 1e-8, standard errors to 2e-5 (R's
+  numerical Jacobian). Conventions followed and pinned by tests: `"sd"`
+  contrasts mean +/- sd/2 for every row; averaged ratios are ratios of
+  averages; 0/1 variables are contrasts in `slopes` too. Guide:
+  `docs/guides/marginaleffects.md`.
+
+### `sp.oaxaca` threefold decomposition
+
+#### Added
+
+- `sp.oaxaca(...).overall` carries the threefold decomposition
+  (`endowments`, `coefficients`, `interaction`, with SEs), from Group B's
+  viewpoint as Stata `oaxaca, threefold` and R `oaxaca` report it, matching
+  R `oaxaca` 0.1.5 to 1e-10. Before, a threefold had to be assembled from two
+  calls with different `reference=`. The gap came up while writing the
+  benchmark's reference solutions.
+
+### CausalAgentBench v2: a runnable, pre-registrable agent benchmark
+
+#### Added
+
+- **The benchmark harness is complete short of the API keys.** 50 tasks
+  with named report fields (v1 asked open questions and was graded against
+  hand-written ranges computed on no data); frozen data files with a
+  SHA-256 manifest; gold answers computed by R reference implementations on
+  those files (`golds/reference.R`), with acceptable variants and
+  tolerances; an agent loop that executes the model's code in persistent
+  Python / R sessions (StatsPAI blocked in the Python-stack cells, MCP tools
+  added in the StatsPAI cells); deterministic grading, including a
+  fabrication check (a submitted number that no tool output contains) and
+  an invented-API check; the H1-H5 cluster-bootstrap tests. StatsPAI's
+  reference solutions score 50/50 against the R golds.
+- The real-model path (Anthropic, OpenAI) is written but builds a client
+  only when `prompts/preregistration.lock.json` verifies: OSF DOI, exact
+  model IDs, and the hashes of every design file. The decisions left for
+  the deposit are listed in `tests/agent_bench/BUDGET_RUNBOOK.md`.
+
+### Configuration-level evidence for the likelihood models
+
+#### Added
+
+- **`sp.validation_scope` maps for `logit`, `probit`, `poisson`, `nbreg`,
+  `glm`, `tobit`, `qreg` and `heckman`**: which vce x weights (x family /
+  link, censoring, dispersion, exposure) cells a Stata or R reference
+  ran, and which outputs it compared. 49 existing reference tests are now
+  credited cell by cell; `logit` is covered in all 10 of its cells. Fits
+  are routed to their map by the recorded call, not by the method label.
+- New references for empty cells: HC0 / HC1 of logit and poisson
+  (weighted and not) and HC0-HC3 of `sp.glm` vs R `sandwich` (1e-8);
+  `sp.poisson(exposure=)` vs R `glm(offset = log(exposure))`; tobit
+  two-sided under robust / cluster / `[pw]` and right-censored under oim /
+  robust / cluster, and `qreg [pw=w]` at three quantiles, vs Stata 18.
+- `sp.glm` records `information` (`observed` / `expected`) in
+  `model_info`.
+
+- **Maps for `aipw`, `ipw`, `tmle`, `ebalance`, `g_computation`, `feols`
+  and `ppmlhdfe`.** New references: `sp.feols` over 24 cells (absorbed
+  effects {none, one, two} x {iid, hetero, cluster, two-way} x weights) vs
+  R fixest (1e-6, observed 1.2e-8); `sp.aipw`'s default cross-fitted fit
+  rebuilt by hand from the same fold draw (1e-9). `ipw` maps carry a trim
+  dimension (all references ran untrimmed), `aipw` reads whether trimming
+  bit, and `tmle` records `model_info['library']` (`default` / `user`),
+  since every reference fit used a user-supplied glm library: a fit with
+  the built-in Super Learner is reported as not covered.
+
+#### Documented
+
+- `sp.probit(robust='hc0' | 'hc1')` differs from R `sandwich::vcovHC` by
+  2-3%: R builds the bread from `glm`'s expected information, this package
+  (like Stata) from the observed one. `sp.glm(..., information='expected')`
+  reproduces R to 1e-8. Registered as a disclosure (T4).
+
+### One standard-error grammar: `vce=` everywhere, `sp.vcov` after the fit
+
+#### Added
+
+- **`sp.vcov(result, vce)`** re-reports a fitted result under another
+  standard-error choice without the caller rebuilding the call, and
+  **`sp.vcov_compare(result, [...])`** puts several side by side (one row
+  per request and term, with the ratio to the fitted SE). Both re-run the
+  recorded call with only `vce=` changed, so the numbers are exactly what
+  `sp.<estimator>(..., vce=...)` returns, small-sample factors and
+  refusals included. Before switching, the recorded call is replayed
+  unchanged and must reproduce the original estimates to 1e-10; edited
+  data, a different frame passed as `data=`, and unseeded randomness are
+  refused. Results hold their input frame weakly; when it is gone,
+  `data=` supplies it. 158 estimators record their call. MCP tool
+  `vcov_from_result` exposes both on a `result_id`.
+- **`vce=` on 49 estimators that only took `cluster=`** (the DiD family,
+  `tmle` / `ctmle` / `aipw` / `ipw` / `metalearner`, the RD helpers,
+  `rlasso_effect(s)` / `rlasso_iv`, `xtabond` / `xtdpdsys`, `mixlogit`,
+  `interactive_fe`, the spatial GMM models and others). `vce="cluster
+  state"` sets the estimator's own cluster argument; kinds it implements
+  through other arguments map onto them (`ipw`: `vce="robust"` is the
+  sandwich of Stata `teffects ipw`, `vce="bootstrap"` the bootstrap;
+  `tmle`: `vce="bootstrap"`); any other kind raises before anything runs.
+  The schema lists, per estimator, which kinds it accepts.
+- **Stata spellings where an estimator keeps its own `vce` vocabulary**:
+  `sp.feols` / `sp.fepois` / `sp.feglm` read `vce="robust"`,
+  `"cluster a b"`, `"cr3 a"` (they reached pyfixest verbatim and died on an
+  internal `AssertionError`); `sp.rdrobust` / `sp.rdbwselect` read
+  `vce="cluster v"` and `"nncluster v"` as Stata's `rdrobust` does;
+  `did_imputation`, `gardner_did`, `did_2x2`, `lm_lin`, `cnsreg`, `nls`,
+  `series`, `threshold` and `gelbach` read `vce="cluster v"`.
+- **`vce=` on `sp.rdbwselect`**, and passed through to `rdrobust` by
+  `rdbwsensitivity`, `rdbalance`, `rdplacebo`, `rdsummary`,
+  `rd_robustness_table` and `rd_flex`. They used `vce="nn"` whatever was
+  asked; R's `rdbwselect(vce=)` changes the bandwidth. The bandwidths
+  equal `sp.rdrobust`'s for the same `vce` to 1e-13.
+- **`seed=` wherever a function takes a random seed** (89 that only took
+  `random_state=`, and `causal_bandit(rng_seed=)`), and `covariates=` on
+  the article-API wrappers that took `X=` (`xlearner`, `frontdoor`,
+  `mediation`, `conformal_ite`, `partial_identification`, `rlasso_effects`,
+  `rlassologit_effects`). The house-style lint has a `seed` theme and now
+  reports zero legacy spellings in all ten themes; its ratchet is frozen
+  at zero.
+
+#### ⚠️ Correctness
+
+- **`sp.regtable(..., vcov=)` ignored regression weights and applied the
+  least-squares formula to logit fits.** It re-weighted `data_info['X']`
+  and the residuals itself: on a weighted fit the HC1 column read 0.120
+  where `regress(..., weights=, vce='hc1')` gives 0.136, and on a logit it
+  read 0.0078 where the robust SE is 0.276. Each column is now re-run
+  through `sp.vcov`, which also lets `vcov=` take any kind the estimator
+  offers (`'cluster state'`).
+- **`sp.callaway_santanna(clustervars=)` on a variable with a single value
+  returned a standard error of about 1e-17.** It now raises
+  `DataInsufficient`, as `gardner_did` and `did_imputation` already did.
+
+### linearmodels 7.1
+
+#### Fixed
+
+- `sp.panel(method='mundlak' | 'chamberlain')`, and random effects with a
+  regressor that does not vary within unit, raised `TypeError` with
+  linearmodels 7.1: the private `_f_statistic` they call lost its `root_w`
+  argument. The model F statistic now comes from whichever signature is
+  installed, so it is the one linearmodels itself reports in that
+  environment. Under 7.1 its restricted model uses the transformed
+  constant column, so the RE F statistic differs from 7.0's; coefficients,
+  standard errors and the variance components are unchanged.
+- Two tests assumed linearmodels before 7.1: 7.1 counts the rank when the
+  design has unit means (the miscount `sp.panel` works around), and it
+  refuses repeated (entity, time) rows.
+
+### MCP server: protocol 2026-07-28, a setup doctor, a faster start
+
+#### Added
+
+- **MCP `2026-07-28` clients are served** beside the handshake ones. That
+  revision dropped `initialize`: every request names its protocol version
+  and client capabilities in `_meta`, and servers must answer
+  `server/discover`. A client speaking only that revision probed the
+  server, got "Method not found" and stopped. Now a request whose `_meta`
+  names a version, or a `server/discover` probe, is served statelessly:
+  `-32022` with the supported list for an unknown version, `-32602` for a
+  missing required `_meta` field, `resultType` and the server identity on
+  every result, `ttlMs` / `cacheScope` on list and read results (handles
+  private and immediately stale), resource-not-found as `-32602`, and no
+  `sampling/createMessage` while such a call runs. `subscriptions/listen`
+  is acknowledged with an empty set (the lists never change) and closed on
+  cancel or shutdown. Over Streamable HTTP these requests need no session,
+  and `MCP-Protocol-Version` / `Mcp-Method` / `Mcp-Name` must mirror the
+  body (`-32020`, base64 sentinel decoded); the defined errors map to 400 /
+  404. `initialize` still selects the handshake and now also negotiates
+  `2025-11-25`; `serverInfo` gains `title`, `description` and
+  `websiteUrl`.
+- **`statspai mcp doctor`** resolves every StatsPAI entry in the Claude
+  Code, Claude Desktop, Cursor, Windsurf, VS Code and Codex configs to the
+  interpreter it runs, reports which StatsPAI each one imports, and runs
+  an in-process round trip. On the maintainer's machine it found Claude
+  Code and Claude Desktop both running 1.38.0 from the system Python.
+- **`statspai mcp config --client ...`** prints a client entry that runs
+  this interpreter by absolute path; `--write` merges it into the JSON
+  config after a timestamped backup. `statspai mcp` alone still starts the
+  server. `statspai-mcp --version` prints the version, interpreter and
+  protocol revisions.
+- **`statspai://handles`** lists the data and result handles the server
+  still holds, so an agent whose context was compacted can recover them.
+- **The packaged skill over MCP** (Skills extension,
+  `io.modelcontextprotocol/skills`): `skills/list` / `skills/get` return
+  `statspai-analysis` with its frontmatter and a SHA-256 manifest, and
+  `resources/read` serves its files under `skill://statspai-analysis/`.
+- **`server.json`** for the MCP Registry (schema 2025-12-11) and the
+  `mcp-name` ownership marker in the README. The release gate keeps its
+  versions on the package version (`--fix-census` rewrites them). Nothing
+  is published automatically.
+
+#### Fixed
+
+- The first `tools/list` took about 3 s: filtering by profile built the
+  curated manifest, which loads the whole registry. It now takes 0.04 s;
+  the list is unchanged.
+- `import statspai` no longer imports the MCP server, and
+  `python -m statspai.agent.mcp_server` no longer prints a runpy
+  `RuntimeWarning`.
+- `sp.spec_curve(controls=['a', 'b'])` crashed with a bare `TypeError`.
+  A flat list of names is ambiguous, so it now raises
+  `MethodIncompatibility` naming both readings; a string inside the list
+  is a one-column set, as `fe=` already treats it.
+- `call_function` accepts `name=` (as `describe_function` does) when
+  `function=` is absent, and `transform_data` runs the ops agents reach
+  for first (`filter` / `where`, `keep`, `mutate`, `winsorize`) as
+  `query`, `select`, `assign` and `winsor`; the lineage records the
+  canonical op.
+- `data_provenance` on results fitted from a handle no longer repeats the
+  root file record inside the lineage.
+
+### Agent-native review: what an agent reads, calls and is told to do next
+
+An agent was given twelve analyses and only the package's
+self-description; a second drove the MCP server; a third read every
+result class. Where one of them reached a wrong conclusion or a dead
+call, the cause is fixed below.
+
+#### ⚠️ Correctness
+
+- **`sp.evalue_from_result(measure='SMD')`** took the raw estimate as a
+  standardised mean difference, so the E-value changed with the units
+  of the outcome (a DiD on log employment got 1.21 where the
+  standardised value is about 1.67). It now divides the estimate, SE
+  and interval by `sd=` (the outcome's standard deviation) and refuses
+  without it. `sp.paper` / the robustness battery pass the SD when they
+  hold the data and otherwise mark the check as not run; the MCP
+  `sensitivity_from_result` tool takes `sd` / `measure`.
+- **`sp.honest_did(method='relative_magnitude')`** built its default
+  grid in standard-error units (0 to 3 SE, about 0.02 on a log
+  outcome), although M-bar is a unitless ratio; the table then
+  "rejected zero" everywhere while `sp.breakdown_m` was 0.74. The
+  default is now HonestDiD's `Mbarvec`, ten points from 0 to 2.
+- **`sp.sar` / `sem` / `sdm` / `slx` / `sac`** accepted `alpha=` and
+  ignored it: every interval was 95%.
+
+#### Fixed
+
+- `result.next_steps()` recommended calls that could not run or did the
+  wrong thing: `sp.rdbalance(covariates=...)` (the argument is `covs`),
+  `sp.hausman_test(result_fe, result_re)`, `sp.blp_test(result)` and
+  `sp.gate_test(result)` without their data, `sp.cate_summary` on a
+  partially linear DML fit, `sp.estat(result, 'ic')` on an IV fit, an
+  E-value of a DiD or RD estimate, and `sp.sensitivity_rr` presented as
+  the Rambachan-Roth interval (it is a linear-extrapolation heuristic;
+  the steps, the audit and the remediation text now point to
+  `sp.honest_did` / `sp.breakdown_m`). Steps now carry the fit's own
+  column names and an `executable` flag; every executable step is run
+  verbatim in a test.
+- MCP `next_calls` marked as ready failed when dispatched (6 of 11 in
+  the audit): `rdplot` / `rddensity` / `rdsensitivity` / `bacon_decomposition`
+  got a `result_id` they do not read and no dataset; follow-ups got
+  every alias of every column argument. A follow-up now gets the
+  result handle only if it reads results, the dataset handle if it
+  reads data, and only its own parameter names; readiness is checked
+  by dispatching every ready call through the server in a test. The
+  `narrative` printed Python dict reprs and never showed the interval.
+- `sp.rate` on a cross-sectional causal forest ranked units by the
+  forest's own predictions without warning. With no heterogeneity
+  (n = 800, 400 replications) that rejected a nominal 5% test 36% of
+  the time; `sp.rate_split` rejected 0%. It now warns, as the
+  fixed-effects path did (`tests/reliability/rate_cross_section.py`).
+- `sp.match` reported only the raw sample's balance, unlabelled.
+  `model_info['balance_after']` (weighted matched means, raw pooled SD)
+  and `max_abs_smd_before` / `_after` are added; the old table is
+  labelled `before matching`.
+- `sp.rddensity`: `estimate` is the CJM t statistic and `se` / `ci` are
+  on the density-difference scale; the estimand text and
+  `model_info['scale']` now say so (numbers unchanged).
+- Regression results (`sp.regress`, `sp.iv`, `sp.logit`, ...) had no
+  `estimate` / `se` / `ci` in the shared envelope. They report the
+  coefficient named in `focal_term` (single endogenous regressor,
+  recorded treatment, or only regressor) and otherwise `null` with a
+  short `coef_head`.
+- Strict JSON: hand-written `to_dict` overrides (`stochvol`, `ridge`,
+  `mswitch` and the other domain results that define their own) are
+  sanitised at the standard level;
+  `np.bool_` no longer serialises as the string "True"; `NaT` is
+  `null`; dict-subclass results (`PolicyTreeResult`) no longer export
+  `{}`.
+- `result_card()` crashed on fits without standard errors (`ridge`,
+  `ets`, `bart`, `gp_regress`, `dlm`, `boxcox`, `shrinkage`);
+  `sp.gardner_did(...).summary()` without an event window and
+  `sp.etwfe(...).tidy()` crashed; etwfe's tidy terms were duplicated
+  across cohorts and had no p-values.
+- Did-you-mean on a misspelled keyword offered `se_method` for `seed`
+  and nothing behind `reject_unknown_kwargs` (`clustr`). Synonyms
+  across Stata / R / Python come first now (`seed` -> `random_state`,
+  `cluster_var` -> `cluster`, `gvar` -> `g`). `sp.dml(model=...)` with
+  an unknown model names the closest one.
+- 402 parameters that existed in function signatures were missing from
+  `sp.function_schema()` and the MCP tool schemas (`synth(covariates=)`,
+  `dml(model_y=)`, `regtable(keep=)`, `rdrobust(vce=)`, ...). Registry
+  entries now take any signature parameter they do not list from the
+  code and its docstring; 16 deliberate exceptions remain, each with a
+  reason.
+
+- MCP server: an argument the estimator cannot bind is refused with a
+  did-you-mean (`cluster_var` was dropped and the fit returned
+  unclustered SEs with `isError: false`), and alias spellings
+  (`cluster=`, `id=`) on the curated tools bind instead of being dropped;
+  `execute_tool` and `statspai run` refuse them too (CLI exit 4).
+  `preflight` checks the cohort column of staggered methods instead of
+  failing the canonical Callaway-Sant'Anna call on a missing `treat`;
+  `recommend` keeps its reasoning and gives a ready call for the top
+  pick; `pipeline_did` passes `id`; no data argument is marked required
+  (a call with none names the four sources); the `core` profile lists
+  the data tools; matplotlib is headless in the server (the
+  `rdbwsensitivity` stage of `pipeline_rd` failed on macOS); unknown
+  function and tool names get suggestions; remediation is phrased in
+  MCP arguments; prompts take `data_id` and leave no literal
+  placeholders; private keys are stripped and per-observation arrays
+  capped (arima 87 KB -> 5 KB); dict, dict-subclass and array returns
+  honour `detail` (`pc_algorithm` returned a serialisation error,
+  `policy_tree` 37 KB at `minimal`); `sensitivity_from_result` with
+  `oster` / `cinelli_hazlett` works from a `regress` handle and says
+  what else it needs otherwise.
+- `sp.california_prop99()` (top level) is the simulated synthdid-layout
+  panel and `sp.datasets.california_prop99()` the real ADH data; the
+  top-level helper now carries the simulated flag and warns, naming the
+  real one. The catalogue quoted the simulated panel's SDID parity
+  number (-17.90) for the real data, where SDID is -15.60.
+- Auto-generated card examples were setup lines when the docstring
+  called the function under another name (`test_calibration`:
+  `n = 400`); they are now calls of the function.
+- `sp.rate_split` / `sp.forest_policy_tree` repeated a data warning
+  once per half of every split (42 times per call); each is now shown
+  once with its count.
+- `sp.iv.iv_diag` labels the tF critical value with the effective F it
+  is computed from, not the classical first-stage F.
+
+#### Added
+
+- `load_data(dataset=...)` in the MCP server loads a built-in example
+  as a data handle, flagged when it is simulated.
+- `synth` and `dml` are curated MCP tools in the default profile (not in
+  `core`, whose byte budget is spent). They were named in the core list
+  but, not being curated, were never served; until now they were
+  reachable only through `call_function`.
+- Per-observation arrays capped at 20 values in a tool payload are
+  readable in full from `statspai://result/<id>/arrays/<path>` while the
+  handle is live; each `arrays_capped` entry carries that URI (or says
+  to re-run with `as_handle=true`). Before this nothing in the MCP
+  surface returned the rest of a capped array.
+- `sp.list_datasets()` and `sp.load_dataset(name)` at top level
+  (searchable in English and Chinese). Six built-in datasets are
+  simulated replicas named after real ones (`mpdta`, `nsw_dw`,
+  `basque_terrorism`, `german_reunification`, `angrist_krueger_1991`,
+  `currency_union_panel`); every frame now carries
+  `attrs['simulated']`, the catalogue lists columns, and the first
+  load of a replica in a process warns that estimates on it are not
+  findings about the real data.
+
+### Figure editor (`sp.interactive`) rebuilt
+
+The editor promised that data stay locked, that every edit has
+reproducible code and that undo works. A probe on StatsPAI's own event
+study, binscatter, RD and coefficient plots found all three broken. Each
+edit is now a named operation with typed parameters; one definition gives
+the live edit, the generated code and the saved-style replay. The tests
+check, pixel for pixel on every operation and on random sequences of
+operations, that the generated code reproduces the figure, that undo and
+reset restore it, and that a saved style replays identically. Guide:
+`docs/guides/figure_editor.md`.
+
+#### ⚠️ Correctness (data protection)
+
+- Errorbar point estimates and their caps were classified as reference
+  lines (unlocked), and the axis-limit guard read error bars and
+  `fill_between` bands at their offsets, (0, 0). `set_ylim` could hide
+  confidence intervals, error bars and bars without a warning. On the
+  `mpdta` Callaway-Sant'Anna event study it protected (-0.046, 0.010)
+  while the intervals span (-0.074, 0.031).
+  Roles now come from matplotlib's containers, and the guard uses the
+  data limits of lines, bands, error bars, bars and images, on log and
+  inverted axes too.
+- A data series whose label contained "treatment" or "baseline" was
+  unlocked. Labels can now only lock an artist; only geometry makes a
+  reference line.
+- Locked data could be made fully transparent or invisible. Alpha stops
+  at 0.2 (data, fits) and 0.05 (intervals) with a warning; a style that
+  leaves a locked series with neither line nor markers raises.
+
+#### Fixed
+
+- `generate_code()` reproduced the figure for 1 of 16 edit types tested.
+  It appended a `fig.tight_layout()` the editor never applied, wrote
+  font and theme edits as global settings (which do not change a figure
+  already drawn), kept only the last of several legend edits, placed a
+  repeated edit at its first position (so `grid(False)` came out before
+  `grid(True)`), and named subplots `ax1`, `ax2` without defining them.
+- `undo()` and `reset()` did not restore tick label sizes, fonts,
+  legend changes, themes or `tight_layout` (8 of 16 edit types).
+- Font, font-preset and theme edits changed matplotlib's global settings,
+  so every later figure in the session changed too.
+- Replaying saved edits copied each record's `code` string into the
+  generated code. It is now regenerated from the operation; incoming code
+  is never used.
+- `sp.interactive(fig)` on a non-interactive backend (Agg, servers,
+  agents) added seven button axes to the figure and moved its bottom
+  margin from 0.11 to 0.22. It now leaves the figure alone; with a GUI
+  backend the controls open in their own window.
+- `set_title` reset the title's size and weight to the defaults.
+- Jupyter panel: after undo, redo, reset or a subplot switch the controls
+  showed stale values; the tick-size slider always started at 10;
+  warnings from an edit were lost.
+- Script editor: selecting a text element recorded an empty edit.
+- Running every `sp.*plot` docstring example through the editor (49
+  figures from 37 functions, plus `sp.counterfactual_plot` and
+  `sp.network_plot` by hand) found three more cases, now fixed:
+  categorical axes (`sp.synth_sensitivity_plot`) crashed the
+  classification; recolouring to black turned a histogram's transparent
+  bar edges into visible frames (`sp.rdplotdensity`,
+  `sp.synthdid_rmse_plot`); and the period shading of `sp.synthdid_plot`,
+  whose transparency is the time weight, was editable. Shading whose
+  alpha varies across same-coloured spans is now locked data. After the
+  fixes every figure passes the three checks.
+- Recolouring or restyling a series left its legend entry in the old
+  look (matplotlib's legend keeps copies made when it was drawn), so the
+  legend could name the wrong series. Legend entries are now rebuilt
+  after every such edit, and the generated code does the same.
+
+#### Added
+
+- `FigureEditor.set_series_color` / `apply_palette` / `color_groups`:
+  recolour a series together with its error bars and band. Palettes
+  include `okabe_ito` and `grayscale`.
+- `set_legend_labels`, `set_suptitle`, `set_markersize`, `set_text`,
+  `set_text_visible`; `run(op, **params)`, `operations()` (typed schema
+  of every operation) and `batch()`.
+- `check()` (text under 6 pt, series indistinguishable in grayscale,
+  series in the background colour), `preview(grayscale=True)`,
+  `export(stem, formats=...)`; `save()` embeds TrueType fonts in PDF by
+  default (`embed_fonts=True`).
+- `sp.interactive(fig, actions=[...], ui=...)` for agents and scripts.
+- MCP `plot_from_result(edits=[...])`: an agent restyles a result's figure
+  with the same actions; the reply adds `edit_code`, `check` and the
+  data-protection `notices`. Its tool description is shorter, so the
+  `core` tool list stays inside its byte budget.
+- MCP `transform_data` op `mice` never worked: it read a result attribute
+  that `sp.mice` does not have (so it always reported "no completed
+  datasets"), and with `columns` it passed `vars=`, which `sp.mice` does not
+  take. It now returns the first completed dataset; with `columns` only
+  those columns are filled. The seed defaults to 0 so a handle's lineage
+  replays to the same data.
+- `sp.refresh_legend(ax)`: rebuild legend entries from the current style
+  of their artists, exactly as a legend drawn now would look.
+- Jupyter panel, Layout tab: "Text on the plot" lists the axes' texts to
+  reword (annotations) or hide (any text); numeric result labels drawn by
+  the plotting function show their wording greyed out.
+- `examples/notebooks/tutorial_figure_editor.ipynb`: a Chinese tutorial
+  on editing a paper figure (locked roles, actions, limit protection,
+  series recolouring, reproducible code checked on a fresh figure, undo,
+  pre-submission check, font-embedded PDF, reusing a style).
+- Saved styles use a version-2 format (`op` + `params`); version-1
+  files are translated.
+
+### `sp.stata`: stored results after estimation, checked against Stata 18
+
+#### ⚠️ Correctness
+
+- **`e(df_m)` after `xtreg, re`** (and the default `xtreg`) was 3 where
+  Stata stores 2, the number of regressors. After `xtreg, fe` it is now
+  set to Stata's k + G − 1 (k − 1 with a clustered or robust variance,
+  as Stata does), and after `areg` and `reghdfe` to k.
+
+#### Fixed
+
+- `e(cmd)`, `e(cmdline)`, `e(depvar)`, `e(model)`, `e(vce)` and
+  `e(vcetype)` are set after 22 estimation commands with the strings
+  Stata 18 stores for each variance option (`e(cmd)` is `regress` after
+  `reg`). They were either unset or the first word typed. Commands not
+  yet checked against Stata leave them unset.
+- `lincom` stores `r(estimate)`, `r(se)`, `r(t)` or `r(z)`, `r(df)`,
+  `r(p)`, `r(lb)`, `r(ub)` and `r(level)` as Stata does.
+- `display 1 2` concatenates its items, as in Stata; `display _N 5` no
+  longer reads `_N` as `_newline`.
+- `"ab"*2` repeats a string (count truncated toward zero), and
+  `gen str name = exp` creates a string variable.
+- `sp.bootstrap` with fewer than 10 requested replications said "Only
+  5/5 bootstrap replications succeeded"; it now says that at least 10
+  are needed.
+
+### Option values checked against R and Stata
+
+`sp.validation_scope` showed which configurations of the core
+estimators had been compared with a reference. Counted per option value
+rather than per grid cell, most gaps were in options users reach for
+after the default: every `sp.etwfe` standard error, the
+caliper / kernel / radius / stratify forms of `sp.match`, the HC2 / HC3
+/ CR2 / jackknife / Conley / wild variances of `sp.regress` and
+`sp.iv`, and the binned, absorbed and staggered forms of
+`sp.event_study`. These now have reference fixtures produced by running
+R 4.5 and Stata 18 on committed data, and comparing them found the
+defects below. Default calls on the main path return what they did.
+
+#### ⚠️ Correctness
+
+- **`sp.etwfe(xvar=...)`** on the linear model fit a pooled
+  cohort × post model with unit effects, ignored
+  `cgroup='nevertreated'`, had no event or calendar aggregation and
+  treated a categorical moderator as continuous. It now fits R
+  `etwfe`'s design (moderator demeaned within cohort × period cells,
+  interacted with every treatment cell and every period; one slope per
+  level of a categorical moderator). On the option fixture the simple
+  ATT moves from 1.4957 (SE 0.0906, both control groups) to 1.5691
+  (SE 0.1016) with not-yet-treated and 1.5248 (SE 0.1469) with
+  never-treated controls, equal to `etwfe::emfx` to 1e-14 (SE 1e-10).
+- **`sp.event_study`** removed the two-way fixed effects with one pass
+  of unit means and one of time means, which is the two-way projection
+  only on a balanced panel with weights constant within a unit. On
+  unbalanced panels the event-time coefficients were off by up to 0.035
+  against `fixest::feols`, and by up to 0.15 with time-varying weights.
+  Those cases now use the exact weighted projection; balanced-panel
+  results are unchanged to the bit.
+- **`sp.did_imputation(fe=...)`** imputed a treated row whose
+  fixed-effect level has no untreated observation at the reference
+  level's effect (mpdta, `fe=['countyreal', 'state#year']`: ATT −1.118,
+  no warning). It now raises, as Stata `did_imputation` does;
+  `autosample=True` drops those rows. A custom `fe=` without a unit
+  effect no longer trips the unit-coverage check.
+- **`sp.match(bias_correction=True)`** fitted the bias-adjustment
+  regression unweighted on all controls. It now uses the matched
+  controls weighted by how often each is used (Abadie-Imbens;
+  `Matching::Match(BiasAdjust=TRUE)`): 1.740 → 1.700 on the fixture.
+- **`sp.match` with a caliper**: the psmatch2 and Abadie-Imbens
+  standard errors counted treated units left unmatched. At caliper
+  0.01 the psmatch2 SE goes from 0.3546 to 0.3636, Stata's number.
+- **`sp.match(se_method='abadie_imbens_2016', caliper=...)`** now
+  requires, as `teffects psmatch` does, max(m, h) opposite-arm and h
+  same-arm units within the caliper for every unit (ATT and ATE), and
+  raises otherwise; it used to report a standard error where Stata
+  refuses.
+- **`sp.match` / `sp.psm` default standard error with ties in the
+  score.** The matches kept every tied control (`ties='all'`), but the
+  same-arm neighbours that estimate sigma^2(X) were taken in row order, so
+  shuffling the rows moved the standard error (1176 to 1198 on
+  `MatchIt::lalonde`, estimate fixed). They now keep every tied unit too,
+  which is Stata `psmatch2 , ai(1) ties`: 1181.665 → 1178.209 on Lalonde
+  and 643.346 → 640.405 on NSW-DW, equal to Stata (`set type double`) to
+  the last digit and the same in every row order. `ties='first'` still
+  reproduces `psmatch2 , ai(1)` without `ties`.
+- **`sp.callaway_santanna(panel=False)` with `estimator='stdipw'` or
+  `'ipw_abadie'`** never reached the DRDID repeated-cross-section
+  estimators and returned the unconditional cell-mean DiD (mpdta with
+  `lpop`: simple ATT −0.03995, SE 0.0474 for both). They now return
+  −0.04178 (SE 0.1672) and −0.04184 (SE 0.7218), as R `did`.
+- **`sp.callaway_santanna(panel=False, bstrap=True)`** bootstrapped the
+  ATT(g, t) cells but kept the analytic SE for the headline and the event
+  study while reporting `se_method='multiplier'`; `sp.aggte` did not
+  inherit the bootstrap. Both now use the same multiplier bootstrap, as on
+  panels.
+- **`sp.honest_did(method='smoothness')` at `M = 0`** now returns the
+  closed-form FLCI (the minimum-variance estimator unbiased under a linear
+  trend, ± z·sd). The numerical search reached the half-length but missed
+  the centre by up to 1.4e-3 of it on correlated covariances; Track A
+  module 10 moves by 2.2e-9, now 4e-16 from R's closed form.
+- **`sp.did_multiplegt_dyn(continuous=)`** now follows `DIDmultiplegtDYN`
+  and Stata `did_multiplegt_dyn`: groups share one baseline and the
+  treatment becomes the switch indicator, the baseline polynomial enters
+  as controls (so the analytic variance carries the slope-estimation
+  term), `normalized=` and the `Av_tot_eff` divisor read the original
+  treatment, and Design Restriction 2 applies. Estimates used to match
+  only when every group switched. On option fixture 97 the effects move
+  from 0.6098 / 0.6432 / 0.6496 to 0.6203 / 0.6205 / 0.5966, the SEs from
+  0.0857 / 0.0934 / 0.0988 to 0.0653 / 0.0732 / 0.0788, and `Av_tot_eff`
+  from 0.7202 to 0.7879, equal to Stata and R. Calls without
+  `continuous=` are unchanged.
+- **`sp.ivreg(vce='conley')` and `sp.ivreg(cluster=[a, b])`** reported
+  a standard error of 0 (t = inf, p = 0) when the non-positive-definite
+  covariance had a negative variance. They now report NaN with a
+  warning, as Stata `acreg` and `ivreg2` report it missing. Finite
+  standard errors are unchanged.
+
+#### Changed
+
+- `sp.honest_did` raises `DataInsufficient` when the event study has no
+  pre-treatment coefficient; it returned θ ± z·SE with a warning that
+  named the wrong cause. `backend='r'` with `honestdid_method='C-F'`
+  works (R printed a line before the JSON) and unreadable R output raises
+  `ConvergenceFailure` with R's output.
+- `sp.spec_curve` refuses an unknown `se_types` name (it was computed as
+  HC1, or classical with `fe=`, under the unknown label, so
+  `se_types=['classical', 'hc1']` reported HC1 twice) and `'cluster'`
+  without `cluster_var` (dropped silently). `'classical'` and `'iid'` now
+  mean the nonrobust variance.
+- `sp.feols`, `sp.fepois` and `sp.feglm` give the same numbers in every
+  process. pyfixest orders the fixed effects through a set of names, so
+  the sweep order of its projections followed `PYTHONHASHSEED` and
+  clustered standard errors differed between runs of one call (4e-9
+  relative one-way, up to 1.7e-6 two-way); the written order is now kept.
+- `sp.feols` IV fits are about 10× faster on large panels: the first
+  stage uses the model's compiled demeaner and is fitted once (1,000,000
+  rows, two fixed effects: 21.6 s → 2.1 s). Coefficients, SEs, Sargan and
+  Wu-Hausman are unchanged bit for bit; the first-stage F moves by at
+  most 5e-15 relative.
+- `sp.match(distance='mahalanobis' | 'euclidean')` finds neighbours with a
+  k-d tree instead of the full distance matrix (100,000 units, five
+  covariates: 173 s → 5 s; R `Matching::Match` 100 s). Every reported
+  number is bit-identical on 1,495 designs with ties, calipers, multiple
+  matches, ATT / ATE and bias correction.
+- Agent cards: the real-call audit covers 70 entry points and also calls
+  each by its alternative route. It fixed arguments wrongly marked
+  required (`xtnbreg` `formula` / `entity`, `psmatch2` `covariates`), 13
+  failure modes naming exceptions that are never raised, stale
+  `did_multiplegt` / `did_multiplegt_dyn` / `xtnbreg` text, and family
+  statements that did not apply; a quoted `'none'` in a docstring choice
+  set is kept as a choice (`gsynth(inference='none')` and 14 more).
+- Every `sp.did_multiplegt_dyn` option value is pinned against Stata
+  (option fixture 97: effects, placebos, analytic SEs, `e(V)`, Wald tests,
+  `control='never_treated'` for the first time), with a new
+  `sp.validation_scope` map. `sp.sdid` placebo and bootstrap SEs are
+  screened (S, five seeds on each side) against R `synthdid` and Stata
+  `sdid`; the `treated_unit=` jackknife SE is registered as T2.
+- `sp.validation_scope` gains an `honest_did` map and per-value R / Stata
+  references for `callaway_santanna` (`drimp`, `ipw_abadie`,
+  `notyet_cutoff` SEs, anticipation, the pairwise unbalanced-panel rule);
+  the map had not matched any repeated-cross-section fit.
+- `sp.feols`, `sp.fepois` and `sp.feglm` ask pyfixest for its compiled
+  demeaner unless `demeaner_backend=` is given. The default numba
+  demeaner took 108 s on 2 million rows with 100,000 firm effects; the
+  compiled one takes 2.6 s, with the coefficient R `fixest` gives to
+  1e-15 (SE 2e-11).
+- The nearest-neighbour residuals in the `rdrobust` bandwidth selector
+  are computed once per tie run, vectorised; results are bit-identical
+  (checked on 1,500 designs with and without ties). `sp.rdrobust` on 1
+  million observations takes 5.3 s, from 15 s (R `rdrobust`: 6.4 s).
+- `sp.match(method='nnmatch', caliper=...)` warns when a unit has fewer
+  than `n_matches` admissible matches (`teffects nnmatch` stops there).
+
+#### Added (evidence)
+
+- Reference fixtures, each read by a test and registered in
+  `sp.validation_scope`:
+  - `sp.etwfe` / `sp.etwfe_glm`: estimate and SE for every option value
+    (both control groups, `panel=False`, weights under both
+    `agg_weights` rules, `xvar`, controls, poisson / logit) against R
+    `etwfe`, and `response_se='unconditional'` / `exovar()` controls
+    against Stata `jwdid`. The 1e-5 GLM SE gap previously filed as a
+    small-sample convention was reference noise (fixest's `glm.tol`,
+    its penultimate-iterate bread, a forward-difference Jacobian); the
+    SEs agree to 1e-9.
+  - `sp.match` / `sp.psmatch2`: 1 to 10 neighbours, Mahalanobis,
+    kernel (five kernels), radius, stratification, caliper and bias
+    correction against Stata `psmatch2`, `teffects psmatch` /
+    `nnmatch`, `atts` and R `Matching` (48 Stata fits at 1e-9).
+  - `sp.regress` / `sp.iv` variances: HC0–HC4, CR1–CR3, jackknife,
+    Newey-West, two- and three-way clustering, Conley, enumerated wild
+    bootstrap, LIML / Fuller with and without `small`, against
+    sandwich, clubSandwich, fixest, fwildclusterboot and Stata
+    `ivregress` / `ivreg2` / `acreg` / `newey` / `boottest`.
+  - `sp.event_study` (staggered adoption, other windows and reference
+    periods, bins, intensity, absorbed effects) against fixest;
+    `sp.did_imputation` custom FE, mixed covariates and weights against
+    Stata `did_imputation`; `sp.sun_abraham` last-cohort control and
+    `window_rule='reference'` against `eventstudyinteract` and fixest;
+    `sp.gardner_did(vce='stage2')` against R.
+  - `sp.rdrobust` comb bandwidth selectors (sharp and fuzzy) against R
+    and Stata `rdrobust`; `sp.rddensity` standard errors against R;
+    `sp.dml` at 2 / 3 / 10 folds, IV-type and ATTE scores, trimming and
+    `n_rep=3` against DoubleML; classical `sp.synth` with nested and
+    regression V on the identified design.
+- Documented differences, not changed: weighted CR2 follows Stata,
+  0.53% from clubSandwich's Pustejovsky-Tipton form; for multiway
+  clustered IV `sp.iv` zeroes negative eigenvalues (as fixest) while
+  `sp.ivreg` reports ivreg2's raw matrix; under `n_rep > 1` the
+  aggregated DML standard error is a convention on which R and Python
+  DoubleML disagree with each other; with a caliper, R `Matching`'s
+  standard error (0.2904) is not reproduced by any variant tried
+  (ours 0.3047, psmatch2 0.3186).
+
+### README banners
+
+#### Changed
+
+- `docs/logo/readme-1.png` at the top of both READMEs is the full
+  banner again (3344x1882) with the new logo: wordmark, tagline, causal
+  diagram, code sample, six feature tiles, method strip and QR code.
+  The compact banner with the new logo and a "Star on GitHub" QR code
+  is added as `docs/logo/readme-footer.png` above the License section.
+- The language switcher reads "English" without "(default)" in both
+  READMEs.
+
+### CI
+
+- The nightly full test matrix had failed since 2026-10-13 on three
+  generated tables: the failure-mode table depended on how
+  `ast.unparse` writes comprehension targets (3.10 against 3.11+), a
+  recovery hint named functions without `sp.`, and the silent-except
+  baseline was looser than the code.
+
+## [1.39.6] — 2026-10-14
+
+A review of everything that landed in October, and the work it found
+unfinished. About two hundred functions added this month were called on
+degenerate, mistyped and reordered input and checked against identities
+that must hold; a third round of the option scan covered inference,
+`iv/`, panel and time series; and `sp.stata` was compared with Stata 18
+on 273 snippets. Results that change and should be recomputed include
+`sp.sun_abraham` and `sp.stacked_did` on integer time with gaps,
+`sp.gardner_did` with unidentified cells, the Kleibergen-Paap and
+Sanderson-Windmeijer statistics with several endogenous regressors,
+`sp.cate_gain_curve` with tied scores, the default-prior check of the
+Bayesian IV, SUR and mixed models, `predict()` on unseen factor levels,
+and `collapse [fw=]`, `[pw=]` standard errors and `margins, post` in
+`sp.stata`. New: `weights_as=` on thirteen regression functions, a
+smaller MCP tool list with an HTTP transport, and Chinese queries in
+`sp.search_functions`. Default calls on ordinary data are unchanged; all
+89 Track A modules reproduce their committed results. MIGRATION.md lists
+what changes. The JSS manuscript stays anchored to 1.39.1.
+
+### README editions
+
+#### Changed
+
+- **`README.md` is English again.** The English edition moved back from
+  `README_EN.md` to `README.md`, and the Chinese edition moved to
+  `README_CN.md`. GitHub now opens on the English text. The PyPI long
+  description is unchanged in content (`pyproject.toml` reads
+  `README.md`). Links to `README_EN.md` on GitHub no longer resolve.
+- **New README banner.** `docs/logo/readme-1.png` is redrawn as a
+  compact vector layout rendered at 3870x1200: the logo and wordmark,
+  the tagline "Agent-Native Causal Inference for Python", and a QR code
+  on the right that links to the GitHub repository. In the logo, the
+  upper-right and lower-left edges of the hexagon are dimmed so the
+  bright edges trace the S of StatsPAI.
+
+### Pre-trend messages that claimed more than the test shows
+
+#### ⚠️ Correctness
+
+- **`sp.bjs_pretrend_joint` accepted a result from any estimator.** It
+  reads the leads from the result's event-study table and tests them
+  against a covariance bootstrapped from `sp.did_imputation` refits. A
+  Callaway-Sant'Anna result has the same table, so the call returned a
+  statistic that pairs one estimator's leads with another's covariance.
+  It now requires a `sp.did_imputation` result. It also refuses a
+  `group=` that does not identify units (the cohort column, the time
+  column); that mistake used to surface only after every refit failed,
+  as "0 / 300 replications succeeded". When refits do fail, the message
+  now carries the reason. Both mistakes were in an example of the
+  packaged skill.
+
+#### Fixed
+
+- **The DID diagnostic battery called a non-rejection "Parallel trends
+  supported".** `sp.diagnose_result` printed that for any pre-trend
+  p-value above 0.05, while the agent summary of the same result warns
+  below 0.10, so a p of 0.098 came back both supported and likely
+  violated. Not rejecting is not evidence of parallel trends. The
+  verdict now says the test did not reject, flags p below 0.10, and
+  points to `sp.honest_did` and `sp.pretrends_power`. The same applies
+  to the per-coefficient check. Pass / fail flags are unchanged.
+### `sp.stata` checked against Stata 18, snippet by snippet
+
+273 short do-file snippets were run in Stata 18 and in `sp.stata`, and
+every number compared. The textbook log replays had covered the common
+paths; these are the places they did not reach. Each fix below was
+checked in Stata before the code changed, and the tests quote Stata's
+output next to each assertion.
+
+#### ⚠️ Correctness
+
+- **`collapse ... [fw=]` ignored the frequency weights.** Means, sums,
+  standard deviations, counts and percentiles were unweighted. The
+  weight clause was stripped before `collapse` saw it.
+- **`logit`, `probit`, `poisson`, `nbreg`, `cloglog`, `ologit` and
+  `oprobit` with `[pw=]`** used the small-sample factor N/(N−k) where
+  Stata uses N/(N−1) (`logit yb x1 [pw=w]`: .0988873 against Stata's
+  .0980456). Only the translation was wrong; `sp.logit(weights=,
+  robust='robust')` called directly already matched Stata.
+- **`margins ..., post` ignored `post`**, so `_b[]`, `_se[]`, `test` and
+  `lincom` afterwards still read the model. It now posts the margins
+  under Stata's names. **`margins, predict(xb)`** after logit returned
+  the mean probability instead of the linear index. `margins` after a
+  weighted logit or probit, which was refused, now works.
+- **`round()`** rounded negative halves away from zero and returned
+  missing for `round(x, 0)`; it is Stata's `y*floor(x/y + .5)`.
+- **`string()`, `display` formats and numbers written into macros**
+  follow Stata's `%g`, `%f`, `%e`, `%0N` and comma rules, checked on a
+  grid of 2,340 values and formats. `string(1/3)` was `.333333333`
+  where Stata gives `.3333333`, and `%9.3f` dropped the leading zero.
+- **Text inside quotes is kept as written.** Double spaces collapsed to
+  one, and a comma, `//` or `;` inside a string literal was read as an
+  option separator, a comment or a command separator.
+- **`local m`v' = 5`** defined the wrong macro; macro names built from
+  macros are expanded first.
+- **`gen lx = L.x` left a helper column `x_L1`** in the data, which
+  wildcards such as `x*` then matched. **`tsset t, delta(5)`** ignored
+  `delta`, so every lag was missing. **`F.D.x` and `L.D.x`** were refused.
+- **`egen group()` and `egen tag()`** treated an empty string as a group.
+- **`e(df_r)` after a clustered regression** was N − k; it is G − 1, and
+  `e(N_clust)` is set.
+- **`gsort -x`** put missing values first. **`gen byte`, `int`, `long`**
+  stored values out of range, and **`gen strN`** did not truncate.
+- **`xtile, cutpoints()`** with repeated cutpoints gave other groups.
+- A scalar no longer shadows an unambiguous abbreviation of a variable.
+
+#### Fixed
+
+- Concatenating two string literals crashed; `capture { ... }` blocks
+  now set `_rc` and continue; `date(s, mask, topyear)` is supported;
+  `tempvar` columns are dropped when the program ends; `levelsof` of a
+  string variable feeds `foreach` with values that contain spaces.
+- `ib(last)`, `ib(first)` and `ib(freq)` are supported; `i(numlist)` and
+  `o.` are refused with a message instead of a patsy error.
+  `_b[1.g#c.x1]` and `_b[1.g]` after `ibn.` resolve.
+- Input Stata rejects is rejected: `append` of a string onto a numeric
+  variable without `force`, factor variables with negative or
+  non-integer levels, `recode` combining `else` with `missing`.
+- `regexs()` reading a match made by an earlier command is refused:
+  Stata keeps the state of the last observation that command evaluated,
+  which depends on its `if` and `in`.
+
+### Two plots and one note
+
+- `sp.best_subset(...).plot()` raised `KeyError: 'step'`; it draws the
+  criterion of the best model of each size. `sp.synth_ttest(...).plot()`
+  raised "Cannot extract trajectory data"; the result now carries the
+  treated and synthetic paths.
+- `sp.match`: the docstring says that the default standard error, which
+  reproduces `psmatch2`'s `ai(J)`, breaks ties among same-arm neighbours
+  by row order and so depends on it when the matching variable has ties
+  (1174 to 1182 over four orderings of the Lalonde data), and that
+  `se_method='abadie_imbens_2016'` does not (1126.26 on all four). The
+  default is unchanged: it is a parity row against Stata `psmatch2`.
+
+### What an agent sees before and after a call
+
+Five gaps found by using the registry and the tool layer the way an agent
+does. No estimate changes.
+
+#### Added
+
+- **`sp.search_functions` answers a query written in Chinese.** It returned
+  `[]` for any of them: the ranker splits on whitespace and every
+  description is English. About 190 Chinese econometrics terms are now
+  rewritten to the English vocabulary the ranker already knows before it
+  ranks, so the Chinese and English spellings of a query return the same
+  list. A query with no known term still returns nothing.
+- **`sp.list_functions(kind="function" | "class")`.** 402 of the 1,566
+  registered names are result, model and exception classes, which an agent
+  reads about but never calls. The default still lists both.
+- **`enum` on 56 more selector arguments**, among them
+  `sp.structural_break(method=)`, `sp.survreg(dist=)`, `sp.meglm(family=)`,
+  `sp.adjust_pvalues(method=)` and the `kernel=` of fourteen RD functions.
+  These are the arguments whose accepted values are stated only by the
+  code (a validation in the body, a module constant, a callee the argument
+  is passed to unchanged). Each list is re-read from that place by
+  `tests/test_enum_seeds.py`.
+- **Failure modes for 87 functions that had none**, quoted from the typed
+  errors each function raises and the `recovery_hint` written next to them
+  (`scripts/gen_source_failure_modes.py`). They are tagged `source` in the
+  card provenance and are used only where a function has no hand-written
+  or inherited failure mode.
+- **Tool calls fill an unset seed and say so.** 171 functions default to
+  `seed=None` or `random_state=None`, so the same tool call returned
+  different numbers each time. The dispatcher now sets the argument when
+  the caller did not pass it, reports it as `seed_injected` and carries it
+  into the `replay` snippet. `STATSPAI_MCP_DEFAULT_SEED` sets the value
+  (default 42) or turns it off. A direct Python call keeps the library
+  default.
+
+#### Fixed
+
+- **Bayesian fits cited the probit sampler whatever model was fitted.**
+  `BayesRegressResult` declared the keys of its whole family, and the
+  result payload reports the first of them, so `sp.bayes_bootstrap`,
+  `sp.bayes_regress(model="normal")`, `sp.bayes_shrink` and the rest all
+  said `citation_key: albert1993bayesian`. `cite()` was already right. Each
+  fit now carries only the keys of its model (`rubin1981bayesian` for the
+  Bayesian bootstrap, `gelfand1990sampling` for the normal model, ...). The
+  horseshoe, which had no entry and fell back to the whole family, now
+  cites `carvalho2010horseshoe` and `makalic2016simple`, the two papers its
+  docstring already references. The payload's `method` reads
+  `Bayesian <model> regression (<sampler>)` instead of the class name.
+
+#### Changed
+
+- **An unknown name is answered with the nearest registered ones.**
+  `sp.describe_function("callaway_santana")` listed the first fifteen
+  names in alphabetical order; `sp.function_schema`, `sp.agent_card` and
+  `sp.support_tier` gave no hint at all. All four now say
+  `did you mean 'callaway_santanna'?` and carry the candidates on the
+  exception as `.suggestions`.
+
+### MCP server: smaller tool list, HTTP transport, handles that survive a restart
+
+#### Added
+
+- **`statspai-mcp --transport http`.** The MCP Streamable HTTP transport
+  on one endpoint (`http://127.0.0.1:8765/mcp` by default; `--host`,
+  `--port`, `--http-path`), for clients that connect to a URL and for
+  several clients sharing one server. A request is answered with JSON,
+  or with an SSE stream of progress notifications followed by the result
+  when the call carries a `progressToken` and the client accepts
+  `text/event-stream`. `notifications/cancelled` stops a running call,
+  and the queue, orphan and wait limits of the stdio loop apply. The
+  server validates `Origin` (and `Host` on a loopback bind) and refuses
+  to bind a non-loopback address without `STATSPAI_MCP_HTTP_TOKEN`.
+  Standard library only. There is no TLS, handles are process-wide
+  rather than per session, and `sampling` is off under this transport;
+  the guide says what that means for a shared deployment.
+- **`STATSPAI_MCP_STATE_DIR`.** With it set, every result and data
+  handle is also written to disk and read back on a memory miss, with
+  its provenance, lineage and replay string. A `result_id` then resolves
+  after a server restart and after LRU eviction, where it used to answer
+  `missing_result_handle` and force a re-fit of the whole chain. Unset
+  (the default), nothing changes. The files are signed pickles in a
+  directory that must be private to the server's user; one that group or
+  others can write is refused with a warning. A TTL still counts from
+  the fit, an entry written by another StatsPAI version is discarded on
+  read, and a result that cannot be pickled stays memory-only.
+  `STATSPAI_MCP_STATE_MAX_BYTES` (default 4 GiB) bounds each kind.
+- **`completion/complete`.** Suggestions for resource-template variables
+  (function names, guide families, live handles) and for the `result_id`
+  argument of prompts. MCP defines no completion for tool arguments, so
+  column names are not offered.
+- **`statspai://arguments`.** The long-form reference for the arguments
+  every tool accepts.
+
+#### Changed
+
+- **`tools/list` is half the size.** The ten arguments the server adds
+  to every tool (`data_path`, `data_id`, inline tables, `result_id`,
+  `as_handle`, `max_output_bytes`, `detail`, ...) carried paragraph-long
+  descriptions, repeated in each tool: 97 KiB of the 146 KiB list under
+  the default `curated` profile. They now carry one clause each and the
+  full text is served once, as `statspai://arguments`, with a pointer in
+  the session instructions. `curated` goes from 146 to 71 KiB and `core`
+  from 82 to 39 KiB (roughly 37 to 18 and 20 to 10 thousand tokens).
+  Both pairs were measured before the enum additions described above,
+  which add about 2 KiB to each list.
+  `data_columns` and `data_sample_n` are still accepted by every tool but
+  are listed only on `load_data`, `describe_data`, `transform_data` and
+  `call_function`; the oversize-file error names them where they matter.
+  No argument was removed and no result changes. The effect on how often
+  a model picks the right tool has not been measured: the real-model
+  benchmark stays off until its pre-registration.
+- `statspai-mcp --profile full` prints a warning with the size of the
+  list it is about to advertise.
+
+#### Fixed
+
+- **Fits made through the MCP server could record no source revision.**
+  In a source checkout, the first fit reads the StatsPAI git revision by
+  running `git` once and caches the answer for the process. Under the
+  server that first fit runs on a worker thread, after numerical code,
+  and on macOS the forked `git` child can crash before `exec`; the
+  revision was then cached as missing and every later result's
+  provenance lacked it, with a crash dump on stderr as the only sign.
+  Both transports now read the revision when they start, before any
+  worker thread exists. Installed wheels never ran `git` and are
+  unaffected. Library code that fits in its own threads can still hit
+  this; the fix there belongs in `_build_info`, whose change would need
+  the parity traces and Track C timing re-recorded, so it is left for a
+  release window.
+
+### The packaged skill's examples are now run, not only parsed
+
+#### Fixed
+
+- **Examples in the `statspai-analysis` skill that bound to a real
+  signature and still failed when run.** The skill's gate checked that
+  every `sp.*` name exists and every keyword is one the function takes.
+  It never executed the code. Running the pipeline files on synthetic
+  data turned up these, all in text an agent is told to copy.
+  - The "verified skeleton", the econ pipeline and the method catalog
+    called `sp.oster_bounds(..., r_max=1.3)`. `r_max` is an R-squared and
+    the function rejects a value above 1. Oster's rule of thumb is
+    `r_max="1.3*r2"`.
+  - `sp.bjs_pretrend_joint` was shown with a Callaway-Sant'Anna result
+    and `group=` set to the cohort column. It needs a `sp.did_imputation`
+    result and the unit id, and as written every bootstrap replication
+    failed.
+  - The epidemiology pipeline passed a TMLE risk difference to
+    `sp.evalue(measure="RR")`. A negative risk difference is refused and
+    a positive one would have been read as a risk ratio. The example now
+    refits with `estimand="RR"`.
+  - The econ pipeline and the skeleton computed an E-value from an OLS
+    wage coefficient with `measure="RR"`. That runs and returns a number
+    that means nothing. They now pass `measure="OLS"` with the outcome
+    standard deviation.
+  - In the econ pipeline `result` meant three different objects. The
+    E-value and `sp.estat` snippets read `.params` from a result that has
+    none, and `sp.unified_sensitivity` was called without `term=` on a
+    model with several regressors.
+  - Two robustness snippets dropped early cohorts with
+    `first_treat_year > 2008`. Never-treated units are coded 0, so that
+    filter deletes the whole comparison group.
+  - The McCrary figure was drawn with `sp.rddensity(...).plot()`. That is
+    the generic coefficient plot, and it raises on this result because
+    the reported interval is for the density difference while the
+    estimate is the test statistic. The figure comes from
+    `sp.rdplotdensity`.
+  - Smaller ones. A codebook written into a directory that does not
+    exist, placeholder columns (`X`, `Z`, `y`) inside otherwise concrete
+    formulas, and synthetic-control calls on a worker panel that has no
+    single treated unit (they now use the bundled Proposition 99 panel).
+
+#### Added
+
+- **`statspai skill validate --run`** executes the quick path, the
+  verified skeleton, the three pipelines and the export recipes, block by
+  block in one namespace per file, on synthetic frames built inside the
+  gate. A block that needs something the gate does not have opens with
+  ```` ```python no-run ````. It is still bound against the signature,
+  and a test caps how many such blocks there are (one today, the torch
+  estimators). The verified skeleton runs in the default test suite. The
+  full pipelines take minutes and are marked `slow`.
+- **`statspai skill status`** says whether an installed copy matches the
+  skill packaged with the installed version. A skill in
+  `~/.claude/skills` is a plain copy, so it keeps describing the API of
+  the release it was copied from. `statspai skill install` now leaves a
+  small record next to the copy, which lets `status` tell a copy that
+  fell behind from one that was edited by hand before `--force`
+  overwrites it.
+- The binding check follows `sp.decompose(method, ...)` to the function
+  the method name reaches, as it already did for `sp.route` and
+  `sp.power`.
+### A review of October: options off the main path, and the month's new functions
+
+Three pieces of work land together. The first is the third round of the
+option scan (inference, the rest of `iv/`, panel, time series), which
+wrote tests for branches no test reached and fixed what they found. The
+second is a behavioural review of the roughly 210 functions added this
+month: each was called on degenerate, mis-typed and reordered input and
+checked against identities that must hold. The third is `weights_as=`,
+finished on 5 October and never merged. Results of default calls on
+valid data are unchanged except where an entry below says a number was
+wrong. MIGRATION.md lists the calls whose numbers change and the calls
+that now raise.
+
+#### ⚠️ Correctness
+
+- **`sp.sun_abraham` and `sp.stacked_did` on integer time with gaps.**
+  Both omitted relative time −1 as the reference period. On a panel
+  observed every second year that period never occurs, nothing was
+  omitted, and `sp.sun_abraham` returned 1.011 with a standard error of
+  0 where the same panel coded with consecutive years gives 2.023
+  (0.066); `sp.stacked_did` returned NaN. Observed periods are now
+  numbered by rank, as the date path already did, and the gapped coding
+  equals the consecutive one exactly. An unevenly spaced grid is
+  renumbered with a warning that event time counts observed periods.
+- **`sp.gardner_did` without a comparison for some treated cells.** When
+  a period has no untreated observation its time effect is not
+  identified, and the first stage filled it with a minimum-norm
+  solution: 2.537 on noiseless data whose identified cells average
+  1.8525. Those cells, and units treated in every row, are now dropped
+  with a warning that names the periods, and the estimand is the ATT
+  over the remaining cells. A cohort recorded as NaN is never treated,
+  as in the other staggered estimators; it used to delete those rows.
+  On `sp.dgp_did(staggered=True)` data, which codes never-treated units
+  that way, the estimate moves from 0.374 to 0.407, the value
+  `sp.did_imputation` gives.
+- **`sp.etwfe`** reads a cohort of `inf`, or one later than the last
+  period, as never treated. The first raised `OverflowError`; the second
+  returned a standard error of 9958.
+- **`sp.did_multiplegt`** removes rows with a missing outcome or
+  treatment before differencing (a few of them used to turn the whole
+  result into NaN), and reports NaN, not 0 with p = 1, when no group
+  switches.
+- **`sp.cate_gain_curve` broke ties in the score by row order.** A
+  constant prediction on data sorted by the true effect scored the AUC
+  of the true ranking, outside its own bootstrap interval. Tied units
+  now enter together; a constant score has an AUC of exactly 0.
+- **`sp.iv.kleibergen_paap_rk` and `sp.iv.sanderson_windmeijer` with two
+  or more endogenous regressors.** The rk statistics were the Wald test
+  of a zero first stage, and the conditional F partialled the other
+  endogenous regressors out by OLS. Both now match Stata 18 `ivreg2`
+  (`widstat`, `idstat`, the Sanderson-Windmeijer F) on three
+  specifications under three covariance estimators. The `KP rk` and
+  `SW conditional F` entries of `sp.iv(...).diagnostics` change with
+  them. One endogenous regressor is unchanged.
+- **`sp.iv.iv_diag`**: a cluster passed as an array now reaches the
+  Anderson-Rubin test and the effective F (it clustered only the
+  standard errors), is aligned by position, and with `absorb=` the CLR
+  and K sets are computed on the demeaned variables.
+- **`anderson_rubin_ci`, `conditional_lr_ci`, `k_test_ci`** sort the
+  grid; an unsorted `beta_grid` returned wrong endpoints.
+- **`sp.panel(method='fd')`** differences consecutive periods of a unit
+  whatever the row order. Unsorted rows, and a sorted panel whose first
+  unit starts late, gave other estimates.
+- **`sp.panel_logit(method='fe')`** omits a regressor with no
+  within-unit variation (its coefficient was 4.7e6).
+- **`sp.fisher_exact(cluster=, stratify=)`** permutes clusters within
+  strata; `stratify` was ignored whenever `cluster` was given.
+- **`sp.bootstrap(ci_method='bca', block=)`** computes the acceleration
+  from a delete-one-block jackknife, and by position when index labels
+  repeat.
+- **`sp.jackknife_se`** refits on the design the fit stored. Interaction
+  and factor terms got NaN, weighted fits were refitted unweighted, and
+  fits without an intercept were refitted with one.
+- **`sp.ipw` and `sp.g_computation`** leave a bootstrap resample that
+  holds one arm out of the standard error and count it. **`sp.aipw`**
+  builds the training and prediction designs together, so a covariate
+  constant within a fold no longer shifts the cross-fitted estimate.
+- **`sp.local_projections`**: `cumulative=True` now regresses
+  `y[t+h] − y[t−1]` (it used the one-period change), a user-supplied
+  `nw_lags` is the truncation lag at every horizon, and the Cholesky
+  band is ordered when a weight is negative.
+- **`sp.garch(model='egarch', dist='t')`** forecasts beyond one step
+  with the expected absolute value of the unit-variance t; the term was
+  taken as zero, 13% at ten steps in the test design.
+- **`sp.dlm`** carries a coefficient with zero state variance back
+  exactly in the smoother and holds it fixed within a Gibbs draw.
+- **`sp.arima`** omits regressors that repeat each other, the constant
+  or the drift, and reports them in `model_info['omitted']`; the
+  coefficient used to be split between them.
+- **`sp.structural_break` and `sp.cusum_test`** omit a redundant
+  regressor (it moved the break date). **`sp.chow_test(time=)`** and
+  **`sp.zivot_andrews(time=)`** sort by the time column.
+- **`sp.tscv` and `DecompositionResult.forecast`** pass `boxcox=` and
+  `biasadj=` on to the benchmark methods; they were dropped.
+- **`sp.forecast_accuracy`** reports MAPE and MPE as missing when an
+  actual value is zero. It averaged over the other periods, so a
+  forecast that missed a zero by 1 scored 0%.
+- **`sp.factor_importance` on numerically coded discrete factors**, the
+  ±1 columns `sp.factorial_design` produces, returned shares of 0 and 1
+  that changed with row order. The neighbourhood now takes every point
+  tied with the k-th nearest, as the categorical case did.
+- **`sp.mdp_policy_value`** raises when the target policy takes an
+  action that never occurs in a state it reaches (it returned 0.351
+  with an interval of (0.26, 0.45) where the value is 1.075). Its
+  standard error no longer depends on how the states are labelled or on
+  where the features are centred; the value itself was always invariant.
+  With a linear basis the standard error moves by about 2% on a feature
+  centred near zero. With the same feature shifted by 10 it used to
+  average four times the Monte Carlo standard deviation, with 89%
+  coverage of a 95% interval over 200 replications; it is now the same
+  at both origins (92%, the standard error treating the nuisances as
+  known).
+- **Categorical covariates** are expanded to indicators by `sp.pscore`,
+  `sp.marginal_policy_effect` and `sp.implied_weights`, which read a
+  `category` column as one number.
+- **`sp.interference_test(focal=<boolean mask>)`** read the mask as the
+  indices 0 and 1.
+- **`predict()` on a factor level the fit never saw** returned the
+  prediction for the reference level, in `sp.regress`, `sp.logit`,
+  `sp.probit`, `sp.glm`, `sp.poisson` and `sp.nbreg`, and so in
+  `sp.poststratify`. It now raises and names the level.
+- **`sp.write_data(df, 'x.dta')`** keeps the text of a Categorical
+  column as value labels; only the codes were written. `.feather` keeps
+  labels with integer keys, and `sp.read_data` reads `.tsv` by tabs.
+- **`sp.influence_measures`** refuses a weighted fit (it mixed the
+  unweighted hat matrix with weighted residuals). **`sp.itcv`** uses the
+  weights of a weighted fit throughout. **`sp.cor_test`** counts the
+  rank of the covariates in its degrees of freedom.
+- **`sp.standardize(formula=)`** leaves a variable inside `log()`,
+  `I()`, `C()` or `factor()` alone, as its docstring says.
+- **`sp.gee`, `sp.gam`, `sp.mswitch`, `sp.dlm`** omit redundant
+  regressors with the usual note; they returned standard errors between
+  1e5 and 1e14. `sp.gam` also omits a parametric term its own smooths
+  reproduce (`y ~ x + s(x)`, or `d` next to `s(x, by=d)`).
+- **`sp.bootstrap_edges(algorithm='ges')`** read the edge mark as a
+  node name.
+
+#### Fixed
+
+- **The default prior of `sp.bayes_ivreg`, `sp.bayes_sur`,
+  `sp.bayes_mixed`, the probit systems and `sp.bayes_arima` is checked
+  after the fit**, as `sp.bayes_regress` already did. With a regressor
+  in thousands the N(0, 1000) prior pulled an IV coefficient to 244
+  where two-stage least squares gives 1437, without a word.
+- `sp.bayes_mixed` computed its multi-chain R-hat on copies of the last
+  chain; `sp.bayes_sur` reported none. `sp.gelman_rubin(fit)` reads the
+  chains of a multi-chain fit.
+- `sp.bma` refuses a constant outcome and warns on separation;
+  predictions from `sp.bart` and `sp.gp_regress` refuse missing
+  regressors; a DataFrame with repeated index labels no longer doubles
+  rows in `sp.bayes_regress`.
+- Complete separation in the shared propensity fit was reported as
+  converged. `sp.pscore`, `sp.full_match`, `sp.match` and `sp.psmatch2`
+  now warn, and `sp.pscore` no longer reports a block 0 or
+  `balanced=True` when no block holds both arms.
+- `sp.bandit_allocate` applies `prob_floor` while topping arms up to
+  `min_pulls`, and warns when it has to assume `sigma=1`.
+- `sp.space_filling(qualitative=)` balances each factor's levels when
+  the run count is not a multiple of the level combinations.
+- `sp.split_data` falls back to twinning on data with few distinct rows.
+- `sp.nlcom` parses `_b[C(race)[T.2]]`. `sp.ttest` and others judge a
+  zero standard error relative to the scale of the data.
+- `sp.ridge(lambda_=0)` on a rank-deficient design returns the
+  minimum-norm solution with a warning, and its constant-column guard
+  is relative. `NLSResult.predict` and the result of `sp.threshold`
+  predict on new data. `sp.nls` detects an unidentified additive pair.
+- A DataFrame whose index labels repeat no longer breaks `sp.gam`,
+  `sp.gee`, `sp.threshold`, `sp.series`, `sp.xthtaylor`,
+  `sp.abnormal_returns` or `sp.dlm`.
+- `sp.gee` and `sp.gam` check the outcome against the family.
+- `sp.unitroot`, `sp.arima`, `sp.garch`, `sp.var`, `sp.vec`,
+  `sp.varsoc`, `sp.johansen`, `sp.johansen_lrtest`, `sp.engle_granger`,
+  `sp.tvp_var`, `sp.structural_break`, `sp.chow_test`, `sp.ardl` and
+  `sp.abnormal_returns` refuse constant, exactly fitted, collinear or
+  too-short input with a named error. Several returned a statistic
+  computed from rounding noise.
+- The forecasting functions refuse a date index that is not increasing
+  instead of fitting the rows in file order.
+- `sp.hdfe_ols` refuses contradictory variance options (`vce='robust'`
+  with `cluster=` reported the HC variance; `se_type='iid'` with
+  `cluster=` labelled cluster errors as iid).
+- `sp.panel` names a missing entity, time or cluster id, and a
+  one-unit panel, instead of failing inside the linear algebra.
+  `sp.panel_unitroot` refuses interior gaps and caps its default lag on
+  short panels.
+- Many smaller cases across these modules where bad input
+  met a raw NumPy or pandas error, or `alpha`, `trim`, a lag or a level
+  outside its range was accepted, now raise an error that names the
+  argument.
+
+#### Added
+
+- **`weights_as=`: say what the weights are.** `sp.regress`, `sp.panel`,
+  `sp.hdfe_ols`, `sp.feols`, `sp.fast.feols`, `sp.iv` / `sp.ivreg`,
+  `sp.glm`, `sp.logit`, `sp.probit`, `sp.cloglog`, `sp.poisson`,
+  `sp.nbreg` and `sp.fast.fepois` report a model-based variance when
+  `weights=` is passed alone, which is right for analytic or frequency
+  weights and far too small for sampling weights (14% to 81% coverage of
+  a 95% interval in `tests/reliability/extreme_weights*.py`). Stata
+  settles this with `[aw=]`, `[fw=]` and `[pw=]`; until now the only way
+  here was to remember to add a robust option.
+  `weights_as='sampling'` gives the same coefficients with the robust
+  variance, bit for bit what the robust option gives by hand, and never
+  overrides a variance the call asks for. Each function also accepts
+  its own model-based reading, `'analytic'` for the linear estimators
+  and `'frequency'` for the likelihood ones, which changes no number
+  and silences the warning about dispersed weights. The other
+  model-based reading is refused with the reason, and
+  `sp.hdfe_ols(weights_as='sampling')` asks for `cluster=` because its
+  weighted fit has no heteroskedasticity-robust variance. The argument
+  is optional and calls without it behave as before.
+- `sp.ipw(n_bootstrap=0)` returns the point estimate alone, with the
+  standard error, interval and p-value missing.
+- `UnitRootResult.rho_level` and `.rho_diff`; `model_info['omitted']`
+  on `sp.arima`, `sp.gam`, `sp.gee`, `sp.mswitch`, `sp.dlm` and
+  `sp.panel_logit`; `converged` and `n_iter` on `sp.factor`;
+  `sp.ridge(lambda_='gcv' | 'hkb' | 'lw')`.
+
+#### Known and not changed
+
+- The standard error of `sp.match(ties='all')` depends on row order when
+  the matching variable has ties; see the note on `sp.match` above.
+- The p-value of `sp.weighted_rank` with `phi='quade'` or `'u868'` moves
+  in the third digit with the unit of measurement on rounded data,
+  because block ranges that are equal in exact arithmetic are ranked
+  after floating-point subtraction.
+
+### Sample size on results that recorded it as `n_obs`
+
+#### Fixed
+
+- **`result.nobs` was None and `result.n_obs` raised `AttributeError`**
+  on results whose estimator records the sample size under
+  `data_info["n_obs"]`. Confirmed on `sp.levinsohn_petrin` (and with it
+  `sp.olley_pakes` and `sp.acf`, which share the result class),
+  `sp.liml` and `sp.truncreg`; a scan of the source finds twenty-five
+  constructors that record it this way, in the gmm, panel, frontier,
+  structural and regression modules. The base result class reads
+  `data_info["nobs"]`, so `to_dict()["n_obs"]` was None as well. It now
+  fills `nobs` from `n_obs` when only the latter is recorded.
+  `data_info["n_obs"]` is still there. No estimate changes. Reported
+  from a replication of Levinsohn and Petrin (2003).
+
+## [1.39.5] — 2026-10-12
+
+Five replications of published papers, and what each one turned up.
+Three results change and should be recomputed: `diversion_ratios()` of
+`sp.blp` was wrong by a share ratio, `sp.lasso_select(method="cv")`
+cross-validated on leaked folds, and the `rho` reported by the
+production-function estimators was not a persistence at the default
+polynomial degree. Standard errors of `sp.blp` change when a random
+coefficient is estimated at zero, and its outer loop is now gradient
+based (20 seconds where it took 44 minutes). New: `sp.ctree`, the logit
+and nested logit of Berry (1994) in `sp.blp`, `sp.blp_instruments`, and
+`sp.grf_calibration`. MIGRATION.md has the details. The JSS manuscript
+stays anchored to 1.39.1.
+
+### The calibration test on predictions made elsewhere
+
+#### Added
+
+- `sp.grf_calibration(Y=, W=, Y_hat=, W_hat=, tau_hat=, weights=, clusters=)`
+  is the regression behind `sp.calibration_test`, taking its inputs
+  directly. It grades CATE predictions that did not come from the forest's
+  own out-of-bag pass: forests fitted on other folds of clusters, a
+  meta-learner, or predictions whose clustering is imposed afterwards
+  (section 3.1 of Athey and Wager's 2019 application does this by
+  overwriting fields of a fitted `grf` forest). The function existed as an
+  internal operator and was already tied to `grf::test_calibration` at
+  1e-14; it is now exported, registered, and checks its inputs (lengths,
+  missing predictions, negative weights, the level). Its covariance
+  keyword is `vce`, as in `sp.calibration_test`; `vcov_type` is still
+  accepted. Replicating that paper on its ACIC 2018 data showed the gap:
+  the fold-out test had to be written by hand with `sp.regress`.
+
+### Production functions: units of output, persistence, and what the bootstrap says
+
+Found by running `sp.olley_pakes`, `sp.levinsohn_petrin` and `sp.acf` on
+the Chilean panel shipped with R `prodest`. Input coefficients on that
+panel are unchanged to seven digits.
+
+#### ⚠️ Correctness
+
+- **`sp.olley_pakes` / `sp.levinsohn_petrin` / `sp.acf`: log output in
+  other units.** Adding a constant to log output is a change of units and
+  can only move productivity by that constant. Stage 2 carried the level
+  through an uncentred cubic in lagged productivity, whose condition
+  number was near 1e6 on real data. With 200 added to log output on a
+  simulated panel, the LP capital coefficient moved by 1e-5 and the fit
+  was reported as unconverged. Stage 2 now runs on output less its mean
+  and builds the Markov basis on standardised lagged productivity. The
+  coefficients, the convergence flag and `rho` no longer depend on the
+  constant.
+- **`productivity_process["rho"]` and `diagnostics["ar_rho"]`** were the
+  linear coefficient of the Markov polynomial, which is its slope at
+  lagged productivity zero. Productivity carries the constant of the
+  production function, so the data need not come near zero. On the
+  Chilean panel this gave -5.79 for LP and -0.63 for ACF. They are now
+  the slope of the linear projection of productivity on its lag (0.98 and
+  0.75 there), which equals the old value when `productivity_degree=1`.
+  The polynomial is still in `diagnostics["markov_coef"]`.
+
+#### Fixed
+
+- **`stage2_converged` for OP and LP** was False on the Chilean panel at
+  the default degrees although the estimate was the minimiser to 1e-9;
+  rounding left the first-order condition at 1.01e-8 against a tolerance
+  of 1e-8. A fit that does stop short now raises a `ConvergenceWarning`.
+  It was silent before.
+- **A fit without `boot_reps`** drew "Standard errors are not finite:
+  the variance matrix is singular". No variance was computed.
+  `diagnostics["se_source"]` now says `"none (pass boot_reps > 0)"` and
+  the warning is kept for standard errors that were requested.
+
+#### Added
+
+- **Bootstrap diagnostics** for OP, LP and ACF: `boot_se_iqr` (the
+  interquartile range over 1.349) and `boot_ci_percentile`. A standard
+  error more than three times `boot_se_iqr` draws a warning. On the
+  Chilean panel the ACF moment conditions change root in a few
+  resamples; one of 176 replications put the two labour coefficients at
+  -82 and 112, and the reported standard errors were 6.3 and 8.5 against
+  0.12 and 0.15 for the bulk. The standard errors are not changed.
+- **`sp.olley_pakes`** records the rows removed by `drop_zero_proxy` in
+  `diagnostics["n_dropped_nonpositive_proxy"]` and warns when some of
+  them are negative, which means the proxy is in logs.
+- A gross-output call with the proxy among the inputs is still refused;
+  the message now says why. In panels simulated under the Levinsohn-Petrin
+  assumptions the moment conditions do not pin the capital and materials
+  coefficients down (estimates between -42 and 34 for truths 0.2 and 0.5).
+
+### `sp.blp` with random coefficients, after a replication of BLP (1995)
+
+A replication of the demand side of Berry, Levinsohn and Pakes (1995) on
+the public automobile data took 44 minutes to fit and had to compute its
+own diversion ratios and markups. The logit side of that work is the
+section below.
+
+#### ⚠️ Correctness
+
+- **`BLPResult.diversion_ratios()`** divided cross-price by own-price
+  elasticities, which leaves out the share ratio `s_k / s_j`. Rows summed
+  to as much as 3.4 on the automobile data. It now divides share
+  derivatives, `(ds_k/dp_j) / (-ds_j/dp_j)`, and agrees with pyblp to
+  1e-7. `include_outside=True` adds the fraction that leaves the market.
+  A product whose demand slopes up gets NaN and a warning.
+- **Standard errors with a standard deviation estimated at zero.** At
+  zero the derivative of mean utility in that parameter vanishes, and the
+  sandwich divided by it. On the automobile data three such parameters
+  had standard errors from 1.7 to 35 and inflated every other standard
+  error (the mean price coefficient 0.156, now 0.054). The parameter is
+  now held at its bound: its standard error is NaN, the others are those
+  of the model without that random coefficient, and
+  `model_info['sigma_at_bound']` names it.
+
+#### Changed
+
+- **Outer loop.** L-BFGS-B with the analytic gradient and `sigma >= 0`
+  replaces Nelder-Mead, and the share inversion is accelerated market by
+  market. The main specification of the replication (five random
+  coefficients, 500 draws, 2,217 products) takes 20 seconds, down from 44
+  minutes. Against pyblp on shared integration nodes the estimates now
+  agree to 1e-12 (1e-8 before). `optimizer='nelder-mead'` keeps the old
+  search.
+- **Several starting points.** The first GMM step runs from four starts
+  (`n_starts=4`) and keeps the lowest objective. On the automobile data
+  the single start at 0.5 ends in a local minimum 7% above the best one.
+  `sigma0=` sets the first start.
+- `result.model_info` reports the starts and the objective each reached,
+  the projected gradient and the number of objective evaluations. With a
+  random coefficient on price it also reports the share of simulated
+  consumers with a positive price coefficient, and the fit warns when
+  products have a positive own-price elasticity. A fit whose outer loop
+  did not converge raises a `ConvergenceWarning`.
+
+#### Added
+
+- `x_random` accepts `"const"`, a random coefficient on the intercept.
+  It governs substitution to the outside good. Checked against pyblp
+  (`X2 = 1 + x1`) to 1e-5.
+- `BLPResult.markups()` and `.marginal_costs()` solve the multi-product
+  Bertrand first-order conditions, with firms from `firm_id=` or
+  `firm_ids=`. They work for the logit and nested logit as well. Checked
+  against pyblp to 1e-6.
+
+Not done: consumer demographics (the income term of the paper), a jointly
+estimated supply side, lognormal coefficients.
+
+### Demand estimation: the logit and nested logit of Berry (1994)
+
+#### Added
+
+- **Berry (1994) logit and nested logit in `sp.blp`.** `x_random=[]` is the
+  logit, a linear IV regression of `ln s_j - ln s_0` on characteristics and
+  price; `nest=` adds the log within-nest share, treats it as endogenous and
+  reports its coefficient as `rho`, with the closed-form nested-logit
+  elasticities. `gmm_steps=1` stops at the weighting matrix `(Z'Z)^{-1}`, so
+  the estimates are exactly two-stage least squares with HC0 standard errors
+  (identical to `sp.iv(..., robust='hc0')` to 1e-9); the default stays
+  two-step GMM. The result carries `model`, `rho`, the `instruments` used,
+  and Hansen's J (`hansen_j`, `hansen_df`, `hansen_p`). Coefficients,
+  standard errors, objective and elasticities match pyblp 1.2.0 to 1e-7
+  (observed 1e-9) in all four combinations
+  (`tests/reference_parity/test_berry_logit_pyblp_parity.py`). A nested
+  logit with random coefficients is refused.
+- **`sp.blp_instruments`**: sums of the characteristics, and the count, of
+  the other products in a market; split into the firm's own other products
+  and rival products with `firm_id=` (Berry, Levinsohn & Pakes 1995, section
+  5.1), plus same-nest sums with `nest=`. Equal to
+  `pyblp.build_blp_instruments` column by column. The frame can go into
+  `sp.blp(instruments=...)` or an `sp.iv` formula (for LIML and the
+  first-stage diagnostics).
+- `sp.blp(firm_id=)` builds the default instruments with that split.
+
+#### Fixed
+
+- **`sp.blp` with its default instruments (`instruments=None`) could not
+  run.** The excluded instruments repeated `x_linear`, which is already in
+  the instrument matrix, so the first weighting matrix was the inverse of a
+  singular `Z'Z`: `LinAlgError: Singular matrix`, or an inverse of order
+  1e16 when the pivots were not exactly zero. The default is now the rival
+  sums of `sp.blp_instruments`, and redundant instruments are dropped before
+  the moments are formed (silently when StatsPAI built them, with a warning
+  naming them when the caller supplied them; both are listed in
+  `omitted_instruments`). Calls that pass `instruments=` with a full-rank
+  set are unchanged.
+- `sp.blp(x_random=[])` raised numpy's `need at least one array to
+  concatenate`.
+- `sp.blp` now refuses, with a message, three inputs that used to end in a
+  numpy error or a silently wrong inversion: collinear `x_linear`, fewer
+  independent excluded instruments than parameters that need one, and
+  inside shares that sum to one or more in a market (the outside share used
+  to be floored at 1e-6).
+
+### Conditional inference trees, and the cross-validated lasso
+
+Prompted by a replication of Varian (2014), "Big Data: New Tricks for
+Econometrics". The paper's classification tree is a conditional inference
+tree, which had no Python implementation, and its cross-validated lasso
+could not be reproduced with `sp.lasso_select`.
+
+#### Added
+
+- **`sp.ctree`**: conditional inference trees (Hothorn, Hornik and Zeileis
+  2006; `party::ctree` and `partykit::ctree` in R). Each node tests every
+  covariate against the outcome with a permutation test in its asymptotic
+  form, splits on the covariate with the smallest p-value, and stops when
+  no Bonferroni-adjusted p-value is below `alpha`. Numeric, two-class and
+  multi-class outcomes; numeric, ordered and unordered covariates.
+  Written from the paper; the R packages are GPL and were used as black
+  boxes. On twelve settings the tree, the cut points and the leaf of
+  every row are identical to `partykit::ctree` 1.3.0, test statistics
+  agree to 1e-9 and adjusted p-values to 1e-7
+  (`tests/reference_parity/test_ctree_partykit_parity.py`). On the Boston
+  mortgage data of the paper it returns the published tree: 11 leaves,
+  228 of 2,380 applications misclassified, predictions unchanged when
+  race is removed. Not implemented: the maximum-type test statistic,
+  Monte Carlo p-values, surrogate splits, case weights. Guide:
+  `docs/guides/conditional_inference_trees.md`.
+
+#### ⚠️ Correctness
+
+- **`sp.lasso_select(method="cv")` cross-validated on leaked folds.**
+  The folds were cut from data already centred and scaled on the full
+  sample, and a training fold predicted the held-out rows without an
+  intercept of its own. Each training fold is now centred and scaled on
+  its own rows, and the error is pooled over observations. On the same
+  folds and penalties the error curve is that of `sp.glmnet` (new
+  `lasso_path["cv_mse"]`, tested to 1e-6). The solver and the BIC / AIC
+  paths are unchanged. In large samples the selected penalty rarely
+  moves. In small ones it can: on the 72-country growth data of
+  Fernandez, Ley and Steel with 41 candidates and `seed=0`, the old code
+  chose a penalty of 0.007 and kept 36 variables, the new code chooses
+  0.152 and keeps 14, which is what `sp.glmnet` and Varian's `cv.glmnet`
+  run select. See MIGRATION.md.
+
+## [1.39.4] — 2026-10-11
+
+Two passes over the package. The first wrote tests for the options and
+inputs around each estimator's main path in matching, regression and the
+forests, and found about forty defects. Several returned a wrong number
+without saying so: the JIVE methods of `sp.iv`, `sp.glm(robust='hac')`,
+standard errors of `sp.match` off the propensity-score ATT path, and the
+default dispersion of gamma and inverse-Gaussian GLMs. MIGRATION.md says
+which results to recompute. The second timed every public estimator at
+three sample sizes and rewrote the ones whose cost grew faster than the
+data; those results are bit-identical unless the entry says otherwise.
+Results on the main paths are unchanged. The JSS manuscript stays
+anchored to 1.39.1.
+
+### Speed: estimators whose cost grew faster than the data
+
+Every public estimator was timed at three sample sizes
+(`benchmarks/bench_scaling.py`, 124 cases). Those whose time grew like
+`n^1.5` or more, or that took seconds on two thousand rows, were profiled
+and rewritten. No algorithm changed. Each rewrite was compared with the
+code it replaces on hundreds to thousands of designs, and results are
+bit-identical unless a line below says otherwise.
+
+#### Changed
+
+| Call | Size | Before | After |
+| --- | --- | --- | --- |
+| `sp.cox` | n = 20,000 | 113 s | 0.07 s |
+| `sp.kaplan_meier` | n = 200,000 | 22 s | 0.06 s |
+| `sp.qreg` | n = 200,000 | 30 s | 0.7 s |
+| `sp.match`, `sp.psmatch2` | n = 200,000 | 51 s | 0.5 s |
+| `sp.mixed` | n = 200,000, 4,000 groups | 112 s | 0.12 s |
+| `sp.event_study` | 20,000 units x 10 periods | 14 s | 0.12 s |
+| `sp.lp_did` | 20,000 units x 10 periods | 74 s | 1.3 s |
+| `sp.did_multiplegt_dyn` | 200 units, 500 bootstrap draws | 26 s | 0.4 s |
+| `sp.sdid` | 20 donors, 200 placebo refits | 17 s | 0.5 s |
+| `sp.synth(method='sparse')` | 20 donors | 54 s | 0.4 s |
+| `sp.logit`, `sp.probit` | n = 200,000 | 0.55 s | 0.35 s |
+
+Timings are from one laptop under load and are meant as orders of
+magnitude.
+
+- **`sp.cox`, `sp.kaplan_meier`, `sp.logrank_test`.** Every risk-set sum
+  is a running total over rows sorted by stratum and descending time
+  (`survival/_cox_core.py`); the previous code rebuilt each risk set from
+  the data at every event time. Harrell's C is counted by sorting, not by
+  a Python loop over pairs. Agreement with the previous code on 216
+  designs (ties, strata, both tie rules, three variance estimators) is
+  1e-12 or better. Inside the kernel the regressors are centred and the
+  linear index is scaled within stratum, which the partial likelihood
+  does not see; a regressor with a large mean (a calendar year) used to
+  overflow the first Newton step and raise `LinAlgError`, and now fits.
+- **`sp.qreg`** from 5,000 rows solves the dual linear programme by a
+  primal-dual interior point (Portnoy and Koenker 1997) and then solves
+  exactly for the `k` observations the solution interpolates. That point
+  is returned only if it passes the subgradient condition strictly, which
+  proves it is the unique minimiser; otherwise HiGHS runs as before.
+  Agreement with the HiGHS vertex on 118 designs: 5e-13 at worst.
+  `sp.sqreg`, `sp.machado_mata` and `sp.ivqreg` use the same solver.
+- **`sp.match`, `sp.psmatch2`.** Propensity-score matching sorts the
+  control scores once and searches the neighbourhood of each treated
+  unit. Mahalanobis and Euclidean matching are processed in blocks and
+  remain quadratic, because the time is in the distance matrix.
+- **`sp.mixed`** takes a thin QR of each group's random-effect design
+  once and evaluates the likelihood from those summaries, a batched
+  `q x q` Cholesky instead of a dense `n_j x n_j` one per group. The
+  likelihood equals the previous one to 2e-11, except where the residual
+  variance is far below the random-effect variance; there the old value
+  was off by up to 1e-7 and the new one is accurate to 3e-13 (checked
+  against 40-digit arithmetic). **Fitted values move below 1e-6 for
+  interior fits.** Where the optimum is on the boundary (a variance at
+  zero, a correlation at one) and in the three-level model, which has no
+  Newton polish, the two versions stop at slightly different points of a
+  flat likelihood: variance components differ by up to 2e-4 relative,
+  fixed-effect standard errors by up to 8e-5. The Track A mixed-model
+  module reproduces its committed numbers to 3e-10.
+- **`sp.event_study`, `sp.lp_did`, `sp.did_multiplegt_dyn`.** Group sums
+  replace per-unit and per-cluster loops; `did_multiplegt_dyn` converts
+  the panel to unit-by-period matrices once and draws each bootstrap
+  replicate as repeated rows of them, consuming the random generator in
+  the same order. The frame code remains as the fallback for panels the
+  matrices cannot represent (duplicate cells, missing group labels).
+- **`sp.sdid`, `sp.synth(method='sparse')`.** The Frank-Wolfe loop and
+  the coordinate descent are numba kernels, imported on first use, that
+  perform the same operations in the same order. The first call in a
+  fresh environment compiles for one to two seconds; the compiled code is
+  cached on disk.
+- **`sp.honest_did(method='relative_magnitude')`** evaluates the
+  truncated-normal quantile of the conditional test on scalars rather
+  than through `scipy.stats.truncnorm` (5 against 200 microseconds, a few
+  thousand calls per grid). Output is unchanged on 72 calls.
+- **`sp.kdensity`** (Gaussian kernel), the ROC area of **`sp.logit`** /
+  **`sp.probit`**, and the Kaplan-Meier steps of **`sp.cuminc`** /
+  **`sp.fine_gray`** are vectorised.
+
+#### Fixed
+
+- **Seven functions allocated a dense `n x n` matrix** and could not run
+  on large samples: `sp.fracreg`, `sp.ivqreg`, `sp.rdit`, `sp.rdmc`,
+  `sp.rd_distributional_design`, `sp.qte(method='conditional_qr')` and
+  `sp.robreg(method='m', init='lad')`. At n = 200,000 that is 320 GB.
+  The weights of a weighted fit were written as `np.diag(w)`, a
+  projection was formed instead of applied, and the identity blocks of a
+  linear programme were stored dense. Results are unchanged (`ivqreg`:
+  2e-16).
+- **`sp.nbreg` on data without overdispersion ran its 100 outer
+  iterations and warned "did not converge".** The profile likelihood is
+  flat in the dispersion there and the bounded search returns a slightly
+  different point each round, so the dispersion never settled to the
+  tolerance. The loop now also stops when the likelihood stops moving
+  (relative change below 1e-8). On 160 Poisson and underdispersed samples
+  it stops within 9 rounds where 42 used to exhaust the budget. Fits with
+  real overdispersion are unchanged (1e-14). On samples at the boundary
+  the coefficients move by 1e-7 or less; the standard error of the log
+  dispersion, which is not identified there, can differ.
+
+### The Stata comparison notebook
+
+#### Added
+
+- `examples/notebooks/statspai_vs_stata_live.ipynb` runs Stata and StatsPAI
+  in the same notebook. Stata is driven through its own `pystata` from the
+  Python kernel, the estimates are read back from `e()` / `r()` and
+  subtracted from StatsPAI's, and a final cell asserts a relative
+  difference below 1e-6 on all thirteen numbers (the largest is 3.7e-10 on
+  Stata 18 MP: OLS, `reghdfe`, 2SLS, `csdid`, `rdrobust`, and a do-file
+  snippet run through `sp.stata`). It needs a local Stata; the committed
+  file carries its outputs.
+
+#### Changed
+
+- `examples/notebooks/statspai_vs_stata_5min.ipynb` gains a `summarize`
+  section and a section that runs a do-file snippet through `sp.stata`,
+  both next to Stata 18 output on the same data, and ends with pointers to
+  the ten method tutorials. It was re-executed on 1.39.3 and stays on the
+  Python kernel, so it runs without Stata.
+
+### Options and inputs off the main path: matching, regression, forests
+
+The main path of each estimator is tied to a reference implementation or
+a known truth. A second pass wrote tests for the combinations around it
+(weights with an ATE, a cluster with a likelihood estimator, HAC with a
+GLM) and for degenerate inputs. About forty defects came out; the ones
+that returned a wrong number are listed first. Results on the main paths
+are unchanged, bit for bit: every propensity-score-distance ATT of
+`sp.match`, `sp.regress`, 2SLS / LIML / GMM, the binary and count models
+without the options named below, and every forest average.
+
+#### ⚠️ Correctness
+
+- **`sp.iv(method='jive')`, `'jive1'`, `'ujive'`, `'ijive'`, `'rjive'` and
+  `sp.iv.jive_mw` were not JIVE.** They regressed the outcome on the
+  leave-one-out first-stage fit, `(Xh'Xh)^-1 Xh'y`, where Angrist, Imbens
+  and Krueger (1999) use that fit as the instrument, `(Xh'X)^-1 Xh'y`.
+  With 30 weak instruments and a true coefficient of 1 the median over
+  simulated samples was 0.59 (2SLS: 1.27); it is now 0.98, and the 95%
+  interval of `jive_mw` covers the truth 96% of the time where it covered
+  5%. Standard errors are the sandwich of the IV estimator with `Xh` as
+  instrument. `sp.jive` was already correct and is unchanged; `sp.iv(
+  method='jive')` now equals it. `robust='hc2' | 'hc3'` with
+  `method='jive'` is refused.
+- **`sp.glm(robust='hac')` standard errors were too small by a factor of
+  `sqrt(n)`.** The score autocovariances were divided by `n` while the
+  bread was not. They now equal statsmodels' HAC at the same lag count
+  (no small-sample factor, the `hac_small=False` convention of
+  `sp.regress`).
+- **`sp.match(weights=)` returned a standard error of 0 and a p-value
+  of 1.** Frequency weights are applied by replicating rows, so each
+  unit's nearest neighbour in its own arm was its own copy and the
+  Abadie-Imbens conditional variance vanished. The neighbour is now taken
+  among other original observations; doubling every weight divides the
+  standard error by exactly `sqrt(2)`.
+- **`sp.match(estimand='ATE')` with nearest-neighbour matching reported
+  the standard error of the ATT and ignored `se_method`.** Relabelling
+  the arms left |ATE| unchanged and moved the standard error (0.206
+  against 0.234). The default is now the Abadie-Imbens (2006) conditional
+  variance of the ATE, which equals `Matching::Match(estimand = "ATE",
+  sample = TRUE, Var.calc = 1, distance.tolerance = 0)` to 12 digits and
+  does not depend on the labelling; `'abadie_imbens_pop'`, `'ai'` and
+  `'bootstrap'` are honoured, and `model_info['se_method']` records which
+  one was used. The point estimate is unchanged.
+- **`sp.match` with `distance='mahalanobis'` or `'euclidean'`: the default
+  ATT standard error looked for same-arm neighbours on the propensity
+  score, not in the matching metric.** It was too large by a quarter to
+  two fifths (0.2197 where `Matching::Match(estimand = "ATT")` gives
+  0.1678). Sixteen standard errors now agree with `Matching` to 12
+  digits. Estimates are unchanged, and so is everything with
+  `distance='propensity'`.
+- **`sp.match(method='cem', estimand='ATE')` returned the ATT** under the
+  ATE label. It is now the cell-size-weighted average with the Neyman
+  stratified variance.
+- **`sp.match` and `sp.psmatch2` reported an effect of 0 with p = 1 when
+  no unit found a match** (a caliper nobody meets, or every treated unit
+  off common support). They raise `DataInsufficient`. Bootstrap
+  replicates in which nobody matches count as failed instead of entering
+  the standard error as zeros.
+- **`sp.propensity_score` gave scores off by up to 0.79 when a covariate
+  was repeated**, without a warning; the balance tables and plots built
+  on it inherited that. The fit goes through the package's one logit
+  routine, which drops redundant covariates. One missing covariate value
+  no longer turns every score into NaN.
+- **Mahalanobis matching inverted a numerically singular covariance
+  matrix**, so adding a covariate that is a linear combination of the
+  others changed the estimate (2.2485 to 2.2395). A rank-deficient
+  covariance uses the pseudo-inverse; a full-rank one is treated as
+  before.
+- **A covariate that separates the arms was reported as balanced**
+  (standardised difference 0). It is reported as infinite and not
+  balanced.
+- **A single cluster gave standard errors of about 1e-16** in `sp.logit`,
+  `sp.probit`, `sp.cloglog`, `sp.poisson`, `sp.nbreg`, `sp.ppmlhdfe`,
+  `sp.zip_model`, `sp.zinb`, `sp.hurdle`, `sp.mlogit`, `sp.ologit`,
+  `sp.oprobit` and `sp.clogit`. They raise `DataInsufficient`, as
+  `sp.regress`, `sp.glm` and `sp.iv` already did.
+- **`sp.iv(cluster=)` merged rows with a missing cluster label into
+  another cluster.** Those rows are dropped with a note, as `sp.regress`
+  and `sp.ivreg` do.
+- **`sp.poisson` and `sp.nbreg` dropped `offset=` when `exposure=` was
+  also given.** The linear predictor now carries their sum, as in
+  `sp.glm`.
+- **Marginal effects of `sp.logit`, `sp.probit` and `sp.cloglog` ignored
+  `weights=`.** They are weighted averages now; frequency weights
+  reproduce the expanded data.
+- **`sp.rate_split` and `sp.forest_policy_tree` did not refit the forest
+  they were given on each half.** The refits dropped the forest's
+  controls and any `Y_hat` / `W_hat` the caller supplied, and estimated
+  the nuisance functions by another method (for `fe=` forests the
+  treatment "propensity" was a 0/1 class label). With confounding that
+  runs through the controls and a true ATE of 1, the halves estimated 5.2
+  where the forest estimated 1.0. Each half is now fitted as the forest
+  was. Numbers from both functions change for every forest except one
+  with user-supplied nuisance models and no controls.
+- **`sp.rate` ignored the forest's observation weights**
+  (`equalize_cluster_weights=True` with clusters of unequal size: AUTOC
+  0.731 where the weighted value is 0.615). The weighted TOC, AUTOC and
+  QINI agree with `grf::rank_average_treatment_effect.fit(sample.weights
+  =)` to 1e-14.
+- **`sp.glm` scaled the covariance of gamma and inverse-Gaussian fits by
+  the deviance over the residual degrees of freedom.** R `summary.glm` and
+  Stata `glm` both use the Pearson chi-squared. On a gamma fit with a log
+  link (n = 40) the dispersion was 0.4470 where both report 0.3624, and
+  the standard errors were 11% larger than Stata's. The default is now the
+  Pearson estimate: default standard errors equal Stata's (observed
+  information) to 1e-8, and `information='expected'` gives R's.
+  `scale='dev'` returns the former numbers. Coefficients, the deviance and
+  the log-likelihood are unchanged; the Gaussian, binomial, Poisson and
+  negative binomial families are unchanged.
+- **A two-way fixed effects forest accepted a treatment that the period
+  effects absorb** (everyone treated from the same date) and returned
+  CATEs for an effect that is not identified. It raises
+  `DataInsufficient`.
+
+#### Fixed
+
+- `sp.match`: an undefined standard error (one matched unit, strata of
+  one treated and one control unit) is NaN with a warning, not 0, and a
+  NaN standard error gives a NaN p-value, not 1. `se_method` is honoured
+  or refused by `method='stratify'`, `'cem'` and `distance='exact'`. A
+  nearest-neighbour ATE says how many units of each arm a caliper left
+  unmatched. `caliper_scale='sd'` with a covariate distance, and an ATE
+  with `common_support='minmax'`, are refused. Mahalanobis matching no
+  longer crashes on a missing covariate value. The local linear matching
+  guard against donors with identical scores is relative to the scores.
+  `replace=` must be a boolean.
+- `sp.cbps` refuses a redundant covariate (its rank check could not
+  fail). `sp.overlap_plot` accepts Crump-trimmed scores.
+- `sp.glm` refuses a Poisson or negative binomial outcome below zero and
+  a binomial outcome outside [0, 1]; it used to return coefficients of
+  order 1e15.
+- `sp.logit`, `sp.probit` and `sp.cloglog` refuse missing, negative or
+  all-zero weights (a missing weight made the fit hang; negative weights
+  returned the starting values) and a constant outcome. `sp.poisson` and
+  `sp.nbreg` validate the outcome, weights and offset. `sp.hurdle`
+  refuses data with no positive counts.
+- `sp.zip_model`, `sp.zinb` and `sp.hurdle` omit collinear regressors
+  with a note, in both equations.
+- Unknown values of `dispersion=` (`sp.nbreg`), `count_model=`
+  (`sp.hurdle`), `marginal_effects=` and `gmm_vcov=` are refused; each
+  used to select a default silently.
+- `average_treatment_effect(subset=)` inside a single cluster raises
+  `DataInsufficient` (it returned an infinite standard error).
+  `predict(newdata, estimate_variance=True)` of the forest family is
+  refused when `ci_group_size=1` (it returned a NaN column). The column
+  interface of the forests accepts `C(col)`. `sp.cate_pretrend_test`
+  validates `alpha`.
+- Several inputs that ended in a `TypeError`, `KeyError` or
+  `AttributeError` raise an error that says what is wrong:
+  `sp.regress(cluster=[a, b, c])`, `sp.ivreg(vce='cr2', method='liml')`,
+  `sp.zip_model` with `C(g)` in the formula, and `sp.regress(hac_panel=)`
+  given the same column as panel and time (a `TypeError` under pandas
+  2.3 and later).
+
+#### Changed
+
+- The size and power figures quoted for `sp.rate_split` and
+  `sp.forest_policy_tree` were re-measured after the refit fix, and the
+  study is now in the repository (`tests/reliability/
+  forest_split_evaluation.py`, 400 replications). With no heterogeneity,
+  `sp.rate` on the forest's own ranking rejects a true null 16.0% of the
+  time at a nominal 5% (AUTOC; 12.2% for QINI); `sp.rate_split` with its
+  default 21 splits rejects 0.5% and 0.0%, and the policy tree's gain
+  0.0%. With real heterogeneity all three reject in every replication.
+  The figures in earlier documentation (7.5% and 3.5%) are superseded.
+
+#### Known issues
+
+- The default standard error of a nearest-neighbour ATE conditions on the
+  fitted propensity score and is conservative when matching on it (mean
+  1.3 times the sampling standard deviation in one design);
+  `se_method='abadie_imbens_2016'` is correctly sized there. The default
+  is deliberately the same rule for the ATT and the ATE and for every
+  distance; the docstring of `sp.match` says when to ask for the 2016
+  variance.
+- `sp.match(weights=, se_method='abadie_imbens_2016')` still counts a
+  row's own copies among its neighbours.
+- With heavily tied priorities the influence-function standard error of
+  `sp.rate` is too small (0.074 against a bootstrap 0.135 on a 12-level
+  priority); forest predictions are essentially never tied.
+
+## [1.39.3] — 2026-10-10
+
+Correctness fixes found by three passes over the package: writing ten
+teaching notebooks, closing the core coverage gap, and working through
+reported defects in the DiD estimators. Several calls returned a wrong
+number without saying so (`sp.liml` with the bracket first in the formula,
+balance diagnostics with a missing matching weight, and the inputs listed
+below under the DiD and core sections); MIGRATION.md says which results to recompute. The release also
+adds ten offline tutorials in Chinese under `examples/notebooks/`. The JSS
+manuscript stays anchored to 1.39.1.
+
+### Follow-ups from the teaching notebooks
+
+#### Fixed
+
+- Four synthetic-control methods cite their own papers, taken verbatim
+  from `paper.bib`. `sp.synth(method="penscm")` and `method="fdid"` returned
+  "No citation registered"; `method="sparse"` and `method="cluster"` fell
+  through a substring match to Abadie, Diamond and Hainmueller (2010).
+  They now cite Abadie and L'Hour (2021), Li (2024), Doudchenko and Imbens
+  (2016) and Rho et al. (2025), the keys their module docstrings already
+  carried. `method="kernel"` cites Hazlett and Xu (2018), "Trajectory
+  Balancing", whose kernel balancing of pre-treatment trajectories is the
+  idea the estimator follows; the module docstring says where the
+  implementation differs from their `tjbal`. The entry is new in
+  `paper.bib` (refs verified via Crossref, OpenAlex and the authors'
+  package page). `method="kernel_ridge"` is unchanged.
+- The docstring of `sp.wild_cluster_bootstrap` says what `ci_boot` is. It
+  is a percentile-t interval and covers at the nominal rate (0.96 with 8
+  clusters and 0.95 with 20, 200 replications each), but it is not dual
+  to `p_boot` and with few clusters can contain values the test rejects.
+  `sp.wild_cluster_ci_inv` is the interval that is. No number changes.
+
+#### Added
+
+- `sp.msm(outcome_rows='last')` fits the outcome model on each unit's
+  last row, for an outcome measured once at the end of follow-up. Such an
+  outcome arrives repeated on every row of its unit, and the default
+  pooled fit pairs it on the earlier rows with the exposure received so
+  far. In the two-visit design of `examples/gmethods_timevarying.py`,
+  where each visit adds 3, the pooled cumulative-exposure slope is
+  between 2.6 and 2.75 across seeds with a standard error of 0.06; with
+  `outcome_rows='last'` it is 2.97 to 3.04 without trimming. The default
+  stays `'all'`, the form in which the R `ipw` and Stata references are
+  matched, and no number changes; it now raises an `AssumptionWarning`
+  when the outcome is constant within every unit. The example passes the
+  new option; it used to print that the model "recovers the truth" next
+  to 2.77.
+
+- `.github/workflows/linux-spot-check.yml`: a dispatchable workflow that
+  runs chosen tests on Linux (Python 3.10 and 3.13, and pandas 3) in a
+  few minutes. A failure that only shows on Linux could until now be
+  checked only by a full run of two to five hours per cell.
+- `tests/test_example_notebooks.py`: the committed tutorials are checked
+  on every run (executed, no error output, standard kernel, no local
+  path, listed in the README, references resolvable in `paper.bib`), and
+  `pytest -m slow tests/test_example_notebooks.py` executes all ten
+  against the tree.
+
+### Defects found while closing the core coverage gap
+
+Writing tests for the uncovered branches of `did`, `rd`, `synth` and `dml`
+turned up inputs on which a wrong number came back.
+
+#### ⚠️ Correctness
+
+- **`sp.fect(method='fe', force='none')` without covariates returned the
+  mean outcome of the treated cells, not a treatment effect.** The mean of
+  the untreated cells was removed once and then recomputed from the
+  centred matrix, so the fitted counterfactual was zero. On a panel with
+  no unit or period effects and a true effect of 2 it reported 7.31 where
+  R `fect` 2.4.1 gives 2.387824; it now gives 2.387824. `force='unit'`,
+  `'time'` and `'two-way'`, every `method='ife'` and `method='mc'` call,
+  and any call with covariates were already equal to `fect` and are
+  unchanged.
+- **Staggered DiD estimators misread a `Period` cohort column that marks
+  never-treated units with `NaT`.** Some treated units were assigned to
+  the wrong cohort (`sp.sun_abraham` reported cohorts 2, 3, 4, 6 for a
+  design with two cohorts, and 1.9459 where integer coding gives 1.9776).
+  Every estimator that accepts calendar time was exposed. `datetime64`
+  columns, and `Period` columns that mark never-treated units with a date
+  after the sample, were read correctly and are unchanged.
+- **`sp.rdrobust` refuses a running variable with fewer than `p + 1`
+  distinct values on a side.** A local polynomial is not identified
+  there. With one support point a side the bandwidth selector failed, the
+  legacy selector took over with a warning, and the fit returned an
+  arbitrary number (-1.0 with p = 0 on data whose two cell means differ by
+  +1.4). It now raises `DataInsufficient` and points to `sp.rd_discrete`.
+- **`sp.drdid(id=..., weights=...)` ignored the weights.** On the panel
+  path the weight column was dropped before the fit, so the weighted and
+  unweighted estimates were the same number; without `id=` the weights
+  were used. All four estimators (`method='imp'` and `'trad'`,
+  `est_method='ipw'` and `'reg'`) now agree with R `DRDID` 1.3.0 called
+  with `panel = TRUE, weightsname =` (estimates to 1e-9). Unweighted calls
+  are unchanged.
+- **`sp.did_multiplegt` reported a placebo or dynamic effect that cannot
+  be estimated as 0 with standard error 0 and p-value 1.** On a panel with
+  too few periods before or after the switches there is no cell to
+  compare. Those rows are now missing, with a warning that names them, and
+  the average cumulative effect is taken over the estimable horizons
+  only. Bootstrap replicates in which a lag has no cell no longer enter
+  its standard error as zeros.
+- **`sp.callaway_santanna` returned a standard error of about 1e-16 for
+  two cluster choices.** With `allow_unbalanced_panel=True` on a balanced
+  panel, a cluster that varies within unit was accepted (the same call
+  without the flag was refused). With `panel=False`, a cluster made of
+  whole cohort-by-period cells (the period, or the cohort itself) gets
+  nothing from the cells that matter: the standard error is exactly zero
+  against never-treated units and a small fraction of the unclustered one
+  otherwise. Both now raise `MethodIncompatibility`.
+- **The relative-magnitudes confidence set of `sp.honest_did` came back
+  empty when the estimate was more than 20 standard errors from zero**,
+  and `sp.breakdown_m(method='relative_magnitude')` then reported a
+  breakdown value of 0 for the most significant effects. The default grid
+  is centred at zero, as in `HonestDiD`; when it accepts nothing because
+  the estimate lies outside it, the grid is now placed around the
+  estimate. Results that were not empty are unchanged.
+- **`model_info['itt_ci']` of a fuzzy `sp.rdrandinf` held the interval of
+  another quantity.** With a `ci=` grid the randomization test is run on
+  `y - tau0 * D`, so its inversion is the Anderson-Rubin interval for the
+  complier effect. That interval was stored as `itt_ci`. On a design with
+  an ITT of 1.46 it read (1.78, 2.08). `itt_ci` is now the large-sample
+  interval of the ITT, and the Anderson-Rubin interval is under
+  `anderson_rubin_ci`. The headline `ci` is unchanged.
+- **`sp.rd_optimized(fuzzy=)` refuses a treatment that does not jump at
+  the cutoff.** The check was `first == 0`, and a first stage with no jump
+  is about 1e-17, so the ratio came back near -4e16 (a constant treatment
+  crashed in the root finder instead). It now raises `DataInsufficient`.
+- **`sp.twowayfeweights` reports no standard error on a saturated
+  design.** With as many fixed effects and slopes as observations the
+  residuals are zero, and the function reported a standard error near
+  4e-15 with a p-value of 2e-15. Both are now missing. The estimate is
+  unchanged.
+- **`sp.dml(fold_indices=...)` refuses a missing fold label on a row that
+  is otherwise complete.** Such a row was deleted with the incomplete
+  ones, without a message. It now raises `MethodIncompatibility`. A row
+  that is incomplete anyway is still dropped, whatever its label.
+
+#### Fixed
+
+- `sp.rdrobust(bootstrap='rbc')` and `sp.did_calibrated_simulation`
+  no longer decide whether a fit is degenerate by asking if its standard
+  error is exactly zero. An exact fit leaves a standard error of zero up
+  to rounding, and whether that is 0 or 1e-17 depends on the estimator
+  and on the linear algebra library: on Linux a bootstrap replicate with
+  a constant outcome was studentised by 1e-17, and on a noise-free panel
+  the simulation scored every estimator but one as a valid draw. The
+  bootstrap compares the standard error with 1e-10 of the outcome's size
+  and the simulation with 1e-6 (a variance of rounding size, 1e-16, has
+  a square root of 1e-8).
+- `sp.rdplot` and `rdplot_numbers` no longer crash when the outcome is
+  constant on one side of the cutoff (`cannot convert float NaN to
+  integer`). That side gets one bin, which is exact.
+- `sp.synth(method='sdid', se_method=...)` works. The dispatcher's name
+  for the option is `inference`; passing sdid's own name raised
+  `TypeError: got multiple values for keyword argument 'se_method'`.
+  Passing both with different values raises `MethodIncompatibility`.
+- `sp.scpi(w_constr='ridge')` with fewer than five pre-treatment periods
+  and no `Q=` raises `DataInsufficient` and says to pass `Q=`. The ridge
+  rule cannot estimate its penalty there, and the prediction intervals
+  failed with `SVD did not converge`.
+- `sp.synth.causal_impact` skips a missing pre-period outcome (the Kalman
+  filter already did; the regression fit before it did not, and the call
+  failed with `SVD did not converge`). A missing post-period outcome
+  raises `DataInsufficient`, where it used to return an effect of NaN.
+- `sp.fect` raises `MethodIncompatibility` for collinear covariates, in
+  place of numpy's `Singular matrix`.
+- `sp.synth_sensitivity` returns `original_att`, the full-donor-pool
+  estimate. The sensitivity plot draws its "Original ATT" line from that
+  key, which was never set, so the line was never drawn.
+- `sp.did_multiplegt_dyn(cluster=<a column that is not there>)` raises
+  `MethodIncompatibility` and names the column, in place of a `KeyError`.
+  With `se_method='analytic'` it no longer warns that "0/0 bootstrap
+  replicates succeeded".
+- `sp.did_calibrated_simulation(control_group='notyettreated')` runs
+  Sun-Abraham against the never-treated cohort. It passed the option
+  through, `sp.sun_abraham` does not take that value, and every draw of
+  that estimator was recorded as a failure.
+- `sp.stacked_did` lists in `model_info['cohorts']` the cohorts it
+  stacked, and the ones it could not use in `skipped_cohorts`. The list
+  used to include both while `n_cohorts` counted the first kind only.
+
+#### Track C re-timed
+
+- The fixes above touch four files on the paths the Track C benchmarks
+  time (`did/_core.py`, `did/callaway_santanna.py`, `synth/scm.py`,
+  `dml/_base.py`), so `python scripts/trace_perf_path.py --check` reported
+  `02_csdid`, `03_scm` and `04_dml` as stale. All four modules were
+  re-timed on an idle machine on 2026-10-10 (every step under a load of
+  1.5) and the check passes again. No ratio moved by more than its run
+  to run noise: HDFE 1.82 / 0.85 / 0.61 (was 1.80 / 0.85 / 0.64), CS-DiD
+  1.38 / 2.09 / 2.60 (1.39 / 1.94 / 2.60), SCM 1.04 / 1.07 / 3.49
+  (1.02 / 1.08 / 3.48), DML 1.17 / 1.10 / 1.07 (1.17 / 1.11 / 1.07).
+
+### Teaching notebooks, and what writing them turned up
+
+#### Added
+
+- Ten offline tutorials in `examples/notebooks/`, with prose and code
+  comments in Chinese and their executed outputs committed: staggered
+  DiD, instrumental variables, regression discontinuity, synthetic
+  control, matching and weighting, regression standard errors, panel
+  fixed effects, analysing a randomized experiment, heterogeneous
+  treatment effects, and g-methods. Each works a bundled dataset or a
+  simulation with a known truth and was run against this tree.
+- `sp.synth_compare(seed=)` fixes the random seed of the methods whose
+  inference resamples (synthetic DID's placebo standard error, for one).
+  Those rows used to change from run to run and could not be pinned,
+  because a `seed` forwarded to every method was rejected by the
+  deterministic ones.
+- `sp.love_plot` accepts an `sp.match` result that carries a matched
+  sample (nearest-neighbour, stratification, CEM). It used to refuse one
+  with a message that asked for exactly that.
+
+#### ⚠️ Correctness
+
+- **`sp.liml` read the formula `"y ~ (d ~ z) + x"` wrongly.** With the
+  bracket written first, every control after it was taken for an excluded
+  instrument and dropped from the structural equation, and nothing was
+  said. On the Card (1995) data the return to schooling came out as 0.013
+  where `sp.iv(..., method="liml")` and the explicit
+  `y=, x_endog=, x_exog=, z=` call give 0.175. Only the order documented
+  in the docstring, `"y ~ x + (d ~ z)"`, was read correctly. The bracket
+  may now sit anywhere among the exogenous terms, and a formula in neither
+  the bracket nor the `"y ~ x | d | z"` form is rejected. Calls that
+  passed the variables by name, and `sp.iv(method="liml")`, are unchanged.
+  See MIGRATION.md.
+- **`sp.balance_diagnostics`, `sp.ps_balance` and `sp.love_plot` reported
+  perfect balance when a weight was missing.** A matched frame marks the
+  rows that were not matched with a missing `_weight`. One missing weight
+  made the weighted control mean NaN, the standardized difference was then
+  returned as 0.0000 for every covariate, and `balanced` was `True`. On
+  the Lalonde data after one-to-one propensity matching the true values
+  are 0.20 for age and 0.16 for marital status, both above the 0.1
+  threshold. This also affected `sp.love_plot(sp.psmatch2(...))`, which
+  takes its weights from that column. A missing weight now counts as zero,
+  which is what it means; negative or infinite weights, and an arm whose
+  weights sum to zero, are errors; and a standardized difference that
+  cannot be computed is NaN, not 0.
+
+#### Fixed
+
+- `sp.synth_compare`: the `pre_rmspe` of a method that reports no level
+  fit (synthetic DID) is missing, where it was `inf`, and
+  `n_effective_donors` counts the donors with weight above 0.01 for
+  classic, demeaned, augmented and synthetic DID results. It used to fall
+  back to the size of the donor pool (38 for the Proposition 99 classic
+  fit, which puts weight on 6) or to 0. The column is now a float so that
+  a missing count can be told apart from zero.
+- `sp.synth(method="classic")` warns when the predictors do not determine
+  the donor weights: the treated unit lies inside the convex hull of the
+  donors' predictors, so infinitely many weight vectors fit them exactly.
+  The behaviour was documented under `perfect_fit` and reported in
+  `model_info["in_predictor_hull"]`, but the call was silent. With one
+  covariate and 38 donors it returned 36 non-zero weights and a
+  pre-treatment RMSPE of 11.5 against 1.7 for the outcome-only fit.
+  Estimates are unchanged. The check is one dictionary lookup on the
+  outcome-only path that Track C times, so `scripts/trace_perf_path.py`
+  listed `03_scm` as stale for this file as well; the module was re-timed
+  on 2026-10-10 with the others (see "Track C re-timed" above).
+- `sp.synth(method="augmented").cite()` returns Ben-Michael, Feller and
+  Rothstein (2021), not Abadie, Diamond and Hainmueller (2010).
+
+### Newer scikit-learn, pandas and rdrobust
+
+#### Fixed
+
+- **`sp.RlassoRegressor`, `sp.RlassoClassifier`, `sp.RlassologitClassifier`
+  and the HAL learners work as `sp.dml` learners under scikit-learn 1.7 and
+  later.** These classes follow the estimator contract without inheriting
+  `BaseEstimator`, and scikit-learn 1.7 stopped inferring tags for such
+  classes, so cross-fitting raised `AttributeError: ... has no attribute
+  '__sklearn_tags__'`. They now define the tags (scikit-learn is still not
+  imported by `import statspai`). Estimates are unchanged.
+- `sp.twowayfeweights` raises `DataInsufficient` when the fixed effects
+  absorb the treatment, for example a treatment that never changes within
+  a group. The check compared the residual sum of squares with exactly
+  zero. Rounding leaves about 1e-28 there, so the function returned a
+  coefficient near -4e12 with a standard error near 5e13. The residual
+  variation is now judged against the raw variation of the treatment.
+  Identified designs are unchanged.
+- `sp.logit_gof(groups=)` and `lroc` in `sp.stata` no longer depend on
+  the machine when several rows share a covariate pattern. Rows with the
+  same regressors have the same fitted probability but not always the same
+  floating-point number, and both statistics count ties. On one Apple
+  machine the Hosmer-Lemeshow statistic of the Kohler-Kreuter reference
+  model came out as 4.2335 where Stata and every CI runner give 4.5058.
+  Each pattern now carries one value.
+
+#### Changed
+
+- R `rdrobust` 4.1.1 and the Python port 2.1.1 (both 2026-10-07) changed
+  the bandwidth selector: the stage-1 pilot bandwidth is padded by
+  `1 + sqrt(eps)` and `stdvars` is on by default. The native cascade behind
+  `sp.rdrobust(bwselect='mserd')` still follows releases 3.0.0 to 4.0.0,
+  which the Track A goldens were generated with. With the newer port
+  installed, `bwselect='cct'` therefore reports a bandwidth about 4e-8
+  (relative) away from the native one, where the two used to agree to
+  1e-15. No StatsPAI number changed.
+
+## [1.39.2] — 2026-10-08
+
+One correctness fix. `sp.mswitch` and `sp.mswitch_lrtest` gave results
+that could depend on the unit in which the series was measured. Nothing
+else changes. The JSS manuscript stays anchored to 1.39.1: no artifact it
+tabulates is touched by this release.
+
+### Markov-switching models and the unit of the data
+
+#### ⚠️ Correctness
+
+- **`sp.mswitch` and `sp.mswitch_lrtest` no longer depend on the unit of
+  `y`.** The likelihood of a Markov-switching model changes by a constant
+  when `y` is rescaled, so the maximiser moves with the unit and nothing
+  else should. The search did depend on it: the quasi-Newton step stops
+  on an absolute gradient and starts from the identity metric, so which
+  local maximum a starting value reached varied with the scale of the
+  series. In `sp.mswitch_lrtest` that reached the answer. On white noise
+  with 80 observations, `reps=19` and `starts=3`, multiplying `y` by 0.01
+  sent 4 of the 19 bootstrap replicates to a different local maximum
+  (largest change in a replicate's statistic 5.16) and moved the p-value
+  from 0.20 to 0.15. The search now runs on `y` divided by its standard
+  deviation and the estimates are mapped back. After the change every
+  replicate agrees to 5e-9 across `y`, `100 y`, `0.01 y` and
+  `-2 + 0.01 y`. Estimates on a series whose standard deviation is near
+  one are unchanged to the stopping rule; on a series far from that scale
+  a start can now end at a different, and no lower, local maximum than
+  before. The Stata parity rows of `sp.mswitch` are unchanged. The size
+  and power study of the test was rerun with the new search
+  (`tests/reference_parity/_fixtures/mswitch_lrtest_mc.json`). See
+  `MIGRATION.md`.
+
+#### Added
+
+- `sp.mswitch_lrtest` now carries an evidence grade: its statistic, every
+  bootstrap replicate and its p-value are tested for invariance to the
+  unit of `y`, its null likelihood against the closed form, and its
+  p-value against the exact value under two clearly separated regimes
+  (`tests/reference_parity/test_oct2026_reanchor_known_truth.py`).
+
+## [1.39.1] — 2026-10-08
+
+The release the JSS manuscript is anchored to. It adds collaborative TMLE
+and closes the evidence gap left by the functions added in 1.39.0. No
+estimate, standard error or default of an existing function changes, and
+the two default changes announced for 1.40 are not in it. Every frozen
+artifact the manuscript tabulates was re-derived on this tree: 89 R
+modules, 85 Stata modules and the Python side of all 89 reproduce their
+committed results, as do the original-data ledger, the forest seed
+studies and Track B, with the one stale row noted below. Track C was
+re-timed.
+
+### Collaborative TMLE
+
+#### Added
+
+- **`sp.ctmle`: collaborative TMLE** (the greedy C-TMLE of van der Laan
+  and Gruber). The propensity model is built one covariate at a time for
+  the outcome fit, and cross-validation decides how far to go, so a
+  covariate that drives treatment but not the outcome stays out of the
+  weights. Under weak overlap with such a covariate the root mean squared
+  error of the ATE was 27% below `sp.tmle` with the full propensity model.
+  The order in which covariates enter and the estimate at every step of
+  the sequence equal R `ctmle::ctmleDiscrete` to 5e-9 on six fixtures
+  (`tests/reference_parity/test_ctmle_R_parity.py`). The step that
+  cross-validation selects cannot be compared row by row, because
+  `ctmleDiscrete` ignores its `folds` argument and draws its own random
+  partition; over many partitions and over 200 data sets the two agree in
+  distribution. `penalty='search'` is the reference's default criterion.
+  `order=` gives the pre-ordered ("scalable") variant, linear in the
+  number of candidates; six pre-ordered sequences equal R to 8e-10. `result.detail` lists every step. Three things to know. The
+  influence-function standard error ignores the selection and was 20% to
+  40% too small in simulation, in R as well; `se_method='bootstrap'`
+  reruns the whole procedure and covered 94%. When the outcome model omits
+  a confounder the method brings it into the propensity but is no more
+  accurate than `sp.tmle`. And it is offered for the ATE only: a
+  collaborative ATT was implemented, was biased by 0.17 to 0.20 when the
+  outcome model missed effect heterogeneity, and was withdrawn.
+
+### Evidence for the functions added in the week before the JSS re-anchor
+
+No estimate, standard error or default changes in this section.
+
+#### Added
+
+- **Known-truth tests for fourteen functions that had no evidence row**
+  (`tests/reference_parity/test_oct2026_reanchor_known_truth.py`):
+  `sp.mixture_design`, `sp.sequential_design`, `sp.switchback_design`,
+  `sp.bandit_allocate`, `sp.bandit_experiment`, `sp.contextual_bandit`,
+  `sp.adaptive_inference`, `sp.interference_test`, `sp.mdp_policy_value`,
+  `sp.marginal_policy_effect`, `sp.synth_ttest`, `sp.loo_predict`,
+  `sp.invlogit` and `sp.kfold_split`. Each is checked against a closed
+  form, an exhaustive enumeration, an algebraic identity or a planted
+  effect with a stated Monte Carlo tolerance. Estimator callables with
+  evidence go from 921 of 940 to 935 of 938; `sp.rdmcplot` and
+  `sp.binned_residuals_plot` are plots and leave the denominator. The
+  three without a grade are deliberate: `sp.tvp_var_sv` (a stochastic
+  sampler, screened only), `sp.text_treatment_effect` (experimental) and
+  `sp.mswitch_lrtest` (below).
+
+#### Known issue
+
+- **`sp.mswitch_lrtest` is not exactly invariant to the unit of `y`.**
+  A shift leaves every bootstrap replicate unchanged; a rescaling sends a
+  few of them to a different local maximum. On white noise with 80
+  observations, `reps=19` and `starts=3`, multiplying `y` by 0.01 moved
+  the p-value from 0.20 to 0.15; with the default `starts=10` it stayed at
+  0.20. The observed statistic does not move. Not fixed in this release;
+  see `docs/dev/2026-10-06-neusser-time-series-econometrics-review.md`.
+
+#### Changed
+
+- **Track B.** The thirteen coverage rows, the size and power sweep and
+  the four mechanism experiments were rerun on this tree and reproduce
+  the committed files to the last printed digit, with one exception. The
+  heterogeneous-timing Callaway-Sant'Anna stress row had been recorded
+  before release 1.31.0 and not refreshed: every release from 1.31.0 on
+  gives 954 of 1,000 intervals covering, where the file said 946. The
+  point estimates are identical; the row is inside its documented band
+  either way.
+- **Track C** was re-timed on this tree, and the solver-agreement column
+  of the synthetic-control row prints in scientific notation (three fixed
+  decimals showed a gap of order 1e-6 as `0.000`).
+
+## [1.39.0] — 2026-10-07
+
+Three days of textbook passes: the code or the syllabus of more than twenty
+econometrics, causal-inference, time-series, Bayesian and experimental
+design texts was run against Stata 18 and R, example by example, and
+everything that disagreed was traced to its first point of divergence.
+Each section below is one of those passes, with what was wrong, what was
+missing and the evidence for the fix.
+
+Read `MIGRATION.md` before upgrading. It has 71 entries under
+`1.38.0 → 1.39.0`, most of them marked ⚠️ because a number changes:
+estimators that returned a wrong value on some class of inputs, and a few
+defaults that moved to the convention of the reference implementation.
+Among the widest: every likelihood-based regression now omits a perfectly
+collinear regressor instead of returning an arbitrary point of a flat
+likelihood; `sp.arima` uses the exact diffuse initialisation, so its
+estimates no longer depend on the units of the data; `sp.match` keeps
+every tied match by default.
+
+Two defaults are announced here and change in 1.40, with a
+`DeprecationWarning` until then: `sp.kaplan_meier(conf_type=)` goes from
+`'plain'` to `'log-log'`, and `sp.bayes_regress(prior=)` from a fixed
+`N(0, 1000)` to `'weakly_informative'`. Naming the argument keeps the
+present behaviour for good.
+
+New subpackages: `statspai.mcmc` (Bayesian regression, model comparison,
+leave-one-out, posterior predictive checks, all without PyMC) and
+`statspai.doe` (design of experiments).
+
+
+### `sp.glmnet`: the elastic net with `glmnet`'s conventions; IPW standard errors without the bootstrap
+
+Second round of the Yuksel and Aydede pass: the items the first round left
+as decisions.
+
+#### Added
+
+- **`sp.glmnet`**: lasso, ridge and elastic net for a Gaussian or binomial
+  outcome, on a penalty path, with penalty factors (hence the adaptive
+  lasso) and K-fold cross-validation reporting `lambda.min` and
+  `lambda.1se`. The objective, standardisation, path and cross-validation
+  summaries are those of R `glmnet` / `cv.glmnet`. On five designs and
+  three mixing weights the path agrees with `glmnet` 4.1-10 to 1e-10 and
+  stops at the same length, coefficients agree to 1e-6, cross-validated
+  errors to 1e-4, and the selected penalties are the same grid points
+  (`tests/reference_parity/test_glmnet_r_parity.py`). Written from the
+  paper and the documentation; `glmnet` is GPL and was run as a black box.
+  Four conventions the documentation leaves open were recovered from its
+  output and are documented and tested one by one.
+- **`sp.ipw(se_method='sandwich')` for Horvitz-Thompson and clipped
+  weights.** It used to require `normalize=True` and `trim=0` and send
+  everything else to the bootstrap. The M-estimation variance now covers
+  `normalize=False` and `trim > 0` (a clipped score is held fixed, as it is
+  in the estimator), for the ATE, ATT and ATC. Equal to a numerically
+  differentiated stacked M-estimator to 1e-10 in all twelve combinations.
+
+#### Changed
+
+- **`CausalForest.variable_importance()` defaults to grf's split measure**,
+  as its `FutureWarning` has announced since 1.31. It returned the
+  permutation measure. `method="permutation"` keeps the old numbers;
+  forests grown with `split_rule="legacy"` keep it as their default.
+
+### Yuksel and Aydede, *Causal Inference and Machine Learning*: DML-DiD, full matching, gsynth with several treated units
+
+A pass over the causal chapters of the book against the R packages it
+uses. Experiments, regression adjustment, nearest-neighbour and caliper
+matching, weighting, PLR / PLIV with `rlasso`, `rdrobust`, synthetic DiD
+and augmented synthetic control already reproduced the references to 1e-9
+or better. What follows is what did not, and what was missing. Guide:
+`docs/guides/yuksel_aydede_causal_ml.md`; notes:
+`docs/dev/2026-10-07-yuksel-aydede-causal-ml-review.md`.
+
+#### ⚠️ Correctness
+
+- **`sp.gsynth(covariates=...)` estimated the covariate coefficients by a
+  pooled regression of the outcome on the covariates alone**, with no
+  intercept, unit effects, period effects or factors, on pre-treatment
+  control rows. When a covariate is correlated with the unit effects or the
+  loadings, as in the example data of R `gsynth`, the counterfactual was
+  biased: 6.68 for one treated unit of those data, where `gsynth` gives
+  5.70. The coefficients are now estimated inside the interactive fixed
+  effects model of the never-treated units (Xu 2017), and the function
+  reproduces `gsynth` to 1e-12 with 0 to 3 factors. Calls without
+  covariates are unchanged to the last digit.
+- **`sp.aipw` reported `n_propensity_clipped = 0` whatever happened.** The
+  scores were clipped to [0.01, 0.99] once inside the propensity fit and
+  counted afterwards, so the count was always zero and the warning attached
+  to it never fired. On the book's design 538 of 20,000 scores were being
+  clipped. The count is now right, a warning is issued when it is not
+  zero, and the bound is the new argument `trim` (default 0.01, so
+  estimates are unchanged). `trim=0` applies no clipping and reproduces the
+  textbook formula.
+
+#### Added
+
+- **`sp.dml_did`**: double machine learning difference-in-differences for
+  two periods, on a panel (outcome change, or long form with `time` and
+  `id`) or on repeated cross-sections. Doubly robust score of Sant'Anna and
+  Zhao (2020); `in_sample_normalization=False` is the score of Chang
+  (2020). `score='experimental'` for randomised designs. With the same
+  folds and learners, estimates and standard errors equal Python
+  `DoubleML`'s `DoubleMLDID` and `DoubleMLDIDCS` to 1e-15 in all eight
+  configurations of each.
+- **`sp.full_match`, and `sp.match(method='full')`**: optimal full
+  matching (Rosenbaum 1991; Hansen 2004). Every unit is used. Solved
+  exactly as a minimum-cost edge cover; on 40 small problems it equals the
+  optimum found by enumeration, and its total distance is never above
+  `optmatch`'s. Weights for the ATT, ATC or ATE, a balance table, and the
+  matched-set-clustered standard error that `MatchIt` prescribes (equal to
+  `lm` + `sandwich::vcovCL` to 1e-9 given the same sets).
+- **`sp.gsynth(treat=...)`**: a 0/1 treatment column in place of
+  `treated_unit` / `treatment_time`, for several treated units and
+  staggered adoption. A list of treated units is also read. Effects by
+  period since adoption in `detail`; number of factors by the
+  leave-one-period-out criterion of Xu (2017); `inference='parametric'`
+  (the bootstrap of the paper) or `'nonparametric'`. `sp.synth(method=
+  'gsynth', treatment=...)` reaches it.
+- **`CausalForest.average_treatment_effect(subset=)`** and the same
+  argument of `sp.average_treatment_effect`: grf's `subset`, for all four
+  targets, with clusters and with `equalize_cluster_weights`. Equal to grf
+  to 1e-14 on grf's own forest outputs.
+- **`sp.metalearner(outcome_model=(control, treated))`** and, for the
+  X-learner, `cate_model=(control, treated)`: a different learner in each
+  arm.
+- **`sp.dml(fold_indices=...)` reads scikit-learn splits**, a list of
+  `(train, test)` index pairs, when the test sets partition the rows and
+  each training set is its complement.
+
+#### Fixed
+
+- `sp.causal_forest(data=, y=, d=, x=[...])` refused a text or `category`
+  column that the formula interface accepted. Both now expand it to one
+  indicator per level.
+- `effect()` and `predict()` of a forest fitted on a categorical column
+  asked for the indicator columns by name. They are rebuilt from the raw
+  column; a level not seen at fit time is an error.
+- `sp.dml(fold_indices=[(train, test), ...])` failed inside NumPy with
+  "inhomogeneous shape".
+- `sp.gsynth` with a list of treated units is no longer refused.
+
+### Interference, adaptive experiments and balancing in high dimensions
+
+A pass over Wager, *Causal Inference: A Statistical Learning Approach*
+(draft of September 2026). The book has no code, so each chapter was read
+as a syllabus: every estimator it defines was looked up in StatsPAI and
+run against a design with a known answer, and against the R package of
+the method's authors where one exists. Chapters 1 to 5, 8, 13 and 14 were
+already covered and checked out. Review in
+`docs/dev/2026-10-07-wager-causal-inference-review.md`, guide in
+`docs/guides/wager_causal_inference.md`.
+
+#### ⚠️ Correctness
+
+- **`sp.network_exposure` returned unusable estimates on networks with
+  uneven degree.** Exposure probabilities were simulated (2,000 draws)
+  and floored at 0.001 even though they have a closed form under
+  Bernoulli assignment, and the variance summed `Y_i^2 (1 - pi_i) /
+  pi_i^2` over *all* units, including those not observed at the exposure
+  level, with no covariance between units that share a neighbour. On a
+  400-node network with degrees up to 10 the mean outcome with no
+  treated neighbour was 8.60 against a true 7.03 and its reported
+  standard error was 98 against a sampling spread of 6. The function now
+  uses exact probabilities, reports the self-normalised (Hajek) mean by
+  default (`estimator='ht'` keeps Horvitz-Thompson) and estimates the
+  variance over the dependency graph of the design, with the positive
+  semidefinite adjustment that makes it conservative
+  (`variance='hac_psd'`, default; `'hac'` is the unadjusted form).
+  Contrasts carry the covariance between the two exposure means. On the
+  same network the Hajek contrast now has a spread of 0.5 instead of 6
+  and its interval covers at 93 to 97%. Units that cannot receive some
+  exposure level (no neighbours) are excluded with a warning, and
+  `min_prob=` restricts to units with adequate overlap. The registry no
+  longer advertises mappings and designs that were never implemented.
+- **`sp.iv.mte` weighted the effect on the treated and on the untreated
+  by the wrong distribution.** The weights were built from the
+  propensity scores of the treated (or untreated) units only. The
+  treated are the units whose resistance is below their propensity, so
+  every unit contributes in proportion to its propensity. With a linear
+  marginal effect `2 - 2u` the function returned an ATT of 1.22 and an
+  ATU of 0.73 against true values of 1.30 and 0.63. Both are now exact
+  linear functions of the fitted coefficients. The ATE was right.
+- **`sp.iv.mte` standard errors ignored the covariance between
+  polynomial coefficients**, which is large and negative. The ATE
+  standard error was 0.075 where the sampling spread was 0.024. Standard
+  errors are now heteroskedasticity-robust with the full covariance, and
+  are reported for the ATT and ATU as well (`extra['att_se']`,
+  `extra['atu_se']`). They treat the fitted propensity score and the
+  covariates as given; `bootstrap=` includes both.
+- **`sp.iv.mte(bootstrap=)` paired outcomes with other units'
+  instruments** whenever trimming removed a row, because the outcome was
+  trimmed and the instrument was not. The bootstrap standard errors
+  were then meaningless (hundreds of thousands on a unit-scale outcome).
+  The bootstrap now resamples the data as supplied and repeats the
+  trimming.
+
+#### Added
+
+- **`sp.interference_test`**: randomization tests on a network. Tests
+  that treatment affects no one, or that there are no spillovers, by
+  holding the treatments of a set of focal units fixed and permuting the
+  rest. Exact in finite samples for any statistic; all assignments are
+  enumerated when there are few enough.
+- **`sp.bandit_allocate`, `sp.bandit_experiment`**: Thompson sampling,
+  upper confidence bounds and epsilon-greedy allocation for multi-armed
+  experiments, with a probability floor, batching and Gaussian or
+  Bernoulli rewards. Thompson probabilities are computed by quadrature,
+  not by simulation, so the recorded assignment probabilities are exact.
+- **`sp.adaptive_inference`**: confidence intervals for arm means and
+  contrasts after an adaptive experiment. The sample mean is biased
+  downwards and not normal under Thompson sampling (its 95% interval
+  covered 87 to 91% in our runs). Weighting by the inverse square root
+  of the assignment probability restores normality; with a 2%
+  probability floor the interval covers 95.5%. An augmented variant with
+  running-mean plug-ins is available as `method='aipw'`.
+- **`sp.residual_balance`**: approximate residual balancing for average
+  treatment effects with more covariates than a propensity model can
+  carry. Weights minimise the worst covariate imbalance and are applied
+  to the residuals of an elastic-net outcome model. The weights agree
+  with the authors' R package `balanceHD` to 1e-6, which is the accuracy
+  of its quadratic-programming path (our objective value is the lower
+  of the two at every configuration tried). With 150 covariates and 300
+  units the estimate is unbiased and its interval covers 93%, where pure
+  weighting is biased by a full standard error.
+
+- **`sp.rd_optimized`** (also `sp.rd(method='optimized')`): sharp
+  regression discontinuity with minimax-optimal linear weights under a
+  bound on the second derivative (Imbens and Wager 2019). The weights
+  come from a least-squares problem with box constraints instead of a
+  kernel, the worst-case bias is computed exactly for the weights used,
+  and the interval is bias-aware as in `sp.rd_honest`. It works with a
+  discrete running variable. Against the authors' R package `optrdd` the
+  estimate is within 0.008 standard errors and the worst-case bias within
+  0.3% (two discretisations of the same programme). On the Lee election
+  data the interval half-length is 2.996 against 3.002 for local linear
+  regression, the small gain theory predicts for a continuous running
+  variable.
+
+- **`sp.mdp_policy_value`**: the long-run average outcome under a policy
+  in a Markov decision process, from one trajectory collected under
+  randomized actions. Doubly robust in the excess-reward function and
+  the ratio of stationary state distributions, so its error does not grow
+  with the horizon. On a four-state process with known tables it is
+  unbiased with 95.5% coverage; with one indicator per state it equals
+  the stationary average of the fitted transition model to 1e-10.
+- **`sp.marginal_policy_effect`**: what removing a small share of the
+  treatments that occur would do to the long-run average outcome,
+  identified when part of the state is hidden. Doubly robust with HAC
+  standard errors; 97% coverage on a design with a hidden autoregressive
+  state.
+- **`sp.contextual_bandit`**: linear Thompson sampling, LinUCB and
+  epsilon-greedy with covariates. Assignment probabilities are exact, so
+  inverse-probability weighting afterwards is unbiased.
+- **`sp.interference_test(null='anonymous' | 'no_higher_order')`**: the
+  two richer hypotheses of the hierarchy. Spillovers depend only on the
+  share of treated neighbours, or only on a unit's own and its
+  neighbours' treatments.
+- **`sp.network_exposure(design='complete')`**: a fixed number treated,
+  with hypergeometric exposure probabilities. It used to raise
+  `NotImplementedError`.
+- **`sp.rd_optimized(fuzzy=)`**: fuzzy designs, with an Anderson-Rubin
+  bias-aware interval that stays valid when the jump in treatment is
+  small.
+- **`sp.doubly_robust(n_folds=)`**: optional cross-fitting of the outcome
+  forest. The default is unchanged.
+
+#### Changed
+
+- **`sp.metalearner(learner='r' | 'dr')`: the default final-stage model
+  requires 20 observations per leaf.** Both learners regress a
+  heavy-tailed pseudo-outcome on the covariates. The default gradient
+  boosting had no minimum leaf size, so it isolated extreme
+  pseudo-outcomes and returned them as conditional effects. On a
+  2,000-unit design with true effects between -1.5 and 3.8 the fitted
+  effects reached -24 and +27, and their root-mean-square error was 0.76
+  (R) and 1.01 (DR) where a constant scores 1.03. With the minimum leaf
+  size it is 0.46 and 0.59. Average effects, their standard errors and
+  every result with an explicit `cate_model=` are unchanged. The S-, T-
+  and X-learners are unchanged.
+- `sp.ltmle(...).summary()` labels the two regimes by their treatment
+  values, or as dynamic, in place of a fixed `E[Y(1,...,1)]`.
+- `sp.gformula_ice_fn`: the documentation said a callable strategy
+  receives the covariate history. It receives the time index. The text
+  now says so and points to `sp.ltmle` for history-dependent regimes.
+
+### Targeted learning after Schuler and van der Laan's *Modern Causal Inference*
+
+The book has no data and no code. It was audited as a description of what
+a plug-in, a one-step estimator and a TMLE must satisfy, and `sp.tmle` was
+checked against those properties, against known truth, and against R
+`tmle` 2.1.1. Review: `docs/dev/2026-10-07-schuler-vanderlaan-review.md`.
+Guide: `docs/guides/schuler_vanderlaan_modern_causal_inference.md`.
+
+#### ⚠️ Correctness
+
+- **`sp.tmle(estimand=...)` returned the ATT for every string other than
+  `'ATE'`**, and labelled the result with the string it was given.
+  `estimand='ate'` gave the ATT under the name `ate`; so did `'ATC'`,
+  `'RR'` or a typo. The argument is now validated and case-insensitive.
+  Results from `estimand='ATE'` and `estimand='ATT'` spelled exactly so
+  were not affected.
+
+#### Added
+
+- **`sp.tmle(estimand='ATC' | 'EY1' | 'EY0' | 'RR' | 'OR')`.** The effect
+  among the controls (the ATT computation with the arms relabelled), the
+  two treatment-specific means, and the marginal risk ratio and odds
+  ratio, each with influence-function inference; the ratio intervals are
+  built on the log scale. `result.detail` lists every
+  parameter whenever each arm is targeted (`fluctuation='per_arm'`, the
+  default for these estimands). With shared initial fits the means, the
+  difference, the risk ratio and the odds ratio agree with R `tmle` to
+  1e-11 in estimate, variance, interval and p-value, with and without
+  observation weights and clusters
+  (`tests/reference_parity/test_tmle_parameters_R_parity.py`). Two
+  documented differences. R's influence curve for the log odds ratio is
+  not centred, which inflates its variance when observation weights vary
+  (0.3% to 2% on the fixture); ours is centred and the test rebuilds R's
+  number from it. R's ATT and ATC are a different TMLE of the same
+  parameter (it also updates the propensity, on a trimmed sample); they
+  are within 0.02 standard errors of ours, and the ATT numbers are
+  unchanged by this release.
+- **`model_info['influence_function']` on every `sp.tmle` result**: the
+  per-row efficient influence function at the targeted fit. Its mean is
+  zero to Newton tolerance, which is the equation targeting solves.
+- **`sp.tmle(g1W=0.5)`, `sp.aipw(propensity=)` and `sp.ipw(propensity=)`**
+  take a known treatment probability, one number or a column of design
+  probabilities, for randomised trials. No propensity model is fitted and
+  nothing is clipped. For `sp.ipw` the sandwich drops the first-stage
+  term; with one probability for everyone the estimate is the difference
+  in means and the standard error its HC0 one.
+- **`sp.tmle(se_method='bootstrap', n_boot=)`.** The influence-function
+  standard error treats the nuisance fits as known and is too small when
+  propensities approach 0 or 1. With 9% of the true propensities outside
+  [0.025, 0.975], its 95% interval covered the ATE 91% of the time and the
+  ATT 81%. No truncation level repaired that (0.74 to 0.87 for the ATT
+  across the bounds tried). Refitting everything on resamples of the rows gave
+  92% and 90%. The bootstrap resamples whole clusters with `cluster=`,
+  covers every row of `result.detail`, and keeps the analytic values in
+  `model_info['se_influence']`. The weak-overlap warning now points to it.
+- **`sp.aipw(outcome_model='logit' | 'probit' | 'poisson')`.** The
+  per-arm outcome regression can be a logit, a probit or a Poisson
+  regression fitted by maximum likelihood, the `logit`, `probit` and
+  `poisson` outcome models of Stata `teffects aipw`. With `cross_fit=False, se_method='sandwich'` the ATE,
+  both potential-outcome means and their standard errors agree with Stata
+  18 to 4e-9, plain, clustered and with sampling weights
+  (`tests/reference_parity/test_aipw_outcome_models_stata_parity.py`). A
+  linear model for a rare binary outcome predicts negative risks; the
+  logit does not.
+- **`se_method='bootstrap'` also works with `fold_indices`** (CV-TMLE):
+  every copy of a resampled row keeps that row's fold. `sp.hal_tmle`
+  accepts every estimand of `sp.tmle`.
+- **`sp.tmle(weights=)` with `estimand='ATT'` / `'ATC'`.** Previously
+  refused. Every empirical mean, the treated share included, becomes a
+  weighted one. Integer weights reproduce row replication to 1e-9.
+- **`sp.causal_gap`**: the critical causal gap of the book's section 2.3.
+  Given an estimate and its interval, the smallest difference between the
+  statistical and the causal estimand at which the interval reaches the
+  null or a threshold of practical interest, on the difference or the
+  ratio scale, with the curve of the implied causal estimate over
+  hypothetical gaps.
+
+### Design of experiments, second round
+
+Review: `docs/dev/2026-10-07-joseph-experimental-design-review.md`.
+
+#### Added
+
+- **`sp.factor_importance`**: model-free ranking and selection of
+  regressors by total Sobol' index, estimated from nearest neighbours
+  (FIRST, Huang and Joseph 2025). Equal to R `first::first` to 1e-10 on
+  numeric data. For a set of categorical factors only it uses the
+  variance within each cell where the reference takes arbitrary tied
+  neighbours.
+- **`sp.space_filling(qualitative=)`**: factors without an order,
+  balanced over the runs, with the mixed-factor MaxPro criterion (equal to
+  R `MaxPro::MaxProMeasure` to 1e-12).
+- **`sp.factorial_design`** also builds Plackett-Burman designs (12, 20,
+  24 runs), regular fractions at 3, 5 and 7 levels, and the orthogonal
+  array L18. The minimum-aberration search is compiled and covers up to 15
+  factors in 32 runs and 12 in 64 (it stopped at 9).
+- **`sp.sequential_design(criterion='alc')`** for `goal='emulate'`.
+
+#### Changed
+
+- **`sp.sobol_indices` defaults to `estimator='saltelli'`**, computed on
+  centred outputs. Released code never had the other default: the
+  function is new in this cycle. With 512 Sobol' points on the borehole
+  function its error for inert inputs is 0.0001 against 0.009 for
+  Jansen's estimator, at the cost of 0.008 against 0.005 for the dominant
+  input. `estimator='jansen'` is unchanged.
+
+### Design of experiments: `statspai.doe`
+
+From a pass over V. Roshan Joseph, *Experimental Design for Data Science
+and Engineering* (2025). Review: `docs/dev/
+2026-10-07-joseph-experimental-design-review.md`. Guide: `docs/guides/
+design_of_experiments.md`.
+
+#### Added
+
+- **`sp.factorial_design`**: full factorials for factors with any number
+  of levels and two-level fractions `2^(k-m)`, from generators or by a
+  minimum-aberration search, with defining relation, resolution, word
+  length pattern and alias structure. The word length patterns equal those
+  of R `FrF2` for 17 design sizes from 8 to 64 runs.
+- **`sp.factorial_effects`**: effects of a two-level factorial, with
+  Lenth's pseudo standard error, margins of error and p-values for designs
+  without replication, and a half-normal plot. The null distribution is
+  simulated, as in Lenth's R package `unrepx`; the t approximation of the
+  1989 paper (`reference='t'`) flags 2.1% of null effects at a nominal 5%
+  with seven effects. Aliased terms are detected and listed.
+- **`sp.design_aberration`**: generalized word length pattern of any
+  factorial design, regular or not, mixed levels included (R
+  `DoE.base::GWLP`, equal to 1e-10).
+- **`sp.mixture_design`**: simplex-lattice, simplex-centroid and
+  space-filling designs for factors that are shares.
+- **`sp.doe_optimal`**: D-, A- and I-optimal designs for a linear model
+  given by a formula, a nonlinear model with parameters in braces (locally
+  optimal, or averaged over a prior) and logit / Poisson responses.
+  Approximate designs carry the equivalence-theorem bound on their
+  efficiency; exact designs their efficiency relative to the approximate
+  optimum. The closed-form designs for polynomial, exponential and
+  logistic models are recovered, and two exact designs have the criterion
+  value of R `AlgDesign::optFederov`.
+- **`sp.space_filling`**, **`sp.design_augment`**,
+  **`sp.design_criteria`**: maximum projection, maximin and uniform Latin
+  hypercubes, random Latin hypercubes, scrambled Sobol' and Halton points;
+  greedy augmentation of an existing design, also on a constrained region;
+  and the measures by which such designs are compared. Criteria equal R
+  `SFDesign` to 1e-12 and augmentation picks the runs of
+  `MaxPro::MaxProAugment`. The search itself is stochastic: its designs
+  score on par with or better than `SFDesign`'s, which is a screen and not
+  a parity claim.
+- **`sp.sobol_indices`**, **`sp.morris_screening`**: global sensitivity
+  analysis of a model's inputs. First-order and total Sobol' indices with
+  bootstrap intervals, and elementary-effects screening. Equal to R
+  `sensitivity` from the same runs (for `soboljansen` after its `2n - 1`
+  divisor is undone; the paper divides by `2n`).
+- **`sp.support_points`**, **`sp.split_data`**: the `n` points that best
+  represent a sample or a distribution in energy distance, and a train /
+  test split in which the test set has the joint distribution of the data
+  (SPlit, or twinning for large data). Twinning returns the rows of R
+  `twinning::twin` from the same start.
+- **`sp.sequential_design`**: Bayesian optimisation by expected
+  improvement, or active learning of a whole surface, with a Gaussian
+  process surrogate.
+- **`sp.gp_regress(interpolate=True)`** for noise-free outcomes,
+  **`likelihood='ml'`** for the profile likelihood, and
+  **`GPResult.expected_improvement()`**.
+
+#### ⚠️ Correctness
+
+- **`sp.gp_regress` could return a fit that reverts to the mean between
+  the data points.** When the length scale is far below the spacing of the
+  data, the marginal likelihood does not depend on it and has zero
+  gradient. An optimiser that steps into that region stays there, and the
+  default start plus the random restarts could all end in it. On ten sites
+  observed twice with noise the function returned a length scale of 0.0014
+  with log likelihood -1.2447, where the maximum is at 0.048 with -1.2107
+  (the value R `rkriging` finds), and predictions between the sites were
+  off by up to 0.79 on a function of range 1.5. The likelihood is now
+  scanned over a coarse grid of length scales and noise shares first, and
+  the best two grid points are added as starts. Fits that were at the
+  maximum already are unchanged. A fit whose length scale is below a
+  quarter of the smallest gap in the data now says so in a note.
+
+### The regression workflow of Gelman, Hill and Vehtari: priors on the scale of the data, predictive checks, leave-one-out
+
+A pass over *Regression and Other Stories* (2020) and its companion
+*Active Statistics* (Gelman and Vehtari, 2024), whose examples are written
+around `rstanarm::stan_glm`, `loo` and `arm`. Thirty-three of the book's
+classical fits were rerun against R `lm` / `glm` / `MASS` / `AER`, and the
+Bayesian workflow against `rstanarm` 2.32.2 and `loo` 2.9.0. Review in
+`docs/dev/2026-10-07-gelman-vehtari-active-statistics-review.md`, guide in
+`docs/guides/regression_and_other_stories.md`.
+
+#### ⚠️ Correctness
+
+- **Perfectly collinear regressors were handed to the optimiser by every
+  likelihood-based estimator except `sp.regress`.** `sp.logit`,
+  `sp.probit`, `sp.cloglog`, `sp.glm`, `sp.poisson`, `sp.nbreg`,
+  `sp.ologit`, `sp.oprobit`, `sp.mlogit`, `sp.tobit`, `sp.qreg` and
+  `sp.svydesign(...).glm` returned one arbitrary point of a flat
+  likelihood: coefficients of order 1e13 from `sp.glm` and `sp.nbreg`,
+  standard errors of exactly zero from `sp.probit` and the ordered
+  models, of order 1e6 from `sp.logit`, `nan` from the survey
+  regression, in several cases with no warning at all. The trigger is
+  the most common specification mistake there is: every indicator of a
+  category next to the constant. The book's child care example does it
+  twice in one propensity score model. These estimators now omit the
+  later member of each dependent set, as Stata does and as R reports with
+  `NA`, announce it (`note: white omitted because of collinearity`) and
+  list it in `model_info['omitted']`. The shared step is
+  `core/_collinear.py`. Fits on full-rank designs are unchanged.
+- **`sp.logit` and `sp.glm(family='binomial')` could stay silent under
+  complete separation.** The detector required 99 percent of the fitted
+  probabilities to lie within 0.01 of the boundary. With sixty
+  observations one point near the separating threshold was enough to
+  silence it while the slope reached 1,412. Any fit whose linear index
+  classifies every observation correctly now raises the
+  `ConvergenceWarning`, as does one with fitted probabilities equal to 0
+  or 1 to machine precision (the event R warns about). `sp.glm` had no
+  check at all and now shares it.
+- **A true / false outcome written in the formula failed everywhere.**
+  `"(earn > 0) ~ height + male"`, the book's way of writing the first part
+  of a two-part model, raised an `IndexError` in `sp.logit` and
+  `sp.probit` and a shape error in `sp.regress`, `sp.glm` and
+  `sp.bayes_regress`, because the formula parser codes a logical term as
+  two columns. It is now one 0 / 1 outcome.
+- **`factor(y) ~ x` in `sp.ologit` / `sp.oprobit` / `sp.mlogit`** (the
+  spelling R's `polr` requires) failed with `Ordered model requires J >=
+  3 categories, got 2` or a `KeyError`. The wrapper is now read as the
+  bare outcome.
+- **`sp.bayes_regress(model='mlogit').predict(new_data)`** raised "the
+  new data lack the regressors" for a formula of plain columns.
+
+#### Added
+
+- **`sp.bayes_regress(prior='weakly_informative')`**: independent normal
+  priors scaled to the data, the default of `rstanarm` (slope standard
+  deviation `2.5 sd(y) / sd(x)`, intercept `N(mean(y), 2.5 sd(y))` with
+  the regressors centred, `sigma ~ Exponential(1 / sd(y))`), for the
+  normal, logit, probit, Poisson and negative binomial models. Results
+  no longer depend on the units of the regressors. The scales match
+  `prior_summary()` to nine digits and each sampler matches its exact
+  posterior on a grid. Also `offset=` and `exposure=` for logit and
+  count models.
+- **Predictive methods on every `sp.bayes_regress` fit**:
+  `posterior_linpred`, `posterior_epred`, `posterior_predict` and
+  `log_lik`, each returning draws by observations, for all eleven
+  likelihoods and for `sp.bayes_shrink`.
+- **`sp.loo`, `sp.waic`, `sp.kfold`, `sp.loo_compare`, `sp.loo_predict`,
+  `sp.psis`, `sp.kfold_split`**: expected log predictive density by
+  Pareto smoothed importance sampling, with the draw-dependent
+  reliability threshold of Vehtari et al. (2024). Given the same
+  log-likelihood matrix the pointwise values, Pareto shapes and
+  comparison match R `loo` 2.9.0 to 1e-9; on the conjugate normal model
+  they match exact leave-one-out. They accept any draws-by-observations
+  matrix, so a PyMC trace works too.
+- **`sp.ppc`** (posterior predictive checks with a test statistic),
+  **`sp.bayes_r2`** and **`sp.loo_r2`** (Gelman, Goodrich, Gabry and
+  Vehtari 2019; the operator matches `rstanarm::bayes_R2` to 1e-9 and
+  extends to count models), **`sp.mad_sd`**.
+- **`sp.bayes_shrink(prior='horseshoe')`** with `global_scale=` or the
+  `p0=` calibration of Piironen and Vehtari (2017); Gibbs sampler of
+  Makalic and Schmidt (2016), checked against the exact posterior.
+- **`sp.retrodesign`**: power, type S error and exaggeration ratio
+  (Gelman and Carlin 2014) in closed form. With `dof=` the test is a
+  t-test and the answer is exact for it; `method='shifted'` reproduces
+  the published approximation.
+- **`sp.binned_residuals`**, **`sp.binned_residuals_plot`** and
+  **`sp.standardize`** (centre and divide by two standard deviations,
+  Gelman 2008), equal to `arm::binned.resids` and `arm::rescale` to 1e-8
+  or better; **`sp.invlogit`**.
+- **`sp.poststratify`**: population-weighted average of cell predictions,
+  draw by draw for a Bayesian fit, overall and by subgroup.
+- **`sp.glm`**: `link='robit(dof)'` (Student-t link, Liu 2004; equal to R
+  `glm` with a user-defined link), `family='quasipoisson'` /
+  `'quasibinomial'`, and grouped binomial outcomes written
+  `cbind(successes, failures) ~ x`.
+- **`y ~ .`** in any formula entry point: the dot stands for every other
+  column.
+- **`sp.bayes_regress(model='ologit')`**, the ordered logit of
+  `sp.ologit` and R `polr`, and **grouped binomial data** in
+  `model='logit'` through `trials=` or an outcome written
+  `cbind(successes, failures)`. Both checked against grid posteriors.
+- **`sp.bayes_shrink(prior='horseshoe', slab_scale=, slab_df=)`**: the
+  regularized horseshoe of Piironen and Vehtari (2017), checked against
+  the exact posterior.
+- **`sp.binned_residuals(band='model')`**: a band from the fitted
+  probabilities that does not collapse where the outcome hardly varies.
+- **`sp.bayes_shrink(prior='horseshoe', family='logit')`**: the horseshoe,
+  plain or regularized, for a binary outcome, by Polya-Gamma Gibbs
+  sampling (Polson, Scott and Windle 2013). It stays finite where too
+  many regressors separate the outcome and maximum likelihood has no
+  solution. Checked against the exact posterior; the Polya-Gamma draws
+  against their exact moments and series representation.
+
+#### Changed
+
+- **The logit, Poisson, negative binomial and multinomial logit models of
+  `sp.bayes_regress` mix three to five times better.** Four draws in
+  five now come from an independence proposal centred at the posterior
+  mode, the rest from the random walk used before. Effective sample size
+  per 4,000 draws went from about 400 to 1,260 and 1,830 on the book's
+  roaches and wells examples. The posterior is the same; the draws for a given seed
+  are different numbers.
+- **The default prior of `sp.bayes_regress` is scheduled to change in
+  1.40** to `prior='weakly_informative'` for the normal, logit, probit,
+  Poisson and negative binomial models. Until then an unnamed `prior`
+  with default `prior_mean` and `prior_var` gives the same numbers as
+  before and a `DeprecationWarning`. See MIGRATION.
+
+#### Fixed
+
+- `sp.nbreg` with absorbed fixed effects reported one fixed-effect
+  parameter too many when an indicator was omitted for collinearity.
+
+### `sp.callaway_santanna(balance=)`: the three rules for an unbalanced panel
+
+#### Added
+
+- **`balance='pair' | 'full' | 'none'`**, named after the `bal()` settings
+  of Stata `csdid` 2.0.0. `'full'` drops every unit not observed in all
+  periods before estimating and warns with the count. That is the default
+  of R `did` and of `csdid` 2.0.0, and it reproduces R `did` 2.5.1 to
+  2e-9 on the unbalanced panels tried (`tests/reference_parity/
+  test_cs_balance_full_did_parity.py`). `'none'` is
+  `allow_unbalanced_panel=True`. `'pair'` is what the function has always
+  done on such a panel and stays the default, so no existing number
+  changes: it keeps a unit in every cell where both of its periods are
+  observed, and in `tests/reliability/unbalanced_panel.py` it covers at
+  the nominal rate where `'full'` would discard most units.
+  `model_info['balance']` records the rule, and the unbalanced-panel
+  warning now names all three.
+
+### Weighted Callaway-Sant'Anna on repeated cross-sections
+
+#### ⚠️ Correctness
+
+- **`sp.aggte` standard errors after `sp.callaway_santanna(panel=False,
+  weights=...)` left the weights out of the cohort-share term.** An
+  aggregate that mixes cohorts carries the influence of the estimated
+  cohort shares (R `did:::wif`), which under weights is built from
+  `w_i * 1{G_i = g}`. The repeated-cross-section route, which also serves
+  `allow_unbalanced_panel=True`, did not pass the weights on, so that
+  term used head counts while the shares used weight mass. Every
+  ATT(g, t), its standard error and every point estimate were right. The
+  standard errors of the simple, event-study, calendar and group-overall
+  aggregates, and the headline standard error of the fit, were off by up
+  to 1.2e-4 in relative terms on the county panel used to find it. They
+  now match R `did` 2.5.1 to 1e-10. Balanced panels and unweighted fits
+  did not change.
+  Found in a three-way run against Stata `csdid` 2.0.0 (pre-release) and
+  R `did` 2.5.1, more than 13,000 rows on which those two agree to 2e-9; the
+  regression test is
+  `tests/reference_parity/test_cs_rc_weighted_aggte_did_parity.py`.
+
+### Matched observational designs: matching on two criteria, sensitivity analysis beyond pairs
+
+A pass over Rosenbaum, *An Introduction to the Theory of Observational
+Studies* (2025) and the three R packages it uses (`iTOS` 1.0.3,
+`weightedRank` 0.7.0, `tightenBlock` 0.1.7). Before it, StatsPAI could bound a
+matched-pair analysis (`sp.rosenbaum_bounds`) and match one-to-one by total
+distance (`sp.optimal_match`). The book's designs are matched sets with
+several controls, built with fine balance, and its analyses put most of the
+weight on the sets where an effect can be seen. No existing estimate
+changes. The comparisons below were run on the book's data and are pinned
+in the test suite on simulated data of the same shape, since the book's
+data are not redistributed. Review in `docs/dev/2026-10-06-rosenbaum-itos-review.md`, guide in
+`docs/guides/observational_block_designs.md`.
+
+#### Added
+
+- **`sp.weighted_rank`**: sensitivity analysis for block designs (matched
+  sets with one or more treated individuals per set) with weighted rank
+  statistics. Stratified Wilcoxon, Quade, the U-statistic weights `u868` /
+  `u878` / `u888` / `u858` / `mixed` or any `(m, m1, m2)`, custom within-set
+  scores, the gap in place of the range. Returns the bound on the p-value at
+  each `gamma`, the `gamma_critical` at which it crosses `alpha` (solved, not
+  read off a grid), and with `estimates=True` the bounds on the
+  Hodges-Lehmann estimate and confidence interval. A list of `phi` gives the
+  adaptive test that pays for choosing among weights. `conditional=True`
+  gives the test on extreme responses. Equals `weightedRank::wgtRank`,
+  `dwgtRank`, `gwgtRank`, `gwgtRankC` and `wgtRanktt` to 1e-9 or better on
+  the book's data, and `wgtRankCI` to the 1e-5 that function solves to.
+- **`sp.weighted_rank_power`**: jackknife estimate of the power of such an
+  analysis from pilot data. Equals `weightedRank::estPower` at
+  `ssratio = 1`. For other ratios `estPower` 0.7.0 divides the bounding
+  standard deviation by the ratio where its square root belongs; a
+  simulation in the tests shows the square root tracks the true power and the
+  ratio does not (estimated power 0 where the truth is 0.2 to 0.9).
+- **`sp.rosenbaum_stratified`**: Rosenbaum bounds for strata of any size and
+  composition, with the separable approximation and the Taylor bound that
+  does not depend on it; in a single stratum the worst case is searched
+  directly. Scores can be overall ranks, within-stratum ranks, aligned ranks
+  or the outcome. The moments come from Fisher's noncentral hypergeometric
+  distribution computed exactly. Equals `senstrat(method="RK")` and
+  `sen2sample` to 1e-9.
+- **`sp.noether_test`**, **`sp.evidence_factors`**, **`sp.truncated_product`**,
+  **`sp.amplify`**: the sign test on the largest pair differences with its
+  exact bound, two evidence factors from a design with two control groups,
+  the truncated product of p-values (Fisher's method at `trunc=1`), and the
+  amplification of `Gamma` into two odds ratios.
+- **`sp.two_criteria_match`**: optimal matching by minimum-cost flow with one
+  distance for pairing and another for balance. Fine and near-fine balance,
+  near-exact matching, symmetric and directional calipers, rank-based
+  Mahalanobis distance, 1:k matching, a cost for using a control, and
+  optimal subset matching. The solver is a compiled successive-shortest-path
+  routine. On the book's largest match (206 treated, 3,919 controls) it takes
+  half a second and reaches the value an LP solver reaches. `iTOS::makematch`
+  truncates every cost to an integer before solving (inside
+  `rcbalance::callrelax`); on truncated costs the two optimal values are the
+  same number, and on the costs as given the StatsPAI match is the cheaper
+  one (268.1 against 326.8).
+- **`sp.tighten_blocks`**: tightens a block design into smaller or fewer
+  blocks balanced on further covariates, with controls kept in their block.
+- **`sp.balance_vs_randomization`**: balance of a matched sample set against
+  simulated completely randomized experiments on the same individuals.
+- 25 bibliography entries, each checked against the Crossref API and
+  OpenAlex (refs verified via Crossref, OpenAlex and doi.org content
+  negotiation; page ranges that none of the registries carry are left out).
+
+### A very small never-treated group is now announced
+
+#### Changed
+
+- **`sp.callaway_santanna` warns when the never-treated comparison group has
+  fewer than five units plus one per covariate** (`AssumptionWarning`,
+  `control_group='nevertreated'` only). No estimate changes. That is the
+  size below which R `did` 2.5.0 and later stop; `did` 2.3.0 had the same
+  guard but it never fired on its default path. The estimate is defined
+  there, so StatsPAI returns it and says how few units carry every
+  comparison.
+- **`sp.cs_jackknife` warns once when the full sample passes that size and
+  a delete-one sample does not.** The refits are silenced for whatever the
+  full fit already said, and this is something it never said. On such a
+  design (five never-treated clusters, for example) R `didjack` on
+  `did` 2.5.x cannot run; StatsPAI computes every replicate.
+### Time series econometrics: a pass over Neusser (2016)
+
+Ten data sets of Neusser, *Time Series Econometrics*, run in R, Stata and
+`sp`. Notes: `docs/dev/2026-10-06-neusser-time-series-econometrics-review.md`.
+Guide: `docs/guides/time_series_econometrics.md`.
+
+#### ⚠️ Correctness
+
+- **`sp.garch` with two or more lagged variances could stop at a worse fit
+  than the model it nests.** On 3,797 daily returns of the Swiss Market
+  Index, `sp.garch(y, p=2, q=1)` returned a log-likelihood of -5600.552 with
+  `beta[2] = 0` and a standard error of zero. GARCH(1,1) reaches -5599.372
+  and Stata's `arch` reaches -5598.548 for the same GARCH(2,1), with 0.371
+  and 0.374 on the two lags. A single simplex search walked into the
+  boundary and stayed. The search now starts a bounded quasi-Newton from
+  several splits of the persistence and keeps the best. GARCH(1,1) results
+  are unchanged. An estimate that ends on the boundary now raises a
+  `RuntimeWarning`. Against Stata 18 on a committed series: coefficients to
+  5e-5, standard errors to 5e-4, log-likelihood to 1e-8
+  (`tests/reference_parity/test_garch_extensions_stata_parity.py`).
+
+#### Added
+
+- **`sp.garch(ar=, dist="t")`**: autoregressive terms in the mean and
+  Student t innovations with estimated degrees of freedom, as Stata's
+  `arch, ar() distribution(t)`. `GARCHResult.forecast_mean()` and
+  `.value_at_risk()`. `sp.from_stata` translates both options.
+- **`sp.garch(model="gjr" | "egarch")`**: threshold GARCH (Glosten,
+  Jagannathan and Runkle) and Nelson's exponential GARCH, with normal or t
+  innovations and AR terms. Six specifications against Stata 18 `arch,
+  tarch()` and `arch, earch() egarch()`: log-likelihood to 1e-8,
+  coefficients to 2e-4, standard errors to 2e-3. The threshold term is on
+  negative shocks, so `gamma = -tarch`; `sp.from_stata` translates both
+  commands and says so. On the Swiss Market Index the two models sit more
+  than 50 log-likelihood points above GARCH(1,1).
+- **`VARResult.fevd(ci="asymptotic" | "bootstrap")`**: standard errors and
+  bands for the variance decomposition. The delta-method standard errors
+  equal Stata's `irf table fevd, stderr`. **`SVARResult.fevd(ci="bootstrap")`**
+  does the same for a short- or long-run identification.
+- **`sp.garch(in_mean=True)`**: the conditional variance in the mean (ARCH
+  in mean, Stata's `archm`), for every `model`, with `ar=` and `dist="t"`.
+  Five specifications against Stata 18: log-likelihood to 1e-8,
+  coefficients to 1e-4, standard errors to 2e-3. Stata holds its
+  pre-sample variance fixed while it climbs the likelihood; `sp.garch`
+  does the same, and a test shows that this, not noise, is what separates
+  the two candidate estimates. **`threshold=`** sets fewer threshold terms
+  than ARCH terms (`arch(1/2) tarch(1)`). `in_mean="sd"` and `"log"` put
+  the standard deviation or the log variance in the mean
+  (`archmexp()`), and `in_mean_lags=` adds lagged terms (`archmlags()`);
+  six more specifications against Stata to 1e-8 in the likelihood.
+- **`boot="kilian"`** in `sp.irf`, `VARResult.fevd`, `SVARResult.irf` and
+  `SVARResult.fevd`: Kilian's bias-corrected bootstrap. In a bivariate
+  VAR(1) with a root of 0.92 and 60 observations, 90% bands for the own
+  response at horizons 4 to 8 covered 38% of the time with the percentile
+  bootstrap, 56% with Hall's, 62% with the delta method and 86% with the
+  bias correction (300 samples). **It is the default bootstrap band.**
+  Stata's `irf create, bs` and R's `vars` report the percentile band,
+  which stays available as `boot="efron"`; the default departs from them
+  because their band undercovers and the corrected one does not pay for
+  it elsewhere (root 0.6, T = 60: 77% against 89%; root 0.2, T = 80: 93%
+  against 93%). The uncorrected bootstraps warn when the largest
+  estimated root exceeds 0.9.
+- **`sp.mswitch`**: Markov-switching regression (Hamilton filter, Kim
+  smoother). The constant, chosen coefficients, the AR terms or the
+  variance depend on an unobserved regime; dynamic regression or
+  Hamilton's autoregression in deviations from the regime mean. Eighteen
+  models against Stata 18 `mswitch dr` and `mswitch ar`: log-likelihood
+  and regime probabilities at Stata's estimates to 1e-11, covariance to
+  5e-6, estimates within 5e-5 standard errors, transition probabilities
+  and durations with their standard errors. Hamilton's GNP example gives
+  -181.263386 (Stata, slightly short of convergence, -181.263394). Several
+  starting values are tried and the number of distinct maxima is
+  reported. Three places where a reference disagrees with itself or with
+  another are documented with independent evidence in the test file.
+- **`sp.mswitch_lrtest`**: a parametric-bootstrap likelihood-ratio test of
+  the number of regimes. The chi-squared reference does not apply to this
+  test. Under a true single regime the bootstrap test rejects 4.5% of the
+  time at the 5% level (400 samples of white noise, T = 100) and 3.5% for
+  an AR(1); a chi-squared with one degree of freedom would reject 37%.
+  Power against two well-separated regimes is 95%. On Hamilton's GNP
+  series the bootstrap p-value of one regime against two is 0.40. Every
+  replicate uses the same search as the data, and replicates with
+  several maxima or failed fits are counted in the result.
+  `sp.mswitch(start_params=)` takes extra starting vectors.
+- **`sp.tvp_var_sv`**: the TVP-VAR with stochastic volatility of Primiceri.
+  Coefficients, contemporaneous relations and log volatilities follow
+  random walks; Gibbs sampler with the indicator ordering of the Del
+  Negro and Primiceri corrigendum. A random estimator, so no parity is
+  claimed. Each block is tested against an exact computation (the
+  Carter-Kohn draw against the Kalman smoother, the inverse-Wishart
+  updates and the indicator probabilities against closed forms), and a
+  joint-distribution test passes with the corrected ordering and fails
+  with the original one. On simulated data 95% bands cover a drifting
+  coefficient 97% and a stepped volatility 88% of the time. Against the
+  R package `bvarsv` volatility medians differ by 1 to 4% on average, a
+  gap of 1 to 3 Monte Carlo standard errors that is not explained. The
+  default prior on coefficient drift (`k_Q = 0.01`, the paper's) is tight
+  enough to flatten a coefficient that moves from 0.2 to 0.8.
+- **`sp.tvp_var`**: a VAR whose coefficients follow random walks. Equation
+  by equation with the Kalman filter and smoother and maximum-likelihood
+  innovation variances (each equation equal to `sp.dlm`, and to R `KFAS`
+  to 1e-12 under a proper prior), or by the forgetting-factor filter of
+  Koop and Korobilis, which has no parameters to estimate (equal to
+  discounted least squares to 1e-8). Coefficient paths with bands, impulse
+  responses of the VAR frozen at a date, companion roots over time,
+  forecasts.
+- **Exact diffuse initialisation** in `sp.kalman_filter` and
+  `sp.statespace` (`init="exact"`, or `diffuse=[...]` to mark some
+  states). Filter, smoother and diffuse likelihood equal R `KFAS` to 1e-12
+  on six models, including missing observations during the diffuse period
+  and time-varying matrices. The default is unchanged. `diffuse=` also
+  takes a matrix `P0_inf` for diffuse directions that are combinations
+  of the states.
+- **`sp.beveridge_nelson(order=(p, q))`**: the decomposition from an ARMA
+  model fitted by exact maximum likelihood. The cycle equals the
+  long-horizon forecast of the fitted model to 5e-13. Integer orders keep
+  the OLS autoregression and give the same numbers as before.
+- **`sp.tsfilter`**: the one-sided (real-time) Hodrick-Prescott filter
+  (`one_sided=True`), the fixed-length symmetric Christiano-Fitzgerald
+  filter (`sma_order=`, Stata's `smaorder()`, to 1e-9), and the stationary
+  variant of the CF filter (`stationary=True`) as the Stata manual
+  defines it. Stata 18 itself computes something else for `cf,
+  stationary`: the weight on the first and last observation is the ideal
+  weight of the neighbouring lag. A test rebuilds Stata's numbers from
+  that rule to 1e-9.
+- **`sp.zivot_andrews`**: `lags="ttest"`, lag selection at every break
+  date (`lag_selection="break"`), and options that reproduce Stata's
+  `zandrews` (statistic to 5e-13, break date and lag order equal, 48
+  cases).
+- **`sp.read_data` reads workbooks written by EViews**, whose archive
+  members are named with backslashes (`xl\worksheets\sheet1.xml`) and which
+  pandas and openpyxl reject. The file is repaired in memory.
+- **`sp.irf(ci="asymptotic" | "bootstrap")`**: standard errors and bands for
+  impulse responses. The delta-method standard errors equal Stata's
+  `irf create` for simple, orthogonalised and cumulative responses, with
+  and without `dfk`. The bootstrap resamples residuals and regenerates the
+  series; `boot="hall"` reflects the percentile band about the estimate.
+  **`SVARResult.irf(ci="bootstrap")`** repeats a short-run or long-run
+  identification on every bootstrap sample.
+- **`sp.johansen_lrtest`**: likelihood-ratio tests with the cointegration
+  rank fixed. The same restrictions on every vector (`beta=`), known
+  vectors (`beta_known=`), restrictions on the loadings (`loading=`).
+  Equal to `urca` `blrtest`, `bh5lrtest` and `alrtest` to 1e-8.
+- **`sp.zivot_andrews`**: unit-root test with one break at an unknown date.
+  Equal to `urca::ur.za` to 1e-7, break date included.
+- **`sp.xcorr`**: cross-correlogram with optional AR prewhitening and the
+  Haugh test. Equal to R `ccf` and Stata `xcorr` to 1e-10.
+- **`sp.lrvar`**: long-run variance with five kernels, Andrews and
+  Newey-West bandwidths and prewhitening. Equal to R `sandwich` to 1e-9
+  over 104 cases.
+- **`sp.periodogram`** and **`sp.cumulative_periodogram_test`**: raw,
+  smoothed and autoregressive spectral estimates (R `spec.pgram`,
+  `spec.ar`, Stata `pergram`), and Bartlett's white-noise test (Stata
+  `wntestb`).
+- **`sp.tsfilter`**: Hodrick-Prescott, Baxter-King, Christiano-Fitzgerald,
+  Butterworth and Hamilton filters, with the gain function. Equal to Stata
+  `tsfilter` to 1e-9.
+- **`sp.beveridge_nelson`**: trend and cycle of an integrated series from
+  an autoregression of its difference.
+- **`sp.kalman_filter`** and **`sp.statespace`**: a linear state space
+  model written by the user, with time-varying matrices and missing
+  observations; filter, smoother, forecasts, and maximum likelihood for a
+  parameter vector. Equal to R `KFAS` to 1e-9. The mixed-frequency model of
+  the book's section 17.4 takes a dozen lines.
+
+#### Fixed
+
+- **`ZivotAndrewsResult` and `JohansenLRTest` lacked the agent contract**
+  (`to_dict`, `violations`, `next_steps`, `result_card`, `cite`) that every
+  result class carries. Four tests of the full suite failed for it on
+  main between the first round of this pass and this fix; the subset of
+  tests run before each push did not include them.
+- **`sp.johansen` summary** printed the length of the series where the
+  statistics use the observations left after differencing and lagging, and
+  `5% CV` at `alpha=0.01`. The result now carries `n_used`, `alpha`,
+  `trend` and `var_names`. Statistics are unchanged.
+
+- **`sp.arima` tries more starting points for a final fit.** One with every
+  ARMA coefficient at zero, where R's `arima(method="ML")` begins: on
+  Swiss GDP growth ARMA(5,2) stopped at a log-likelihood of -110.13 where
+  R reaches -107.03, and now reaches R's value. And one from the estimates
+  of each model with one AR or one MA term fewer, the dropped coefficient
+  at zero: on the quarterly change of Swiss log GDP, MA(3) stopped at
+  -249.22 with a root on the unit circle, below the MA(2) it nests
+  (-244.90); R's `arima` stops at the same point. It now reaches -243.82.
+  A model no longer fits worse than the models it nests. Fits that were
+  at their maximum are unchanged (all 2,497 ARIMA and forecasting tests of
+  the earlier passes, and Track A module 39, to the last digit).
+
+#### Found in the book
+
+- The MATLAB smoother shipped with section 17.4 computes smoothed
+  variances with a transpose missing (`Pt*F*inv(Ptp1)` for
+  `Pt*F'*inv(Ptp1)`, and no `F` on the right). Smoothed means are
+  unaffected; variances are too large by up to 0.134, so the band in the
+  book's figure is too wide.
+
+Thirty-two references added to `paper.bib`, each verified against the
+Crossref and OpenAlex records of its DOI.
+### A causal-inference textbook's Stata code, run against Stata
+
+The Stata code and data of Qiu Jiaping's *Practical Econometric Methods for
+Causal Inference* (chapters 3 to 12) were run in Stata 18 and replayed
+through `sp.stata`, number by number. 2,007 printed numbers are reproduced
+(1,561 at the start), none of the commands is refused (26 at the start),
+and one number differs, where Stata's own rounding is the cause. The
+findings are in `docs/dev/2026-10-06-qiu-jiaping-review.md`, the reader
+guide in `docs/guides/qiu_jiaping.md`.
+
+#### ⚠️ Correctness
+
+- **Propensity score matching with a redundant covariate.** The logit
+  behind `sp.match`, `sp.psmatch2` and `sp.overlap_weights` solved its
+  Newton step from a singular Hessian when one covariate was a combination
+  of others. Next to a column of very different size (`re74^2`) the error
+  reached the fitted scores. On the textbook's specification, which lists
+  the same dummy under two names, the ATT was 1562.29 where Stata's
+  `attnd`, `psmatch2` and `teffects psmatch` give 1627.36. On the bundled
+  Lalonde data with a repeated dummy it was 605.80 against 468.10. The fit
+  now runs on the standardised design, leaves out a redundant covariate (as
+  Stata does) and warns when it has not converged. Without a redundant
+  covariate the matches and the estimate do not change. The fit is carried
+  further than before (scaled gradient 2e-13, was 2e-9 on the NSW data), so
+  a standard error that uses the fitted model moves in the ninth digit: the
+  Abadie-Imbens (2016) row of Track A module 11 goes from 621.7932847 to
+  621.7932873, with Stata at 621.7932451.
+- **`sp.match(ties='all')` could miss a control at exactly the same
+  distance.** The cut-off was squared with the C library's `pow` and the
+  distances with numpy. The two differ in the last place for about one
+  number in 600, and a control tied with the nearest one was then dropped.
+  On one specification the ATET was 1148.68 against Stata's 1170.95.
+  `teffects psmatch` in `sp.stata` and `sp.psmatch2(ties=True)` go through
+  the same comparison.
+- **The score the matching runs on is no longer clipped to
+  [1e-6, 1 - 1e-6].** Every control with a score below 1e-6 was at the same
+  distance from a treated unit. Estimates change only where scores that
+  small or that large exist.
+- **`sp.stata`: `replace` reads the rows it has just written.** Stata
+  replaces one observation after another, so `replace x = 0.4 * l.x + e in
+  2/l`, `replace s = s[_n-1] + x` and `by id: replace v = v[_n-1] if
+  missing(v)` build a recursion. They were evaluated on the whole column at
+  once and returned missing values from the third row on, with no error.
+  `replace z = z / z[1]` now leaves `z` unchanged from the second row on,
+  as it does in Stata.
+- **`sp.stata`: a lag is read from the data as they are.** The column made
+  for `L.x` was reused after `x` had been replaced.
+- **`sp.stata`: `clear all` clears.** It was skipped as a display setting,
+  and a second simulation in the same snippet ran on the data of the first.
+- **`sp.from_stata`: an option written with a blank before its
+  parenthesis.** `reg y x, cluster (id)` was translated without the
+  clustering (`sp.stata` refused the line). `select (z1 z2)`, `vce (cluster
+  id)` and `title ("...")` are read as Stata reads them.
+
+#### Added
+
+- **`sp.pscore`**: the propensity score with blocks and a balancing test
+  (Becker and Ichino 2002; Stata `pscore`). It returns the score, the block
+  of every row, the region of common support and the covariates that are
+  not balanced in a block. The number of blocks, the rejections and the
+  counts per block agree with Stata on six specifications.
+- **`sp.loneway`**: one-way analysis of variance with the intraclass
+  correlation, its asymptotic standard error and interval, the standard
+  deviations between and within groups and the reliability of a group mean
+  (Stata `loneway`). Equal to Stata's `r()` to 12 digits for balanced and
+  unbalanced groups, the exact interval and the truncated case.
+- **`pscore=` on `sp.match` and `sp.psmatch2`**: match on a column that
+  already holds the score (Stata `psmatch2 d, pscore(ps)`).
+- **`sp.psmatch2(common_support='treated')`**: the region of `pscore` /
+  `attnd, comsup`, where controls outside the range of the treated scores
+  are set aside. **`se='bootstrap'` now works with `ties=True`.**
+- **`sp.heckman` two-step** returns the selection equation
+  (`model_info['selection_equation']`) and the Wald test of the outcome
+  equation. **`sp.estat(result, 'firststage')`** adds the p-value, the
+  degrees of freedom and the partial R-squared.
+- **`sp.stata` / `sp.from_stata`**: `pscore`, `attnd`, `psmatch2 d,
+  pscore()`, `pstest`, `DCdensity`, `loneway`, `vif`, `r(att)` / `r(seatt)`
+  after `psmatch2` (so `bootstrap r(att): psmatch2 ...` runs), `d` / `des`.
+
+#### Second round, the same day
+
+- ⚠️ **`sp.heckman` two-step with rho outside [-1, 1].** The two-step
+  estimate of rho is not confined to the unit interval. Beyond it the
+  variance formula has negative weights, and the standard errors were too
+  small (by a third on the case that showed it). rho is now set to +/-1 and
+  sigma to `|lambda|`, as Stata does, with an `AssumptionWarning`;
+  `model_info` keeps the raw value in `rho_two_step`. Fits with rho inside
+  the interval are unchanged. The summary prints the selection equation.
+- **`sp.stata`: a recursive `replace` of any length.** After one evaluation
+  of the column only the rows that read a changed row are evaluated again,
+  so a chain costs one small evaluation per link (50,000 rows in five
+  seconds; it was declined beyond 20,000).
+- **`sp.match(method='stratify', strata=)`** takes the strata from a column
+  (the blocks of `sp.pscore`): Becker and Ichino's `atts`, equal to Stata to
+  13 digits. `common_support='treated'` works with any method of
+  `sp.psmatch2` when `pscore=` is given.
+- **`sp.estat(result, 'firststage')` returns the Stock and Yogo critical
+  values** for one endogenous regressor (`stock_yogo`, with
+  `minimum_eigenvalue`). The table is the one Stata returns in
+  `r(mineigcv)`, read off by running the command. The threshold of 10 is
+  now called a rule of thumb, which is what it is.
+- **`sp.stata` / `sp.from_stata`**: `attk` and `atts` are translated.
+  `esttab` over models from different estimators has one `_cons` row, and
+  shows N for `etregress`.
+
+#### Third round
+
+- ⚠️ **`sp.stata`: `generate s = sum(x) if d` summed every row above.**
+  Stata's running sum advances on the observations the command selects
+  (`. 2 . 6 . 12 . 20` for the even rows of 1 to 8). `sp.stata` returned
+  the sum over all rows (`3 10 21 36`). `if`, `in` and `by` are now applied
+  before the sum is taken. A `sum()` without a qualifier is unchanged.
+- **`sp.stata`: a `replace` that keeps a running sum of the variable's own
+  earlier rows** (`replace r = sum(r[_n-1]) + 1`) is run in row order,
+  whatever its length.
+- **`sp.estat(result, 'firststage')` computes the Cragg-Donald minimum
+  eigenvalue statistic for any number of endogenous regressors**, equal to
+  Stata's `r(mineig)` to 12 digits, and attaches the Stock and Yogo values
+  for that combination.
+- **`sp.psmatch2(method='radius', radius_weights='pairs')`**: Becker and
+  Ichino's `attr`, which counts every treated-control pair within the
+  radius once. It is there so that a result obtained with `attr` can be
+  reproduced (equal to Stata to nine digits); the default, `'treated'`, is
+  `psmatch2`'s radius matching and gives a different number. `attr` is
+  translated with a note that says so.
+
+#### Changed
+
+- `scripts/stata_log_replay.py` reads logs as UTF-8 (a comment in Chinese
+  made a line unreadable) and compares `pscore`, `attnd`, `pstest`,
+  `heckman`, `etregress`, `vif`, `rdplot`, `rdbwselect`, `DCdensity` and
+  `loneway` output.
+
+### R reference for Callaway-Sant'Anna moved to `did` 2.5.1 and `DRDID` 1.3.0
+
+#### Changed
+
+- **The R reference environment now uses `did` 2.5.1 and `DRDID` 1.3.0**
+  (was 2.3.0 and 1.2.3). No StatsPAI estimate changes. Every Track A golden
+  value that runs through the two packages reproduces to the last digit
+  (modules 04, 38, 73, 74, 80), and so do the regenerated
+  `tests/reference_parity` fixtures (worst gap 1e-15). The one number that
+  moves is the simulated p-value of the functional-form test in module 79,
+  from 0.99998 to 0.99997. It is a count over 100,000 draws and one draw
+  changed side. The eight implied densities next to it are bit-identical.
+- **Two gaps against R are closed by the reference, not by a code change.**
+  On repeated cross-sections and unbalanced panels the aggregated
+  Callaway-Sant'Anna standard error differed from `did` 2.3.0 by 0.003% to
+  2.2% while every `ATT(g, t)` cell agreed, and two tests carried a 1% and
+  a 3% tolerance for it. `did` 2.5.0 records that `aggte()` misattributed
+  the estimated-weight influence term on unbalanced panels. `did` 2.5.1
+  returns what StatsPAI already computed, to 1e-15 on the twenty synthetic
+  cases and 4e-11 on `mpdta`, and both tests are now held to 1e-8
+  (`test_cs_no_never_unbalanced_parity.py`, `test_cs_rcs_parity.py`).
+- **Analytic cluster-robust standard errors of `sp.callaway_santanna` now
+  have an R reference** next to the Stata `csdid` one. `did` 2.3.0 had no
+  analytic clustered standard error, and its clustered bootstrap averaged
+  the influence function within cluster, which is the cluster-robust
+  variance only for equal cluster sizes. `did` 2.5.0 uses cluster sums, as
+  StatsPAI and `csdid` do. On nine clusters of sizes 150 to 1, for
+  balanced and unbalanced panels, both comparison groups and both base
+  periods, every cell and every aggregation agrees to 7e-13 or better
+  (`tests/reference_parity/test_cs_cluster_analytic_parity.py`, 50 tests).
+- **`didFF` 0.1.0 needs `control_group` spelled out under `did` 2.5.x.** It
+  forwards a length-two default to `did`, which the old version read as its
+  first element and the new one rejects. Module 79 and two fixture
+  generators now pass `"nevertreated"` explicitly. The edited scripts give
+  the same numbers under `did` 2.3.0.
+
+### Missing data in `sp.path_analysis`
+
+#### Added
+
+- **`sp.path_analysis(missing='fiml')`**: full-information maximum
+  likelihood. Each row contributes the likelihood of the values it has, so
+  a row with one indicator missing still informs the rest of the model.
+  The estimates are consistent when values are missing at random given
+  the observed ones; listwise deletion, the default, needs them missing
+  completely at random and discards information either way. Standard
+  errors come from the observed information, the chi-square compares the
+  model with the saturated moments found by EM, and factor scores are
+  computed from whatever each row observes. Rows missing an exogenous
+  variable are still dropped. On four models (a path model, a two-factor
+  CFA, a structural model with a covariate, a growth curve; up to 16
+  missing-data patterns) the parameter table, the standardised solution,
+  the fit measures and the factor scores equal `lavaan`'s
+  `missing = "ml"` to 1e-5. `se='robust'` is refused with it.
+
+### Local and hybrid structure learning
+
+#### Added
+
+- **`sp.mmpc`**: the parents and children of every variable, by max-min
+  parents and children or semi-interleaved HITON-PC
+  (`method='hiton'`). Each variable keeps the others that no subset of its
+  candidate neighbours separates from it, and an edge stays if both ends
+  agree. Categorical data use the likelihood-ratio test, continuous data
+  the exact t test of a partial correlation. On 24 simulated data sets
+  both skeletons equal `bnlearn::mmpc` and `si.hiton.pc`.
+- **`sp.mmhc`**: max-min hill climbing. The tests propose the candidate
+  edges and hill climbing on the BIC searches among them only. On the same
+  24 data sets the score is never below `bnlearn::mmhc`'s, equal on 18 and
+  higher on 6. `sp.bootstrap_edges(method='mmhc')` is accepted.
+
+### Event-study rank tests and the `lmrob` covariance
+
+#### Added
+
+- **`sp.abnormal_returns` reports two nonparametric tests.**
+  `res.tests.loc["grank"]` is the generalized rank test of Kolari and
+  Pynnonen (2011): each standardised CAR is ranked among that security's
+  standardised estimation-window abnormal returns, and the mean rank on
+  the event day is compared with its variation over all days.
+  `res.tests.loc["sign_rank"]` is Wilcoxon's signed-rank test on the CARs
+  and equals Stata `signrank` to 1e-9. Stata `estudy`'s `GRANK` writes L1
+  where the test has T = L1 + 1 observations; with its constants the
+  statistic here equals its number to 1e-6, with the paper's it is 1.5
+  percent smaller. `estudy`'s `Wilcoxon` row ranks each CAR within its own
+  security's time series and is not a signed-rank test (it reports 96
+  for twelve securities); the test rebuilds it to show what it is.
+- **`sp.robreg(vce='avar1')`** is `robustbase::lmrob`'s default covariance
+  of an MM fit, equal to `vcov(lmrob(...))` to 1e-6 with
+  `tuning_s=1.54764`. It is the stacked sandwich with one entry changed:
+  the sum of squares of the scale equation's score is taken as
+  `sum(rho^2) - n b^2`, where the default (and Stata `robreg`) squares
+  `rho - b` as it is. Standard errors differ by up to 3e-4 at n = 800.
+  `sp.from_r("lmrob(...)")` now writes this option.
+
+#### Changed
+
+- `res.tests` of `sp.abnormal_returns` has two more rows. Code that
+  indexes the table by label is unaffected; code that asserts on every row
+  should note that a signed-rank p-value is bounded below by the number of
+  events (6.5e-4 for fifteen).
+
+### Latent variables in `sp.path_analysis`
+
+#### Added
+
+- **`sp.path_analysis` fits structural equation models with latent
+  variables.** `f =~ a + b + c` defines a latent variable by its
+  indicators, and it can then be regressed on, or be a regressor, like any
+  column. That covers confirmatory factor analysis, regressions that
+  correct for measurement error in a predictor, second-order factors and
+  latent growth curves (`growth=True`). `y ~ 1` or `meanstructure=True`
+  adds a mean structure, `std_lv=True` scales a latent variable by a unit
+  variance instead of a unit first loading, `NA*a` frees a loading. The
+  result carries `factor_scores`, `latent_cov` and `implied_mean`. On nine
+  models (two-factor CFA under both scalings, latent and observed
+  predictors together, a cross-loading with a residual covariance,
+  equality and fixed constraints, a mean structure, a growth curve) the
+  parameter table, the standardised solution, the fit measures, the
+  Satorra-Bentler standard errors and scaled test, and the factor scores
+  equal `lavaan` 0.6-21 to 5e-6, which is where lavaan's optimiser stops.
+  A model whose information matrix is singular is refused; a negative
+  estimated variance is reported with a warning.
+
+#### Changed
+
+- **`sp.path_analysis(auto_cov_y=False)`** names a default that was
+  already there. `lavaan::sem` lets the disturbances of terminal outcomes
+  covary without being asked; `sp.path_analysis` fits the model as
+  written, as Stata's `sem` does. The earlier docstring said the function
+  reproduces `sem()` without that qualification, which was wrong for a
+  model with two or more terminal outcomes. No estimate changes;
+  `auto_cov_y=True` gives lavaan's.
+
+### Column names that are not identifiers
+
+- **Backticks in formulas.** `` sp.regress("`In-game Purchases` ~ `Side-quest
+  Engagement`", data=df) `` is how R writes a column whose name has a
+  space or a hyphen. It failed in every formula entry point except
+  `sp.feols`, with "Variable(s) not found: ['quest']". Backticks are now
+  read as `Q("...")` in the one place every formula passes through, so
+  `sp.regress`, `sp.iv`, `sp.ivreg`, `sp.logit`, `sp.probit`, `sp.glm`,
+  `sp.poisson`, `sp.nbreg`, `sp.ppmlhdfe`, `sp.qreg`, `sp.tobit` and
+  `sp.gam` take them, and terms are reported as `Q("name")` either way.
+- ⚠️ **`sp.iv` / `sp.ivreg` misread a hyphen inside a quoted name.** The
+  rewrite of `- 1` (drop the intercept) was applied to the whole string,
+  so `Q("x-1")` became `Q("x+ -1")` and the call failed. It now applies
+  outside quotes only.
+- `sp.ppmlhdfe` accepts a quoted fixed effect (`| Q("firm id")`), `sp.gam`
+  a quoted smooth variable (`s(Q("x 1"))`), and the count models a quoted
+  outcome.
+- A missing quoted column is reported by its whole name.
+
+### The rest of the Das list: mediation, FCI, hill climbing, forest tuning
+
+#### ⚠️ Correctness
+
+- **`sp.fci` now runs the whole algorithm.** It stopped after the PC
+  skeleton and four orientation rules. With latent common causes that is
+  not enough: an edge can survive that no subset of either node's
+  neighbours separates but a subset of Possible-D-SEP does, and the
+  remaining rules orient marks the first four leave as circles. The
+  Possible-D-SEP pass and Zhang's rules R1 to R10 are in. On 36 data sets
+  (24 without latent variables, 12 with two or three hidden common
+  causes) the PAG equals `pcalg::fci` mark for mark; before, the skeleton
+  differed in 14 of the first 24, each time by edges that should have been
+  removed. `possible_dsep=False` gives the earlier skeleton, which is
+  RFCI's. `FCIResult.n_removed_by_possible_dsep` counts what the pass
+  removed. `sp.causal_discovery(method='fci')` is accepted.
+
+#### Added
+
+- **`sp.mediate(inference='robust', outcome_model='logit' | 'probit' |
+  'poisson')`**: natural direct and indirect effects on the scale of the
+  outcome's mean when the outcome model is not linear. A binary mediator
+  is integrated out by its two-point distribution, a continuous one by a
+  normal distribution around its regression line. Effects, proportion
+  mediated and standard errors equal Stata 18's `mediate` to 1e-8 on ten
+  model pairs (probit, logit and Poisson outcomes; linear, logit and
+  probit mediators; with and without the interaction). A logit outcome
+  with a linear mediator, which Stata refuses, is computed by
+  Gauss-Hermite quadrature and checked against direct integration.
+  `treat_values=(a, b)` contrasts two levels of a treatment that is not
+  0/1 (Stata's `continuous()`).
+- `sp.mediate` with `inference='bootstrap'` reports a percentile interval
+  for the proportion mediated.
+- **`sp.hill_climb`**: score-based structure learning by greedy search on
+  the BIC, for categorical and for continuous data (`bnlearn::hc`). The
+  score of a graph equals bnlearn's to 1e-12. The search breaks ties
+  between equally good moves deterministically and walks out of
+  equivalence-class plateaus, so a collider is recovered whatever the
+  column order; on five comparison data sets its final score is bnlearn's
+  on four and higher on one.
+- **`sp.bootstrap_edges`**: refit a structure-learning algorithm on
+  bootstrap resamples and report how often each edge, and each direction,
+  comes back (`bnlearn::boot.strength`). Works with `pc`, `hill_climb`,
+  `ges`, `fci`, `lingam`, `notears` or a callable.
+- **`sp.tune_causal_forest`**: random search over the forest's settings on
+  the out-of-bag R-loss, the criterion of grf's `tune.parameters`. A tuned
+  setting replaces the defaults only if it beats them by more than twice
+  the noise of the comparison. Measured on four designs: the error of the
+  effects falls by a third when the effect is constant, does not move for
+  a step or a fast-varying effect, and rises 7% for a linear one. It is
+  documented as what it is.
+### `sp.gam`: surfaces, random intercepts, thin plate splines, a test for each term
+
+- `te(x, z, k=)` fits a surface as the tensor product of two P-spline
+  margins, with one smoothing parameter per direction. `s(g, bs='re')`
+  adds a random intercept for each level of `g`; its `lambda` is the
+  residual variance over the variance of the effects. `s(x, bs='tp')` is
+  the thin plate regression spline [@wood2003thin], the basis `mgcv`
+  uses when none is named. All three match `mgcv::gam` at given
+  smoothing parameters to 1e-9 (coefficients, standard errors, effective
+  degrees of freedom, criterion, fitted values, predictions) and under
+  REML selection to 1e-5 for the surface and the thin plate curve.
+- `fit.smooth_terms` gains `ref_df`, `statistic` and `pvalue`: the test
+  that a term is zero [@wood2013pvalues], also printed by `summary()`.
+  Reference degrees of freedom match `summary.gam` to 1e-9 and p-values
+  to 5e-6. In 300 simulated samples with no effect the rejection rate of a
+  5% test is inside 2% to 9%. The test is not reported for random
+  effects.
+- `fit.partial(term, simultaneous=True)` returns a band that holds the
+  whole curve with the stated probability, by simulation from the
+  posterior of the coefficients. The pointwise band holds the whole
+  curve under 80% of the time at a nominal 95%.
+- `fit.plot()` draws a contour for a surface and estimates with
+  intervals for a random effect.
+
+### Counterfactual identification
+
+- **`sp.identify_counterfactual(dag, event, given=)`**: the ID* and IDC*
+  algorithms [@shpitser2008complete]. It decides whether a counterfactual
+  probability, such as the effect of treatment on the treated
+  `P(Y[X=0] = y | X = 1)`, is a function of interventional distributions
+  on a graph with latent confounding, returns the formula, and says for
+  each interventional term whether observational data can stand in for
+  the experiment. `.estimate(data)` evaluates it on categorical
+  observational data when they can, `.evaluate(net)` in a specified
+  `sp.bayes_net`. Queries no experiment settles (probabilities of
+  necessity and sufficiency) are reported as such. Every formula returned
+  on 1,092 random queries equals the counterfactual probability computed
+  by enumeration in random structural models; the paper's worked example
+  and the query of Ness's listing 10.8 come out as printed; eight
+  textbook verdicts match the R package `cfid`, and on 1,118 random
+  queries the verdict agrees with its development version on 95%. This closes the first
+  open item of `docs/dev/2026-10-06-ness-causal-ai-review.md`, which has
+  the details, including where `cfid` and this implementation differ.
+### Path analysis, and two decisions left open by the Das pass
+
+#### ⚠️ Correctness
+
+- **`sp.match` keeps every tied match by default (`ties='all'`).** Under
+  matching with replacement the default was `ties='first'`: of several
+  controls at exactly the same distance, the one that came first in the
+  data. The estimate was then a function of the row order. On the Lalonde
+  sample (614 rows, 24 treated units with exact ties) the ATT was 1967.94,
+  and 2012.47 after shuffling the rows. With every tie kept it is 1968.80
+  in either order, which is Stata's
+  `teffects psmatch (re78) (treat ..., logit), atet` to the last digit
+  (1968.799715855857), with the Abadie-Imbens (2016) standard error equal
+  to 1e-6 (1126.3212). On the ECLS sample of the Das book the ATT moves
+  from -0.50 (SE 0.25) to -0.12 (SE 0.03). Data without exact ties are
+  unaffected: the NSW-DW parity row against R and Stata does not move.
+  `ties='first'` remains, warns as before, and is what `sp.psmatch2` uses,
+  since `psmatch2` without its `ties` option does the same. `model_info`
+  reports `n_units_with_tied_matches` under either rule.
+  `sp.match(estimand='ATE', se_method='abadie_imbens_2016')` now runs
+  without `ties='all'` having to be passed.
+
+#### Added
+
+- **`sp.path_analysis`**: structural equation models among observed
+  variables, in lavaan syntax. Regressions with labelled paths
+  (`y ~ b*m + c*x`), residual covariances (`m1 ~~ m2`), equality
+  constraints by repeating a label, fixed coefficients, product terms
+  (`x:w`) and defined effects (`indirect := a1*b1 + a2*b2`) with
+  delta-method standard errors. It returns the standardised solution, the
+  chi-square test of the over-identifying restrictions, CFI, TLI, RMSEA
+  with its interval and SRMR. `se='robust'` gives the Satorra-Bentler
+  sandwich and scaled test. On four models (two mediators with a residual
+  covariance, a rejected chain, a constrained model, a saturated one) the
+  parameter table, the fit measures and the robust results equal
+  `lavaan::sem` and `estimator = "MLM"`: to 1e-12 where the solution is
+  closed-form, to lavaan's optimiser tolerance elsewhere. This was the
+  largest gap the Das pass found: chapter 11's multiple-mediator model had
+  no counterpart, and `sp.sem` is the spatial error model. Latent
+  variables and mean structures are not implemented and are refused by
+  name.
+- **`sp.pc_algorithm(collider_conflict='last')`** reproduces `pcalg::pc`
+  when a sample contradicts itself. Two colliders can claim one edge in
+  opposite directions; the algorithm does not say which wins. The default
+  `'first'` keeps the earlier one, pcalg lets the later one overwrite. On
+  24 small-sample reference graphs, 14 of them with such clashes, the
+  skeleton equals pcalg's under either rule, the CPDAG equals it in all 24
+  under `'last'`, and under `'first'` in exactly the cases where
+  `orientation_conflicts` is empty
+  (`tests/reference_parity/test_pc_pcalg_parity.py`). The default is
+  unchanged.
+
+### Bayesian econometrics without PyMC
+
+Ramirez-Hassan's *Introduction to Bayesian Econometrics* (2026) teaches the
+subject with `MCMCpack`, `bayesm`, `coda` and `BMA`. StatsPAI had Bayesian
+estimators for causal designs (PyMC) and a Minnesota-prior VAR, and nothing
+for the models that book starts with. This pass adds them as NumPy
+samplers, checks every one against an exact posterior, and fixes what the
+comparison turned up in the existing PyMC estimators. Notes are in
+`docs/dev/2026-10-06-ramirez-hassan-bayesian-econometrics-review.md`; the
+user guide is `docs/guides/bayesian_econometrics.md`.
+
+#### ⚠️ Correctness
+
+- **`sp.bayes_iv` and `sp.bayes_hte_iv` understated the uncertainty of the
+  effect when the treatment is endogenous.** The docstring described a
+  joint model of the two equations. The code computed first-stage
+  residuals once by OLS and used them as a regressor, as if they were
+  data. The posterior mean was 2SLS, but the posterior standard deviation
+  was 2SLS times `sqrt(1 - corr(v, eps)^2)`. With an error correlation of
+  0.9 and 400 observations the posterior sd was 0.44 of the 2SLS
+  standard error and the 95% interval covered the true effect in 35 of 60
+  samples. The residual is now `D - E[D | Z, X]` as a
+  function of the first-stage parameters, which is the joint normal model.
+  Same design after the change: ratio 1.02, coverage 58 of 60.
+  Results without endogeneity are unchanged; the stronger the endogeneity,
+  the wider the new interval.
+- **`sp.bayes_iv(prior_first_stage_sigma=)` was accepted and ignored.** The
+  first-stage coefficients used `prior_coef_sigma`. They now use the
+  argument that is named after them (default 5).
+- **`sp.bayes_mte` with the default `mte_method='polynomial'` did not
+  estimate the marginal treatment effect.** It fitted
+  `Y = alpha + D * g(p)`, which has no term for how the untreated outcome
+  varies with the unobserved resistance to treatment. With selection on
+  levels, `g` is neither the MTE nor a LATE: in a Heckman-Vytlacil normal
+  design with MTE(v) = 1 - 0.8 v, two million observations give an
+  intercept of 0.89 and a slope of -0.14. The mode now fits the local IV
+  regression `E[Y | p] = alpha + sum_k b_k int_0^p a(u)^k du` (Heckman and
+  Vytlacil 2005), which returns 1.00 and -0.80 on the same data and needs
+  no normality. `mte_method='hv_latent'` had the same gap and gains a
+  centred polynomial for the untreated outcome (`b_sel`).
+  In PyMC, over 12 samples of 1,000 with a true ATE of 1.0, the old
+  default averaged 0.89 and covered in 7; after the change the polynomial
+  mode (plug-in and joint first stage), `hv_latent` and
+  `bivariate_normal` average 0.98 to 0.99 and each covers in 11.
+  Intervals from the polynomial mode are wider than before, because local
+  IV uses the variation in the propensity only.
+- **`sp.bayes_synth` reported intervals that were too narrow.** The effect
+  was the treated unit's post-period mean minus the synthetic control's,
+  with only the donor weights uncertain. The model's own likelihood says
+  the treated unit's untreated outcome is the synthetic control plus
+  noise of variance `sigma^2`; over `T1` post periods that noise averages
+  to a term of variance `sigma^2 / T1`, which is unobserved and was left
+  out. In a factor-model design with a true effect of 2 (30 samples) the
+  posterior sd was 0.057 where the estimates varied by 0.093, and 25
+  intervals covered; now 0.090 and 30. The post-period counterfactual
+  band is predictive for the same reason.
+- **`sp.bayes_fuzzy_rd` treated the errors of the outcome and take-up
+  equations as independent.** They are correlated whenever the effect is
+  not zero, and that correlation enters the variance of the ratio of the
+  two jumps. The posterior mean was unaffected; the interval was too wide
+  by 10 to 25 percent in typical designs (coverage 97 to 98 percent at a
+  nominal 95) and slightly too narrow when the effect and the selection
+  have opposite signs. The two errors are now jointly normal.
+
+#### Added
+
+- **`sp.bayes_regress`**: Bayesian regression by MCMC with a normal prior
+  on the coefficients. `model=` is one of `'normal'` (Gibbs),
+  `'conjugate'` (closed form), `'t'` (Student-t errors), `'logit'`,
+  `'probit'`, `'oprobit'`, `'poisson'`, `'negbin'`, `'tobit'` and
+  `'quantile'`. Returns the draws, credible and HPD intervals, effective
+  sample sizes, `prob("x > 0")`, `predict`, convergence diagnostics and
+  the log marginal likelihood (`'exact'`, `'chib'`, `'gelfand-dey'`,
+  `'laplace'`). It warns when the chain mixes badly and when the default
+  prior is not vague at the scale of a regressor.
+- **`sp.bayes_mixed`**: hierarchical models for panel data with random
+  intercepts and slopes; normal outcomes by the blocked Gibbs sampler of
+  Chib and Carlin (1999), logit and Poisson outcomes by Metropolis within
+  Gibbs. The default prior of the random-effects covariance adds 0.02 to
+  each sum of squares and is weak on any ordinary scale; the textbook's
+  identity scale is `re_prior=(q + 2, 1.0)`.
+- **`sp.bayes_ivreg`**: Bayesian instrumental variables by Gibbs sampling,
+  `"y ~ x + (d ~ z1 + z2)"` as in `sp.ivreg`. The joint normal model of
+  both equations, so the posterior of the effect has the 2SLS spread
+  under a strong instrument; `rho`, the error correlation, is the
+  posterior counterpart of a Hausman test. Warns when the first-stage F
+  is below 10. No PyMC needed.
+- **`sp.dlm`**: dynamic linear models, that is regression with
+  coefficients that follow random walks (`"y ~ 1"` is the local level
+  model). Kalman filter and smoother, variances by maximum likelihood or
+  by Gibbs with forward filtering and backward sampling, coefficient
+  paths with intervals, forecasts, `constant=` for coefficients that do
+  not move. Filter, smoother and likelihood agree with R `dlm` to 1e-9;
+  the Gibbs sampler is checked against an exact posterior.
+- **`sp.bayes_sur`**: seemingly unrelated regressions (and multivariate
+  regression) by Gibbs sampling.
+- **`sp.bayes_shrink`**: the Bayesian lasso (Park and Casella 2008) and
+  stochastic search variable selection (George and McCulloch 1993) with
+  posterior inclusion probabilities; regressors standardised for the
+  prior, coefficients on the original scale.
+- **`sp.stochvol`**: stochastic volatility for returns. The log variance
+  is a stationary AR(1) with its own shock; the whole volatility path is
+  drawn in one block and returned with credible bands. Priors as in R
+  `stochvol`, whose long runs it reproduces on a committed series. The
+  sampler passes the joint-distribution test (its sweep leaves the prior
+  invariant when the data are redrawn each iteration).
+- **`sp.bayes_arima`**: ARIMA(p, d, q) with the exact Gaussian likelihood
+  and a proper uniform prior over the stationary and invertible region,
+  posterior predictive forecasts, and marginal likelihoods for comparing
+  orders. AR(1) and MA(1) posteriors are checked against grid integration.
+- **`sp.bayes_mvprobit`** and **`sp.bayes_mnprobit`**: multivariate and
+  multinomial probit by data augmentation on the unrestricted covariance,
+  reporting the identified coefficients and correlations. Checked by the
+  joint-distribution test and against importance sampling from the prior.
+  The multinomial probit covariance is weakly identified with
+  decision-maker regressors only and its chain is as slow as
+  `bayesm::rmnpGibbs` on the same data; the result warns.
+- **`sp.bayes_mixture`**: mixtures of normal regressions with a fixed
+  number of components or a Dirichlet process (`components='dp'`), by a
+  collapsed Gibbs sampler. Number of clusters, posterior similarity
+  matrix, a point partition, and for `"y ~ 1"` the density with bands.
+  With eight observations the sampler reproduces the posterior obtained
+  by enumerating all 4,140 partitions.
+- **`sp.gp_regress`**: Gaussian process regression with RBF and Matern
+  kernels, one length scale per regressor, hyperparameters by maximum
+  marginal likelihood, and a constant mean estimated with its uncertainty
+  in the bands. Agrees with scikit-learn to 1e-10 at fixed
+  hyperparameters.
+- **`sp.bart`**: Bayesian additive regression trees for continuous and
+  binary outcomes, on an engine written from the published model (numba,
+  birth and death moves). Posterior bands, prediction at new points,
+  share of splitting rules per regressor. The sampler is checked against
+  the exact posterior of a model small enough to enumerate and by the
+  joint-distribution test for a sum of trees; on a Friedman sample its
+  test error is within the range of R `dbarts` across seeds.
+- **`sp.abc`**: inference for models that can only be simulated.
+  Rejection ABC with an optional local linear adjustment, and Bayesian
+  synthetic likelihood. All three are checked against exact posteriors.
+- `sp.bayes_regress(model='mlogit')`: multinomial logit.
+  `sp.bayes_regress(inference='vb')`: mean-field variational Bayes for the
+  normal model, with the evidence lower bound.
+- **`sp.bma`**: Bayesian model averaging. `method='bic'` with Occam's
+  window for Gaussian, binomial, Poisson and gamma outcomes, and
+  `method='gprior'` with the benchmark g-priors for Gaussian outcomes, by
+  enumeration or MC3. `always=` keeps the regressor of interest in every
+  model. The models inside Occam's window are found by an exact branch
+  and bound.
+- **`sp.bayes_factor`** and **`sp.savage_dickey`**: Bayes factors and
+  posterior model probabilities from marginal likelihoods, and the
+  density-ratio test of a point restriction.
+- **`sp.bayes_bootstrap`**: Rubin's Bayesian bootstrap of a regression or
+  of any weighted statistic.
+- **MCMC diagnostics for any chain**: `sp.mcmc_summary`, `sp.mcmc_ess`,
+  `sp.hpd_interval`, `sp.geweke_diag`, `sp.raftery_diag`,
+  `sp.heidel_diag`, `sp.gelman_rubin`.
+
+#### Evidence
+
+- The diagnostics agree with R `coda` 0.19-4.1 to 1e-9 on committed
+  chains. `sp.bma` agrees with `BMS::bms` to 1e-9 and with `BMA::bic.glm`
+  to 1e-9 in the model probabilities of the logit and Poisson families.
+  `BMA::bicreg` computes BIC from an R-squared rounded to five decimals;
+  rounding ours the same way reproduces its BIC to 1e-9
+  (`tests/reference_parity/test_bayes_mcmc_parity.py`).
+- Every sampler is compared with the exact posterior of a small model,
+  integrated on a grid from `scipy.stats` densities that share no code
+  with the sampler: posterior means within four Monte Carlo standard
+  errors, standard deviations within 5 percent, marginal likelihoods
+  against the exact normalising constant
+  (`test_bayes_regress_exact_posterior.py`,
+  `test_bayes_mixed_exact_posterior.py`).
+- The book's examples on its own data against long runs of `MCMCpack` and
+  `bayesm` are a stochastic screen, not a parity claim
+  (`tests/external_parity/test_ramirez_hassan_bayes.py`).
+- `sp.bayes_ivreg` is checked against its exact posterior with the error
+  covariance integrated out in closed form, and `sp.bayes_iv` (PyMC)
+  against `sp.bayes_ivreg`.
+- Known-truth screens of the other PyMC estimators, 40 samples each:
+  `sp.bayes_rd` and `sp.bayes_its` have posterior standard deviations
+  within 2 percent of the least squares standard errors and coverage of
+  37 and 39 out of 40. `sp.bayes_did` has a posterior standard deviation
+  of 0.107 against the analytic 0.105 and covers in 36 of 40.
+  `sp.bayes_dml` (60 samples): posterior standard deviation 0.0365,
+  estimates vary by 0.034, 57 cover.
+
+#### Changed
+
+- `sp.bvar(...).summary()` labels the coefficient rows (`L1.gdp`, ...,
+  `_cons`); `coef_names` and `coef_table()` expose them.
+
+#### Where StatsPAI does not follow the reference packages
+
+- Quantile regression estimates the scale of the asymmetric Laplace
+  likelihood. `MCMCpack::MCMCquantreg` fixes it at one, which makes the
+  width of the credible intervals depend on the units of the outcome.
+  `scale=1.0` reproduces it.
+- The ordered probit always has free cutpoints. The book's example passes
+  a design without a constant to `bayesm::rordprobitGibbs`, whose first
+  cutpoint is fixed at zero; the resulting coefficients are more than
+  three standard errors from maximum likelihood.
+- The multivariate Gelman-Rubin factor uses the number of chains, as in
+  Brooks and Gelman (1998). `coda` has the number of parameters there.
+- `MCMCpack::MCMChregress` reports a posterior sd of 0.008 for the
+  intercept of the book's public-capital panel, below the floor
+  `sqrt(0.106 / 48) = 0.047` that the model's own state-effect variance
+  implies. `sp.bayes_mixed` gives 0.17 under the same prior, and the
+  `lme4` standard errors within 3 percent under its default prior.
+- The book's prior for that variance component, `InvWishart(5, 5)`,
+  supplies 91 percent of its sum of squares; the posterior mean is 14
+  times the REML estimate. `sp.bayes_mixed` does not use that prior by
+  default, reports the prior's share of every variance component, and
+  warns above 25 percent.
+
+### What a graph-first causal inference book found
+
+Ness's *Causal AI* builds a DAG, tests it, fits a model on it, intervenes,
+identifies an estimand and only then estimates, with pgmpy, y0, DoWhy and
+Pyro. Each step was redone with StatsPAI on the book's data and compared
+with the numbers the notebooks print and with independent R packages
+(dagitty, bnlearn, pcalg, causaleffect). The econometrics textbooks probed
+estimators. This one probed the layer that says which estimator a graph
+licenses, and most of the fixes are there. Notes are in
+`docs/dev/2026-10-06-ness-causal-ai-review.md`; the user-facing map is
+`docs/guides/ness_causal_ai.md`.
+
+#### ⚠️ Correctness
+
+- **`sp.dag` dropped every arrow written right to left.** `"X <- Z"` was
+  skipped, so `sp.dag("X <- Z; Z -> Y; X -> Y")` had no confounding arrow
+  and `adjustment_sets` returned the empty set as valid. `"A -> B <- C"`
+  made a node called `"B <- C"`. Arrows now read either way and chain. A
+  name alone declares a node. An undirected edge, an unreadable statement
+  or a cycle raises; all three used to be skipped.
+- **`DAG.adjustment_sets` returned no set when the smallest had seven or
+  more variables.** The search stopped at six, and an empty list means
+  "not identified by adjustment": with eight observed confounders
+  `sp.dag_recommend_estimator` answered "Not identifiable under the
+  declared DAG". Existence is now decided exactly at any size
+  [@vanderzander2019separators]; larger sets are found by pruning the
+  ancestral one. Same sets as dagitty on the reference graphs.
+- **`DAG.backdoor_paths` listed paths that do not enter the exposure.** It
+  returned every non-causal path, including `X -> M -> C <- Y`. As a
+  result `classify_variable` called mediators and the parents of an M-bias
+  collider confounders, and `summary` drew every edge as `→`.
+  `backdoor_paths` now returns backdoor paths, `noncausal_paths` the rest
+  too, and `path_status` has a third type, `'noncausal'`, and an `'arrows'`
+  field with the path as drawn.
+- **`sp.identify` treated nodes named `U_...` as unobserved.** Nothing
+  documented it. `adjustment_sets` offered such a node as an adjustment
+  variable while `identify` reported the same graph as not identifiable.
+- **`sp.front_door` returned a shrunken estimate when the mediator did not
+  vary within a treatment arm.** The regression of Y on M in that arm has
+  no M coefficient, least squares set it to zero, and the effect was
+  scaled by the other arm's share (153.81 on the book's data, where
+  nobody untreated has `M = 1`). It now raises `IdentificationFailure`.
+  `outcome_model='additive'` extrapolates explicitly under no D-by-M
+  interaction and reproduces DoWhy's `frontdoor.two_stage_regression`
+  (170.20560581290403) to 1e-12.
+- **`sp.pc_algorithm` lost edges and searched the wrong conditioning
+  sets.** When two colliders claimed one edge in opposite directions the
+  edge was deleted from the CPDAG: 85 of 200 draws of a six-variable
+  design at n = 120 lost at least one. Conditioning sets were drawn from
+  the union of both neighbourhoods, updated within a level, which is
+  neither PC nor PC-stable and depended on column order. The search is
+  now PC-stable [@colombo2014order] and returns the skeleton, separating
+  sets and (absent clashes) CPDAG of `pcalg::pc`. Clashes are kept in
+  node order and returned in `orientation_conflicts`. Meek's third rule
+  was missing and is applied. **Graphs learned with earlier versions can
+  differ.**
+- **`sp.fci` stopped its skeleton search at the first level that removed
+  no edge.** With three common causes of X and Y the spurious `X - Y` edge
+  survived at any sample size. It now uses the same search as
+  `sp.pc_algorithm`. Edge labels were also wrong at the left end: a
+  bidirected edge read `X >-> Y` (now `X <-> Y`) and `X <-- Y` read
+  `X >-- Y`. The graph now equals `pcalg::fci` mark for mark on three
+  designs, one with unobserved common causes.
+
+#### Added
+
+- **`sp.bayes_net`**: a discrete causal Bayesian network. Tables are
+  estimated from categorical data (with an optional Dirichlet prior),
+  written by hand, or given as functions of the parents. Exact inference
+  by variable elimination: `query(variables, evidence=, do=)`, `prob`,
+  `expectation` (with a utility per state), `do`, `simulate`, `cpt`, and
+  `counterfactual` by a twin network when every non-root node is
+  deterministic. A query that depends on a parent configuration with no
+  data warns that positivity fails. Reproduces the book's kernels,
+  queries, expected utilities and Monty Hall counterfactuals, bnlearn's
+  kernels, and enumeration to 1e-13.
+- **`sp.identify(...).estimate(data)`**: the ID estimand evaluated on
+  categorical data, using observed columns only, with an optional
+  bootstrap. Treatment values whose formula needs a conditional
+  probability with no data come back missing with a warning.
+- **`sp.refute`**: refutation tests for any effect estimator (placebo
+  treatment, dummy outcome, random common cause, data subset), with Monte
+  Carlo p-values that the reruns are centred where they should be.
+- **Categorical conditional-independence tests.**
+  `DAG.test_implications(df)` uses a chi-square test when the columns are
+  labels (`test='g-test'` for the likelihood ratio) and reports Cramer's
+  V. `sp.pc_algorithm(ci_test='chi-square' | 'g-test')` learns from
+  categorical columns. Statistics, degrees of freedom and p-values equal
+  `dagitty::localTests(type='cis.chisq')` and `bnlearn::ci.test`
+  (`x2-adf`, `mi-adf`).
+- `sp.front_door(outcome_model='additive')`.
+- `DAG.noncausal_paths`, `DAG.format_path`.
+
+#### Changed
+
+- `sp.dag` reads quoted names, Graphviz `digraph { ... }` and dagitty
+  `dag { ... }` wrappers, and `{A B} -> C` groups. A DOT string used to
+  yield node names with the quotation marks in them.
+- The estimand `sp.identify` prints no longer conditions on variables the
+  graph d-separates from the factor. For the book's gaming graph
+  `P(Purchases | seven variables)` became `P(Purchases | four parents)`.
+  The value is the same.
+- `sp.dag_recommend_estimator` lists every strategy the graph licenses
+  (the front door and an instrument next to the backdoor), and writes
+  column names that are not identifiers as `Q("...")` so the call runs.
+- `sp.ipw` stores `ess_treated`, `ess_control` and `ess_ratio_min` and
+  raises an `AssumptionWarning` when an arm's effective sample size is
+  under a fifth of the arm; `result.violations()` reports the same.
+- A treatment column of labels (`'high'` / `'low'`) raises an error that
+  names the column and the recode, in `sp.ipw`, `sp.aipw`,
+  `sp.g_computation`, `sp.tmle`, `sp.metalearner`, `sp.front_door`,
+  `sp.ebalance`, `sp.cbps` and `sp.dml`. It was numpy's "could not convert
+  string to float".
+- `sp.pc_algorithm`, `sp.ges`, `sp.notears`, `sp.lingam` and `sp.fci` say
+  that non-numeric columns are the reason they cannot run and point to
+  `ci_test='chi-square'`. `sp.pc_algorithm` refuses a `ci_test` it does
+  not implement (the docstring advertised `'hsic'`).
+- `DAG.path_status` and `DAG.all_paths` return paths in a fixed order.
+### What a statsmodels time-series textbook found
+
+Maitra's *A Practical Guide to Static and Dynamic Econometric Modelling*
+teaches diagnostics, asset-pricing regressions, ARDL, ARIMA, VAR and VECM
+with statsmodels on series downloaded from FRED and Yahoo Finance. Each
+computation was rerun with StatsPAI and compared with statsmodels, R 4.5.2
+and Stata 18. Notes are in
+`docs/dev/2026-10-06-maitra-static-dynamic-review.md`.
+
+#### ⚠️ Correctness
+
+- **`sp.arima` on a differenced series depended on the unit of
+  measurement.** The level of an integrated series was started from a
+  normal prior of variance 1e6, the statsmodels default. That prior is
+  diffuse only against an innovation variance far below 1e6. For
+  ARIMA(1, 1, 0) on quarterly U.S. GDP the AR coefficient was 0.170 with
+  GDP in billions of dollars, 0.216 in trillions and 0.025 in millions. It
+  is now 0.216 in every unit, the estimate of R's `arima(method="ML")` and
+  Stata's `arima`, and the log-likelihood agrees with both to seven
+  digits. The filter now uses the exact diffuse initialisation, and the
+  `d + sD` observations that identify the integration states are left out
+  of the likelihood. A model with `d = 0`, or with no AR or MA term, is
+  unaffected.
+- **`sp.arima(method='innovations_mle')` reported the wrong
+  log-likelihood for a differenced model.** Its coefficients were right,
+  but the log-likelihood, AIC and BIC came from the same filter. For
+  ARIMA(0, 2, 1) on GDP it reported -408.62 where R gives -400.13.
+- **`sp.arima(auto=True)` never considered a drift, and could select a
+  model fitted on the unit circle.** After one difference only models
+  without a constant were searched, so a trending series was fitted with
+  an AR root at one or differenced again. The constant is now part of the
+  search when `d + D <= 1`, as in R's `forecast::auto.arima`, and a
+  candidate with an AR or MA root within 1% of the unit circle is dropped.
+  On thirteen series the order, the differencing, the constant and the
+  AICc match `auto.arima(stepwise=FALSE, approximation=FALSE)`. Pass
+  `trend='n'` or `trend='c'` to fix the constant yourself.
+- `sp.arima` computes AIC, BIC and AICc from the log-likelihood, the
+  number of estimated parameters and the number of observations after
+  differencing, as R and Stata do.
+- `sp.johansen(test='maxeig').summary()` headed its column "Trace stat"
+  and wrote the null as `r <= k`. It now reads "Max-eig stat" and `r = k`.
+  The statistics were right.
+
+#### Added
+
+- **`sp.chow_test`**: the Chow test for a break at a date fixed in
+  advance. All coefficients or a subset, one break or several, classical
+  or robust covariance. The break is the number of rows in the first
+  regime, a value of a time column, or an index label. Agrees with
+  `strucchange::sctest(type="Chow")` to 12 digits and, in its Wald form,
+  with Stata's `estat sbknown`. `sp.structural_break(method='chow')` is
+  unchanged: it searches for the date and uses the sup-F reference.
+- **`sp.bds`**: the BDS test that a series is independent and identically
+  distributed, usually run on residuals. Takes a series or a fitted
+  regression. Reproduces `statsmodels.tsa.stattools.bds` exactly.
+- **`sp.rolling`**: rolling or recursive least squares from a formula,
+  with coefficients, standard errors (classical or HC0 to HC3), R-squared
+  and root MSE per window. Agrees with statsmodels' `RollingOLS` to 1e-13.
+- `sp.cusum_test(method='ols')`: the CUSUM test on OLS residuals, whose
+  boundary is a constant. Agrees with `strucchange` to 12 digits and with
+  Stata's `estat sbcusum, ols`. The default is still the
+  recursive-residual test, and the result gains a `method` key.
+- `sp.corrgram(model_df=, boxpierce=)`: degrees of freedom reduced by the
+  ARMA coefficients behind a residual series, and the Box-Pierce
+  statistic. Agrees with R's `Box.test(fitdf=)`.
+- `sp.ardl(x_lags='bic')` or `'aic'` searches the lag order of every
+  regressor, jointly with the autoregressive order when `lags` names the
+  same criterion. Selects what `ardl_select_order` selects.
+- `ARDLResult.forecast(steps=, exog=)`: dynamic forecasts several periods
+  ahead, with future values of the regressors where the model needs them.
+  `ARDLResult.long_run()`: long-run effects with delta-method standard
+  errors, equal to statsmodels' `UECM.ci_params` and `ci_bse`.
+- `VECResult.forecast`, `.irf` and `.fevd`: forecasts with intervals,
+  impulse responses and the variance decomposition of the levels. Equal
+  to statsmodels' `VECM` for the five deterministic cases and to
+  `vars::vec2var` in R.
+- `sp.engle_granger` reports MacKinnon's p-value (`result.pvalue`), the
+  one statsmodels' `coint` gives, and the result has a readable `repr`.
+
+#### Changed
+
+- `sp.arima` searches for the maximum on a standardised copy of a badly
+  scaled series and maps the estimates back. With GDP in billions the
+  drift of ARIMA(1, 1, 0) was 249.09 where the maximum is at 248.90.
+- `sp.swilk` and `sp.sktest` accept a Series or a one-dimensional array,
+  and `sp.ttest(series, mu=...)` tests it against a value.
+- `sp.qreg(quantile=[...])` says to use `sp.sqreg`. It raised a
+  `TypeError` from a comparison.
+- `result.get_influence()` and `result.outlier_test()` name
+  `sp.influence_measures`.
+
+### What an applied R causal-inference book found
+
+Das, *Causal Inference in R* (Packt), works through propensity scores,
+graphs, instruments, mediation, causal forests and causal discovery with
+MatchIt, dagitty, AER, mediation, grf, pcalg and bnlearn. Its 32 scripts
+were rerun in R 4.5 and each computation repeated with StatsPAI on the same
+data, with Stata 18 as a second reference where it has the command. Most
+of it reproduced to the last digit. What did not is below; notes are in
+`docs/dev/2026-10-06-das-causal-inference-in-r-review.md`.
+
+#### ⚠️ Correctness
+
+- **`CoxResult.ph_test()` was not the Grambsch-Therneau test.** It returned
+  `n * rho^2` with `rho` the Spearman correlation between time and the
+  unscaled Schoenfeld residuals. On the book's maintenance data that gave
+  0.14 where `survival::cox.zph` gives 1.03. It is now the score test of
+  `cox.zph` (survival 3.0 and later), with `transform='km'` by default and
+  `'rank'`, `'identity'`, `'log'` or a callable as alternatives, a `df`
+  column and a `GLOBAL` row. It agrees with `cox.zph` to 1e-6 under either
+  tie rule, with and without strata. `method='approx'` gives the 1994
+  approximation that Stata's `estat phtest` reports, and matches it for
+  all four time functions. The `ph_test` violation that `sp.cox` stores is
+  computed from the new statistic.
+- **The overdispersion test of `sp.poisson` could not detect
+  overdispersion.** The auxiliary regression had a constant in it and was
+  tested on the slope, which measures how the excess variance changes
+  with the mean. Counts with a Pearson dispersion of 12 passed with
+  p = 0.44. It is now the Cameron-Trivedi regression without intercept of
+  `((y - mu)^2 - y) / mu` on `mu`, the statistic of
+  `AER::dispersiontest(trafo = 2)` (3.9747 on those counts, in both).
+  `diagnostics` gains `'Dispersion (Pearson chi2 / df)'` and
+  `'Overdispersion alpha (C-T)'`.
+
+#### Added
+
+- **`sp.power_ttest`**: power, sample size or detectable difference of a
+  one-sample, two-sample or paired t test from the noncentral t
+  distribution. Give two of `n`, `delta` and `power`. Agrees with Stata's
+  `power onemean / twomeans / pairedmeans` to 1e-10 and with
+  `pwr::pwr.t.test` to its solver tolerance. `sp.power_rct` is the normal
+  approximation and is unchanged; with 15 per arm and an effect of one
+  standard deviation it reports 0.78 where the t test has 0.75.
+- **`sp.esize`**: Cohen's d, Hedges's g, Glass's Delta and the
+  point-biserial correlation for a difference between two group means,
+  with noncentral-t confidence intervals. Equal to Stata's
+  `esize twosample, all` to 1e-9, with and without `unequal`.
+- **`sp.cor_test`**: Pearson's correlation, or the partial correlation
+  given covariates, with its t test and Fisher-z interval (R `cor.test`,
+  `ggm::pcor.test`).
+- `sp.adjust_pvalues` gains `'hochberg'`, `'hommel'`, `'by'`
+  (Benjamini-Yekutieli) and `'sidak'`. With the existing three these are
+  the methods of R's `p.adjust`, to 2e-15.
+- `sp.iv` and `sp.ivreg` read the two-part formula of `AER::ivreg`,
+  `"y ~ x + d | x + z"`. A regressor missing from the instrument list is
+  endogenous.
+
+#### Changed
+
+- **`sp.match` warns when `ties='first'` chose among equally close
+  matches.** On the ECLS sample the book uses, three covariates give a
+  propensity score with 91 distinct values over 9,289 children. The
+  default kept the first control in data order for each, so 1,357 treated
+  children were matched to 52 controls and the ATT was -0.50 (SE 0.25).
+  With every tied control kept (`ties='all'`) it is -0.12 (SE 0.03). The
+  numbers are unchanged; the warning states how many units had ties and
+  how many controls the estimate rests on, and `model_info` carries
+  `n_units_with_tied_matches` and `n_tied_matches_left_out`.
+- The error for an unknown `sp.adjust_pvalues` method lists method names.
+  It listed function objects.
+- `docs/guides/migration-from-r.md`: the `AER::ivreg` row showed a call
+  that raises (`instruments=`), and the `pcalg::fci` row a dispatcher
+  method that is refused. Both corrected, and a section added for base-R
+  tests, `effsize`, `pwr`, `cox.zph` and `dispersiontest`.
+
+The same rerun found that `sp.pc_algorithm` drops edges `pcalg::pc` keeps.
+A parallel pass (Ness, *Causal AI*) reached that function first and carries
+the fix; this one leaves `causal_discovery/` and `dag/` alone. The notes
+record a 24-case `pcalg` comparison for whoever closes it.
+### What an accounting research textbook found
+
+Gow and Ding's *Empirical Research in Accounting: Tools and Methods*
+(2024) teaches the field's methods in R, with `fixest`, `plm`, `sandwich`
+and `robustbase` and the companion package `farr`. Most chapters need CRSP
+and Compustat through WRDS. The ones that do not, and the simulated or
+packaged-data parts of four others, were rerun in R 4.5.2 and recomputed
+with StatsPAI; what changed was then tested on committed synthetic files
+against R and Stata 18. Notes are in
+`docs/dev/2026-10-06-gow-ding-accounting-review.md`; the user-facing map is
+`docs/guides/empirical_accounting_research.md`.
+
+#### ⚠️ Correctness
+
+- **Two-way clustered standard errors when the covariance matrix is not
+  positive semi-definite.** `sp.regress(cluster=[a, b])` and
+  `sp.panel(..., cluster=[a, b])` build the covariance as `V_a + V_b -
+  V_ab`, which can have negative eigenvalues when one dimension has few
+  clusters. A negative variance was reported as a standard error of 0, with
+  no warning, and the matrix behind the standard errors was not stored, so
+  `.vcov()` raised. Negative eigenvalues are now set to zero, the
+  adjustment of Cameron, Gelbach and Miller (2011) that `fixest` and
+  `reghdfe` apply, a `RuntimeWarning` says so, and the matrix is stored. On
+  the book's accruals regression (8,850 firm-years, 21 years, 85
+  coefficients) 46 eigenvalues are negative and the reported standard
+  errors rise by 4 to 19 percent; they now equal `fixest`'s to 1e-12 when
+  both use the same base year. Fits whose covariance was already positive
+  semi-definite are unchanged. `sp.feols` applies the same adjustment to
+  pyfixest's matrix, where a negative variance was a missing standard
+  error and the others were 4 to 19 percent too small on that regression;
+  it now equals R's `fixest` to 1e-12 there too.
+- **`sp.poisson` failed on a quasi-separated model**, with "SVD did not
+  converge". A regressor that picks out only zero outcomes has no finite
+  coefficient; the iteration tested convergence on the coefficients alone
+  and walked that one towards minus infinity until the weights underflowed.
+  It now also stops when the deviance is flat, reports the other
+  coefficients (equal to R's `glm` to 1e-9), warns, and lists the regressor
+  in `model_info['separated_terms']`. The starting values are `glm`'s
+  (`mu = y + 0.1`); the old ones could overflow on counts in the thousands.
+  Converged fits are unchanged.
+- **`sp.from_r` translated `matchit()` to a call that gave another
+  estimate.** Without replacement the matched pairs depend on the order
+  in which treated units choose. MatchIt starts from the largest
+  propensity score; `sp.match` has a different default, and the
+  translation left the order out. On a 1,200-unit file the translated call
+  returned 0.533 where MatchIt returns 0.542. The translation now writes
+  `m_order='largest'` (or the `m.order` given), and the six calls tested
+  reproduce MatchIt 4.7.2 to 1e-15.
+- **`sp.from_r` dropped the clustering of a `feols` call without a note.**
+  `feols(y ~ x | f, ~ firm + year, data = d)` and `vcov = ~ firm + year`
+  translated to `sp.feols('y ~ x | f', data=df)`. Both forms now give
+  `vcov={'CRV1': 'firm + year'}`; `vcov = "iid"` and `"hetero"` carry over,
+  and anything else is listed as untranslated.
+
+#### Added
+
+- **`sp.fama_macbeth`**: one cross-sectional regression per period, the
+  coefficients averaged, standard errors from their variation over time,
+  `lags=` for the Newey-West correction of the coefficient series.
+  `plm::pmg` and `sandwich::NeweyWest` to 1e-15, Stata `xtfmb` to 1e-6
+  (it keeps the per-period estimates in single precision).
+- **`sp.robreg`**: M, S and MM robust regression. The S step is the fast-S
+  algorithm with a subsampling scheme that also works with indicator
+  regressors. Coefficients, scale, robustness weights and the sandwich
+  covariance equal Stata `robreg` to 1e-8; coefficients, scale and weights
+  equal `robustbase::lmrob` to 1e-9; `method='m'` with `vce='huber'`
+  equals `MASS::rlm` to 1e-10.
+- **`sp.itcv`**: Frank's impact threshold for a confounding variable, the
+  impacts of the observed controls as a benchmark, and the percent bias and
+  RIR of Frank et al. (2013). Equal to Stata `pkonfound` to 1e-15.
+- **`sp.ndcg`**: normalised discounted cumulative gain at k, the ranking
+  measure of the fraud-prediction literature, next to `sp.auc`.
+- **`sp.abnormal_returns`**: the event study of finance and accounting.
+  Abnormal returns around each event from a market, market-adjusted,
+  mean-adjusted or factor model fitted on a pre-event window, cumulative
+  abnormal returns with forecast-error standard errors, and five tests of
+  their mean (cross-sectional t, Patell, BMP, and the two Kolari-Pynnonen
+  adjustments for clustered event dates). Against Stata `estudy` on a
+  committed file: abnormal returns and CARs of all four models to 5e-6
+  (`estudy` works in single precision), the tests to 1e-9 given the same
+  standardised CARs, and end to end to 5e-5 for the two models whose
+  standard deviations follow the same rule. `estudy`'s market-model
+  standard deviation uses `n - 1` where the forecast-error variance has
+  `n - 2`, and its factor-model one leaves out the coefficient-error
+  term; both numbers are rebuilt from ours in the test. Its group CAAR is
+  not the mean of its own security rows and is not compared.
+- `sp.feols` IV results carry the first-stage F, the Sargan statistic and
+  the Wu-Hausman test, R fixest's `fitstat(m, ~ ivf1 + sargan + wh)`, to
+  1e-13 on the book's example and equal to `sp.ivreg` with the fixed
+  effects written as dummies. `sp.estat(result, "firststage" / "overid" /
+  "endogenous")` reads them; it returned empty results for a `sp.feols`
+  fit.
+- `sp.regress(robust='hac', hac_panel=(unit, time))`: Newey-West within
+  panels at exact time lags, in any row order. `plm::vcovNW` to 1e-15 and,
+  with `hac_small=True`, Stata `newey ..., force` to 1e-9, gaps included.
+  Without it a stacked panel is read as one long series.
+- `sp.winsor(..., trim=True)` sets the tails to missing instead of pulling
+  them in (`winsor2, trim`; `farr::truncate`).
+- `factor(x)` and `as.factor(x)` in a formula are read as `C(x)`, in every
+  estimator. They raised `NameError`.
+- `sp.from_r` translates `pmg`, `lmrob`, `rlm`, `rdrobust`, `binom.test`
+  and `linearHypothesis`; `matchit(!d ~ x)` and `caliper=` are carried
+  into the call. `sp.from_stata` / `sp.stata` translate `xtfmb`, `robreg`
+  and `newey` on `xtset` data.
+
+
+### What a forecasting textbook found
+
+Hyndman, Athanasopoulos, Garza, Challu, Mergenthaler and Olivares,
+*Forecasting: Principles and Practice, the Pythonic Way*, runs on
+statsforecast, statsmodels and hierarchicalforecast. Its methods come from
+the first author's R packages. Chapters 3 to 13 were rerun on the book's
+data three ways: with the book's libraries, with R (`forecast` 9.0.2,
+`hts` 6.0.3) and with StatsPAI. Notes are in
+`docs/dev/2026-10-06-hyndman-fpp-pythonic-review.md`; the user-facing map
+is `docs/guides/forecasting_fpp.md`.
+
+#### ⚠️ Correctness
+
+- **`sp.arima` could return an inferior local maximum without a warning.**
+  The fit was one quasi-Newton search. Over 32 models on nine of the book's
+  series it ended more than `1e-3` log-likelihood units below the maximum
+  in 13: an MA(3) for Egyptian exports at -186.84 where the maximum is
+  -183.35, an ARIMA(1,1,1) with drift for egg prices at 58.17 where R
+  reports 59.00, a seasonal model stopped on the invertibility boundary.
+  The search also ran at most 50 iterations, and an ARIMA(3,1,3)(0,1,1)[4]
+  stopped at 323.81 where the maximum is 326.47. Every fit now starts
+  twice, the second time from conditional-sum-of-squares estimates as R's
+  `CSS-ML` does, and is checked by simplex searches followed by a
+  quasi-Newton polish. A fit
+  that still does not converge raises `ConvergenceWarning`. Estimates of
+  models where the single search had found the maximum are unchanged.
+  `method='innovations_mle'` is unchanged.
+- **AICc of a seasonally differenced `sp.arima` model** used `n - d`
+  observations in its small-sample term. It uses `n - d - D s`, as
+  `forecast::Arima` does. AIC and BIC were right.
+- **`sp.arima(auto=True)`** ranked candidates fitted with at most 50
+  iterations and had no seasonal search. It now follows Hyndman and
+  Khandakar (2008); see Changed.
+
+- **`import statspai` failed on Python 3.11.** A dataclass in
+  `regression/gam.py` used `slice(0, 0)` as a field default; dataclasses
+  on 3.11 refuse an unhashable default, and `slice` became hashable only
+  in 3.12. The default is now a factory. Python 3.10, 3.12 and 3.13 were
+  not affected.
+
+#### Added
+
+- **`sp.ets`**: exponential smoothing as innovations state space models.
+  Simple exponential smoothing, Holt's linear and damped trend,
+  Holt-Winters additive and multiplicative, each with an additive or a
+  multiplicative error, fitted by maximum likelihood with the initial
+  states estimated. `model="ZZZ"` chooses the form by AICc. Forecasts carry
+  analytic prediction intervals, and simulated ones for the models that
+  have none. At the parameters `forecast::ets` estimates, the log
+  likelihood, fitted values and intervals equal R's to `1e-13` on 15
+  models. The optimiser is restarted, so the likelihood reached is at
+  least as high as R's on every model tested. The forecast variance of
+  ETS(A,N,A) and ETS(M,N,A) in `forecast` 9.0.2 enters `gamma` one lag
+  late (fixed in its development version); `sp.ets` follows the formula of
+  Hyndman, Koehler, Ord and Snyder (2008), which a simulation confirms.
+- **`sp.simple_forecast`**: the mean, naive, seasonal naive and drift
+  methods with normal or bootstrapped intervals. Equal to `naive`,
+  `snaive` and `rwf(drift=TRUE)` to `1e-14`.
+- **`sp.forecast_accuracy`**: ME, RMSE, MAE, MPE, MAPE, MASE, RMSSE and
+  the first autocorrelation of the errors for one or several forecasts.
+  Forecast tables with intervals add the Winkler score and coverage, and
+  the CRPS on request. Equal to `forecast::accuracy` to `1e-14`.
+- **`sp.tscv`**: cross-validation on a rolling forecast origin with an
+  expanding or rolling window, for the built-in methods or any function of
+  the training window. The error matrix equals `forecast::tsCV`. Origins
+  where the forecaster fails are reported, not dropped.
+- **`sp.stl`** and **`sp.classical_decompose`**: STL with R's settings, a
+  periodic seasonal option, robustness iterations and MSTL for several
+  seasonal periods. The result has the seasonally adjusted series, the
+  strength of trend and of seasonality, and forecasts that model the
+  adjusted series. Components equal `stats::stl` and `forecast::mstl` to
+  `1e-10`.
+- **`sp.ljungbox`**: Ljung-Box and Box-Pierce tests with the degrees of
+  freedom reduced by the number of fitted ARMA parameters. It accepts
+  residuals or a fitted `sp.arima`, `sp.ets` or `sp.simple_forecast`
+  result. Equal to `Box.test(fitdf=)`.
+- **`sp.ndiffs`**, **`sp.nsdiffs`**: the number of regular and seasonal
+  differences, by KPSS tests and by seasonal strength.
+- **`sp.boxcox_lambda`**: Guerrero's variance-stabilising Box-Cox
+  parameter.
+- **`sp.fourier_terms`**: sine and cosine regressors for long, non-integer
+  or multiple seasonal periods.
+- **`sp.hierarchy`** and **`sp.reconcile`**: build a hierarchical or
+  grouped structure with its summing matrix, and reconcile base forecasts
+  bottom-up, top-down, by OLS, structural or variance weights, or by
+  minimum trace with a shrunk or sample covariance. Equal to `hts::MinT`
+  and `combinef` to `1e-14`.
+- `boxcox=` and `biasadj=` in `sp.ets`, `sp.arima` and
+  `sp.simple_forecast`: model a Box-Cox transform of the series (a number
+  or `"auto"` for Guerrero's choice) and back-transform forecasts and
+  intervals, to the median or, with `biasadj=True`, to the mean. Equal to
+  `forecast::rwf` / `snaive` with `lambda=` to `1e-15`.
+- **`sp.ets` accepts missing values** between the first and the last
+  observation. A missing period moves the states on with a zero
+  innovation and adds nothing to the likelihood. R's `ets` keeps the
+  longest stretch without gaps.
+- `sp.reconcile(method="middle_out", middle=...)` and
+  `proportions="forecast"` (top-down by forecast proportions). Equal to
+  hierarchicalforecast's `MiddleOut` and `TopDown` to `1e-15`.
+- **`sp.ts_features`**: 29 summary features of a series or of every
+  column of a table of series (autocorrelation sums, strength of trend
+  and seasonality, spike, linearity, curvature, lumpiness, stability,
+  crossing points, flat spots, level and variance shifts, ARCH effect).
+  Equal to R `tsfeatures` to `1e-13`.
+- **`sp.bootstrap_series`** and **`sp.bagged_forecast`**: bootstrapped
+  versions of a series by Box-Cox, STL and a moving block bootstrap of
+  the remainder, and forecasts averaged over them (bagged ETS).
+- **`sp.seasonal_dummies`**: seasonal indicator regressors.
+- `sp.reconcile(sd=...)`: reconciled standard deviations and
+  `result.intervals(level)`, the normal prediction intervals of the
+  coherent forecasts. Interval widths equal hierarchicalforecast's
+  `Normality` method to `1e-14` for bottom-up, OLS and structural
+  weights.
+- `ARIMAResult.forecast(level=(80, 95), exog=..., dof_adjust=...)`:
+  several coverage levels, future values of the regressors, and the
+  degrees-of-freedom adjusted variance that `forecast::Arima` uses.
+  Forecasting a model with regressors used to raise a statsmodels error.
+  `ARIMAResult.candidates` lists the models an automatic search compared.
+
+#### Changed
+
+- **`sp.arima(auto=True)`** is the search of Hyndman and Khandakar.
+  `period=` adds seasonal orders, with the seasonal difference set by
+  seasonal strength. A mean (no differencing) or a drift (one difference)
+  is included when AICc prefers it. The search is stepwise from four
+  standard models; `stepwise=False` fits every model up to total order
+  five. A model with a root of modulus below 1.01 is not returned. On the
+  fifteen series of the book compared, it returns the model R's
+  `auto.arima(approximation=FALSE)` returns.
+- **`sp.arima`** estimates a differenced model on the differenced series
+  and then computes fitted values and forecasts from the level model with
+  the exact diffuse start described under the dynamic-modelling audit
+  below. The likelihood is the same one; the search is several times
+  faster. It is the likelihood Stata maximises and the one R's `arima`
+  gives for the differenced series. On ten models of the book's series where
+  the old search had converged, log likelihoods move by less than `1e-3`
+  and coefficients by at most `2e-3`. Forecasts now agree with
+  `forecast::Arima` to about `1e-6`.
+- **`sp.arima` is faster.** The likelihood of the differenced series is
+  evaluated by the innovations algorithm, compiled with numba. It is the
+  number the Kalman filter returns, to `1e-8`, about fifteen times
+  faster. `auto=True` with `period=12` takes 2 to 7 seconds on the book's
+  monthly series; it took one to five minutes, and R takes 5 to 16 seconds
+  with `approximation=FALSE`. numba is imported on the first call to
+  `sp.arima`, not on `import statspai`.
+- Regressors of `sp.arima` keep their names in `params`. They were
+  `x1`, `x2`.
+- `ARIMAResult.forecast()` is indexed by the forecast periods when the
+  series had a date or period index.
+
+### What a Python econometrics textbook found
+
+Dogan's *Introduction to Econometrics with Python* follows Stock & Watson
+with every example written for statsmodels, linearmodels, scikit-learn and
+`arch`. Each computation was rerun with StatsPAI on the book's data and
+compared with those libraries and with Stata 18. Notes are in
+`docs/dev/2026-10-05-dogan-python-econometrics-review.md`; the user-facing
+map is `docs/guides/migration-from-statsmodels.md`.
+
+#### ⚠️ Correctness
+
+- **`sp.arima` now reports the exact maximum likelihood estimates.** The
+  default method started the Kalman filter from a diffuse prior and left
+  the first `max(p, q + 1)` observations out of the likelihood. On 223
+  quarters of U.S. GDP growth an AR(1) gave a constant of 2.942 and a
+  log-likelihood of -562.07. Stata's `arima`, R's `arima(method="ML")` and
+  statsmodels' `ARIMA` give 2.980 and -565.00, and so does `sp.arima` now
+  (coefficients to five digits, log-likelihood to 1e-5 against Stata). An
+  AR(1) check against the likelihood written in closed form is in
+  `tests/test_arima_exact_likelihood.py`. `method='innovations_mle'` was
+  already exact and is unchanged.
+- **`sp.arima(auto=True)` could not select white noise or a random walk,
+  and favoured large models.** `(0, d, 0)` was skipped by the search, and
+  models with more states were scored on fewer observations, so AICc
+  rewarded them for nothing. On white noise with 100 observations the
+  search returned a nonzero order 150 times out of 150. It also chose `d`
+  by comparing AICc across differently differenced series, which describe
+  different data. Now `d` is chosen first by KPSS tests (the rule of R's
+  `forecast::auto.arima`) and `(p, q)` by AICc on a common sample,
+  `(0, d, 0)` included. The same experiment returns `(0, 0, 0)` 54% of the
+  time, and `(0, 1, 0)` 56% of the time on a random walk.
+- `sp.arima(method='css')` and `method='conditional'` raise. They were
+  silently mapped to exact maximum likelihood, which is a different
+  estimator from conditional sum of squares.
+
+#### Added
+
+- **`sp.shrinkage`**: ridge, lasso and principal-components prediction
+  with the penalty or the number of components chosen by m-fold
+  cross-validation, and the cross-validated root mean squared prediction
+  error. `fit.predict(data)` and `fit.rmspe(holdout)` score new data.
+  Means and standard deviations are recomputed on each training fold.
+  Ridge and principal components agree with scikit-learn to 1e-12 on the
+  book's 816-predictor school data; the lasso agrees to solver tolerance.
+  This closes the chapter 14 item left open by the Stock & Watson review.
+- `sp.test(result, "x1 = 0, x2 = 0")`: comma-separated restrictions are a
+  joint test, as in statsmodels' `f_test`.
+
+- `predict()` and `sp.margins` work on an IV fit whose formula has a
+  transformed term. The design is rebuilt from the structural equation;
+  the `(x ~ z)` block used to stop the formula engine.
+- `tests/reference_parity/test_arima_default_stata_parity.py`: the default
+  `sp.arima` against Stata 18 on a committed series, four models, with the
+  log-likelihood to 1e-6.
+
+#### Changed
+
+- **`sp.ivreg` / `sp.iv` report formula terms under the names `sp.regress`
+  gives them.** `np.log(x)`, `I(x ** 2)` and `C(g)[T.2]` were reported as
+  `np.log[x]`, `I[x ** 2]` and `g[2]`, the stand-in column names the IV
+  parser estimates them under. `sp.regtable(ols, iv)` now puts a regressor
+  on one row, `sp.test(iv, "np.log(x) = 0")` finds it, and Stata's
+  `2.g` / `i.g` resolve. Estimates are unchanged. Code that indexes an IV
+  result by the bracket name needs the new name (see `MIGRATION.md`).
+  Panel results keep the bracket names for now; `sp.test` and `sp.lincom`
+  accept either spelling there.
+- `sp.vecm`, `sp.IV2SLS`, `sp.adfuller` and other names from statsmodels,
+  linearmodels and `arch` raise an `AttributeError` that names the
+  StatsPAI function (`sp.vec`, `sp.ivreg`, `sp.unitroot`); a misspelt name
+  gets "did you mean".
+- `sp.test` and `sp.lincom` match coefficient names without regard to
+  blanks inside them. `I(inc**2)` names the coefficient the design calls
+  `I(inc ** 2)`; it was "Cannot parse term".
+- Asking a regression result for a statsmodels attribute (`bse`,
+  `rsquared`, `resid`, `f_test`, `get_margeff`, ...) still raises
+  `AttributeError`, and the message now says where the same thing lives
+  (`std_errors`, `r2`, `residuals()`, `test()`, `sp.margins`).
+
+### What an introductory Stata text found: Kohler, Kreuter and Haensch (2026)
+
+*Data Analysis Using Stata* (4th ed.) teaches what comes before the first
+regression: variables, labels, tables, weights, survey data, programs.
+Its commands were run in Stata 18 on the book's datasets and replayed
+through `sp.stata`. At the start 1,619 printed numbers were reproduced,
+101 differed and 375 commands were declined; now 5,442 are reproduced, 25
+differ for stated reasons and 45 are declined. The notes are in
+`docs/dev/2026-10-05-kohler-kreuter-4e-review.md`. Stata 18 reference
+numbers on committed synthetic data are in
+`tests/reference_parity/test_kohler_kreuter_stata_parity.py` (196 numbers).
+
+#### ⚠️ Correctness
+
+- **A formula over a column named like a Python keyword failed.**
+  `sp.regress("survived ~ C(class)", ...)`, and any formula that wraps
+  `class`, `return`, `yield` or `lambda` in a function, raised a syntax
+  error. These are ordinary variable names in Stata and R data. All
+  estimators that build their design from a formula are affected.
+- **`sp.estat(result, "reset", rhs=True)` could return a negative F** when
+  a regressor was in the thousands: its cube reached 1e14 and the
+  unrestricted fit lost it to rounding. The powers are now taken on unit
+  scale. On the rent regression of the book Stata's F(8, 2148) = 59.24 had
+  come out as -214.
+- **`sp.hausman` left factor levels out of the comparison** when the two
+  results spelled them differently (`C(g)[T.2]` and `g::2.0`). Fixed
+  against random effects with `i.mar`, the test had 2 degrees of freedom
+  where Stata has 6 (chi2 100.26 against 236.26).
+- **`sp.stata`: `x == .`, `x != .` and `x > .` on a variable with extended
+  missing values.** The data keep `.a` to `.z` as NaN, like `.`, so
+  `keep if x != .` dropped rows that Stata keeps (in Stata `.a != .` is
+  true). The session now knows which variables may hold such values and
+  declines the comparisons that tell the kinds apart, as well as `by`,
+  `tabulate, missing` and `collapse, by()` on them. `missing(x)`, `x < .`
+  and `x >= .` are unaffected. A frame says which variables are coded
+  through `sp.read_data(..., extended_missing='column')` or
+  `df.attrs['_ext_missing']`.
+- **`sp.stata`: `table g, statistic(a) statistic(b)` ran with the last
+  `statistic()` only.** A repeated option was kept once.
+- **`sp.stata`: `collapse ..., by(g)` dropped the rows with a missing
+  `g`.** Stata keeps them as a group; so does this now.
+
+#### Added
+
+- `sp.ranksum`, `sp.signrank`, `sp.kwallis`, `sp.spearman`, `sp.ktau`,
+  `sp.ksmirnov`, `sp.median_test`, `sp.robvar`, `sp.oneway`: the rank,
+  median, variance and one-way tests of a first statistics course, each
+  returning a `ClassicTestResult`.
+- `sp.influence_measures` (leverage, studentized residuals, Cook's
+  distance, DFFITS, Welsch distance, COVRATIO, DFBETAs after
+  `sp.regress`), `sp.logit_influence` (Pregibon's diagnostics by covariate
+  pattern) and `sp.logit_gof` (Pearson and Hosmer-Lemeshow).
+- `sp.sumstats(weights=)` for analytic weights, with Stata's weighted
+  percentiles, and `sp.sumstats(by=, total=True)` for the Total panel.
+- Goodman and Kruskal's gamma and Kendall's tau-b with asymptotic standard
+  errors in the association tests of a two-way table.
+- `SurveyResult.params` / `.std_errors`, the names every other result uses.
+- In `sp.stata`: about 100 more functions of the expression language
+  (strings, `recode` / `irecode` / `autocode`, clock times, calendar parts,
+  distributions, `c()`); string variables; `recode`, `mvencode`, `xtile`,
+  `pctile`, `centile`, `tostring`, `destring`, `order`, `expand`,
+  `contract`, `separate`, `split`, `sample`, `splitsample`, `mark`,
+  `markout`, `levelsof`, `ds`, `unab`, `assert`, `confirm`, `isid`,
+  `joinby`, `duplicates report` / `tag`; `tabulate` with percentages,
+  expected counts, weights, `gamma`, `taub` and `summarize()`; `tab1`,
+  `tab2`; `table` with several statistics; `mean`, `proportion`, `total`,
+  `ratio` with `over()`, weights and `vce(cluster)`; `svyset` and `svy:`
+  (the four `singleunit()` rules, poststratification, subpopulations,
+  `tabulate` with the Rao-Scott correction, `regress` / `logit` /
+  `poisson`, `estat effects`); `predict` with influence statistics after
+  `regress` and `logit`, `dfbeta`, `estat gof`, `lroc`, `lrtest`,
+  `linktest`, `logistic`, `ologit`, `cloglog`; `margins` for predictive
+  margins, factor levels and grids in `at()`; `e(sample)`; the `by` prefix
+  before any command; extended macro functions, `syntax`, `marksample`,
+  `tokenize`, `gettoken`, `macro shift`, `_rc`, one-line `if`.
+- In `sp.stata`, second round: `test` and `lincom` after `mean` /
+  `proportion` / `total` / `ratio`; `nestreg: regress`; `anova y g` (the
+  one-way layout); `cc` and `cs` with exact limits for the odds ratio;
+  `predict p1 ... pk` after `mlogit` / `ologit` / `oprobit`; `statsby`.
+
+#### Changed
+
+- **The base category of `C(g)` is the lowest level in the estimation
+  sample**, as in Stata and R. It was the lowest level among all rows
+  where `g` is observed. The two differ only when a level occurs solely in
+  rows that are dropped for a missing value elsewhere; the fit is the
+  same, the coefficients are those of the other coding.
+- `sp.stata`: `display` with text returns the line as Stata prints it
+  when it holds no number or more than one; a pure string used to return
+  nothing. `oprobit` runs `sp.oprobit` (the translation named a `glm`
+  family that does not exist). `tabstat, by()` and `table` return the
+  Total panel. `by g: regress ...` runs the regression in each group; it
+  was refused. `predict, residuals` after `logit` is the Pearson residual
+  of the covariate pattern, as in Stata; it was refused. `levelsof` writes
+  a non-integer level with 16 significant digits, as Stata does.
+
+### What the notebooks of Facure's *Causal Inference in Python* found
+
+The eleven chapter notebooks of the book (O'Reilly, 2023) keep their
+printed outputs, so each analysis was rerun with StatsPAI on the book's
+data and compared with the stored number. The data look like product data:
+daily dates, text categories, a `treated` flag beside a `post` flag,
+several treated units. Most of what follows is about inputs of that shape.
+The notes are in `docs/dev/2026-10-05-facure-causal-inference-in-python-review.md`,
+the guide in `docs/guides/facure_causal_inference_in_python.md`, and the
+tests in `tests/test_facure_textbook_pass.py` (simulated data) and
+`tests/external_parity/test_facure_causal_inference_in_python.py` (the
+book's data, skipped without it). References verified via Crossref,
+OpenAlex and arXiv.
+
+#### ⚠️ Correctness
+
+- **`sp.did` on a block design with a `post` column could return the wrong
+  sign.** `sp.did(df, y=, treat='treated', time='post', id='unit')` on data
+  with several rows per unit and period went to Callaway-Sant'Anna, whose
+  reshape kept the first row of each (unit, period) cell and dropped the
+  rest. On the book's chapter 8 data the result was -0.659; the difference
+  of the four cell means is 0.692. `sp.callaway_santanna` now refuses
+  repeated (unit, period) rows on a panel, and `sp.did(method='auto')`
+  estimates a 0/1 group flag with a 0/1 time and repeated rows as the 2×2
+  design, clustered on `id`. A 0/1 `treat` that never changes within a unit,
+  next to a time variable with more than two values, now warns that it is
+  read as "first treated in period 1". See `MIGRATION.md`.
+- **A `category` covariate with numeric levels was used as a number.** In
+  `sp.ipw`, `sp.aipw`, `sp.match`, `sp.ebalance`, `sp.overlap_weights`,
+  `sp.cbps`, `sp.tmle`, `sp.g_computation`, `sp.dml`, `sp.metalearner`,
+  `sp.dose_response`, `sp.drdid`, `sp.callaway_santanna` and the
+  propensity-score diagnostics, a covariate of dtype `category` was cast to
+  its level values and entered as one linear term. It is now expanded to
+  indicator columns, as are text columns (which failed in numpy) and
+  `C(col)` / `i.col` entries (which failed as missing columns). A plain
+  integer column is still a number. The expansion is recorded in
+  `model_info['covariate_expansion']`, and `sp.predict_cate` rebuilds it on
+  new rows. See `MIGRATION.md`.
+- **`sigma=` had no effect in `sp.power_rct`, `power_did`, `power_rd`,
+  `power_iv`, `power_cluster_rct` and `power_ols`.** The effect was
+  multiplied by `sigma` and divided by a standard error proportional to
+  it. `effect_size` is now in the units of the outcome and power depends on
+  `effect_size / sigma`; with the default `sigma=1` nothing changes. A call
+  that passed a raw effect with `sigma` got the power of an effect `sigma`
+  times too small or too large. See `MIGRATION.md`.
+- **`sp.dag_recommend_estimator` never recommended an instrument.** It
+  tested exogeneity by conditioning on the exposure in the original graph,
+  which opens the collider at the exposure and rejects every instrument
+  when there is unobserved confounding. The test is now made in the graph
+  with the arrows into the exposure removed, and a conditional instrument
+  is returned with its conditioning set.
+- **The same function recommended the front door when it does not hold.**
+  A direct edge from the exposure to the outcome, or a confounder declared
+  with `latent=[...]`, was not checked. It now uses `DAG.frontdoor_sets`.
+- **`sp.cate_eval` accepted a treatment that is not 0/1** and returned a
+  RATE computed from AIPW scores that do not exist for a dose. It raises.
+- **`sp.balance_table` and `sp.balance_check` returned a table of NaN for a
+  treatment with other codes** (three arms, text labels). They raise, and
+  `sp.balance_table` no longer skips a covariate that is not in the data.
+- **`sp.synth(inference=)` ignored values it did not know.**
+  `inference='jackknife'` on the classic method returned placebo inference.
+  Unknown values, and `'bootstrap'` / `'jackknife'` outside
+  `method='sdid'`, are errors.
+
+#### Added
+
+- **`sp.switchback_design` and `sp.switchback`**: regular switchback
+  experiments after Bojinov, Simchi-Levi and Zhao (2023). The design gives
+  the minimax-optimal randomization points for a carryover of order `m`.
+  The analysis is the Horvitz-Thompson estimator of the average lag-`m`
+  effect, the exact randomization test of the sharp null, and under the
+  optimal design the paper's conservative standard error. Evidence:
+  enumeration of every assignment path of a 12-period design reproduces
+  unbiasedness and the paper's variance formula to machine precision; the
+  book's two examples agree to 1e-12.
+- **`sp.synth_ttest`, and `sp.synth(..., inference='ttest')`**: the
+  debiased K-fold synthetic control estimator and t-test of Chernozhukov,
+  Wüthrich and Zhu (2026). Equal to the authors' R package `scinference` to
+  1e-15 on the estimate and the standard error for `K` = 2, 3, 4.
+- **`sp.metalearner(learner='r')` takes a continuous treatment.** The CATE
+  is the effect of one more unit of the treatment; `estimate` is the
+  partially linear coefficient with its influence-function standard error
+  (`estimand='APE'`), equal to `sp.dml(model='plr')` on the same folds and
+  learners. The CATE equals `econml.dml.NonParamDML`'s exactly under the
+  same folds and learners. The other learners still require 0/1.
+- **`sp.cate_gain_curve`**: effect by quantile of a predicted effect,
+  cumulative effect and gain curves and their area, for a randomized
+  treatment of any type.
+- **Dates as time and cohort columns** in `sp.callaway_santanna`,
+  `sp.sun_abraham`, `sp.did_imputation`, `sp.etwfe` and through `sp.did`.
+  `datetime64` and `Period` columns are numbered in the order observed; a
+  missing cohort date or one after the last period means never treated. The
+  numbering is in `model_info['calendar_time']`, and unevenly spaced dates
+  warn.
+- `sp.iv` and `sp.ivreg` read the linearmodels block
+  `y ~ 1 + [endog ~ instruments] + exog`.
+
+- **`sp.gardner_did` with a date-typed time column returned a wrong
+  estimate** (3.13 for 1.93 on a simulated daily panel) and said nothing.
+  `sp.gardner_did`, `sp.stacked_did`, `sp.wooldridge_did`,
+  `sp.twfe_decomposition`, `sp.bacon_decomposition` and `sp.did_forest`
+  now number dates the same way as the estimators above; the last five
+  failed with `TypeError`.
+
+#### Added in the second round
+
+- `sp.cate_gain_curve(n_boot=, cluster=, seed=)`: bootstrap standard error
+  and percentile interval of the area (`auc_se`, `auc_ci`). On rankings
+  with no information the 95% interval covers zero in 95% of 60 draws on
+  the book's test set.
+- `sp.synth_experimental_design(criterion='population')`: the design
+  question of the book's chapter 10. A random search over treated sets for
+  the one whose weighted average, and the weighted average of the
+  remaining units, both track the population average over the pre-period
+  (`population_weights=` for a size-weighted average). The default
+  criterion is unchanged.
+- Text, `category` and `C(col)` covariates or controls are also expanded in
+  `sp.sbw`, `sp.genmatch`, `sp.optimal_match`, `sp.cardinality_match`,
+  `sp.psmatch2`, `sp.auto_cate`, `sp.policy_tree`, `sp.event_study`,
+  `sp.sun_abraham`, `sp.did_imputation`, `sp.etwfe`, `sp.wooldridge_did`,
+  `sp.gardner_did`, `sp.stacked_did`, `sp.lp_did`, `sp.did_multiplegt`,
+  `sp.did_few_treated`, `sp.overlap_weighted_did` and `sp.continuous_did`.
+
+#### Added in the third round
+
+- **`sp.switchback(outcome_bound=B)`: a standard error and an interval
+  under any regular design.** With every outcome bounded by `B` in absolute
+  value, the variance of the estimator is largest when all potential
+  outcomes equal `B` (Lemma 1 of the paper). That variance has a closed
+  form for any set of randomization points and any coin, checked here
+  against enumeration of every assignment path on 24 designs. `se` is its
+  square root and `ci` the Chebyshev interval `estimate +/- se /
+  sqrt(alpha)`: valid in finite samples, assumption-free and wide. For
+  T = 120, m = 2, B = 10 it gives 26.66, 33.67 and 27.81 for the optimal,
+  every-period and every-three-periods designs; the paper's simulations
+  give 26.78, 33.67 and 27.85. The optimal design keeps the paper's
+  tighter estimator.
+- **Categorical covariates in the forests.** `sp.causal_forest` (formula
+  interface), `sp.regression_forest`, `sp.iv_forest`, `sp.multi_arm_forest`,
+  `sp.lm_forest`, `sp.causal_survival_forest` and the other forests of the
+  family turn a text or `category` covariate into one 0/1 column per
+  level, named `col[level]`. Every level gets a column, so `predict` on a
+  frame with the original column can refuse a level it never saw.
+- `sp.synth_experimental_design(criterion='population')` enumerates every
+  treated set when there are at most `n_search` of them and returns the
+  optimum (`diagnostics['global_optimum']`); otherwise the best random set
+  is improved by single exchanges until none helps.
+
+#### Changed
+
+- Every `sp_call` string of `sp.dag_recommend_estimator` now runs as
+  written (`sp.ipw`, `sp.front_door`, `sp.identify` and `sp.iv` were called
+  with arguments they do not have).
+- `sp.synth` with a list of treated units on a single-unit method says
+  which functions take several (`sp.geolift`, `method='sdid'`); it failed
+  in numpy with a shape error. A list of one is unwrapped.
+- `sp.margins` on a fit with factor or transformed terms and no `data=`
+  says to pass the data.
+- `repr()` of the result of `sp.synth_experimental_design` is one line; it
+  printed every weight vector.
+
+### What *Causal Inference in R* found
+
+Barrett, D'Agostino McGowan and Gerke's book (<https://www.r-causal.org>)
+teaches one workflow with the `propensity`, `halfmoon` and `tipr` packages.
+Every analysis in its chapters 2 and 6 to 16 was rerun in R and in StatsPAI
+on the same rows. Notes are in
+`docs/dev/2026-10-05-barrett-causal-inference-in-r-review.md`, the user
+guide is `docs/guides/causal_inference_in_r.md`.
+
+#### ⚠️ Correctness
+
+- **`sp.trimming(method='crump')` and `sp.propensity_score(trimming='crump')`
+  trimmed too little.** The cutoff solved `alpha = 1 / (2 E[g])` where the
+  rule of Crump, Hotz, Imbens and Mitnik (2009) is
+  `alpha (1 - alpha) = 1 / (2 E[g])`, and it searched a 500-point grid. On
+  the book's data the cutoff was 0.0638 and 329 of 354 days were kept. The
+  rule gives 0.0716 and keeps 318, which is what `propensity::ps_trim(method
+  = "adaptive")` returns (cutoff equal to 1e-15, the same 36 days dropped).
+  The cutoff is now solved exactly.
+- **Weighted variances in `sp.balance_diagnostics` and `sp.ps_balance`.**
+  The weighted group variance had divisor `sum(w)` while the unweighted one
+  had `n - 1`, so `weights=1` did not reproduce the raw columns. It is now
+  `sum(w (x - m)^2) / (sum(w) - sum(w^2) / sum(w))`, the form in Austin and
+  Stuart (2015). Weighted variance ratios now equal `cobalt` and `halfmoon`
+  to 1e-10 (0.7794 before, 0.7938 after on the book's temperature
+  variable). Weighted standardized differences move in the third decimal.
+- **`sp.from_r` translated four common calls of the book to something
+  else and reported `ok`.** `lm(..., weights = w)` kept the weights in
+  `arguments` and dropped them from `python_code`, so the code ran an
+  unweighted regression. `glm(..., family = binomial())`, the usual way to
+  write it, became `sp.glm(family='binomial()')`, which raises.
+  `matchit(treat ~ x)` passed the treatment as the outcome as well.
+  `subset =` and `offset =` disappeared without a note. Now the weights
+  reach the code, families are read in every spelling R accepts
+  (`binomial`, `binomial()`, `binomial("probit")`, `binomial(link =
+  "probit")`, `quasibinomial()` with a note on its standard errors),
+  `matchit` leaves `y` to the caller under `missing_arguments` and writes
+  out MatchIt's defaults (`replace=False`, `estimand='ATT'`), and any
+  argument that was not carried over is listed in
+  `untranslated_arguments`. The same now holds for every R function
+  `sp.from_r` knows: an argument a handler never read is reported
+  (`feols(subset =)`, `plm(effect = "twoways")`, `lmer(weights =)`,
+  `glmer(nAGQ =)`). `feols(weights = ~w)` passed the column name with its
+  tilde. `did::att_gt` lost `control_group`, `xformla`, `anticipation`,
+  `weightsname` and `clustervars`, and its translation ran with
+  `base_period='universal'` where R's default is `'varying'`; all are
+  carried now and the base period is written out. `lmer(REML = FALSE)`
+  becomes `method='ml'`.
+- **`DAG.adjustment_sets(minimal=True)` could miss minimal sets.** The
+  search stopped at the smallest size that had a valid set. For
+  `W -> X; P -> W; Q -> W; P -> Y; Q -> Y; X -> Y` it returned `{W}` and
+  not `{P, Q}`. It now returns every valid set with no valid proper
+  subset, as `dagitty::adjustmentSets` does.
+
+#### Added
+
+- `sp.ps_weights(ps, treat, estimand=)`. Propensity-score weights for the
+  ATE, ATT, ATC, the overlap population (ATO) and the evenly matchable
+  (ATM), with `stabilize=`, `truncate=` and a continuous exposure through
+  normal densities. Equal to `propensity::wt_*` to 1e-13.
+- `sp.ess(weights, by=)`. Effective sample size, overall or by group.
+- `sp.energy_distance(data, treat, covariates, weights=)`. One number for
+  joint covariate imbalance. Equal to `halfmoon::bal_energy` to 1e-15.
+- `sp.implied_weights(data, treat, covariates, interactions=, estimand=)`.
+  The weights a linear regression adjustment puts on each row. Equal to
+  `lmw::lmw` to 1e-8.
+- `sp.confounder_adjust` and `sp.confounder_tip`. What an estimate becomes
+  under a stated unmeasured confounder, and how strong the confounder must
+  be to reach the null. Differences, risk, odds and hazard ratios, binary
+  or normal confounder. Equal to `tipr` to 1e-12 on 19 cases.
+- `sp.ipw(estimand='ATO' | 'ATM')`, and `'ATU'` as another name for
+  `'ATC'`. The sandwich standard error covers all five estimands and
+  equals `propensity::ipw` to 1e-13 once its `n / (n - 1)` factor is
+  applied.
+- `sp.contrast(effect='ratio' | 'odds_ratio')` gives marginal risk and
+  odds ratios with delta-method intervals on the log scale.
+  `sp.contrast(subset=)` and `sp.margins(subset=)` average over a
+  subpopulation while keeping the model's factor levels, which gives the
+  effect on the treated or the untreated after any outcome model. Both
+  equal `marginaleffects::avg_comparisons`.
+- `sp.g_computation(estimand='ATC')`.
+- `sp.margins_at(contrast='first' | 'adjacent')` returns the difference
+  between grid points with the standard error that uses their covariance.
+  With `at={'dose': [30, 60]}` it is g-computation for a continuous
+  exposure under any functional form. Equal to
+  `marginaleffects::avg_comparisons(variables = list(x = c(a, b)))` after
+  a spline regression. `sp.margins_at(subset=)` as in `sp.margins`.
+- `sp.bootstrap(ci_method='studentized')`, the bootstrap-t interval
+  (`rsample::int_t`). The statistic returns `(estimate, se)`.
+- `sp.roc_curve(weights=)` and `sp.auc(weights=)`, the weighted
+  Mann-Whitney probability. No standard error is reported with weights.
+- `DAG.equivalent_dags()` and `DAG.equivalence_class()` list the graphs the
+  data cannot tell apart and the edges that flip among them. Counts and
+  undirected edges equal `dagitty`.
+- `sp.balance_diagnostics(sd_denom='unweighted')` is the `cobalt`
+  convention. Its summary now also has the effective sample size of each
+  group and the energy distance before and after weighting.
+
+#### Changed
+
+- `sp.contrast` raises when only one level of the variable is available.
+  It used to return an empty table.
+
+### What Ding's *Linear Model and Extensions* found
+
+A pass over the 24 R programs of Peng Ding's regression course
+(arXiv:2401.00649): least squares and robust inference, selection and
+shrinkage, GLMs, clustered data, quantiles, survival. Every real-data
+result was recomputed with `sp.*` and compared with R; everything that
+changed was then tested on a committed synthetic file against R and Stata
+18. Notes are in `docs/dev/2026-10-05-ding-linear-model-review.md`, the
+chapter map in `docs/guides/ding_linear_model.md`.
+
+#### ⚠️ Correctness
+
+- **`sp.cox` robust and clustered standard errors were wrong when event
+  times are tied.** Under the default `ties='efron'` the sandwich was built
+  from Breslow's score residuals. With no ties the two are identical; on
+  the COMBINE trial of chapter 27, where relapse is recorded in days, the
+  robust standard errors were off by up to 2%. They are Efron's now and
+  match `survival::coxph(robust = TRUE)` to 1e-14 with `robust=`,
+  `cluster=` and `strata=`. Coefficients, model-based standard errors and
+  `ties='breslow'` fits are unchanged.
+- **`sp.regress` rejected full-rank regressions through the origin.**
+  `"t ~ 0 + x + I(1 - x)"` (Goodman's ecological regression) raised
+  "perfectly collinear": the check used the correlation, which is the
+  right test only when the model has a constant. It also refused a
+  constant column in a model without an intercept. Models with an
+  intercept are unchanged.
+- **`sp.mlogit`, `sp.ologit` and `sp.oprobit` dropped a category** when
+  the outcome was a string and the formula had a `C()`, `I()` or
+  interaction term. They stopped with "requires J >= 3 categories, got 2".
+
+#### Added
+
+- **`sp.gee`**: generalized estimating equations (Liang and Zeger) with
+  independence, exchangeable, AR(1) and unstructured working correlations
+  for Gaussian, binomial, Poisson and gamma margins. Reports the sandwich
+  and the model-based covariance. Matches R `gee` to 1e-12 and Stata
+  `xtgee` to 1e-7 (`dof_correction=False`, `scale=1` for Stata's
+  conventions). The AR(1) parameter comes in both references' versions:
+  `corstr='ar1'` is Stata's pooled moment, `corstr='ar-m'` is R `gee`'s
+  per-cluster one; they differ when cluster sizes do.
+- **`sp.ridge`**: ridge regression with the scaling, GCV score and HKB / LW
+  penalties of `MASS::lm.ridge` (1e-13).
+- **`sp.boxcox`**: Box-Cox power for the outcome, with a profile-likelihood
+  interval and likelihood-ratio tests of -1, 0 and 1. Profile as
+  `MASS::boxcox`, estimate and tests as Stata `boxcox, model(lhsonly)`.
+- **`sp.best_subset`**: exact best-subset selection by branch and bound,
+  as `leaps::regsubsets`. Regressors can be forced in.
+- `sp.regress(robust='hc4')` (Cribari-Neto 2004).
+- `sp.glm(link='cauchit')`.
+- `sp.qreg(weights=)` and `sp.qreg(vce='ker')`, following `quantreg`.
+- `sp.kaplan_meier(conf_type='log' | 'log-log')`, the intervals of R
+  `survfit` and Stata `sts`. The default is unchanged.
+- `.predict()` on `sp.mlogit` / `sp.ologit` / `sp.oprobit` results returns
+  the predicted probabilities of every category, in sample or on new data.
+- `sp.estat(result, "leverage")` returns `dffits`, `loo_residuals`,
+  `press` and `loo_interval_halfwidth`.
+
+- `sp.stata` / `sp.from_stata` translate `xtgee` (to `sp.gee`, with
+  Stata's defaults written into the call) and `boxcox` (to `sp.boxcox`).
+- `.predict(data, what='confidence')` on `sp.logit`, `sp.probit` and
+  `sp.cloglog` results: the probability, its delta-method standard error
+  (R's `predict(se.fit = TRUE)`) and an interval that stays inside
+  (0, 1). The same call already worked on `sp.glm` results.
+- `sp.cox` reports the Wald and score tests of all coefficients next to
+  the likelihood-ratio test (`diagnostics["Wald chi2"]`, `["Score
+  chi2"]`), as `survival::coxph` prints them.
+- `sp.zip_model`, `sp.zinb` and `sp.hurdle` also store their log
+  likelihood and information criteria as `Log-Likelihood`, `AIC` and
+  `BIC`, the names the other count models use.
+
+- **`sp.gam`**: generalized additive models, `"y ~ s(x1) + s(x2, k=15) +
+  z"`, with penalised cubic B-spline smooths for Gaussian, binomial,
+  Poisson and gamma responses. Smoothing parameters by REML (default) or
+  GCV / UBRE. Returns parametric coefficients with standard errors, the
+  effective degrees of freedom of each curve, `partial(term)` with a
+  band, `predict` and `plot`. Same basis, penalty and criteria as
+  `mgcv::gam` with `s(x, bs = "ps")`: 1e-9 at given smoothing parameters
+  in three families, 1e-4 on the parameters it selects. `s(x, by=d)`
+  fits a curve that multiplies `d` (the effect of a 0/1 treatment as a
+  function of `x`) or, for a factor `d`, one curve per level, and `vce=` / `cluster=` give sandwich standard
+  errors.
+- **`sp.conformal_regression`**: distribution-free prediction intervals
+  for least squares by split conformal, jackknife+ or exact full
+  conformal, also as `sp.conformal("regression", ...)`.
+- `sp.stepwise(start='full')`: bidirectional search from the full model,
+  as R's `step()`.
+
+#### Deprecated
+
+- **`diagnostics` of `sp.zip_model`, `sp.zinb` and `sp.hurdle` no longer
+  lists the fitted-value vectors** (`predicted_structural_zero`,
+  `predicted_count`, `predicted_overall`, `predicted_hurdle_prob`,
+  `predicted_count_mean`). They are in `data_info`. Reading them from
+  `diagnostics` still works and warns; the keys go in 1.41.
+- **The default interval of `sp.kaplan_meier` will change from `'plain'`
+  to `'log-log'` in 1.40.** The plain interval is the only one of the
+  three that leaves [0, 1] and has to be cut off, and it is the default
+  of neither R (`'log'`) nor Stata (`'log-log'`). Until then a call
+  without `conf_type=` returns what it always did and raises a
+  `DeprecationWarning`. See `MIGRATION.md`.
+
+#### Changed
+
+- `I(x^2)` is read as a power in every formula. It used to fail with a
+  message about `xor`.
+- `sp.cox` formulas accept `C()`, interactions and `I()`.
+- `sp.estat(result, "leverage")` no longer forms the n by n hat matrix.
+
+refs verified via Crossref REST and doi.org content negotiation:
+hoerl1970ridge, golub1979generalized, box1964analysis,
+furnival1974regressions, cribari2004asymptotic, lin1989robust,
+cook1977detection, lei2018distribution, barber2021predictive,
+eilers1996flexible, wood2017generalized.
+
+### What the programs of Hansen's *Econometrics* found
+
+The sixteen Stata do-files that come with Hansen's *Econometrics* (2022)
+were run in Stata 18 and replayed through `sp.stata`, every printed number
+compared. The notes are in `docs/dev/2026-10-05-hansen-econometrics-review.md`.
+The Stata evidence on committed data is in
+`tests/reference_parity/test_hansen_methods_stata_parity.py`.
+
+#### ⚠️ Correctness
+
+- **Dynamic panel GMM with `time_dummies=True` kept dummies it could not
+  identify.** `sp.xtabond` and `sp.xtdpdsys` made a dummy for every period
+  of the panel but the first. With `lags=2` the differenced equation starts
+  three periods in, so the dummies of the periods before it were zero or
+  identified from a handful of level rows, and the rest summed to the
+  constant. The fit went through a pseudo-inverse with a warning. On
+  `abdata` a system GMM with two lags gave 1.1548 for the first lag where
+  Stata's `xtdpd` prints 1.1665. Now the dummies of periods without a
+  transformed row are left out, and with a constant one more is omitted
+  from the regressors and kept as an instrument, which is what `xtdpd`
+  does. One-step, robust and two-step estimates, standard errors, the
+  instrument count and Sargan's statistic agree with Stata 18 to 1e-9 on
+  `abdata`. Fits without period dummies are unchanged. See
+  `MIGRATION.md`.
+- **A GMM weight matrix that is singular to rounding was inverted as if it
+  were not.** `numpy.linalg.inv` raises only on an exactly zero pivot. On
+  the investment panel of chapter 17 the two-step weight has rank 191 of
+  199 (the first years hold six to thirteen firms and more moments than
+  that), `inv` returned noise, and the standard errors came out of order
+  1e14 with no warning. The rank is now checked first, and a singular
+  weight gets a generalized inverse with the existing warning.
+- **Which generalized inverse: the one Stata takes.** With a singular
+  weight the two-step estimate depends on the generalized inverse. The
+  Moore-Penrose inverse used so far gives 0.3178 for the first lag in
+  Table 17.3 where Stata prints 0.3191. `sp.xtabond` / `sp.xtdpdsys` now
+  sweep on the largest remaining diagonal and set the collinear moments to
+  zero, which is Mata's `invsym`, and leave those moments out of the
+  one-step covariance in Windmeijer's correction. Table 17.3 is reproduced
+  to every printed digit, coefficients and corrected standard errors, and a
+  case on committed data agrees with `xtdpd` to 1e-9. Fits whose weight
+  has full rank are unchanged.
+- **Random effects with a regressor that does not vary within unit used the
+  wrong degrees of freedom.** `sp.panel(method='re')` divided the within
+  residual variance by `N - G - K` with `K` the number of regressors. A
+  regressor that is constant within unit (an industry dummy, a listing
+  indicator) is swept out of the within regression and costs it nothing, so
+  the divisor is `N - G - r` with `r` the within rank, as in Stata's
+  `xtreg, re` and R's `plm`. `sigma_e`, `sigma_u`, `theta` and through them
+  every coefficient were slightly off. On the investment panel of chapter
+  17 the coefficient on lagged debt moves from -0.009192 to -0.009196,
+  Stata's value. Designs in which every regressor varies within unit are
+  unchanged. The same count is used by `method='mundlak'` /
+  `'chamberlain'` and by the `sigma_u` / `sigma_e` that `sp.stata` reports
+  after `xtreg`. See `MIGRATION.md`.
+- **Dickey-Fuller p-values of explosive series were too small.** MacKinnon's
+  approximation is a cubic fitted up to a statistic of 2.74 (constant) or
+  0.70 (constant and trend). Beyond that the cubic turns down. With a
+  trend, a statistic of +3.0 was given p = 0.25, +3.25 p = 0.06 and +4.0
+  p = 0.00, so a series growing faster than a random walk could be
+  reported as stationary. The p-value is now 1 above the fitted range, as
+  in Stata and statsmodels. This affects `sp.unitroot` (`test='adf'` and
+  `'pp'`) and the Fisher-type panel tests. Statistics inside the range are
+  unchanged. See `MIGRATION.md`.
+- **2SLS lost digits on ill-conditioned designs.** The projection on the
+  instruments went through `(W'W)^-1` and the second stage through
+  `(X'PX)^-1`, which squares the condition number twice. With a cubic in
+  class size instrumented by a cubic in predicted class size (chapter 20)
+  the coefficients agreed with Stata to seven digits only. Both steps now
+  use orthogonal factorisations. Against a 50-digit solution of the same
+  system the error falls from 8e-7 to 3e-13. Well-conditioned fits move by
+  rounding error.
+
+#### Added
+
+- `sp.mprobit`: multinomial probit for choice data in long form, with
+  alternative-specific and case-specific regressors and an independent or
+  unstructured error covariance, parameterised as Stata's `cmmprobit`. The
+  choice probabilities are integrated by Gauss-Legendre quadrature (up to
+  four alternatives), so the likelihood has no simulation noise. Against
+  Stata's `mprobit`, which also integrates, coefficients agree to 1e-9 and
+  standard errors to 1e-7. Against `cmmprobit` with 3,000 simulation
+  points on the book's travel data the unstructured model agrees to three
+  or four digits (log likelihood -2017.437 against -2017.433).
+- `sp.series`: series regression with a polynomial or spline basis and
+  the order chosen by leave-one-out cross-validation. Returns the fitted
+  function and its derivative with pointwise standard errors. The
+  cross-validation criteria of the book's `figure20_6.R` are reproduced to
+  3e-14 on both of its samples.
+- `sp.factor(...).rotate('varimax' | 'promax')`: rotated loadings, the
+  rotation matrix, the factor correlation and the variance each factor
+  accounts for, with Stata's conventions. Stata's `rotate` to seven
+  digits, with and without Kaiser normalisation.
+- `sp.xthtaylor(method='amacurdy', time=)`: the Amemiya-MaCurdy estimator
+  for balanced panels. Stata's `xthtaylor, amacurdy` to 1e-10.
+- `sp.nlogit(fixed_lambda=, base=)`: dissimilarity parameters held at a
+  value, and a choice of base alternative. The book's constrained nested
+  logit is reproduced (log likelihood -2044.4153).
+- `sp.mixlogit` keeps its covariance matrix in `data_info['var_cov']`, so
+  `sp.test` and `sp.lincom` work after it.
+- `sp.stata` runs `nlogitgen` / `nlogit` with a constraint, `cmmprobit`
+  with `estat covariance` / `estat correlation`, `cmmixlogit`, `margins,
+  dydx() outcome() alternative()` after either, `rotate`, `xthtaylor,
+  amacurdy`, `estat bootstrap` (normal, percentile, BC and BCa intervals),
+  `matrix list e(Sigma)` after `var`, `display a, b`, and a product of two
+  factors when one of their main effects is in the model (`i.b i.a#i.b`),
+  with `testparm i.a#i.b`. All 190 numbers of chapter 26 are reproduced.
+- `sp.threshold`: threshold regression with an unknown threshold (the
+  intercept and the coefficients named in `regime=` change when a variable
+  crosses a value estimated by least squares), and with `kink=True` the
+  continuous model in which only a slope changes. The threshold model
+  reports Hansen's (2000) likelihood-ratio interval for the threshold and
+  standard errors of the other coefficients given it; `n_boot=` adds a
+  multiplier-bootstrap test of the linear model, whose F statistic has no
+  standard distribution because the threshold is not identified under the
+  null. In the kink model the threshold is jointly normal with the slopes
+  and gets a standard error. `absorb=` removes fixed effects at every
+  candidate. Evidence: Stata's `threshold` to 1e-11 (threshold, sum of
+  squares, coefficients, classical and robust variances), Stata's `nl` to
+  1e-7 for the kink model, and the book's own `figure23_3.R` on the Card,
+  Mas and Rothstein data to 1e-9 (threshold, 99% interval, coefficients,
+  clustered standard errors). `sp.stata` translates `threshold` with one
+  threshold.
+- `sp.stata` runs `xtdpd` with `dgmmiv()`, `lgmmiv()` and `iv()` through
+  `sp.xtdpdsys`: the `dgmmiv()` variables are instrumented GMM-style, the
+  `iv()` variables are their own instruments, `i.<time>` in both is the set
+  of period dummies. Both columns of Hansen's Table 17.3 are reproduced
+  (136 printed coefficients and standard errors). `xtdpd` without
+  `lgmmiv()`, `div()`, `liv()`, `noconstant` and `fodeviation` are declined.
+
+- `sp.cnsreg`: linear regression under linear equality constraints.
+  `method='cls'` is constrained least squares and reproduces Stata's
+  `cnsreg` with classical, robust and cluster covariances. `method='emd'`
+  is the efficient minimum distance estimator of chapter 8.
+- `sp.nls`: nonlinear least squares. The regression function is a formula
+  with the parameters in braces (`"y ~ {a} + {b} * x^{c}"`, Stata's `nl`
+  syntax) or a Python function. Classical, HC1 to HC3 and cluster
+  covariances. Reproduces `nl` to 1e-6.
+- `sp.pca` and `sp.factor`: principal components, and factor analysis by
+  principal factors, iterated principal factors, principal-component
+  factors or maximum likelihood, with scores. They reproduce Stata's `pca`
+  and `factor`, sign convention and likelihood-ratio statistics included.
+- `sp.jackknife`: the delete-one or delete-one-cluster jackknife for any
+  statistic, the counterpart of `sp.bootstrap`. It reproduces Stata's
+  `jackknife` prefix and `vce(jackknife)`.
+- `sp.xthtaylor`: the Hausman-Taylor estimator for panels with
+  time-invariant regressors, some of them correlated with the unit effect.
+  It reproduces Stata's `xthtaylor` to 1e-12, conventional and
+  cluster-robust standard errors, and `sp.stata` runs the command. One
+  departure: with period dummies in an unbalanced panel Stata's estimates
+  change with the period it omits (a coefficient of -0.248 or +0.015 on
+  the test panel, depending on the year); here the fit is the same for
+  every base period.
+- `sp.mlogit`, `sp.ologit`, `sp.oprobit` and `sp.clogit` keep their
+  covariance matrix (`data_info['var_cov']`). They kept the standard errors
+  only, so `sp.test` and `sp.lincom` refused any hypothesis on more than
+  one coefficient after these fits. The matrix agrees with statsmodels'
+  `MNLogit` to 1e-11.
+- `sp.stata` runs `cmset` and `cmclogit` (alternative-specific and
+  case-specific regressors, `basealternative()`, `casevars()`) and
+  `margins, dydx() outcome() alternative()` after it. All 35 numbers of the
+  conditional logit of chapter 26 are reproduced.
+- `sp.model_average`: selection criteria (AIC, BIC, leave-one-out
+  cross-validation) and averaging weights (Mallows, jackknife, smoothed
+  AIC and BIC) for candidate regressions, with averaged coefficients, fit
+  and predictions. Weights agree with R's `quadprog` to 1e-8, and the
+  jackknife weights with the book's program for chapter 28 digit for
+  digit.
+- `sp.var(exog=)` and `sp.varsoc(exog=)`: exogenous variables in every
+  equation of a VAR, as in Stata's `var ..., exog()`. A structural VAR
+  fitted on such a model works unchanged.
+- `sp.estat(result, 'overid')` after 2SLS and LIML also returns the
+  statistics that assume i.i.d. errors (Sargan and Basmann, or
+  Anderson-Rubin and Basmann's F) under `iid_errors`, and names the robust
+  statistic `score` after a heteroskedasticity-robust 2SLS fit.
+- `sp.read_data` reads Stata 7 files (format 110), which pandas before 3.0
+  refuses.
+- `sp.stata` runs `cnsreg` with `constraint define`, `nl`, `pca`, `factor`,
+  `estimates stats`, `irf create` / `irf table` (`irf`, `cirf`, `oirf`,
+  `coirf`, `fevd`, `sirf`, `sfevd`), the `jackknife` and `bootstrap`
+  prefixes and `vce(jackknife)` / `vce(bootstrap)`, `var` / `varsoc` /
+  `svar` with `exog()`, `L(1/3).D.x`, `ivregress, perfect`, `estat overid,
+  forcenonrobust` with `r(sargan)` and its companions, `e(rank)`,
+  interacted factors among the excluded instruments, and square brackets
+  used as parentheses (`gen n = [_N]`).
+
+#### Changed
+
+- `sp.iv` drops excluded instruments that are linear combinations of the
+  exogenous regressors and the other instruments, warns, and lists them in
+  `model_info['omitted_instruments']`. It used to stop with numpy's
+  `Singular matrix`. An interaction of two factors among the instruments
+  no longer duplicates dummies that are already regressors. The
+  quarter-of-birth specification of chapter 12 with 180 instruments now
+  runs.
+- `sp.clogit` evaluates its likelihood without a Python loop over choice
+  sets and finishes with Newton steps. On 2,779 choice sets of four
+  alternatives it takes 0.13 seconds where it took 22. Estimates agree with
+  the earlier ones to 1e-8 or better.
+- `sp.lincom` and `sp.test` accept division by a number (`"exp + exp2/5"`).
+- `sp.from_stata("nlcom (a + b) / (1 - c)")` is read as one expression.
+
+
+### `rdlocrand` 3.0
+
+The maintainers of `rdlocrand` released 3.0 on 2026-10-04. Every reference
+fixture was regenerated against it. The window sequences StatsPAI already
+built (those of release 1.0) are the ones 3.0 returns, to the last digit.
+Notes are in `docs/dev/2026-10-04-cit-rd-extensions-review.md`.
+
+#### ⚠️ Correctness
+
+- **`sp.rdrandinf`, `sp.rdwinselect` and `sp.rdsensitivity` with `p > 0`
+  use HC3 for the large-sample test; they used HC2.** `rdlocrand` 3.0 added
+  `vce = "HC1" | "HC2" | "HC3"` with HC3 as the default, and the same
+  argument is new here (`vce='hc1' | 'hc2' | 'hc3'`). All three agree with
+  3.0 to 7e-13 across polynomial orders, kernels, a non-zero null and
+  evaluation points away from the cutoff. On the U.S. Senate data, for
+  `termshouse` with `p = 1` in [-1, 1], the large-sample p-value moves from
+  0.666 to 0.694.
+  `vce='hc2'` returns the earlier numbers. Calls with `p = 0`, the default,
+  are unchanged, and so is the randomization p-value.
+
+#### Changed
+
+- `sp.from_stata` / `sp.stata` read `vce()` on `rdrandinf` and
+  `rdwinselect`. With `p() > 0` and no `vce()` the translation notes that
+  releases up to 2.0 used HC2.
+- `tests/reference_parity/test_rdlocrand_v1_parity.py` runs against both
+  1.0 and 3.0. `sp.rdwinselect(approx=True, p=1)` has reference numbers for
+  the first time (2.0 stopped with an error there).
+- With `p > 0`, 3.0 no longer computes a randomization p-value.
+  `sp.rdrandinf` keeps its own, which permutes outcomes against (score,
+  assignment) pairs and holds its level in simulation.
+
+### What the examples of Wooldridge's *Introductory Econometrics* found
+
+Every example of the book that the companion scripts of Heiss compute was
+written with StatsPAI and compared with statsmodels, linearmodels, Stata 18
+or R on the book's datasets. Most of it agreed to 1e-12. The notes are in
+`docs/dev/2026-10-05-wooldridge-review.md`; the Stata and R numbers are in
+`tests/test_wooldridge_examples.py`.
+
+#### ⚠️ Correctness
+
+- **`sp.synth(method='classic')` reported a confidence interval that could
+  contradict its own p-value.** `pvalue` is the rank of the treated
+  post/pre RMSPE ratio among the placebos; `ci` was the estimate plus or
+  minus a normal quantile times the standard deviation of the placebo
+  ATTs, a different procedure with no guarantee of agreeing with the test.
+  `ci` is now the interval the test implies: the constant effects that
+  the same rank test does not reject (Firpo and Possebom 2018), with exact
+  ends. It excludes zero exactly when `pvalue < alpha`. On Proposition 99
+  without covariates (p = 3/39 = 0.077) the 95% interval goes from
+  [-40.7, 1.6] to [-58.6, 19.6] and the 90% one from [-37.3, -1.8] to
+  [-33.0, -5.3]. With fewer than `1 / alpha - 1` donors no effect can be
+  rejected and the interval is `(-inf, inf)`; it used to be finite. The
+  estimate, `se` and `pvalue` are unchanged, the old interval is in
+  `model_info['ci_normal']`, and `model_info['ci_method']` says which one
+  `ci` is. `summary()` now prints an infinite end as `-inf` / `inf`
+  instead of leaving it blank, for every estimator. See `MIGRATION.md`.
+- **DFBETAS from `sp.estat(result, 'leverage')` were on the wrong scale.**
+  The division by the square root of the diagonal of `(X'X)^-1` was
+  missing, so each value was the change in the coefficient over the
+  leave-one-out residual standard deviation, not over the standard error of
+  the coefficient. The `2/sqrt(n)` rule was then applied to that quantity,
+  and `dfbetas_flagged_obs` listed the wrong observations. The values now
+  agree with Stata's `dfbeta` and with statsmodels to 1e-8. Leverage and
+  Cook's distance were right and are unchanged. See `MIGRATION.md`.
+- **`predict(new_data)` after `sp.glm` returned the linear index.** With
+  no argument the same method returned the fitted means, so the two calls
+  were on different scales for every link but the identity. Both are now
+  the mean of the outcome; `what='link'` gives the index. After
+  `sp.poisson` and `sp.nbreg` the call used to fail on the `_cons` column
+  and now works, with the `offset=` or `exposure=` of the new rows applied.
+  See `MIGRATION.md`.
+- **`sp.from_stata` translated `heckman` to the two-step estimator.**
+  Stata's `heckman` is maximum likelihood unless `twostep` is given, and
+  `twostep` itself was reported as an untranslated option. The translation
+  now writes `method='ml'` or `method='twostep'`. On the `mroz` data the
+  coefficient on education is 0.10835 by maximum likelihood and 0.10907 by
+  the two-step estimator; both now match Stata. `sp.heckman` itself is
+  unchanged. See `MIGRATION.md`.
+- **`sp.estat(result, 'endogenous')` and `'overid'` said "p-value not
+  available"** in their interpretation, next to the p-value they reported.
+  They now state the conclusion.
+
+#### Added
+
+- **Formulas.** `log`, `log2`, `log10`, `log1p`, `exp` and `sqrt` can be
+  written without the `np.` prefix in every formula (`log(wage) ~ educ`).
+  A transformed outcome is accepted by `sp.ivreg` and `sp.panel`, a
+  transformed endogenous regressor by `sp.ivreg`
+  (`hours ~ educ + (log(wage) ~ exper + I(exper**2))`), and `sp.qreg`
+  takes transformed, factor and interaction terms. A name the data do not
+  have is reported by name; it used to end in a `KeyError`.
+- **`result.predict(data, what=, alpha=)`** for the results of
+  `sp.regress`, `sp.ivreg`, `sp.glm`, `sp.poisson` and the other
+  formula-based fits. The design is rebuilt from the formula, so new data
+  need the raw variables only. `what='confidence'` returns the standard
+  error and interval of the conditional mean, `what='prediction'` the
+  interval for a new observation of a linear model, `what='link'` the
+  index. The results of `sp.logit` and `sp.probit` take a DataFrame.
+- **`sp.estat`**: `'archlm'` (Engle's LM test), `'durbinalt'` (Durbin's
+  alternative test), `'bgodfrey'` with `version='fstat'`, and `'white'`
+  with `variables='fitted'` (the form of the test on the fitted values and
+  their squares). `'leverage'` also returns `rstudent` and `rstandard`.
+  `'beta'` returns the standardized coefficients of Stata's
+  `regress, beta`.
+- **`sp.tobit(formula=)` and `sp.truncreg(formula=)`**, with transformed,
+  factor and interaction terms; the formula may also come first.
+  `sp.survreg` accepts the data first.
+- **`sp.glm(scale=)`**: `'x2'`, `'dev'` or a number, the factor on the
+  model-based covariance. `family='poisson', scale='x2'` is the
+  quasi-Poisson covariance and matches Stata `glm, scale(x2)`.
+- **`sp.test`** takes a list of restrictions and coefficient names that
+  hold operators or blanks (`I(exper ** 2)`, `np.log(sales)`); so does
+  `sp.lincom`.
+- **`sp.lrtest`** accepts the maximum-likelihood regressions (`sp.logit`,
+  `sp.probit`, `sp.poisson`, `sp.nbreg`, `sp.tobit`, `sp.glm`). It refuses
+  fits on different samples, different models, and a reversed order.
+- **Stata translations**: `estat archlm`, `estat durbinalt`, `truncreg`,
+  `glm` (`family()`, `link()`, `scale()`, `vce()`), and `vce(robust)` /
+  `vce(cluster)` on `heckman`.
+
+#### Fixed
+
+- `sp.panel(method='fd')` with the time variable among the regressors (a
+  linear trend) raised `KeyError`.
+- `sp.panel(method='fe')` and `'twoway'` raised when the effects absorbed a
+  regressor. The regressor is now omitted with a warning and listed in
+  `model_info['omitted']`, as Stata and R do.
+- `sp.panel(method='mundlak')` raised on a time-invariant regressor or on
+  period dummies. Unit means that add no rank are left out and listed in
+  `model_info['cre_means_omitted']`.
+
+### ⚠️ Correctness
+
+- **`sp.stata` / `sp.from_stata` translated `ivregress gmm` to a
+  different estimator.** Stata's two-step GMM uses the heteroskedasticity
+  -robust weight matrix unless told otherwise; the translation called
+  `sp.ivreg(method='gmm')`, which uses the unadjusted one, and dropped
+  `wmatrix()`. On Card's schooling data the schooling coefficient came
+  out 0.1608 against Stata's 0.1588. The translation now follows
+  `wmatrix()` and `vce()` as Stata 18 resolves them (a `vce(cluster c)`
+  alone sets the weight matrix too), and nine option combinations
+  reproduce `ivregress gmm` to 5e-9 through `sp.stata`
+  (`tests/reference_parity/test_iv_gmm_stata_parity.py`). Combinations
+  with no counterpart (`wmatrix(hac ...)`, `igmm`, a cluster weight matrix
+  with a robust variance, `wmatrix(unadjusted) small`) are reported as
+  untranslated and `sp.stata` refuses them. Calls to `sp.iv` /
+  `sp.ivreg` themselves return the same numbers as before.
+- **`sp.ipw(estimand='ATT' | 'ATC', normalize=False)` was scaled by the
+  share of the target group.** The Horvitz-Thompson sums were divided by
+  `n` for every estimand, so the ATT came back multiplied by `P(T=1)` and
+  the ATC by `P(T=0)`. They are now divided by the number of treated and
+  of controls. On the NHANES school-meal data of Ding (2024, chapter 13)
+  the ATT goes from -1.098 to -1.992, the value of the book's own code.
+  `normalize=True` (the default) and the ATE are unchanged. See
+  `MIGRATION.md`.
+- **The confidence interval of `sp.fisher_exact` was too short.** It was
+  read off a 101-point grid six outcome standard deviations wide, each
+  point tested on its own 500 draws, and with `controls` the shifted
+  outcome was not residualized. It is now the exact inversion of the
+  randomization test on the assignments that gave the p-value, each end
+  found by bisection. On the LaLonde experiment the 95% interval goes
+  from [999, 2589] to [572, 3015]; effects of 1000 and 2600 have
+  randomization p-values of 0.21 and 0.20 and belong in it. The interval
+  is infinite, with a warning, when the design has too few assignments to
+  reject at `alpha`. p-values are unchanged. See `MIGRATION.md`.
+- **`sp.gformula_ice_fn` raised `LinAlgError` on a flat confounder list.**
+  The documented shorthand for "the same confounders at every time", and
+  any covariate named at more than one time, entered the history twice and
+  made the default sandwich standard error singular. Repeated names are
+  now counted once. Point estimates are unchanged.
+- **Lee and Zhang-Rubin bounds warn when ties defeat the trimming.** On a
+  binary or coarsely discrete outcome `trimming='quantile'` keeps every
+  observation tied at the quantile, trims almost nothing, and the two
+  bounds collapse (both -0.045 where the sharp bounds are [-0.176,
+  -0.019] on the trial of Ding's chapter 26). `sp.lee_bounds`,
+  `sp.principal_strat`, `sp.survivor_average_causal_effect` and
+  `sp.attrition_bounds` now say so and point to `trimming='exact'`. The
+  default and its numbers are unchanged.
+- **For `statistic='ks'` and `'rank_sum'` the "confidence interval" of
+  `sp.fisher_exact` was not an interval for the effect.** It was the 2.5%
+  and 97.5% percentiles of the null distribution of the statistic, centred
+  on zero whatever the effect. It is now the same constant-effect
+  inversion as for the difference in means, in outcome units: the
+  statistic is recomputed on `Y - tau_0 * D` for a stored set of
+  assignments and each end is bisected. With 12 treated among 60 units
+  and a constant effect of 0.75 the 95% interval covers 96.0% (rank sum)
+  and 96.7% (KS) of the time over 150 draws. The same holds for
+  `statistic='t'`. p-values are unchanged. See `MIGRATION.md`.
+- **Arithmetic inside a formula wrapped around on small integer
+  columns.** `pd.read_stata` returns a Stata `int` as `int16` and a `byte`
+  as `int8`, and numpy keeps arithmetic in that type, so `I(x**2)` was a
+  column of garbage for values above 181 (or 11) and the regression was
+  fitted on it without a warning. On the restaurant-inspection data of
+  Huntington-Klein's *The Effect* (a count up to 646) the coefficient of
+  the quadratic model was -0.0171 where Stata and R give -0.0844. It
+  affected `sp.regress`, `sp.feols`, `sp.fepois`, `sp.feglm`, `sp.glm`,
+  `sp.logit`, `sp.ivreg`, `sp.panel`, the covariate formulas of the DiD
+  family and the spatial models. Narrow integer columns are now widened to
+  `int64` before a formula is evaluated
+  (`tests/test_narrow_integer_formula.py`). Frames whose integers are
+  already `int64` or float are unaffected. See `MIGRATION.md`.
+- **`sp.ebalance(moments=2)` with a 0/1 covariate returned uniform
+  weights.** The square of an indicator is the indicator, the dual was
+  singular, and the estimate reported was the raw difference in means
+  behind a `ConvergenceWarning`. A moment that repeats another one is now
+  left out (`model_info['redundant_moments']`) and the weights balance the
+  rest exactly.
+- **`sp.match(method='cem')` follows the `cem` packages.** Sturges' rule
+  gives the number of cut points, hence one bin fewer than before, and a
+  bin is closed on the right. The default now reproduces Stata `cem` on
+  the NSW data (matched sample and estimate). Estimates from the default
+  change, and so do estimates with integer covariates under an explicit
+  `n_bins`. See `MIGRATION.md`.
+- **`sp.sensemakr` skipped a benchmark name it did not find** and returned
+  a table without that row. It is now an error.
+- **`sp.stata` / `sp.from_stata`, four silent mistranslations of factor
+  notation.** `a##b##c` was written as the main effects and the three-way
+  product, without the two-way terms. A variable with no prefix inside `#`
+  or `##` was read as continuous where Stata reads a factor. `a#b` without
+  main effects was written as the product of two columns; it is now
+  refused, because the formula's coefficients would not be Stata's.
+  `i.p##c.x##c.x` lost the square. All four now follow Stata and are
+  pinned against Stata 18
+  (`tests/reference_parity/test_the_effect_stata_parity.py`).
+- **`sp.stata`: `collapse` stores a mean, median or sd as Stata does**
+  (float unless the source is a long or a double). Regressions on
+  collapsed data differed from Stata in the sixth digit.
+
+- **`sp.survreg` ignored `robust=` and `cluster=`.** Both were accepted
+  and written into `model_info`, and the standard errors were the
+  observed-information ones whatever was asked. They are now the sandwich
+  and the cluster sandwich, with Stata's factors, and agree with Stata 18
+  `streg ..., time vce(robust)` and `vce(cluster)` to 1e-6 for the
+  Weibull, exponential, log-normal and log-logistic models
+  (`tests/reference_parity/test_survreg_streg_stata_parity.py`). On the
+  test data the robust standard error of the Weibull scale is 28% larger
+  than the one that used to be returned under `robust='robust'`. Fits
+  without these options change in the sixth digit only: the optimiser now
+  finishes with Newton steps (coefficients were about 1e-5 from the
+  optimum) and agrees with Stata to 1e-9. See `MIGRATION.md`.
+- **The Vuong statistic reported by `sp.zip_model` and `sp.zinb` was too
+  large.** `diagnostics['vuong_stat']` compared the zero-inflated fit with
+  a Poisson (negative binomial) density evaluated at the zero-inflated
+  model's own count coefficients. That is not the maximum of the
+  comparison model's likelihood, so the comparison model looked worse than
+  it is. It is now the regression fitted on its own, as in R
+  `pscl::vuong` and in Vuong (1989). On the test data the statistic goes
+  from 13.42 to 8.69 for the Poisson pair and from 9.16 to 3.70 for the
+  negative binomial pair, and both now agree with R and with Stata 18
+  (`forcevuong`) to 1e-6. Coefficients,
+  standard errors and log-likelihoods are unchanged. The docstrings also
+  say that this statistic is not a valid test for zero inflation (Wilson
+  2015). See `MIGRATION.md`.
+
+### Added
+
+From a pass over Huntington-Klein, *The Effect* (2nd ed.): its Stata code
+for chapters 4 and 13 to 21 was run in Stata 18 and replayed through
+`sp.stata` (836 printed numbers reproduced, 148 before). Notes are in
+`docs/dev/2026-10-05-the-effect-2e-review.md`.
+
+- `sp.ebalance(moments=[2, 2, 1])` takes one order per covariate (Stata
+  `targets(2 2 1)`), and `dof_adjust=True` matches the sample variance
+  and skewness as Stata `ebalance` does. With it the weights agree with
+  `ebalance, tolerance(1e-10)` to 1e-10. The default is unchanged.
+- `sp.match(method='cem', n_bins=...)` takes a list or a dict, from
+  covariate to a number of bins or to cut edges.
+- `sp.sensemakr(benchmark={'label': [columns]})` benchmarks several
+  controls as one group (`gbenchmark()` / `gname()` in Stata). Agrees with
+  Stata `sensemakr` to 1e-12.
+- `sp.rdrobust` names a covariate, outcome or running variable that is not
+  numeric instead of failing inside numpy.
+- `sp.rosenbaum_bounds(estimates=True)` adds, for each Gamma, the range of
+  the Hodges-Lehmann point estimate and the outer ends of its confidence
+  interval (the `t-hat` and `CI` columns of Stata `rbounds`). The
+  significance levels and the confidence bounds agree with Rosenbaum's
+  `DOS2::senWilcox`, the point-estimate bounds with Stata `rbounds`.
+  `sp.stata` runs `rbounds diff, gamma()` and `bstat, stat()`.
+- `sp.stata` runs `xi`, `ebalance`, `cem`, `sensemakr` and
+  `table g, statistic(mean x)`; `encode, g()`;
+  `date()`; `egen cut(), group()`; `reghdfe` with `d##ib3.t` and squares;
+  `_b[1.d#3.t]`; abbreviated variable names; weights that are missing or
+  zero (the observation is dropped, as in Stata); `[iw = w]` in `regress`
+  when the weights sum to the number of observations; `i.` covariates in
+  `psmatch2` and `teffects`; `program def`, `return scalar` of a local
+  macro and nested programs. Translated `tabstat, by()` and `table` head
+  the groups by their values; they used to read "Control" and "Treated"
+  for any 0/1 grouping variable.
+
+Seven functions from a pass over Croissant (2025), *Microeconometrics with
+R*, and its companion package `micsr`. The book's chapters on binary,
+count and censored outcomes use estimators StatsPAI did not have. Notes
+are in `docs/dev/2026-10-04-croissant-microeconometrics-review.md`.
+
+- **`sp.ivprobit` and `sp.ivtobit`** fit a probit and a tobit with
+  continuous endogenous regressors. Maximum likelihood is the default and
+  `method='twostep'` gives Newey's minimum chi-squared estimator, as in
+  Stata's `ivprobit` and `ivtobit`. Both report the Wald test of
+  exogeneity and take `vce='robust'` or `cluster=`. Coefficients,
+  standard errors, the log-likelihood and both Wald statistics agree with
+  Stata 18 to 1e-6 on 14 blocks, with one and two endogenous regressors
+  and with one and two censoring limits
+  (`tests/reference_parity/test_ivprobit_ivtobit_stata_parity.py`).
+- **`sp.ivpoisson`** fits an exponential-mean model with endogenous
+  regressors by GMM, as Stata's `ivpoisson gmm`. `errors='multiplicative'`
+  is Mullahy's (1997) moment condition, the one that is valid when an
+  omitted variable enters the exponential. One-step, two-step and iterated
+  GMM, robust, clustered and unadjusted weight matrices, Hansen's J. It
+  agrees with Stata 18 to 1e-6 on 12 blocks
+  (`tests/reference_parity/test_ivpoisson_stata_parity.py`).
+- **`sp.cmtest`** runs the conditional moment tests of normality,
+  heteroskedasticity, skewness and kurtosis on a fit from `sp.probit` or
+  `sp.tobit`. Those models are inconsistent when the latent error is not
+  normal or not homoskedastic, and they leave no residual to inspect. The
+  statistics agree with R `micsr::cmtest` to 1e-9 for the tobit and 1e-6
+  for the probit, and reject 5% of the time under the null in simulation
+  (`tests/reference_parity/test_cmtest_micsr_parity.py`).
+- **`sp.nlogit`** fits the nested logit in its random-utility form on
+  long-format choice data, with one dissimilarity parameter per nest or a
+  common one, alternative-specific constants, and the likelihood-ratio
+  test of IIA against the conditional logit. Coefficients, standard
+  errors (oim, robust, cluster) and the test agree with Stata 18 `nlogit`
+  to 1e-6, and coefficients and likelihoods with R `mlogit`. `mlogit`'s
+  standard errors differ from Stata's by up to 4% on the same estimates;
+  StatsPAI's are Stata's (`tests/reference_parity/test_nlogit_parity.py`).
+- **`sp.etpoisson`** fits a Poisson regression with an endogenous binary
+  treatment by maximum likelihood, as Stata's `etpoisson`. The outcome
+  error is integrated out by Gauss-Hermite quadrature (`intpoints=24`).
+  It reports the correlation of the two errors, the Wald test of
+  independent equations and the average treatment effect on the count
+  scale with a delta-method standard error. Coefficients and standard
+  errors agree with Stata 18 to 1e-6 (observed 1e-10) and the ATE with
+  `margins r.treat` to 1e-9
+  (`tests/reference_parity/test_etpoisson_stata_parity.py`).
+  `sp.from_stata` translates the command.
+- **`sp.tobit(method='scls')`** is Powell's symmetrically censored least
+  squares. It needs a symmetric error and nothing else, so it stays
+  consistent under heteroskedasticity and non-normality, which is what to
+  turn to when `sp.cmtest` rejects. In a simulation with heteroskedastic
+  errors its slope averages 1.01 for a true value of 1 and its 95%
+  interval covers 97% of the time, where maximum likelihood averages 1.33.
+  Coefficients agree with `micsr::tobit1(method = "trimmed")` to 1e-8
+  (`tests/reference_parity/test_binary_r2_and_scls_parity.py`).
+- **`sp.probit` and `sp.logit` report a family of goodness-of-fit
+  measures** in `model_info['r2']`: McFadden, Cox-Snell, Nagelkerke,
+  Efron, Tjur, Estrella and McKelvey-Zavoina. They agree with R
+  `DescTools::PseudoR2` and `micsr::rsq` to 1e-6. `model_info['pseudo_r2']`
+  is unchanged.
+- **`sp.survreg(frailty='gamma')`** adds gamma-distributed unobserved
+  heterogeneity to the four parametric duration models, as Stata's
+  `streg, frailty(gamma)`. It reports `log(theta)`, the frailty variance
+  and the likelihood-ratio test of `theta = 0` with its boundary p-value.
+  Coefficients, standard errors, `theta` and the test agree with Stata 18
+  to 1e-6. When the variance goes to its boundary the fit is the model
+  without frailty and a warning says so. `sp.survreg` results also carry
+  `data_info['llobs']`, so `sp.vuong` can compare two duration
+  distributions, and `model_info['ll_log_time']`, the log-likelihood in
+  Stata's convention.
+- **`sp.vuong`** compares two non-nested maximum likelihood fits on the
+  same observations and returns the Vuong statistic with its AIC and BIC
+  corrections. It takes fits from `sp.poisson`, `sp.nbreg`,
+  `sp.zip_model`, `sp.zinb`, `sp.hurdle`, `sp.logit` and `sp.probit`,
+  which now carry their per-observation log-likelihood in
+  `data_info['llobs']`. Statistics agree with R `pscl::vuong` to 1e-6 on
+  five model pairs. `pscl` leaves a negative binomial dispersion out of
+  its parameter count and StatsPAI does not, so the corrected statistics
+  differ when exactly one model is negative binomial
+  (`tests/reference_parity/test_vuong_pscl_parity.py`).
+- `sp.stata` reads `stset timevar, failure(eventvar)` and runs
+  `streg ..., distribution() time [frailty(gamma)] [vce()]` through
+  `sp.survreg`. `streg` for the Weibull or exponential without `time` is
+  the proportional-hazards metric and is refused, as are `shared()`,
+  other frailty distributions, and `stset` with `id()`, `enter()` or
+  `origin()`.
+- `sp.ologit`, `sp.oprobit`, `sp.mlogit`, `sp.tobit` and `sp.nlogit` fits
+  carry their per-observation log-likelihood, so `sp.vuong` takes them.
+- `sp.from_stata` and `sp.stata` translate `ivprobit`, `ivtobit` and
+  `ivpoisson gmm`. `ivtobit` without `ll()` is written as `ll=None`,
+  because `sp.ivtobit` censors at zero by default and Stata does not.
+  `ivpoisson cfunction` is refused.
+
+### What the syllabus of Xu and Lan's *Causal-Inference Econometrics* found
+
+徐小君、蓝嘉俊《因果推断计量经济学》(清华大学出版社, 2025) publishes no data
+and no code, only a sample chapter and the table of contents. The twelve
+chapters were therefore used as a syllabus. One Stata do-file per chapter
+runs the commands those methods are taught with, on datasets that ship with
+Stata, and each log was replayed through `sp.stata` number by number
+(`tests/external_parity/xu_lan_syllabus/`). About 1,200 printed numbers
+were reproduced at the start and two blocks were not. 85 commands were
+refused, and several of the functions behind them had never been compared
+with Stata. Three of the findings were made by other passes the same
+night and fixed on main first: `ivregress gmm` translating to 2SLS,
+`heckman` translating to the two-step estimator, and the missing
+`estat durbinalt` / `estat archlm`. Those fixes are theirs (see the
+entries above); this pass keeps a second set of Stata numbers for each.
+Notes are in
+`docs/dev/2026-10-05-xu-lan-causal-econometrics-review.md`; the numbers
+below are pinned on committed synthetic data in
+`tests/reference_parity/test_textbook_syllabus_stata_parity.py` (40 tests).
+
+**⚠️ Correctness**
+
+- **`sp.arima` fitted a zero-mean model to a series that has a mean.** The
+  default (`method='statespace'`) estimated no constant, so an AR(1) on a
+  series with a non-zero mean pushed the autoregressive coefficient towards
+  one. On the first difference of the log U.S. wholesale price index the
+  coefficient was 0.763; with the mean estimated it is 0.619 (Stata: 0.615
+  by exact likelihood). `sp.arima` now has `trend=`. The default estimates
+  a constant when the series is not differenced and none when it is, as R's
+  `stats::arima` and statsmodels' `ARIMA` do; `trend='c'` on a differenced
+  series estimates the drift Stata's `arima` always includes; `trend='n'`
+  gives the old fit. `method='innovations_mle'` already estimated the
+  constant and is unchanged. See `MIGRATION.md`.
+- **Two-step standard errors of `sp.heckman` now use the observed
+  information of the first-step probit.** They used the expected
+  information. The difference is in the fourth digit (0.60627 to 0.60654
+  for the inverse Mills ratio on Stata's `womenwk`), and it was the whole of
+  the gap that Track A module 43 carried as a tolerance. The worst relative
+  gap in a standard error against R `sampleSelection` and Stata goes from
+  8.6e-5 to 4e-9, and the module's budget is now the default 1e-6.
+- **`sp.stata("tobit y x, ul(2)")` censored from below as well.** Stata
+  censors only on the sides that are written. The translation passed the
+  upper limit and left `sp.tobit` at its own default of `ll=0`, so every
+  outcome at or below zero was treated as censored too. `tobit y x` with
+  no limit (an uncensored normal model in Stata) became a tobit at zero,
+  and `ll` without a value or with a variable name fell back to zero
+  silently. Both limits are now written out, `sp.tobit` accepts
+  `ll=None`, and the forms that cannot be translated are refused. On a
+  sample censored from above only, the slope goes from 0.965 to 0.998
+  (truth 1), equal to Stata 18 to 1e-8. See `MIGRATION.md`.
+- **`sp.tab` reported a Yates-corrected statistic as "Pearson chi2" on
+  2 x 2 tables.** The test came from `scipy.stats.chi2_contingency` at its
+  default, which applies the continuity correction when the table has one
+  degree of freedom. The label, Stata's `tabulate, chi2` and R's
+  `chisq.test(correct = FALSE)` all mean the uncorrected statistic. On the
+  test table it is 11.84, not the 11.11 that was printed. Larger tables
+  are unchanged. See `MIGRATION.md`.
+- **`sp.garch(p >= 1, q=0)` returned numbers for a model that is not
+  identified.** With no ARCH term the variance never responds to the data
+  and every value of the GARCH coefficient gives the same likelihood. The
+  call is now refused. (`p` counts lagged variances and `q` lagged squared
+  innovations; ARCH(1) is `p=0, q=1`.)
+
+**Added**
+
+- **`sp.sdtest` and `sp.ztest`.** The chi-squared test that a standard
+  deviation equals a value, the F test that two are equal, and the z test
+  on a mean or a difference of means when the standard deviation is known.
+  These are the two worked examples of the book's first chapter. Both take
+  data or summary statistics (`sp.sdtest(n=10, sd=1.14, sd0=2)`), as
+  Stata's `sdtest` / `sdtesti` and `ztest` / `ztesti`.
+- **`sp.prtest`, `sp.sktest`, `sp.swilk` and `sp.ci`.** The rest of a
+  first statistics chapter: the z test on one or two proportions, the
+  skewness-kurtosis and Shapiro-Wilk tests for normality, and confidence
+  intervals for means, variances, standard deviations and proportions
+  (exact, Wald, Wilson, Agresti-Coull, Jeffreys). They agree with Stata 18
+  `prtest`, `sktest`, `swilk` and `ci` to 1e-8 or better (the Shapiro-Wilk
+  p-value to 1e-5). `sp.stata` runs those commands and `prtesti`.
+- **`svar ..., aeq(A) beq(B)` and `svar ..., lreq(C)`** run in `sp.stata`,
+  with the matrices defined by `matrix A = (...)` before them.
+- **`tabulate a b, chi2 exact lrchi2 V`** runs in `sp.stata`. The Pearson
+  and likelihood-ratio statistics, Cramer's V and Fisher's exact p-values
+  are in `.attrs['test']` of the table and in `r()`; `sp.tab(...,
+  output='dataframe')` carries the same dictionary.
+- **`sp.nlcom`.** A nonlinear function of the coefficients with a
+  delta-method standard error: ratios, the long-run effect `b / (1 - c)` of
+  a partial-adjustment model, turning points. The expression is parsed into
+  a syntax tree and differentiated node by node; nothing is passed to
+  `eval`.
+- **`sp.svar`.** Structural VAR on a fitted `sp.var`: short-run
+  restrictions in the AB model (`A=`, `B=`), long-run restrictions
+  (`long_run=`), or sign restrictions on the impulse responses (`sign=`).
+  Coefficients, standard errors, the log-likelihood, the test of
+  over-identifying restrictions, structural impulse responses and variance
+  decompositions agree with Stata 18 `svar` to 1e-6 in all three
+  likelihood cases. Sign restrictions return the set of admissible
+  rotations, and the documentation says what its bands are not: they carry
+  no sampling uncertainty. `VARResult.fevd()` gives the Cholesky variance
+  decomposition.
+- **`sp.unitroot(test='pp' | 'kpss')`.** Phillips-Perron `Z(t)` and
+  `Z(rho)` and the KPSS statistic, equal to Stata's `pperron` and `kpss` to
+  1e-9. KPSS has stationarity as its null; the result says so in `null`.
+- **Stata's factor-variable names in `sp.test` and `sp.lincom`.**
+  `"2.race = 3.race"` and `"x + 1.union#c.x"` find the coefficients the
+  formula engine calls `C(race)[T.2]` and `x:C(union)[T.1]`. `"i.race"` on
+  its own tests every level jointly.
+- **`sp.heckman(select=None)`** selects where the outcome is observed
+  (Stata's `heckman y x, select(z1 z2)`, which `sp.stata` now runs), and
+  `method='mle'` is accepted for `'ml'`. `sp.arima` and `sp.garch` take
+  `data=` with a column name.
+- **`sp.hdfe_ols(absorb_dof='areg')`** (and `sp.absorb_ols`) charges every
+  absorbed level in a clustered variance, where the default follows
+  `reghdfe` and does not charge an effect nested in the cluster variable.
+  With `drop_singletons=False` the fit is then the dummy-variable
+  regression, slopes and standard errors equal to
+  `sp.regress('y ~ x + C(g)')` to 1e-10 under the classical, robust and
+  clustered variances, with and without weights, without building the
+  dummies. `sp.stata` sends `areg` there: on the NLS panel (4,134 groups)
+  the command goes from about three minutes to under a second, and its
+  `_cons` is now Stata's (the dummy-variable translation reported the
+  first group's level and said so in a note). The result no longer lists
+  the group dummies. A robust variance with weights and HC2 / HC3 keep
+  the dummy-variable translation.
+- **`sp.ttest(n=, mean=, sd=)`** takes summary statistics for one sample
+  or two independent ones (Stata's `ttesti`).
+- **Abbreviated variable names in `sp.stata`** are spelled out in
+  `heckman`, `truncreg`, `etregress` and `prais`, and inside the options
+  that hold a varlist: `select()`, `treat()`, `absorb()`, `by()`,
+  `cluster()` and `vce(cluster ...)`. An abbreviation that fits two
+  variables is refused, as in Stata.
+- **`sp.stata` runs** `sdtest`, `sdtesti`, `ztest`, `ztesti`, `ttesti`,
+  `etregress`, `pperron`, `kpss`, `arima`, `arch`, `testparm` and `nlcom`.
+
+**Fixed**
+
+- **`xtreg y x i.year, fe` through `sp.stata` failed on a panel with fewer
+  units than regressors.** The fixed-effects statistics went through the
+  between regression of the random-effects variance components, which does
+  not exist there.
+- **`sp.panel(method='mle')` took minutes on a few thousand panels.** It
+  called the general mixed-model optimiser. The likelihood of the
+  random-intercept model is now concentrated in one variance ratio. On the
+  NLS panel (4,134 women, 19,007 rows) the fit goes from more than 150
+  seconds to 0.3, with the same estimates to 1e-8.
+- **`sp.regress` with thousands of dummy columns spent minutes checking
+  for collinearity.** The scan took one dot product per pair of columns
+  and regrew its Cholesky factor one row at a time. It now works on blocks
+  of the cross-product. With about 4,100 dummy columns the two checks go
+  from more than 400 seconds to about 40; the omitted columns are the
+  same.
+
+### What Gaillac and L'Hour's *Machine Learning for Econometrics* found
+
+A pass over the companion code of Gaillac and L'Hour (2025, OUP): notebooks
+and R scripts for chapters 2 to 11. Notes, what was run and what is left
+open are in `docs/dev/2026-10-05-gaillac-lhour-ml4econometrics-review.md`.
+Most of the book already had a counterpart that reproduces its references
+(`hdm::rlassoIV`, `ivmodel` LIML and Fuller on the Card and BLP data to
+1e-8; the double-selection simulation of chapter 5 gives bias 0.017 and
+coverage 0.949 against the book's 0.012 and 0.942). Three things did not.
+
+- **Cluster-Lasso for panels (chapter 7): `cluster=` on `sp.rlasso`,
+  `sp.rlasso_effect`, `sp.rlasso_effects` and `sp.rlasso_iv`.** The
+  penalty loadings of Belloni, Chernozhukov, Hansen and Kozbur (2016) sum
+  the scores within cluster before squaring, `gamma` defaults to
+  `0.1 / log(G)`, and the final standard error is cluster-robust. hdm has
+  no such option and the book sources an unpublished `rlasso_cluster.R`.
+  Against Stata's lassopack on the same bytes: the penalty level, the
+  selected variables and the post-Lasso coefficients of `rlasso,
+  cluster()` agree to 1e-10, and the point estimates and variances of
+  `pdslasso, cluster()` (double selection and partialling out) and
+  `ivlasso, cluster()` (selection among instruments, and among both
+  instruments and controls) agree to 1e-9
+  (`tests/reference_parity/test_cluster_lasso_stata.py`). Variances carry
+  no small-sample factor, as in `pdslasso`. What ignoring the clustering
+  costs: in a within-transformed panel of 100 units and 8 periods with
+  AR(1) regressors and errors (coefficient 0.8), double selection without
+  `cluster=` keeps 6.1 controls on average and its 95% interval covers
+  78.6% of the time; with `cluster=` it keeps 4.6 and covers 93.3% (1,167
+  draws). On one of the two test panels lassopack and hdm's iteration stop
+  at different supports. The test shows that both are fixed points of the
+  loading iteration under StatsPAI's cluster loadings, so the difference
+  is the path and not the penalty; this also happens without clustering.
+- **Classic synthetic control: interval and p-value from one procedure
+  (chapter 10).** The book's end-of-chapter question 5 is that a test
+  which rejects and an interval containing zero cannot come from the same
+  procedure. In `sp.synth(method='classic')` they did not. See the
+  correctness entry above; the inversion is
+  `statspai.synth._core.placebo_inversion_ci`, checked against a
+  brute-force grid. Under `H0: effect = C` the weights do not move, the
+  treated gap becomes `gap - C` and the gap of a placebo whose donor pool
+  holds the treated unit with weight `w` becomes `gap + w C`, so each
+  comparison is a quadratic inequality in `C`.
+- **`sp.datasets.nsw_dw()` said it was the Dehejia-Wahba data.** It is a
+  simulated replica with a built-in latent effect of $1,794 (the treated
+  mean of `re78` is 5,508; in the real file it is 6,349). The docstring
+  now opens with that and the frame carries `attrs['simulated'] = True`.
+  `sp.datasets.nsw_dw(simulated=False)` returns the real sample: the 185
+  NSW treated and the 2,490 PSID-1 comparison men, bundled, no network.
+  Its naive difference in 1978 earnings is -$15,205, Table 3 of Dehejia
+  and Wahba (1999), and it agrees row by row with the files on Dehejia's
+  NBER page to the rounding of earnings. The bare call is still the
+  replica, rows unchanged, because parity fixtures are built on it.
+
+### Changed
+
+- `sp.survreg` raises `MethodIncompatibility` when a duration is zero or
+  negative. It used to add `1e-15` to every duration and fit.
+
+### Fixed
+
+- **`sp.zip_model` and `sp.zinb` returned NaN for every standard error
+  when one coefficient of the inflation equation was not identified.**
+  Under quasi-complete separation that coefficient runs off, the logistic
+  function overflowed inside the complex-step Hessian, and one NaN spread
+  to the whole matrix. On the `trips` data of the book, R
+  `pscl::zeroinfl` reports standard errors for the other 19 coefficients
+  and StatsPAI's are now within 0.5% of them. `sp.hurdle` was not
+  affected in its numbers. All three now warn and name the coefficient
+  the likelihood is flat in (`tests/test_zeroinflated_separation.py`).
+  Estimates on data without separation do not change.
+
+### What Ding's *A First Course in Causal Inference* found
+
+The 28 R programs of the book write every estimator out by hand. Each
+deterministic number was recomputed with the matching `sp.*` call
+(`tests/external_parity/test_ding_first_course.py`, 19 tests over 17
+chapters; review in `docs/dev/2026-10-05-ding-first-course-review.md`,
+guide in `docs/guides/ding_first_course.md`). The four corrections are
+listed above. What was added:
+
+- `sp.rosenbaum_bounds(method='t')`: Rosenbaum's sensitivity analysis for
+  the mean pair difference. Agrees with `sensitivitymw::senmw(method =
+  "t")` to 2e-14.
+- `sp.anderson_rubin_test(ar_vcov='HC0' | 'HC1' | 'HC2' | 'HC3')`: the
+  Anderson-Rubin test and interval with a heteroskedasticity-robust
+  variance (the Fieller-Anderson-Rubin interval of the book). The
+  statistic was the homoskedastic F unless `cluster=` was given, and
+  `vcov` only ever chose the effective F reported beside it. Agrees with
+  `sandwich::vcovHC` on the reduced form to 1e-9 for one and two
+  instruments. The default stays `'classic'`.
+- `sp.ri_test(stat='rank_sum' | 'lin' | 'lin_t')` and
+  `sp.fisher_exact(statistic='t')`. `'lin_t'` is Lin's estimate over its
+  HC2 standard error, the covariate-adjusted statistic whose
+  randomization test is also valid for the weak null.
+- `sp.randomize(rerand_accept=)`: rerandomization by Morgan and Rubin's
+  criterion. Assignments are redrawn until the Mahalanobis distance,
+  scaled by `n1 n0 / n`, is below the chi-square quantile of the
+  acceptance probability; `result.rerandomization` records it. The
+  `n_rerand` search is unchanged, and its documentation now says that its
+  threshold is not on that scale.
+- `sp.lm_lin(blocks=)`: Lin's estimator fitted in each block of a
+  stratified experiment and combined by block shares.
+- `sp.fisher_exact(...).summary()` prints the confidence level that was
+  asked for and no longer calls the null-distribution quantiles of
+  `statistic='ks'` / `'rank_sum'` / `'t'` a confidence interval.
+  `FisherResult` has an `alpha` attribute.
+- `sp.principal_strat(method='principal_score')` recognises one-sided
+  noncompliance: the arm in which the stratum variable is constant is not
+  fitted and its empty stratum has share zero.
+
+### What de Chaisemartin and D'Haultfoeuille's DiD textbook found
+
+The four applications of the authors' difference-in-differences textbook
+(SSC package `cc_xd_didtextbook`) were run in Stata 18 and again in
+StatsPAI. Six results were wrong (⚠️ below), the authors' own diagnostic
+was missing, and their main estimator refused the book's central example.
+Details, one documented departure from the reference command and what is
+still open are in `docs/dev/2026-10-05-dcdh-did-textbook-review.md`.
+
+- ⚠️ **`sp.did_multiplegt` with a non-binary treatment.** Every switcher
+  from a baseline other than 0 was signed as a switch off, whichever way
+  it moved, and nothing was divided by the size of the change. On the
+  newspaper panel of Gentzkow, Shapiro and Sinkinson (2011) the estimate
+  was -0.00082. It is now the effect per unit of treatment, 0.0057791,
+  which is what Stata `did_multiplegt_old` returns (1e-8), as are the two
+  placebos. Binary treatments give the same numbers as before.
+- ⚠️ **`sp.sun_abraham` on an unbalanced panel.** The weight of a cohort
+  at a relative time was its share of units. It is now its share of the
+  observations at that relative time (of their weight under `weights=`),
+  as in Sun and Abraham (2021) and Stata `eventstudyinteract`. On the
+  Wolfers (2006) divorce panel, where 52 state-years have no outcome, the
+  unweighted effect at relative time 0 was -0.1399 and is -0.1054, Stata's
+  number to nine digits. Weights that vary over time now give Stata's
+  estimates and standard errors as well. Balanced panels are unchanged.
+- ⚠️ **`sp.sun_abraham(event_window=)`.** Relative times outside the
+  window were left out of the regression, which puts their treated
+  observations in the reference category. On the Wolfers panel a window of
+  (-14, 12) moved the effect at relative time 0 from 0.246 to 0.502. The
+  window now selects what is reported and the regression stays saturated
+  (`window_rule='report'`, the new default). `window_rule='bin'` pools the
+  relative times beyond each end into that end, the specification usually
+  written for `eventstudyinteract`; `window_rule='reference'` is the old
+  behaviour.
+- ⚠️ **`sp.did_multiplegt_dyn(same_switchers=True)`** kept every switcher
+  observed at all the horizons, including those with no control left at
+  the long ones, so the switchers were not the same across horizons. It
+  now keeps the switchers whose effect is estimable at every horizon, as
+  Stata does.
+- ⚠️ **`sp.did_multiplegt_dyn(aggregation='switchers')`** divides the
+  summed effects by the treatment changes in place at each horizon, which
+  is the definition of `Av_tot_eff`. Nothing changes for a binary
+  treatment that stays switched; a treatment that comes back within the
+  horizons gave a different number before.
+- ⚠️ **`sp.did_multiplegt_dyn(controls=)`.** The first-difference
+  regression behind the option was fitted without the groups that never
+  switch, whose outcomes were then left unadjusted, and on a panel with
+  holes a change between two rows several periods apart was used as a
+  one-period change. The regression also ignored `weights=` and
+  `trends_nonparam=`. And the analytic variance treated the fitted slopes
+  as known; it now has the term for their estimation (it was 0.1 to 0.6%
+  off). Estimates and standard errors agree with Stata to 5e-7 in six
+  configurations: plain, weighted and clustered, within
+  `trends_nonparam` cells, normalized, one switch direction, and on an
+  unbalanced panel.
+- ⚠️ **`regress y x, vce(hc2 clustvar, dfadjust)` through `sp.stata` /
+  `sp.from_stata`** came back as `sp.regress(robust='hc2')`: the cluster
+  variable and the degrees-of-freedom adjustment were dropped without a
+  note. It is now `vce='cr2', cluster=, dfadjust=True`.
+- **`sp.twowayfeweights`** (new). The weights a two-way fixed effects
+  regression puts on the treatment effects of the treated cells (de
+  Chaisemartin and D'Haultfoeuille 2020), for the fixed effects regression
+  (`type='feTR'`) and the first-difference regression (`'fdTR'`), with
+  controls, with other treatments in the regression (their contamination
+  weights are reported too), with observation weights, and with the
+  regression of chosen variables on the weights. Any treatment, binary or
+  not, staggered or not. Every count, sum, coefficient and test of the
+  nine calls in the book agrees with Stata `twowayfeweights`.
+- **`sp.did_multiplegt_dyn` takes a non-binary treatment.** Periods are
+  ranked, so a four-yearly panel works; cells where a group has been on
+  both sides of its starting treatment are dropped; switchers are matched
+  on their period-one level. Effects, placebos, analytic standard errors,
+  normalized effects and `Av_tot_eff` agree with Stata `did_multiplegt_dyn`
+  on the synthetic test panel and, once one county the command discards by
+  accident is set aside, on the newspaper panel.
+- **Joint tests without the bootstrap.** With `se_method='analytic'`,
+  `joint_placebo_test`, the new `joint_effects_test`, `joint_overall_test`
+  and `effects_equal_test` are Wald tests on the analytic joint covariance
+  and reproduce Stata's p-values. No replicate is drawn any more, so an
+  analytic fit no longer spends its time on 500 bootstrap draws it did not
+  use for the standard errors.
+- **`design=`, `by_path=` and `normalized_weights=`** in
+  `sp.did_multiplegt_dyn`: the treatment paths behind an effect, the
+  effects path by path, and the weights of a normalized effect on the
+  current and lagged treatments.
+- **`sp.regress(dfadjust=True)`**: Bell-McCaffrey degrees of freedom for
+  `robust='hc2'` and for `vce='cr2'` with `cluster=`, as Stata 18
+  `vce(hc2 [clustvar], dfadjust)`. `sp.test` now works after
+  `vce='cr2'` / `'cr3'`, whose full covariance is stored.
+- **Translations**: `twowayfeweights`, `did_multiplegt_dyn`, `did_had`
+  and `did_multiplegt_old` run through `sp.stata`.
+- **A sup-t test in `sp.uniform_bands`**, and `terms=`. The result's
+  `attrs` now carry `max_t` and `supt_pvalue`, the test that every covered
+  coefficient is zero. It is the test the textbook recommends when many
+  correlated pre-trend estimates make the Wald test's covariance nearly
+  singular. `terms=[...]` covers named coefficients of any regression, for
+  an event study written by hand with lead and lag dummies. On the book's
+  two examples the p-values are 0.068 and 0.608, against 0.068 and 0.607
+  from Stata `sotable`.
+- **`sp.fect` on large panels.** The initial two-way fit built one dummy
+  column per unit, so a panel of 7,248 units and 40 periods needed a 17 GB
+  matrix and did not finish. Above 50 million design cells the same
+  least-squares fit is solved by alternating projections (equal to the
+  dense fit to 1e-11 where both run); that panel now takes 0.4 seconds
+  for `method='fe'`. Smaller panels take the same path as before.
+- **`sp.fect` warns when the iterations stop at `max_iter`**
+  (`ConvergenceWarning`). `model_info['converged']` already said so, and
+  nothing else did. With weak factors the ATT can keep moving for
+  thousands of iterations: on the Moser and Voena (2012) panel the
+  two-factor estimate is 0.277 at `tol=1e-3`, 0.131 at `1e-4` and 0.051 at
+  `1e-5`.
+
+### A causal-ML textbook's notebooks, run against their references
+
+The Python notebooks of Chernozhukov, Hansen, Kallus, Spindler and
+Syrgkanis, *Applied Causal Inference Powered by ML and AI*
+(arXiv:2403.02467), were rerun in StatsPAI next to R `hdm`, `sensemakr`,
+`dagitty`, `rdrobust` and Python `DoubleML`. Double lasso, the DML models,
+IRM, the ATT score for difference-in-differences, PLIV, proxy controls and
+`rdrobust` with covariates reproduced their references. What did not is
+below. Every fix is pinned on simulated data; the book's data are not
+redistributed. Reader guide: `docs/guides/applied_causal_ml.md`.
+
+#### ⚠️ Correctness
+
+- **`sp.dml(model='plr')` and `model='pliv'` with a classifier nuisance
+  used the predicted label, not the predicted probability.** Passing
+  `ml_m=RandomForestClassifier()` for a 0/1 treatment residualised it as
+  `D - 1{p > 0.5}`. On the book's 401(k) example the estimate was 6,044
+  where `DoubleML` and the book give 8,754. A classifier now contributes
+  `predict_proba` for a 0/1 outcome, treatment or instrument, and is
+  refused for any other target. Regressors, `model='irm'` and
+  `model='iivm'` are unchanged. `sp.dml_model_averaging` had the same
+  defect and the same fix. See MIGRATION `oct2026-causalml-textbook-fixes`.
+- **`sp.dml_sensitivity` on an IRM fit used the PLR scaling.** The bound
+  for the average effect needs `sigma^2 = E[(Y - g(D, X))^2]` and the
+  Riesz representer `D/m - (1-D)/(1-m)`. The old bound on the 401(k)
+  example was [-1,276, 16,870]; it is now [2,940, 12,654], equal to
+  `DoubleML`'s to 1e-10, for the ATE and the ATTE scores.
+- **`sp.dml_sensitivity`'s `rv_qa` now accounts for the sampling error of
+  the bias bound.** It is the confounding strength at which the interval
+  for the bound reaches zero. It used to subtract `1.96 * se` of the
+  unadjusted estimate, which ignores that `S` is estimated. On the 401(k)
+  PLR fit `rv_qa` moves from 0.0486 to 0.0511.
+
+#### Added
+
+- **`sp.lm_lin`**: the average effect of a randomized experiment by
+  regression on treatment, centred covariates and their interactions (Lin
+  2013). Estimate, standard error, degrees of freedom and interval equal R
+  `estimatr::lm_lin` 2.0.0 to 1e-9 for HC0 to HC3, classical, CR2 (with
+  Bell-McCaffrey degrees of freedom) and Stata clustering.
+  `superpopulation=True` adds the variance from estimating the covariate
+  means, which the book's experiments chapter adds by hand: with random
+  covariates and heterogeneous effects the regression interval covered
+  the population effect 83% of the time in simulation and the corrected
+  one 94%.
+- **Standard errors and a uniform band for the TOC curve of
+  `sp.cate_eval`.** `toc_curve` gains `se`, `ci_lower` / `ci_upper` and
+  `band_lower` / `band_upper`; the band covers the whole curve, so a
+  stretch of it above zero is evidence that the score found heterogeneity.
+  The influence function includes the term for ranking within the
+  evaluation sample; without it the standard error is more than 10% too
+  large at the top of the curve. Checked against a known curve
+  (`tests/reference_parity/test_cate_eval_toc_bands.py`). `m_hat` is no
+  longer required when `mu1_hat` and `mu0_hat` are given. AUTOC and Qini
+  are unchanged (equal to grf's to 1e-10).
+- **Standard errors and an interval for the sensitivity bounds.**
+  `sp.dml_sensitivity(...)` returns `se_low`, `se_high`, `ci_low` and
+  `ci_high` for PLR and IRM fits, with clusters and with repeated
+  cross-fitting. `DoubleML` 0.11.3 reports the same two standard errors
+  with the bounds exchanged; a finite-difference check of the influence
+  functions (`tests/reference_parity/test_dml_sensitivity_bound_scores.py`)
+  and the book's own code agree with the assignment used here.
+- **A weak-instrument-robust confidence set for PLIV.**
+  `sp.dml(model='pliv')` stores `model_info['anderson_rubin']`: the exact
+  solution of the Anderson-Rubin inequality on the cross-fitted score. It
+  is an interval when the first stage is significant and unbounded
+  otherwise. The book scans a grid, which truncates the set (its AJR
+  example prints an upper end of 1.99; the set extends to 3.67).
+- **`sp.best_linear_projection` accepts `sp.dml(model='irm')` results.** It
+  projects the cross-fitted doubly-robust scores on covariates or group
+  indicators, which is `DoubleML`'s `cate()` / `gate()`. Coefficients match
+  to 1e-10; the joint covariance is in `.attrs['vcov']`, for causal
+  forests as well, so the projected effect at any covariate value has a
+  standard error.
+- **Joint inference for `sp.rlasso_effects`.** The return value is still a
+  `dict`, now with `.vcov()` (equal to hdm's to 1e-14) and
+  `.conf_int(joint=True)`, a sup-t band as in
+  `confint(<rlassoEffects>, joint = TRUE)`.
+- **`sp.sensemakr`** takes string and categorical controls (they enter as
+  indicators and are benchmarked as a group), takes `kd=` / `ky=`
+  multiples, and reports the adjusted estimate, standard error, t and
+  interval for each benchmark, equal to R `sensemakr` 0.1.6 to 1e-9. It
+  used to stop with a NumPy casting error on the package's own Darfur
+  example. The treatment standard error is now computed from a QR factor
+  (1e-14 from R on Track A module 22, was 5e-8).
+- **`sp.dag`** accepts named unobserved nodes (`latent=[...]` or
+  `"F [latent]"`): they are never offered as adjustment variables and
+  `sp.identify` projects them out (`DAG.latent_projection()`).
+  `DAG.implied_independencies()` lists the testable implications of a
+  graph and `DAG.test_implications(data)` tests them; both equal
+  `dagitty`'s output.
+
+#### Fixed
+
+- `sp.proximal_regression` refuses a treatment that is not 0/1. It used to
+  truncate a continuous treatment to integers and return a number.
+- `sp.dml_sensitivity` refuses PLIV and IIVM fits with a reason instead of
+  asking for residuals that those models never store.
+
+### What Clarke's *Applied Microeconometrics* found
+
+The Stata chapters of the book's companion site (randomisation inference
+and the bootstrap, matching and weighting, clustered inference and the
+two-way fixed effects decompositions, synthetic control and synthetic
+difference in differences) were run in Stata 18 and replayed through
+`sp.stata`. Method and ledger in
+`docs/dev/2026-10-04-clarke-applied-microeconometrics-review.md`.
+
+#### ⚠️ Correctness
+
+- **`sp.twfe_decomposition` now decomposes the TWFE coefficient.** Its
+  2×2 rows were weighted by unit counts and its timing comparisons were
+  not restricted to their windows, so the rows did not sum to the
+  coefficient, and its "dCDH" weights were not de Chaisemartin and
+  D'Haultfoeuille's. On the book's three-unit panel, where every piece is
+  known by hand, the headline was 1.839 for a coefficient of 27/11. The
+  rows are now those of `sp.bacon_decomposition` and sum to the
+  coefficient exactly, the weights are the dCDH (2020) weights, the
+  estimate is the TWFE coefficient and the standard error is its
+  unit-clustered one (equal to `xtreg, fe vce(cluster)` to 1e-10). The
+  comparison with R `bacondecomp` and `twowayfeweights` on `mpdta`, a
+  strict `xfail` until now, passes. See MIGRATION.
+- **Propensity-score matching: units with the same covariates now tie.**
+  The fitted score of two units with identical covariates could differ in
+  the last place, because a matrix product rounds each row on its own.
+  With every tied control kept (`ties='all'`, what `teffects psmatch`
+  does) that rounding decided which of several identical controls was
+  matched, and the estimate changed when the rows were shuffled. The
+  index is now evaluated once per distinct covariate row. On the Lalonde
+  data with discrete covariates `teffects psmatch, atet` gives 1209.718
+  (1261.376); StatsPAI gave 1199.666 (1266.607) and now gives 1209.718
+  (1261.376). Samples with continuous covariates are unaffected. See
+  MIGRATION.
+- **`sp.stata` / `sp.from_stata`: three translations ran something other
+  than the Stata command.**
+  - `teffects ipw` was translated to `sp.ipw` with its default bootstrap
+    standard error. It now asks for the stacked M-estimation standard
+    error `teffects ipw` reports (`se_method='sandwich'`).
+  - `teffects aipw` was translated to `sp.aipw` with its default
+    five-fold cross-fitting, a different (and random) estimator. It now
+    runs `cross_fit=False, se_method='sandwich'`, and `atet`, which
+    `teffects aipw` does not have, is refused.
+  - `boottest` was translated to a call of `sp.wild_cluster_bootstrap`
+    with arguments that function does not take, so it raised a
+    `TypeError`. It now runs `sp.wild_cluster_boot` on the regression
+    before it, with `weight()`, `reps()`, `seed()`, `level()` and a null
+    value (`boottest x = c`). With few clusters the Rademacher draws are
+    enumerated and the p-value equals Stata's (0.09179688 on the book's
+    regression). A `bootcluster()` other than the error cluster, a joint
+    hypothesis and an unknown weight are refused.
+
+#### Added
+
+- **A probit propensity score.** `sp.ipw`, `sp.match` and `sp.psmatch2`
+  take `ps_model='probit'` (default `'logit'`, as before). The sandwich
+  standard error of `sp.ipw` and the Abadie-Imbens (2016) standard error
+  of `sp.match` use the probit's score, density and observed Hessian.
+  Against Stata 18 on the Lalonde data, to the seven digits `teffects`
+  prints: `teffects ipw (..., probit)` ATET and ATE with their standard
+  errors, `teffects psmatch (..., probit), atet` with its standard error,
+  and `psmatch2` (whose default is a probit) to 1e-7.
+  `tests/reference_parity/test_teffects_probit_stata.py` holds the
+  numbers. `teffects ... , probit` and `psmatch2` without `logit` are
+  translated accordingly; they were refused or run as a logit.
+- `sp.wild_cluster_boot(h0=)`: the value of the coefficient under the
+  null. `confidence_set=True` adds `ci_inverted`, the set of null values
+  the test does not reject, which is what `boottest` prints; the
+  translated `boottest` asks for it.
+- **The Abadie-Imbens (2016) standard error for the ATE.**
+  `sp.match(estimand='ATE', se_method='abadie_imbens_2016')` reports what
+  `teffects psmatch, ate` reports, to the seven digits it prints on five
+  reference fits. The Stata manual prints the score adjustment with a
+  plus sign; `e(V)` and the paper have a minus (estimating the score can
+  only lower the variance of the ATE), and that is what is implemented.
+  `teffects psmatch, ate` is translated with it; it used to be flagged as
+  not carrying Stata's standard error.
+- **`egen` in `sp.stata`**: `count`, `mean`, `median`, `sd`, `min`, `max`,
+  `total`, `pctile`, `iqr`, `std`, `group`, `tag` and the `row*`
+  functions, with `if`, `in`, `by()` and behind `by g:`. Each follows the
+  missing-value rule of `[D] egen`. Run beside Stata 18 on 30 commands:
+  27 agree to 1e-15 on every row, the other three depend on a row order
+  Stata's sort does not fix.
+- **`sp.stata` runs more of an ordinary do-file.** `quietly { ... }`,
+  `capture { ... }` and `noisily { ... }` blocks; `capture cmd`, which
+  swallows what Stata would raise (a variable that is not there,
+  `restore` without `preserve`) and nothing else; `by g:` / `bysort g
+  (t):` in front of `generate` and `replace`, with `_n`, `_N` and
+  subscripts counted within the group; `count [if] [in]`; `_pctile` and
+  the percentiles, skewness and kurtosis `summarize, detail` leaves in
+  `r()`; `scalar(name)`; `_b["x"]`; `duplicates drop [varlist, force]`;
+  `bsample [, cluster()]` (the data are then marked as random);
+  `predict` after a regression with `i.` variables; the variables
+  `psmatch2` leaves behind (`_pscore`, `_weight`, `_support` ...); a
+  `scalar` defined with no data in memory. Loops, frames and matrices
+  are still refused.
+- `scripts/stata_log_replay.py` reads `import delimited` (Stata's
+  delimiter detection and lower-cased names) and `input` blocks, and
+  compares `sdid`, `boottest` and `psmatch2` output. It reads a block as
+  one command (the body from the log's numbered echo, or from the do-file
+  beside the log when the block ran quietly) and keeps macros, scalars,
+  matrices and saved datasets across `use`.
+- **`sp.stata` runs loops.** `forvalues`, `foreach`, `while`, `if { } else
+  { }` and `continue`, with the macros they use (`local x = exp`, `local
+  ++i`, `` `=exp' ``, `` `r(N)' ``, `tempvar`, `tempfile`) and programs
+  called with arguments. A block's body is run line by line, so each
+  command in it is translated and refused as it would be outside. Extended
+  macro functions, `syntax` and `mata` are still refused.
+- **`sp.stata` holds more than one dataset.** `save` keeps a copy in the
+  session (no file is written); `use`, `append using`, `merge 1:1 | m:1 |
+  1:m ... using` work on those copies and on the
+  frames passed in the new `files=` argument. Frames (`frame create / copy
+  / change / put / post`, `frlink`, `frget`) are run. `merge`, `append`,
+  and `frlink` / `frget` were run beside Stata 18 and give its
+  rows in its order.
+- **Matrices in `sp.stata`**: `matrix A = J(r, c, .)`, `e(b)`, `e(V)`, a
+  cell at a time, `A[i, j]` in expressions, `svmat`, `mkmat`, and matrix
+  expressions with sums, products, a transpose and `inv()`.
+- More of `egen`: `skew`, `kurt`, `mad`, `mdev`, `mode`, `rank`, `seq`,
+  `anycount`, `anymatch`, `cut(, at())`, `rowfirst`, `rowlast`. Nineteen
+  commands beside Stata 18, all equal on every row.
+- `sp.match(estimand='ATE', se_method='abadie_imbens_2016', caliper=)`:
+  as in Stata the caliper is a condition every unit has to meet, and the
+  call stops when one does not.
+- `sp.causal_forest` accepts `treat=` and `covariates=` for `d=` and `x=`.
+- `display "text" exp` evaluates the expression.
+
+With these the three chapter logs of the book run with one command
+declined (`regress, vce(bootstrap)`), down from 107.
+
+### ⚠️ Correctness: local randomization and multi-cutoff RD
+
+Found by running the replication files of Cattaneo, Idrobo and Titiunik
+(2024), *A Practical Introduction to Regression Discontinuity Designs:
+Extensions*, through StatsPAI and comparing every number with R
+`rdlocrand` 2.0, `rdmulti` 2.0 and `rddensity` 2.6. `sp.rdrobust` (20
+calls, including clustered, fuzzy and mass-point cases) and the
+`sp.rddensity` test agreed to 1e-11 and are unchanged. See MIGRATION.md
+for each item below.
+
+- **`sp.rdrandinf(p=1)` estimated the wrong quantity.** It residualized
+  the outcome on one polynomial pooled across the cutoff. The score is
+  collinear with treatment inside the window, so the trend absorbed the
+  effect: 2.90 (p = 0.107) on the Senate data in a ±2.5 window, where the
+  difference in intercepts is 13.26. It now fits each side separately and
+  matches `rdlocrand` to 1e-13 in the statistic and the large-sample
+  p-value, for every kernel, order and evaluation point tried.
+- **`sp.rdrandinf(fuzzy=)` reported a p-value that meant nothing.** It
+  permuted the instrument and recomputed the Wald ratio, so most draws
+  divided by a first stage near zero. On the book's fuzzy example it
+  returned p = 0.863 for an effect whose 2SLS p-value is 0.038. The
+  default is now the randomization test on the reduced form
+  (`fuzzy_stat='itt'`); `fuzzy_stat='tsls'` gives the large-sample test.
+- **`sp.rdrandinf` / `sp.rdrbounds`: `wl` and `wr` are the window's
+  endpoints**, as in `rdlocrand`, not offsets from the cutoff. The two
+  agree only at `c = 0`; the book's placebo-cutoff example (`c=1,
+  wl=0.2348, wr=1.7652`) raised an error. A window that does not contain
+  the cutoff is now refused with a message that says why.
+- **`sp.rdwinselect` did not run the window-selection procedure.** Its
+  default sequence started at a fraction of the score's range (5, 15.6,
+  ..., 100 points on the Senate data) instead of at the smallest window
+  with ten observations a side, had no binomial test, did not say which
+  covariate was least balanced, and without covariates tested quantile
+  dummies of the score and returned p = 1. It now reproduces Snippet 2.5
+  of the book: the ten windows, their counts, the binomial p-values and
+  the recommended window [-0.7652, 0.7652].
+- **`sp.rdmc(cutoff_var=)` reported conventional intervals.** The point
+  estimates matched `rdmulti::rdmc`; the interval and p-value were the
+  conventional ones, which ignore smoothing bias. On the book's example
+  the third cutoff went from [0.017, 0.401], p = 0.033 to the robust
+  [-0.042, 0.408], p = 0.112. The estimate on the normalized score
+  (`rdmulti`'s "Pooled" row) is now reported as `result.normalized`.
+
+- **`sp.rdrobust`'s automatic manipulation check is now `sp.rddensity`.**
+  It was McCrary's binned test, which is not built for a score with mass
+  points. On the book's academic-probation data (429 GPA values) it warned
+  of sorting with p = 6e-11 where `sp.rddensity` gives 0.082, the number
+  the book reports; over 60 placebo cutoffs on that data, where nothing
+  is manipulated, it rejected 43% of the time against 5%. Under simulated
+  sorting on a continuous score both tests reject every time. Estimates,
+  standard errors and intervals are unchanged; what changes is when the
+  warning fires and the value in `model_info['mccrary']['pvalue']` (the
+  key keeps its name; `'test'` beside it says `'rddensity'`).
+  `sp.mccrary_test` itself is unchanged.
+
+### Added: local randomization options
+
+- `sp.rdrandinf`: `kernel=` (it was accepted and ignored), `nulltau=`,
+  `bernoulli=`, `ci=` (a grid of effects for the test-inversion
+  interval), `d=` / `dscale=` (large-sample power, in
+  `model_info['power']`), `evall=` / `evalr=`, `fuzzy_stat=`.
+- `sp.rdwinselect`: `obsmin=`, `wobs=`, `wasymmetric=`, `approx=`,
+  `n_perms=`, `kernel=`, `dropmissing=`; columns `variable` and
+  `binom_pvalue`; `attrs['recommended_window']`.
+- `sp.rddensity`: `bino_w=`, `bino_wstep=`, `bino_n=`, `bino_nw=`,
+  `bino_p=` for the binomial tests.
+- `sp.rdmcplot`: the RD plot for a design with several cutoffs, one
+  binned scatter and polynomial fit per cutoff on a shared axis
+  (`rdmulti::rdmcplot`). The numbers are `sp.rdplot`'s on each cutoff's
+  units and are returned in `fig.rdmcplot_data`.
+- `sp.bitest`: the exact binomial test of Stata's `bitest` / `bitesti`
+  and R's `binom.test`, from a 0/1 column or from counts. Agrees with
+  Stata 18 to 1e-12, including `r(k_opp)`. `sp.stata` runs both commands
+  and stores their `r()` results.
+- `sp.rdrandinf(interfci=)`: Rosenbaum's (2007) confidence interval under
+  interference between units, in `model_info['interf_ci']`.
+- `sp.rdwinselect(statistic='hotelling')`: one joint balance test of all
+  covariates per window (Hotelling's T-squared), with the F p-value under
+  `approx=True`; agrees with `rdlocrand` to 1e-9.
+- `sp.rdwinselect(wmasspoints=True)`: for a discrete score, window `k`
+  runs from the `k`-th support point below the cutoff to the `k`-th at or
+  above it, as in `rdlocrand` 1.0 (same windows, counts and p-values).
+  Releases 1.1 and 2.0 pair the `k`-th on the right with the `(k-1)`-th
+  on the left, so their first window is empty below the cutoff; on the
+  book's academic-probation data the first window here is the one the
+  book itself analyses (208 and 67 observations).
+- `sp.from_stata` / `sp.stata`: `rdms` (the boundary points are read from
+  the `cvar()` variables by `sp.stata`), `bitest`, `bitesti`, and the
+  `interfci()` and `wmasspoints` options.
+- `sp.rdms` without `x2`: one score with cumulative cutoffs
+  (`rdmulti::rdms(Y, X, C)`), a sharp RD at each cutoff on the whole
+  sample or, with `ranges=`, on the units in each cutoff's interval.
+  Agrees with `rdmulti` to 1e-9. `sp.stata` runs `rdms y x, cvar(c)
+  range(lo hi)` and `rdmcplot y x, cvar(c) pvar() nbinsvar() ...`,
+  reading the per-cutoff values from the named variables.
+- `sp.rdms`: lists for `cutoff1=` / `cutoff2=` estimate several boundary
+  points in one call and return one row per point; `xnorm=` adds the
+  pooled estimate on the distance to the boundary. Both agree with
+  `rdmulti::rdms` to 1e-9 (`test_rdms_points_parity.py`). A call with
+  scalar cutoffs returns what it did before.
+
+### Where StatsPAI departs from `rdlocrand`, and why
+
+- **Randomization p-values with `p > 0`.** `rdlocrand` re-randomizes
+  treatment labels with the scores held fixed. The observed statistic
+  extrapolates each side's fit to the cutoff; a relabelled sample fits
+  through the interior, with about a quarter of the variance. On data
+  with no effect, 40 observations and `p = 1`, that test rejects a true
+  null 37% of the time at the 5% level. `sp.rdrandinf` permutes outcomes
+  against (score, assignment) pairs and rejects 4.7% (3,000 replications)
+  (`tests/reference_parity/test_rdlocrand_extensions_parity.py`). For
+  `p = 0`, with or without a kernel, the two schemes coincide and the
+  60-seed mean p-values agree with R's.
+- **The default windows of `sp.rdwinselect`** are those of `rdlocrand`
+  1.0, to 1e-9 in every column (`test_rdlocrand_v1_parity.py`). Releases
+  1.1 and 2.0 start one observation short on the left of the cutoff (9
+  with `obsmin = 10` on the Senate data); the documentation and the
+  book's printed output describe what 1.0 does. Four releases were run
+  side by side: this and the mass-point shift appear in 1.1, and a
+  Kolmogorov-Smirnov randomization p-value stuck at 1 on binary variables
+  appears in 2.0.
+- **Kolmogorov-Smirnov p-value with ties.** `sp.rdrandinf(statistic=
+  'ksmirnov')` now reports the exact conditional p-value, which is what R
+  does below 10,000 pairs. With tied outcomes the previous value assumed
+  a continuous distribution: 0.965 where R gives 0.356 on a binary
+  covariate. The randomization p-value was not affected.
+
+### What the labs of Cunningham's *Causal Inference: The Remix* found
+
+The labs of the 2026 workshop tour were run in Stata 18 and R `did` and
+again through StatsPAI. Three results were wrong (⚠️ below) and four
+commands could not be translated. Details and what is still open are in
+`docs/dev/2026-10-04-mixtape-remix-review.md`.
+
+- ⚠️ **`sp.callaway_santanna` with a covariate that varies over time.** Each
+  ATT(g, t) now conditions on the covariate's value in the earlier of the
+  cell's two periods, as Stata `csdid` and R `did` do. The value in the
+  unit's first row of the data used to be taken for every cell, so the
+  estimates matched neither package and depended on the row order. On the
+  Remix's Brazilian mental-health panel (14 time-varying controls,
+  `method(drimp) notyet long2`) the simple ATT was 0.3985 (0.0613) and is
+  now 0.4028 (0.0598), `csdid`'s number, with all 196 cells within 6e-6.
+  Covariates that are constant within unit give the same numbers as
+  before. Reference rows against `csdid` and against `did::att_gt` are in
+  `tests/reference_parity/test_stata_did_commands_parity.py`.
+- ⚠️ **`sp.etwfe_emfx(type='group' | 'calendar' | 'event')` on a `sp.jwdid` /
+  `sp.etwfe` fit: the standard error of the headline.** The headline
+  estimate is the unweighted mean of the reported rows, and the standard
+  error printed beside it was the one of the `'simple'` aggregate, a
+  different quantity. It is now the delta-method standard error of that
+  mean through the rows' joint covariance, which is what Stata gives for
+  the mean of the rows `estat event, post` leaves in `e(b)` (0.1168
+  against the 0.1064 reported before, on the test fixture). With
+  `include_leads=True` the headline no longer averages the pre-treatment
+  rows in. The rows themselves, their standard errors and
+  `type='simple'` are unchanged.
+- ⚠️ **`sp.did_imputation(pretrends=k)` when some of the `k` leads are not
+  identified.** Without never-treated units the far leads are observed
+  for the last cohort only, and their indicators are spanned by the fixed
+  effects and the nearer leads. StatsPAI inverted the singular matrix
+  anyway and returned every lead, the identified ones included, with
+  standard errors in the thousands. It now refuses, names the
+  unidentified leads and the longest run that is identified. On Baker's
+  simulated panel `pretrends=17` reproduces Stata's `pre1` to `pre17`,
+  and the leads refused are the ones Stata reports as omitted.
+
+Added on the way:
+
+- **`sp.callaway_santanna(estimator='drimp')`**, the improved doubly
+  robust estimator of Sant'Anna and Zhao (inverse probability tilting for
+  the propensity score, odds-weighted least squares for the outcome
+  model), on panels and on repeated cross-sections. It is Stata
+  `csdid`'s `method(drimp)` and agrees with it to 1e-12 on the estimate
+  and 1e-9 on the standard error on the Remix's TVA panel.
+- **`sp.estat(result, 'simple' | 'group' | 'calendar' | 'event')`** after
+  `sp.callaway_santanna` or `sp.jwdid` / `sp.etwfe`, the aggregations
+  Stata's `csdid` and `jwdid` report through `estat`, with
+  `window=(a, b)` for `estat event, window(a b)`. After
+  `sp.callaway_santanna` the group average holds the cohort shares fixed,
+  as `csdid` does; `sp.aggte` keeps R `did`'s convention.
+- **`sp.stata` / `sp.from_stata` translate `drdid`, `jwdid`,
+  `csdid_estat` and `estat simple | group | calendar | event`**, and
+  `csdid ..., method(drimp)`. Every line is checked against what Stata 18
+  printed for it, 46 comparisons in the file named above. Two things the
+  translation says out loud. `drdid` with no estimator named is `drimp`.
+  `csdid ..., ipw` is not `method(ipw)`, because `csdid` accepts and
+  ignores an estimator written as a bare option, so the line runs the
+  default as Stata does. `did_imputation, minn(#)` other than `minn(0)`
+  is reported instead of approximated.
+- **`sp.gardner_did(treat=, fe=, second_stage=)`**, the general form of
+  the two-stage estimator that R `did2s` and Stata `did2s` implement. The
+  untreated rows are the ones a treatment dummy marks, the first stage is
+  any list of fixed effects (`'region#year'` for a cell, as in
+  `sp.did_imputation(fe=)`) with covariates, and the second stage any
+  list of columns or `'ib0.x'` factors. `sp.gardner_did` could fit unit
+  and period effects only, so region-by-year effects, as in the Remix's
+  Medicaid lab, were out of reach. Eight forms agree with Stata `did2s`
+  to 1e-8 (1e-6 where Stata demeans within `unit()` in single
+  precision), and `sp.stata` now runs `did2s` lines. Calls with
+  `first_treat=` are unchanged.
+- **`sp.drdid(est_method='all')`**, the table Stata's `drdid, all`
+  prints: the doubly robust, outcome-regression and weighting estimators
+  on one sample, one row each in `.detail` (five on a panel, seven on
+  repeated cross-sections), every row equal to Stata's to 1e-13. The
+  result itself is the improved doubly robust fit. `sp.stata` runs
+  `drdid ..., all`, the form the labs use most.
+- **`sp.g_computation(by_arm=True)`**, regression adjustment with an
+  outcome regression in each treatment arm, and with `ps_covariates=` its
+  inverse-probability-weighted, doubly robust form. `se_method='analytic'`
+  is the sandwich of the stacked estimating equations. These are Stata's
+  `teffects ra` and `teffects ipwra`: the effect, the untreated
+  potential-outcome mean and both standard errors agree to 1e-14, for the
+  ATE and the ATT. `sp.stata` runs both commands, which it refused. The
+  default call is unchanged.
+- **`sp.stata` reads more of a do-file.** `` `r(mean)' `` and
+  `local m = r(mean)` are expanded from the results the session holds,
+  in the text Stata writes into a macro (`.41178860375` for a mean of
+  0.41178860374999998, so a line that uses the macro computes with
+  Stata's number). `keep` and `drop` take varlist ranges and wildcards.
+  `reshape wide` and `reshape long` give Stata's columns and rows.
+  `collapse` has `firstnm` and `lastnm`. `reghdfe` takes `ib<k>.x`, for
+  which `sp.hdfe_ols` gained the same spelling among its regressors.
+  With these the Lalonde and Medicaid labs of the Remix run from the
+  first line to the last. Macros that read the data, and loops, are
+  still refused.
+
+- ⚠️ **`sp.synth(method='classic')` without predictors now fits the raw
+  pre-treatment path.** The default used to rescale each pre-treatment
+  period by its range across units before solving for the weights, a
+  step meant for predictors in different units, so the periods were
+  weighted unequally and the weights did not minimise the pre-treatment
+  squared error. `standardize_predictors` now defaults to `None`:
+  covariates and special predictors are rescaled as before, the
+  pre-treatment outcomes are not. The result is the simplex least-squares
+  fit that `augsynth(progfunc = "None")` and `synthdid`'s `sc` return and
+  that a nested V on the outcome lags converges to. Numbers that move:
+  the README's Proposition 99 example from -19.76 (11.23) to -19.51
+  (10.80), same placebo rank 3 of 39, pre-treatment RMSE 1.72 to 1.66;
+  the outcome-only Texas fit of the Mixtape replication from 21,482 to
+  21,013, on the same three donors. Fits with `covariates=` or
+  `special_predictors=` do not move, nor do Track A modules 07 and 52.
+  `standardize_predictors=True` gives the earlier numbers, and the R
+  `Synth` references for the sensitivity tools, which were built for
+  that convention, now ask for it by name. `sp.synth_loo`,
+  `sp.synth_time_placebo`, `sp.synth_donor_sensitivity`,
+  `sp.synth_rmspe_filter` and `sp.synth_sensitivity` take the same
+  argument and follow the same default.
+- **The Remix workshop's worked project as a reference.** The tour
+  includes a complete staggered-adoption analysis with its R outputs
+  committed (16 countries, 1994 to 2010). StatsPAI reproduces them: Bacon
+  decomposition, BJS with a covariate, Callaway-Sant'Anna with a
+  time-varying covariate in four configurations (a second confirmation
+  of the fix above), Sun-Abraham under `aggregation='fixest_att'`,
+  synthetic DiD, ridge-augmented SCM, and, with the change above,
+  outcome-only SCM (weights within 1e-5 of `augsynth`'s for the four
+  treated countries; before it one weight was off by 0.13).
+
+Three more ⚠️ from the same replay, all in `sp.stata` / `sp.from_stata`:
+
+- ⚠️ **`csdid` was translated with StatsPAI's propensity-score trimming,
+  not `csdid`'s.** `csdid` 1.81 defaults to `pscoretrim(1)`, no trimming;
+  `sp.callaway_santanna` defaults to 0.995, as R `did`. The translated
+  call now carries `pscore_trim=1.0`. On a design with four controls
+  above 0.995 the first post-treatment cell is 1.4400 (0.7104) without
+  trimming and 1.3164 (0.3862) with it; both are reproduced. The guide
+  said the two defaults were the same. `sp.callaway_santanna` itself is
+  unchanged.
+- ⚠️ **`reghdfe y i.x, absorb()` was translated to a call that could not
+  run.** The factor was written as `C(x)`, which `sp.hdfe_ols` does not
+  read, and the translation was reported as faithful. It is now `i.x`.
+  A factor inside an interaction among the regressors is refused.
+  `noconstant` is recognised as changing only what `reghdfe` prints.
+- ⚠️ **`collapse (first)` and `(last)` skipped missing values**, which is
+  what Stata's `firstnm` and `lastnm` do. They now take the first and
+  last row of the group whatever it holds.
+
+### Agent cards
+
+#### Fixed
+
+- **69 agent cards listed an alternative twice and 12 listed the
+  function itself.** A family card and a curated card could name the
+  same function under two spellings (`did_imputation` and
+  `sp.did_imputation`), and a family card names its own members, so
+  `sp.agent_card('callaway_santanna')` recommended `callaway_santanna`
+  instead. Alternatives are now distinct and never the function itself,
+  across all registered functions.
+- The card audit against real calls covers 60 entry points, up from 40
+  (`heckman`, `mediate`, `oaxaca`, `ebalance`, `cbps`, `lee_bounds`,
+  `rdrandinf`, `rd_honest`, `wooldridge_did`, `lp_did`, then
+  `did_multiplegt_dyn`, `fect`, `interflex`, `xtabond`, `sensemakr`,
+  `oster_bounds`, `rdbwselect`, `rd_discrete`, `mixed`, `liml`). The
+  twenty new cards had no defect in required arguments, result class or
+  enum values.
+- **Arguments agents could not see.** `sp.regress(weights=, vce=)`,
+  `sp.ivreg(cluster=, vce=)` and six arguments of `sp.nbreg` (`weights`,
+  `y`, `x`, `alpha`, `maxiter`, `tol`) were accepted by the functions and
+  absent from `sp.function_schema()`. They are registered now, and the
+  `weights` descriptions say which kind of weight the default variance
+  assumes. The card of `sp.rdrobust` described `weights=` as reserved
+  and unimplemented; it has been implemented and reference-checked for
+  some time, and the card says so.
+- `sp.fect(method='ife' | 'mc')` without `r=` / `lam=`, and
+  `sp.interflex(estimator='kernel')` without `bw=` or
+  `vce='bootstrap'` with another estimator, raised a bare `ValueError`.
+  They now raise `MethodIncompatibility` (a `ValueError`) with a recovery
+  hint naming the argument to add.
+
+### Reliability
+
+- **Weight diagnostics in `sp.logit`, `sp.probit`, `sp.glm` and
+  `sp.iv`**, which completes the set. A fourth weight study
+  (`tests/reliability/extreme_weights_binary_iv.py`, 24 designs, 2,000
+  replications each) finds the default variance covering 15% to 79%
+  under dispersed sampling weights and the robust one 81% to 90% in
+  small effective samples. Every regression entry point that takes
+  `weights=` and reports a model-based variance by default now records
+  `n_effective_weights` (and `n_clusters_effective_weights` when
+  clustered) and warns. No estimate changes.
+  `docs/dev/2026-10-05-weights-declaration-options.md` records the
+  decision behind this: keep `weights=` as it is and warn now; add an
+  optional `weights_as=` after the JSS submission; do not make it
+  required.
+- **`sp.event_study` is checked against `fixest` across its common
+  options.** A 32-cell grid on one panel (single-date and staggered
+  adoption, two windows, two reference periods, with and without a
+  time-varying covariate and unit-level weights) agrees with
+  `fixest::feols` on every coefficient and standard error to 2e-12. Three
+  cells join `sp.validation_scope('event_study')` (covariate, weights and
+  both, at the default window and reference period); the others stay as
+  regression checks and are not credited as evidence, the staggered ones
+  because a reference match there certifies the specification and not
+  the estimand. No code changed.
+- **`sp.iv(method='gmm')` now has reference rows against Stata
+  `ivregress gmm`**, and accepts `small=False`. Coefficients, standard
+  errors and Hansen's J agree with Stata 18 to 5e-9 on Card's data under
+  the robust, cluster and unadjusted weight matrices, with and without
+  `small`. `small=False` (Stata's default for `ivregress gmm`) was
+  refused for GMM before; the difference is the finite-sample factor,
+  `N / (N - K)` or `G/(G-1) * (N-1)/(N-K)`, and nothing else. The
+  docstring of `sp.iv` lists which options give which `ivregress gmm`
+  variant. `sp.validation_scope` also failed to recognise a GMM fit (the
+  label carries its step count) and reported every one as not covered;
+  fixed.
+- **Weight diagnostics in `sp.fast.feols`, `sp.fast.fepois` and
+  `sp.nbreg`.** A third weight study
+  (`tests/reliability/extreme_weights_fast.py`, 18 designs, 2,000
+  replications each) finds the same three failures there as elsewhere:
+  the default variance under sampling weights (22% to 81% coverage), a
+  robust variance in a small effective sample (84% to 90%), and a
+  clustered one when the weights leave few clusters in effect (79% at
+  7). The three entry points now record `n_effective_weights` and
+  `n_clusters_effective_weights` and warn; the fast result objects carry
+  them in a new `weight_info` attribute. No estimate changes.
+- **Few treated clusters in fixed-effects regressions.** A fourth block
+  of `tests/reliability/few_clusters.py` (40 units, 10 periods, a true
+  effect of zero, 2,000 replications) gives the rejection rate of the 5%
+  test as the number of treated units grows: unit-clustered two-way
+  fixed effects 75% / 31% / 10% / 6% at 1 / 2 / 5 / 10 treated units,
+  `sp.did_few_treated` 3% / 7% / 10% / 14%. `sp.panel`, `sp.hdfe_ols`,
+  `sp.feols` and `sp.regress` now record a 0/1 regressor that is ever 1
+  in fewer than 10 clusters in `few_treated_clusters` and warn; the hint
+  offers `sp.did_few_treated` only for one or two treated clusters.
+  `sp.did_few_treated` now warns when the treated groups are more than a
+  tenth of the controls (it used to wait until they were more than
+  half). No estimate changes.
+- **New guide, "When the interval can be trusted"**
+  (`docs/guides/when_intervals_hold.md`): the findings of the reliability
+  studies as rules for clusters, weights, unbalanced panels, a discrete
+  running variable and the DML learner, each with the diagnostic to read
+  on the result. The DiD estimator guide's section on unbalanced panels
+  now says what `allow_unbalanced_panel=True` assumes.
+- **The reliability studies are in the evidence view.**
+  `docs/evidence_inventory.json` lists every design and method of the six
+  studies under `tests/reliability/` with its rate, Monte Carlo standard
+  error and the number of refused fits (which count in the denominator);
+  `docs/evidence_inventory.md` summarises, per study and method, how many
+  designs sit at the nominal rate and which is furthest from it.
+- **A coverage study for DML across first-stage learners**
+  (`tests/reliability/dml_learners.py`, 20 designs, 300 replications
+  each). Under linear confounding OLS, Lasso and `sp.dml_model_averaging`
+  cover 94% to 95% and the tree learners 90% to 93%. Under nonlinear
+  confounding the linear learners are biased by 0.72 on a coefficient of
+  0.5 and never cover, a random forest covers 43% to 67%, gradient
+  boosting (the `sp.dml` default) 87% to 90%, and model averaging 73% to
+  87%. The reported standard error matches the sampling spread in every
+  design, so the shortfall is nuisance bias, which the interval does not
+  carry. No code changed; the existing note on a default `sp.dml` fit
+  already points to learner choice and model averaging.
+- **`sp.rdrobust` at polynomial orders 0, 3 and 4 now has reference
+  rows.** 54 cells (six bandwidth selectors, three kernels, three
+  orders) against R `rdrobust` 4.0.0, eight outputs each: agreement to
+  1e-13 at `p=0`, 1e-10 at `p=3` and 1.4e-8 at `p=4`. The existing grid
+  covered `p=1` and `p=2` only; `sp.validation_scope('rdrobust')` lists
+  the new cells. No code changed.
+- **A coverage study for staggered-adoption DiD on an unbalanced panel**
+  (`tests/reliability/unbalanced_panel.py`, 8 designs, 1,000
+  replications each). `sp.callaway_santanna`, `sp.did_imputation` and
+  two-way fixed effects hold 94% to 97% when cells are missing at random
+  and when units leave according to their level.
+  `sp.callaway_santanna(allow_unbalanced_panel=True)` compares group
+  means, and is biased by 40% of the effect (coverage 50% with 100
+  units, 3% with 400) when treated units with a high level leave. That
+  is what the estimator computes, in R `did` as here; what changed is
+  that the docstring and the unbalanced-panel warning, which recommended
+  the option without qualification, now state the assumption, and the
+  result records it in `model_info['unbalanced_assumption']`. No
+  estimate changes.
+- The `sp.rdrobust` warning for a running variable with fewer than 30
+  distinct values now quotes the coverage found in
+  `tests/reliability/rd_mass_points.py`.
+
+## [1.38.0] — 2026-10-04
+
+A .dta file that is read and written back is now the same file. The names
+of value-label sets, the extended missing values `.a` to `.z`, notes,
+characteristics (`xtset` declarations among them) and display formats all
+survive `sp.read_data` followed by `sp.write_data`, and Stata 18 confirms
+it. Files from Stata 18 with alias variables (format 120 / 121) can be
+read. The release also carries weight diagnostics beyond `sp.regress` and
+a `sp.rdrobust` that refuses an undefined bandwidth on a discrete running
+variable in place of returning a NaN interval.
+
+One default changes: `sp.write_data` folds a `<var>__miss` column back
+into `<var>`. See `MIGRATION.md` under `1.37.0 → 1.38.0`.
+
+### A .dta file read and written back is the same file
+
+`sp.read_data` followed by `sp.write_data` used to lose four things Stata
+stores in a .dta file. All four now survive, and Stata 18 confirms it: the
+files written here pass `dtaverify` in formats 117, 118 and 119, and
+`cf _all using <original>, all` matches every variable.
+
+#### Added
+
+- **Value-label sets keep their names.** `sp.read_data` records the name
+  of each variable's set in `df.attrs['_value_label_names']`, and
+  `sp.write_data` writes one set under that name for all the variables
+  that share it. Before, pandas named each set after its variable, so a
+  set shared by twenty items became twenty sets. A variable whose labels
+  were changed gets a set of its own.
+- **Extended missing values are written back.** A `<var>__miss` column
+  from `read_data(extended_missing='column')` is folded into `<var>` as
+  `.a` ... `.z` on write; `write_data(extended_missing='nan')` keeps the
+  old behaviour. A code on a row where `<var>` holds a value is refused.
+- **Notes and characteristics** are read into `df.attrs['_notes']` and
+  `df.attrs['_characteristics']` (keyed by variable, the dataset's own
+  under `'_dta'`) and written back for the columns still in the frame.
+  `xtset` / `tsset` declarations are characteristics, so they survive.
+- **Display formats are written**, not only the unit of a date: a
+  `%12.2fc` column comes back as `%12.2fc`. A format Stata would refuse
+  for the column is left out with a warning.
+- **Format 120 / 121 files are read** (Stata 18, alias variables), which
+  neither pandas nor pyreadstat opens. The alias variables hold no data
+  in the file; they are left out with a warning and listed in
+  `df.attrs['_alias_variables']`.
+- **`sp.stata` knows the label sets a file came with**:
+  `label define yesno 2 "Maybe", add` after loading a .dta now changes
+  every variable attached to `yesno`.
+
+#### Changed
+
+- **`sp.write_data` to .dta is atomic.** The file is written beside the
+  target and moved into place when complete; a write that fails leaves an
+  existing file as it was.
+
+#### Fixed
+
+- **`sp.read_data(extended_missing='column')` failed on a file with a
+  date variable that had a missing value**, on both readers: pandas
+  stopped with `TypeError: ufunc 'isnan' not supported` and pyreadstat
+  with `ValueError: Given date string "a" not likely a datetime`. The
+  dates are now converted after the codes are taken out.
+
+### `sp.rdrobust` with a few support points
+
+#### Fixed
+
+- **`sp.rdrobust(masspoints='off')` crashed with a complex number, or
+  returned a NaN interval, on a discrete running variable.** With five
+  support points a side the bandwidth selector took a fractional power of
+  a negative variance-to-bias ratio and stopped with `TypeError: float()
+  argument must be ... not 'complex'` in half the replications of a
+  simulation; in a few others a negative variance came back as a NaN
+  standard error and a NaN interval, with no error. Both now raise
+  `NumericalInstability` with a recovery hint (`masspoints='adjust'`, a
+  manual `h=`, or `sp.rd_discrete` / `sp.rdrandinf`). The default
+  `masspoints='adjust'` was not affected.
+- **A fall-back to the legacy bandwidth selector or estimator is no
+  longer silent.** When the CCT selector or the bias-corrected fit fails
+  on degenerate data and `sp.rdrobust` uses its older implementation
+  instead, it now warns and lists the step in
+  `model_info['legacy_fallbacks']`; an undefined bandwidth is raised
+  rather than replaced by another selector's number.
+
+### Reliability
+
+- **Weight diagnostics in `sp.panel`, `sp.hdfe_ols`, `sp.feols`,
+  `sp.poisson` and `sp.ppmlhdfe`.** A second coverage study
+  (`tests/reliability/extreme_weights_models.py`, 12 designs, 2,000
+  replications each) repeats the weight question for fixed effects and
+  Poisson. The default variance covers 45% to 80% (fixed effects) and
+  14% to 68% (Poisson) of the time under dispersed sampling weights; the
+  robust variance drops to 84% at a Kish effective size of 17; and a
+  cluster-robust interval with unit-level weights follows the number of
+  clusters the weights leave in effect (78% at 7, 87% at 17, 91% at 23),
+  whatever the count of clusters. These entry points now record
+  `n_effective_weights` and, for one-way clustering,
+  `n_clusters_effective_weights` (in `model_info`, or `weight_info` on
+  the `sp.hdfe_ols` result), and warn in those three cases. No estimate
+  or standard error changes.
+- **A coverage study for `sp.rdrobust` on a discrete running variable**
+  (`tests/reliability/rd_mass_points.py`, 28 designs, 1,000 replications
+  each). The robust interval holds 94% to 96% down to 20 support points a
+  side and falls to 69% to 89% at 10 and 5, where the mass-point
+  bandwidth floor reaches the whole side; the existing warning for fewer
+  than 30 distinct values covers that range. Clustering on the support
+  points undercovers at every level (86% at 50 points a side, 22% at 5),
+  and `sp.rdrobust` now warns when each cluster holds a single value of
+  the running variable.
+- **`sp.regress` reports the Kish effective sample size of the weights
+  and warns in two cases a new coverage study found.** With
+  `weights=` alone the standard errors are the classical weighted ones,
+  which assume precision weights. Under sampling weights the 95%
+  interval of a slope covered 78% of the time at a Kish ratio of 0.4 and
+  34% to 47% at 0.05 to 0.09 (`tests/reliability/extreme_weights.py`,
+  2,000 replications a cell); the fit now warns when the ratio is under
+  0.5 and says which reading each option corresponds to. HC1 covers 88%
+  at a Kish size of 53 and 84% at 17 where HC3 stays at 93% to 94%; HC0 /
+  HC1 / HC2 fits warn when the Kish size is under 100 and under half of
+  n. `model_info['n_effective_weights']` is recorded on every weighted
+  fit. No estimate or standard error changes.
+
+## [1.37.0] — 2026-10-04
+
+Value labels now do something. A .dta file's value labels were read and
+written back but used by nothing; they now reach tabulations, regression
+tables and do-files run through `sp.stata`, and the labels Stata attaches
+to its extended missing values (`.a` "Refused") are read correctly on both
+reader paths. The rest of the release is small-sample inference:
+cluster-robust p-values and intervals under CR2, CR3 and two-way
+clustering refer to t(G - 1), the `sp.fast` estimators count degrees of
+freedom as fixest does, and weighted Poisson standard errors use the
+weights.
+
+Python 3.10 is now the oldest supported version. Numbers that change are
+listed in `MIGRATION.md` under the `1.36.0 → 1.37.0` headings.
+
+### Python 3.10 is the floor; Windows is untested for now
+
+#### Changed
+
+- **Python 3.9 is no longer supported** (`requires-python = ">=3.10"`).
+  3.9 reached end of life in October 2025, and `pyfixest` and current SciPy
+  no longer install on it, so `sp.xtevent` (default engine), `sp.ssc` and the
+  TWFE arm of the DiD calibrated simulation did not run there. A full test
+  run on 3.9 failed 47 tests, 45 of them for that reason. The `fixest` extra
+  loses its `python_version >= '3.10'` marker.
+- **Windows is out of the test matrix for now.** A full run on Windows
+  failed about 18 tests that pass on Linux and macOS, most of them the MCP
+  server's stdio tests. The project has no Windows machine to debug them.
+  The package still installs on Windows and the Rust backend's wheels are
+  still built for it, but nothing is verified there until the list in
+  `docs/dev/2026-10-04-windows-test-gaps.md` is cleared.
+
+### Value labels, in use
+
+Variable labels already reached `df.attrs` and went back out to .dta.
+Value labels were stored and then used by nothing: `sp.tab` printed 1 / 2 /
+3, `sp.regtable` printed `C(edu)[T.2]`, and a do-file's `label` commands
+were skipped. See the new guide `docs/guides/stata_labels.md`.
+
+#### ⚠️ Correctness
+
+- **A label on an extended missing value is no longer attached to a
+  number.** For a file with `label define regionlbl ... .a "Refused"`,
+  `sp.read_data` returned `{..., 2147483622: 'Refused'}` in
+  `attrs['_value_labels']` without `pyreadstat` (the raw code of `.a` in a
+  label table, a value no row holds) and `{..., 'a': 'Refused'}` with it.
+  Both now return the real codes in `_value_labels` and
+  `{'region': {'.a': 'Refused'}}` in the new `attrs['_missing_labels']`.
+  A `UserWarning` says that the rows are read as `NaN` and can no longer be
+  told apart from `.`.
+- **With `pyreadstat` installed, a numeric variable holding `.a` ... `.z`
+  came back as an `object` column.** It is `float64` with `NaN`, as on the
+  pandas path. A regression on such a column failed or, worse, treated it
+  as categorical.
+
+#### Added
+
+- `sp.read_data(path, extended_missing='column')` keeps which missing value
+  each row held, in a `<var>__miss` column (`'.a'` ... `'.z'`) next to the
+  variable. The variable itself stays numeric with `NaN`.
+- `sp.label_values(df, var, {code: text})`: Stata's `label define` +
+  `label values`. `'.a'` ... `'.z'` label extended missing values.
+- `sp.decode(df, columns=None, missing=False)`: Stata's `decode`. Ordered
+  categoricals whose categories follow the codes.
+- `sp.regtable(..., labels=df)` labels the rows from the data's variable
+  and value labels (`esttab, label`): `C(edu)[T.2]` and `edu::2` become
+  `Education: secondary`, interactions are joined by `×`.
+- `sp.label_vars(df, other_frame, rename=None)` copies variable labels,
+  value labels and formats from a labelled frame, for after a `merge`,
+  `get_dummies` or `rename`, where pandas drops or misplaces them.
+- `sp.write_data(value_labels=)` takes `'.a'` ... `'.z'` codes, and writes
+  `attrs['_missing_labels']` back to .dta and Parquet.
+- `sp.read_data` on an SPSS .sav file keeps value labels (for numeric
+  variables with whole-number codes) in `attrs['_value_labels']`; it used
+  to keep variable labels only.
+- `sp.stata` runs `label variable / define / values / data / drop` and
+  `decode` instead of skipping or refusing them; `encode` labels the new
+  variable; `rename` takes the labels along; `preserve` / `restore` cover
+  labels; `codebook` and `labelbook` are skipped as display commands.
+
+#### Changed
+
+- `sp.tab` prints value labels in place of codes when the data carry them,
+  in the order of the codes, as Stata's `tabulate` does. `labels=False`
+  gives the codes (`nolabel`). Counts and tests are unchanged, and so is
+  the output for data without value labels. `tabulate` inside `sp.stata`
+  does the same and honours `nolabel`.
+- `sp.describe` has a sixth column, `value_labels` (`0=No, 1=Yes`).
+
+### `sp.ssc` without pyfixest
+
+#### Fixed
+
+- `sp.ssc(...)` raised a bare `ModuleNotFoundError` when the optional
+  `pyfixest` was not installed. It now raises `MissingDependencyError` (still
+  an `ImportError`) naming the `fixest` extra, as `sp.feols` does.
+
+### What the full test matrix found after five days without running
+
+The count gates in front of the test job had been red since 2026-09-28, so
+nothing below was tested on CI in that time. A manual full run across
+three operating systems and Python 3.9 to 3.13 turned these up.
+
+#### Fixed
+
+- **`sp.causal` keeps its signature after the deprecated `statspai.causal`
+  shim is imported.** Importing the shim (`from statspai.causal import
+  CausalForest`) rebinds `sp.causal` to a callable module, and
+  `inspect.signature(sp.causal)` then read `(*args, **kwargs)`. Anything
+  that introspects the signature saw a different function depending on
+  import order. The call itself always worked.
+- **On Python 3.13 the four regression forests document their shared
+  options again.** `sp.regression_forest`, `sp.multi_regression_forest`,
+  `sp.probability_forest` and `sp.quantile_forest` splice a common block of
+  parameter documentation into their docstrings at import, by matching a
+  placeholder line with its indentation. Python 3.13 strips docstring
+  indentation at compile time, so the match failed there: `help()` showed
+  `y` and nothing else, and `sp.function_schema` fell back to generic
+  parameter descriptions. The docstrings are now identical on every
+  supported Python.
+
+### Stata dates through `sp.read_data`
+
+#### ⚠️ Correctness
+
+- **A Stata date is the same value with and without `pyreadstat`.**
+  `sp.read_data` takes the pyreadstat reader when that optional package is
+  installed and the pandas reader otherwise, and the two disagreed on dates.
+  With pyreadstat a `%tm`, `%tq`, `%th`, `%tw` or `%ty` variable came back
+  as Stata's raw period count (`720.0` for 2020m1) and a `%td` variable as
+  an `object` column of `datetime.date`; without it every one of them was
+  `datetime64`. Both paths now return `datetime64`, set to the first day of
+  the period as `pd.read_stata` does. Found by running one notebook under
+  two interpreters. The pandas path had its own gap: a `%ty` column with a
+  missing value came back as `object`, and is now `datetime64` too.
+- **`sp.read_data` then `sp.write_data` keeps the unit of a date.** A
+  `datetime64` column whose entry in `attrs['_formats']` is a Stata date
+  format is written back with that unit (`%td` stays `%td`). pandas wrote
+  every datetime column as `%tc`, and on the pyreadstat path the write
+  failed outright on the `object` dates. `convert_dates=` still overrides.
+- **A Stata `byte` no longer overflows in Python.** Without pyreadstat,
+  `sp.read_data` and the MCP data loader returned Stata's storage types as
+  numpy dtypes: `int8` for a `byte`, `int16` for an `int`, `float32` for a
+  `float`. Stata computes in double precision whatever the storage type;
+  numpy does not, so `df["age"] ** 2` on an `int8` column wrapped past 127
+  and returned negative numbers without a warning. Numeric columns are now
+  `int64` / `float64`, which is also what the pyreadstat path returns, so
+  the two readers give the same frame. The MCP streamed-sample path widens
+  too.
+
+#### Changed
+
+- **`sp.write_data` stores each numeric column in the smallest Stata type
+  that holds it exactly**, as Stata's `compress` does for integers; a
+  `float64` column goes to `float` only when every value is already a
+  float32. Nothing is rounded. A .dta read and written back keeps its
+  storage types and its size, where pandas alone would have written every
+  widened `byte` as a `long`.
+
+### Chen Qiang's do-files: `synth2` and `rcm` covariates
+
+The replay of the 18 chapter do-files (see 1.36.0) now reproduces 2,958
+numbers and refuses no command. 324 numbers differ for documented reasons,
+320 of them downstream of the non-convex nested search of `synth` and
+`synth2` in chapter 18, where the placebo p-values agree all the same.
+
+#### Added
+
+- **`sp.rcm(covariates=...)`.** `covariates=` adds every unit's covariates to the candidate
+  predictors (Hsiao and Zhou 2019; Stata `rcm y x`), checked against Stata
+  along the forward and the best-subset path. One deliberate difference:
+  with as many candidates as pre-treatment periods less one, Stata's `rcm`
+  selects the model that interpolates the data (R-squared 1, a BIC that is
+  the logarithm of rounding error); StatsPAI stops at one residual degree
+  of freedom. The command's lasso option is not implemented, because its
+  path and cross-validation folds are Stata's own and could not be checked.
+- **`sp.synth(method='classic')` returns the reports of Stata's `synth2`.**
+  With `placebo=True` the result has `model_info['placebo_table']` (pre-
+  and post-treatment MSPE and their ratio per unit),
+  `model_info['placebo_effects']` (two-, right- and left-sided placebo
+  p-values per period) and `model_info['placebo_weights']`. New keywords:
+  `placebo_cutoff=` leaves badly fitted pretend units out of those
+  p-values, `placebo_time=` refits at a pretend treatment date, `loo=True`
+  drops each weighted donor in turn and reports the range of the synthetic
+  path, `post_periods=` restricts the periods the effect is measured on.
+  `model_info['pre_r2']` is the pre-treatment R-squared. `sp.from_stata` /
+  `sp.stata` translate `synth2` to this call. Checked against `synth2`
+  2.1.0 on the regression-based predictor weights
+  (`tests/reference_parity/test_synth2_stata_parity.py`): pre-treatment
+  MSPE to 1e-8 and every p-value exactly; paths and post-treatment MSPE
+  after rounding our weights to three decimals as `synth` stores them.
+  `synth2`'s R-squared divides by the variation of the synthetic path, ours
+  by that of the treated unit's outcome. `placebo_units=` (also in
+  `method='rcm'`) and `pre_periods=` cover `placebo(unit(numlist))` and
+  `preperiod()`.
+- **`sp.synth(v_method='regression')` no longer refuses a specification
+  with as many predictors as units.** The regression behind V is not
+  identified there; Stata's `synth` sweeps the cross-product matrix with
+  the largest remaining diagonal first and gives the columns it cannot
+  sweep a zero coefficient. The same rule now applies and reproduces
+  `e(V_matrix)` to 5e-11 and `e(RMSPE)` to 1e-8, with 12 units and 12
+  predictors and with 9 units and 12 predictors
+  (`test_synth_regression_v_stata.py`).
+
+### `sp.fast.feols_jax`: the same standard errors as `sp.fast.feols`
+
+#### ⚠️ Correctness
+
+- **`sp.fast.feols_jax` returned different standard errors from
+  `sp.fast.feols` on the same call.** When the default of `sp.fast.feols`
+  moved to fixest's small-sample convention in 1.31, the JAX backend kept
+  the old count, and its result still reported `ssc='fixest'`. Clustered
+  standard errors were 8% above fixest's (and above the NumPy backend's)
+  when the absorbed effects were nested in the clusters; `iid` and `hc1`
+  were 5.7e-4 low. It now takes `ssc=` (default `'fixest'`), agrees with
+  fixest 0.14 on the same 21 configurations to 6.3e-10, and reports the
+  convention it used. `ssc='statspai'` returns the old numbers.
+  Coefficients are unchanged. `sp.fast.feols_jax_bootstrap` does not use
+  a small-sample factor and is unchanged. See `MIGRATION.md`.
+
+### `sp.fast.fepois`: fixest's small-sample factors, and weights in the HC1 score
+
+#### ⚠️ Correctness
+
+- **`sp.fast.fepois` clustered standard errors were 8% too large when the
+  absorbed effects were nested in the clusters.** The source said the
+  small-sample factors were fixest's; they were the pre-1.31
+  `sp.fast.feols` convention. `cr1` charged every absorbed level against
+  the degrees of freedom, where R `fixest::fepois` leaves out dimensions
+  nested in the clusters; `iid` used `n/(n - p - Σ(G_k - 1))` where fixest
+  uses `(n - 1)/(n - K)`; `hc1` was one degree of freedom short. A new
+  `ssc=` argument defaults to `'fixest'`, which reproduces fixest 0.14 on
+  20 configurations to 6.5e-8 (its own stopping rule);
+  `ssc='statspai'` returns the old numbers. Coefficients are unchanged.
+  `sp.fepois` and `sp.ppmlhdfe` were not affected. See `MIGRATION.md`.
+- **A weighted `sp.fast.fepois(vcov='hc1')` left the weights out of the
+  score.** The bread was weighted and the meat was not: standard errors
+  43% to 46% off fixest's on the reference panel. Unweighted fits and the
+  weighted `iid` / `cr1` variances were not affected.
+
+#### Changed
+
+- Two tests compared `sp.fast.fepois` with fixest at 1% and 2% (the
+  second against a non-default `ssc(fixef.K='full')`), which is how the
+  factors above went unnoticed. They now compare with fixest's defaults
+  at 1e-5.
+
+### `sp.fast.feols`: degrees of freedom with one absorbed dimension
+
+#### ⚠️ Correctness
+
+- **`sp.fast.feols` charged one degree of freedom too few for a single
+  absorbed dimension.** With `y ~ x | firm` the residual degrees of
+  freedom were `n - p - (G - 1)`; R `fixest` and Stata `reghdfe` use
+  `n - p - G`, because the effects span the intercept. IID and HC1
+  standard errors were `sqrt((n - p - G)/(n - p - G + 1))` of fixest's
+  (5.6e-4 low on a 1,042-row panel with 150 firms). Clustered standard
+  errors were `sqrt((n - p - 1)/(n - p))` of fixest's when that dimension
+  was nested in the clusters, and with two absorbed dimensions neither
+  nested in the clusters the count was one too many. All of these now
+  agree with fixest to 1e-9 across 21 configurations, with and without
+  weights (`tests/reference_parity/test_fast_feols_weights_fixest_parity.py`).
+  Coefficients are unchanged. Two-way models clustered on a key that
+  nests one of the effects were exact before and are unchanged; `sp.feols`
+  and `sp.hdfe_ols` were exact throughout. `ssc='statspai'` is unchanged.
+  See `MIGRATION.md`.
+
+### `sp.regress`: weights and dropped rows under CR2, CR3 and two-way clustering
+
+Found while generating a Stata reference for the configurations the
+evidence map listed as having none.
+
+#### ⚠️ Correctness
+
+- **`sp.regress(weights=)` was ignored under `vce='cr2'`, `vce='cr3'` /
+  `'jackknife'` and two-way clustering.** Those three paths refit the
+  model without the weights and returned the *unweighted* coefficients and
+  standard errors, with no warning. They now fit the weighted model, and
+  the variance is that of the weighted design: `vce='cr2'` with weights
+  reproduces Stata's `regress [aw=w], vce(hc2 g)` to 5e-16. With
+  `vce='wild'` and `vce='conley'`, which do not implement weights, the
+  call now raises instead of dropping them. Unweighted calls are
+  unchanged. See `MIGRATION.md`.
+- **Rows dropped for missing values shifted the cluster keys under
+  `vce='cr2'` / `'cr3'` and two-way clustering in `sp.regress`.** The
+  keys were read from the first `n` rows of the data, not from the rows
+  that were fitted. With four of 400 rows missing a regressor the CR2
+  standard errors were off by 17% and the two-way ones by 66%. The keys
+  are now read on the estimation sample; the result equals the fit on the
+  pre-cleaned data to 1e-12. `vce='wild'` raised an unrelated `ValueError`
+  in the same situation and now works. Data with no missing values in the
+  formula variables are unchanged.
+- **`sp.twoway_cluster` and `sp.cr2_se` ignored the weights of a weighted
+  fit.** `sp.twoway_cluster` built its scores from the unweighted design:
+  standard errors 11% to 17% below Stata's
+  `regress [aw=w], vce(cluster a b)` on the test fixture. `sp.cr2_se`
+  recomputed the unweighted fit from the stored design. Both now agree
+  with Stata to 1e-15, and both follow the fitted rows when the fit
+  dropped missing values (`sp.twoway_cluster` raised; `sp.cr2_se` fell
+  back to a re-parse of the formula).
+
+### CR2, CR3 and two-way clustering: t(G - 1), not the normal
+
+#### ⚠️ Correctness
+
+- **p-values and intervals of the bias-reduced and two-way cluster
+  variances came from the normal.** `sp.regress`, `sp.feols` and
+  `sp.ivreg` with `vce='cr2'` / `'cr3'` / `'jackknife'`, and
+  `sp.regress(cluster=[a, b])`, replaced the standard errors of a fitted
+  model and then referred the t ratio to N(0, 1), while the one-way
+  cluster variance of the same functions used t(G - 1). Stata reports
+  t(G - 1) for `vce(hc2 clustvar)` and `vce(jackknife, cluster())`, and
+  t(G_min - 1) for `vce(cluster a b)`. The standard errors agreed with
+  Stata and the p-values did not. They do now (1e-8 on the test fixture).
+  The size study shows what it was worth: with six clusters of equal size
+  CR2 rejected a true null 12% of the time on the normal reference and 6%
+  on t(G - 1); CR3 7% and 3%. Coefficients and standard errors are
+  unchanged; p-values rise and intervals widen, slightly at 40 clusters
+  and substantially below 10. `sp.hdfe_ols` and `sp.panel` already used
+  t(G - 1). See `MIGRATION.md`.
+
+### `sp.poisson` and `sp.ppmlhdfe`: weights in the covariance
+
+#### ⚠️ Correctness
+
+- **`sp.poisson(weights=)` and `sp.ppmlhdfe(weights=)` computed the
+  covariance without the weights.** The coefficients were the weighted
+  ones; the information, the scores and the cluster sums were not
+  weighted. Against Stata 18 the Poisson model-based standard errors
+  were 10% high (42% high with integer frequency weights), the robust
+  ones 7% low, and `ppmlhdfe`'s robust and clustered ones 8% and 12% off.
+  All now agree to 6e-10. The column is read as Stata reads it for the
+  variance asked for: `weights=w` alone is `[iw=w]` / `[fw=w]`
+  (model-based, scales with the weights), with `robust=` it is `[pw=w]`,
+  with `cluster=` it is `[pw=w], vce(cluster)`. That is what `sp.logit`,
+  `sp.probit` and `sp.glm` already did; they are pinned alongside.
+  Unweighted fits are unchanged. See `MIGRATION.md`.
+- **The log-likelihood reported by a weighted `sp.poisson`, `sp.nbreg`
+  or `sp.ppmlhdfe` was the unweighted sum.** `ll`, `ll_null`, the LR
+  statistic and the pseudo R-squared now use the weighted sums, as Stata
+  does (Poisson `e(ll)` and `e(ll_0)` to 1e-10). `sp.nbreg`'s
+  coefficients and standard errors under weights were already correct.
+
+### Count models with missing values
+
+#### Fixed
+
+- **`sp.poisson`, `sp.nbreg` and `sp.ppmlhdfe` failed on a missing
+  regressor or outcome.** A formula of plain columns passed the missing
+  values into the IRLS, which stopped with `LinAlgError: SVD did not
+  converge`. Rows with a missing outcome or regressor are now dropped, as
+  Stata does and as these functions already did for formulas with `C()`,
+  `I()` or interactions; weights, exposure, offset and cluster keys are
+  read on the rows that remain. The fit equals the fit on the cleaned
+  frame to 1e-12. Nothing that ran before changes. Twenty other
+  regression-family estimators were put through the same comparison and
+  already handled missing rows.
+
+### Agent surface
+
+- **Evidence maps credit reference tests that already existed, and gain
+  new ones.** `sp.validation_scope('rdrobust')` listed 12 configurations
+  with a reference; the R tests for the variance kinds, clustering,
+  covariates, fuzzy and kink designs and the 36-cell bandwidth x order x
+  kernel grid were never entered. They are now (75), and the grid test
+  asserts all eight outputs at 1e-9 where it asserted two at 1e-6 (the
+  worst measured gap is 8e-12). `regress` gains a Stata 18 reference for
+  analytic weights under six variances, CR2, two-way clustering and the
+  cluster jackknife (6 to 15 configurations). `iv` gains a `small`
+  dimension, so a `small=False` fit is no longer counted under the
+  `small=True` evidence, and the existing `ivregress` / `ivreghdfe` rows
+  (7 to 22). A weighted `sp.regress` fit was read as unweighted by the
+  map and reported as covered; it is now its own cell.
+  `sp.fast.feols` gains the fixest rows above (2 to 6). For `sp.etwfe`,
+  the Stata `jwdid` references for unit effects, every `hettype`, a
+  moderator (`xvar`) and never-treated controls, linear and Poisson, and
+  the weighted references on two real panels were entered: a linear
+  `fe='unit'` fit was reported as having no evidence, partly because it
+  recorded the control group as `never` where the map says
+  `nevertreated`, so it could match nothing.
+  `sp.etwfe(controls=, fe='unit')` is now pinned against Stata
+  `jwdid, exovar()` (1e-10), and the docstring says what the default
+  cohort-effects design does with a time-varying control: it is a
+  different regression from the unit-effects one and has no reference.
+  `sp.match(method='nnmatch')` gets a map of its own: its fits were
+  routed to the propensity-score map, where none of its options exist,
+  and read as unverified although nine `teffects nnmatch` commands pin
+  estimate and standard error to 1e-10. The MatchIt comparisons made
+  through `sp.match(method='nearest')`, which is the same fit as
+  `sp.psm`, are entered in the `psm` map.
+- **The few-cluster warning no longer says the wild bootstrap "keeps
+  correct size".** A size study (`tests/reliability/`, 16 designs, 2,000
+  replications each) shows where that holds and where it does not. With
+  clusters of similar size and half of them treated, the wild cluster
+  bootstrap rejects a true null 5% to 7% of the time from 6 clusters up.
+  With two treated clusters it almost never rejects (0.0% at 40
+  clusters), and with one cluster holding half the sample it over-rejects
+  (13%) while CR3 stays at 3% to 5%. The hint in `sp.regress`, `sp.panel`
+  and the agent summary now says this.
+- **`sp.regress` reports the effective number of clusters and warns when
+  it is small.** The few-cluster warning was keyed on the count (fewer
+  than 30) and stayed silent with 40 clusters of which one holds half the
+  sample, where CR1 rejects a true null 36% of the time. The fit now
+  records `model_info['n_clusters_effective']`, the inverse Herfindahl
+  index of the cluster sizes, and warns when there are 30 or more
+  clusters but fewer than 30 in effect. In the study CR1 is at 6% above
+  30 effective clusters and at 8% to 10% at 26 and 18. No estimate or
+  standard error changes.
+- **The effective-cluster warning also covers `sp.panel`, `sp.hdfe_ols`
+  and `sp.feols`.** In a fixed-effects panel of 40 units clustered by
+  unit, the cluster-robust t-test rejects a true null 5.5% of the time
+  when every unit has 8 periods and 21.8% when one unit has 312, so the
+  three entry points now record `n_clusters_effective` and raise the same
+  warning as `sp.regress` on one-way clustered fits.
+- **`sp.regress` warns about few treated clusters.** A regressor that is
+  constant within clusters and takes the values 0 and 1 is a
+  cluster-level treatment. When fewer than 10 clusters, and under a
+  quarter of them, sit on one side, the fit warns and records
+  `model_info['few_treated_clusters']`. In the study, two treated
+  clusters out of 40 make CR1 reject a true null 31% of the time while
+  the wild cluster bootstrap never rejects. Level dummies of a
+  categorical term are not counted, and more than three such columns are
+  recorded without a warning (a set of cluster indicators is not a
+  treatment).
+- **Isolated MCP calls can return a result handle.** With
+  `STATSPAI_MCP_ISOLATION=process`, a call that asked for a handle
+  (`as_handle=true`) used to run on the thread runner, because a handle
+  minted in a child process died with it; those are the long fits one
+  most wants to be able to kill. The worker now pickles the result it
+  cached into a private directory and the server adopts it under the
+  same id, so the `result_id` in the response works in follow-up calls
+  (`isolation.adopted_handles`). The file is signed with a one-time key
+  and unpickled only if the signature verifies. A result that cannot be
+  pickled is dropped from the response with the reason. The channel runs
+  the other way too: a call that reads a result (`audit_result`,
+  `honest_did_from_result`, `sensitivity_from_result`, `estat`, ...) is
+  isolated, with the cached entry handed to the worker. What still runs
+  in the server: calls that read a data handle (`data_id`), the data
+  tools, the `pipeline_*` composites, and `interpret_result`, which may
+  ask the client for a completion while it runs.
+- **`sp.fepois` and `sp.feglm` cards declared the result as a list.** The
+  annotation is `Union[EconometricResults, List[EconometricResults]]`
+  (the list is the multiple-estimation syntax); a plain formula returns
+  one result, and the card now says so. Found by extending the
+  real-call card audit from 30 to 40 entry points.
+- **`sp.panel` names its default small-sample convention.** With no
+  `ssc=` the result now carries `model_info['ssc'] = 'linearmodels'` and a
+  one-line description (`N/(N-k)` on the covariance, no `G/(G-1)` cluster
+  factor, tests on `N - K` degrees of freedom); before, the field was
+  absent and a reader had to know what its absence meant. The
+  few-cluster warning now adds that `ssc='stata'` gives `xtreg`'s factor
+  and `t(G-1)`. The default itself is unchanged, and so is every number:
+  it is a documented convention, `ssc='stata'` and `ssc='fixest'` reproduce
+  `xtreg` and `fixest`, and the joint test that showed the difference
+  (p = 0.0017 against Stata's 0.0040 on 60 clusters) is pinned in
+  `tests/reference_parity/test_joint_wald_stata_parity.py`.
+
+## [1.36.0] — 2026-10-03
+
+Three textbooks' do-files were run in Stata 18 and replayed through
+StatsPAI: Chen Qiang's *Econometrics and Stata Applications*, Zhao
+Xiliang's *Design-Based Econometrics*, and Stock and Watson's
+*Introduction to Econometrics*. Most of what they exercise already agreed.
+What did not is fixed here, and some of it changes numbers. The affected
+calls are listed in `MIGRATION.md` under the `1.35.0 → 1.36.0` headings.
+
+Numbers that change: the model F statistic of `sp.regress` under robust or
+clustered errors, fit statistics of a regression without a constant, `AIC`
+/ `BIC`, several `sp.estat` defaults, `sp.etwfe` when every unit is
+eventually treated, data-driven RD bandwidths when the interquartile range
+sets the pilot scale, the LIML `kappa`, CR2 degrees of freedom,
+synthetic-control weights when the minimiser is not unique, and the
+standard errors `sp.stata` asks for on robust ML commands and large-sample
+IV. `sp.panel(vce=...)` now raises on a value it does not implement, where
+it returned classical standard errors.
+
+Stata labels now make the whole trip. `sp.write_data` writes variable,
+value and dataset labels back to .dta, the MCP data loader keeps them, and
+an agent sees them, with informative display formats, in the data
+description and as role hints from `sp.detect_design`.
+
+### Stata labels on the way out, and through the MCP server
+
+`sp.read_data` keeps a .dta file's labels; nothing wrote them
+back, and the MCP data path did not use it.
+
+#### Added
+
+- **`sp.write_data(data, path)`**, the counterpart of `sp.read_data`. For
+  .dta it writes the variable labels (`attrs['_labels']`), value labels
+  (`attrs['_value_labels']`) and dataset label (`attrs['_data_label']`) into
+  the file; `labels=` / `value_labels=` / `data_label=` add to or override
+  them. The default format is 118, so non-ASCII labels survive. A label
+  longer than Stata's 80 characters, value labels on a string column or on
+  non-integer codes raise, naming the variable. Parquet carries the labels
+  too; .csv / .xlsx / .feather / .json cannot, and warn when the frame has
+  any. Checked by opening the written file in Stata 18 (`describe`,
+  `label list`, `tabulate`).
+- `sp.read_data` now also returns the dataset label, in
+  `attrs['_data_label']`, and restores integer value-label codes after a
+  Parquet round trip (JSON metadata had turned them into strings).
+- The MCP data description (`describe_frame`, used by the data-handle tools
+  and the data resource) reports `variable_labels`, `value_labels` and
+  `data_label` when the frame carries them.
+- **Display formats that say something are kept.** `sp.read_data` and the
+  MCP loader put a .dta file's non-default display formats in
+  `attrs['_formats']`, and the data description reports them as
+  `display_formats`. `%td`, `%tm` and `%tq` all load as `datetime64`, so the
+  format is the only place the time unit of a date survives; `%12.2fc` marks
+  money. Stata's defaults (`%9.0g`, `%9s`, ...) are not reported.
+- **`sp.detect_design` reports `role_hints`**: columns whose name or
+  variable label points to a role (`time`, `unit`, `treatment`, `weight`,
+  `cluster`), with the matched word and the label. In a survey file the
+  names are often opaque (`v12`) and the label is where the meaning lives.
+  English words match whole words only (`id` does not fire on `paid`);
+  common Chinese terms match too. Hints are advisory. They never change
+  `design`, `confidence`, `identified` or `candidates`, and the key is absent
+  when nothing matches.
+- **Labels follow columns through `transform_data`.** pandas drops `attrs`
+  in some operations, so a loaded .dta lost its labels partway along a
+  transform chain. Each step now rebuilds them: a surviving column keeps its
+  labels, `rename` moves them, and a column `assign` overwrote gets none.
+
+#### Changed
+
+- **The label part of the MCP data description is bounded.** A value label
+  shared by many variables (one 1 to 5 scale on 300 survey items) is spelled
+  out once and later variables carry `{"same_as": <first variable>}`; a label
+  with more than 50 codes is cut, with the full count in
+  `value_labels_truncated`; Stata's missing-value codes print as `.a` rather
+  than `2147483622`; and strings in `head` longer than 200 characters are
+  clipped (a strL can run to megabytes).
+- **Value labels and formats survive a column projection.** pandas narrows
+  its per-variable lists after a `columns=` read; the reader fell back to
+  "label set named after its variable", which loses `label values region
+  regionlbl`. Both layouts are now resolved by name.
+- **The MCP data loader reads .dta the way `sp.read_data` does.** It called
+  bare `pd.read_stata`, which dropped variable labels and turned every
+  value-labelled column into a string categorical, so `foreign`
+  (0 "Domestic" / 1 "Foreign") reached an estimator as text where Stata's
+  own commands use the codes. Value-labelled columns now keep their numeric
+  codes and the labels travel in `df.attrs`, on the whole-file, streamed
+  sample and remote paths alike. A tool call that relied on receiving the
+  label text as the column's values needs to map the codes through
+  `attrs['_value_labels']`.
+
+### An undergraduate textbook's do-files, replayed against Stata
+
+The 18 chapter do-files of Chen Qiang's *Econometrics and Stata
+Applications* (2nd edition) were run in Stata 18 with a log, and every
+logged command was replayed through one `sp.stata` session
+(`scripts/stata_log_replay.py`). At the start 607 printed numbers were
+reproduced and about 230 commands were refused. Now 2,911 numbers are
+reproduced, 17 differ for documented reasons and three `synth2` commands are
+declined. The findings are in
+`docs/dev/2026-10-03-chen-qiang-2e-review.md`, the reader's guide in
+`docs/guides/chen_qiang_2e.md`. The textbook's programs and data are not
+redistributed. Everything below is pinned against real Stata 18 output on
+four committed synthetic datasets
+(`tests/reference_parity/test_textbook_methods_stata_parity.py`, 40 blocks).
+
+#### ⚠️ Correctness
+
+- **`sp.regress` reported the classical F statistic under a robust,
+  clustered or HAC covariance.** `diagnostics['F-statistic']` was the ratio
+  of sums of squares whatever the covariance. On the Nerlove cost function
+  with `robust='hc1'` it was 437.9 where the Wald F on the robust covariance
+  is 177.19 (Stata `regress, robust`). It is now that Wald statistic, with
+  `N - K` denominator degrees of freedom, `G - 1` under clustering and the
+  rescaled `F(q, B - q + 1)` under `robust='ewc'`, and equals `sp.test` of
+  all slopes. Classical fits are unchanged.
+- **Fit statistics of a regression without a constant.** `y ~ x - 1`
+  reported the centred R-squared (negative when the line through the origin
+  fits worse than the mean), an F statistic that assumed an intercept and
+  `df_model = K - 1`. They are now the uncentred R-squared, the F test of
+  all `K` coefficients and `df_model = K`, as Stata `regress, noconstant`
+  and R `lm(y ~ x - 1)`.
+- **`AIC` / `BIC` of `sp.regress` and `sp.estat(..., 'ic')`** were
+  `N log(RSS / N) + 2K`, without the constant `N (log 2 pi + 1)`, so they
+  disagreed with the log likelihood reported next to them and with Stata and
+  R. They are now `-2 log L + 2K` and `-2 log L + K log N`. Differences
+  between models, and therefore every model choice, are unchanged.
+  `sp.estat(..., 'ic')` also returns `ll` and uses the model's own
+  likelihood after `sp.logit` / `sp.probit`.
+- **`sp.estat(..., 'white')` degrees of freedom.** Squares and
+  cross-products that duplicate another term (the square of a dummy) were
+  counted as restrictions. The statistic was right, the p-value too large.
+- **`sp.estat(..., 'bgodfrey')` default.** The first `lags` observations
+  were dropped. Stata's `estat bgodfrey` and R's `lmtest::bgtest` both keep
+  them with the missing lagged residuals set to zero. That is now the
+  default (`fill='zero'`); `fill='drop'` is the old behaviour and Stata's
+  `nomiss0`.
+- **`sp.estat(..., 'vif')`** returned the factors rounded to two decimals
+  and `1/VIF` to four. They are returned at full precision.
+- **Breusch-Pagan LM test for random effects on an unbalanced panel**
+  (`result.bp_lm_test()`). The scale factor used the average panel length.
+  It is now the Baltagi-Li form with `sum T_i^2`, which is Stata's
+  `xttest0` (274.68 where the old formula gave 277.21 on the test panel).
+  Balanced panels are unchanged.
+- **`sp.from_stata("synth ...")`** now passes `placebo=False`. Stata's
+  `synth` fits the treated unit only; the translation ran the in-space
+  placebo as well, minutes per donor with `nested`.
+
+#### Added
+
+- **`sp.prais`**: Prais-Winsten and Cochrane-Orcutt regression with AR(1)
+  errors, iterated or two-step, six estimators of `rho`, robust
+  covariances. All 24 combinations agree with Stata `prais` to 1e-9
+  (two-step) or to Stata's own convergence tolerance (iterated).
+- **`sp.corrgram`**: autocorrelations, partial autocorrelations
+  (regression or Yule-Walker) and Ljung-Box Q statistics; Stata `corrgram`
+  and `wntestq`.
+- **`sp.varsoc`** and, on the result of `sp.var`, `lag_exclusion()`,
+  `lm_test()`, `stability()`, `granger_table()`, `equation_table()`,
+  `forecast()` and `fpe`: Stata's `varsoc`, `varwle`, `varlmar`,
+  `varstable`, `vargranger` and `fcast compute`. Also reachable as
+  `sp.estat(fit, 'varlmar' | 'varwle' | 'varstable' | 'vargranger')`.
+- **`sp.vec`**: vector error-correction model by Johansen maximum
+  likelihood with all five trend specifications, standard errors of the
+  cointegrating vectors, `lm_test()` and `stability()`. Agrees with Stata
+  `vec`, `veclmar` and `vecstable` to 1e-8.
+- **`sp.hausman(consistent, efficient)`**: the Hausman test between two
+  fitted models, with `constant=`, `sigmamore=` and `sigmaless=`, a
+  generalised inverse and rank degrees of freedom, as Stata `hausman`.
+- **`sp.panel(method='mle')`**: random effects by Gaussian maximum
+  likelihood with observed-information standard errors (Stata `xtreg, mle`).
+- **`sp.xtsum`, `sp.xtserial`, `sp.xtoverid`**: within and between
+  summary statistics, Wooldridge's test for serial correlation, and the
+  cluster-robust test of random against fixed effects.
+- **`sp.synth(method='rcm')`**: the regression control method (the panel
+  data approach of Hsiao, Ching and Wan) with exact best-subset, forward or
+  backward selection, AICc / AIC / BIC / MBIC, placebo runs in space with
+  period-by-period p-values and a placebo in time. The best subset is found
+  by branch and bound: the 24-donor Hong Kong example with a placebo run per
+  donor takes about a second and reproduces every digit the Stata command
+  `rcm` prints.
+- **`sp.estat`**: `'imtest'` (White's test with Cameron and Trivedi's
+  skewness and kurtosis parts), `'classification'` after `sp.logit` /
+  `sp.probit`, the Durbin score form in `'endogenous'`, and the options
+  `variables=` / `version=` (`'hettest'`), `rhs=` (`'reset'`), `fill=`
+  (`'bgodfrey'`), `threshold=`.
+- **`sp.synth_loo`, `sp.synth_time_placebo`, `sp.synth_rmspe_filter`,
+  `sp.synth_donor_sensitivity`** take `covariates=`, `special_predictors=`
+  and `v_method=`, so a robustness check runs on the specification of the
+  estimate it checks. They matched on pre-treatment outcomes only.
+- **`sp.stata` runs much more of a do-file.** `regress, noconstant`;
+  weight expressions (`[aw=1/v]`), frequency weights (expanded rows) and a
+  weight clause after `if`; `gsort`, `rename`, `tabulate` with
+  `generate()`, `collapse`, `ipolate`, `set obs`, `set seed`, `clear`;
+  `asinh()`, running `sum()`, date functions, densities and quantiles,
+  random draws and time-series operators inside `generate`; `e(rss)`,
+  `e(mss)`, `e(rmse)`, `e(df_r)`, `e(df_m)`, `e(F)`, `e(ll)`; `predict,
+  leverage`, `predict` after `logit` / `probit`, `predict ... if`;
+  `estimates store / restore / table`, `esttab`, `hausman`; `bysort:
+  summarize`; `estat` and its subcommands; `prais`, `corrgram`, `wntestq`,
+  the `var` and `vec` families, `fcast compute`; `xtreg, re | be | mle`
+  with `sigma_u`, `sigma_e`, `rho`, the three R-squared and the constant of
+  `xtreg, fe`; `xttest0`, `xtoverid`, `xtserial`, `xtsum`; the `_cons` that
+  `reghdfe` prints; `teffects psmatch` with `generate()` and `osample()`,
+  `predict, ps`, `tebalance summarize`; `c.x#(c.z1-z9)` and `test
+  c.x#c.z`; `rcm`; and `program ... end` with `simulate`. `tsset` / `xtset`
+  now sort the data, as in Stata. Random numbers come from numpy, so a
+  simulation has Stata's design and another sample; a warning says so.
+- `scripts/stata_log_replay.py` compares regression headers, `estat`,
+  `margins`, `hausman`, `corrgram`, the `var` / `vec` suites, the `xt`
+  commands, `teffects`, `tebalance`, `rdrobust`, `rddensity`, `synth` and
+  `rcm` output, reads the `tsset` declaration and value labels stored in a
+  `.dta` file, and marks numbers computed on simulated data.
+
+refs verified via Crossref and OpenAlex: `cochrane1949application`,
+`ljung1978measure`, `hsiao2012panel`, `drukker2003testing`,
+`arellano1993testing`, `baltagi1990lagrange`, `yan2022rcm`,
+`yan2023synth2`.
+
+### A design-based textbook's do-files, run against Stata
+
+The do-files of Zhao Xiliang's *Design-Based Econometrics* (2nd edition,
+13 files covering randomized experiments, matching, IV, DiD, imputation and
+synthetic control, RD and mediation) were run line by line in Stata 18 and
+in StatsPAI on the same data. Regression, clustered and HC2/HC3 standard
+errors, 2SLS, Kleibergen-Paap and effective F statistics, Bacon
+decomposition, Callaway-Sant'Anna, BJS imputation, SDID, `rddensity` and
+fixed-bandwidth `rdrobust` already agreed to 1e-8 or better. What did not is
+below. The textbook's data are not redistributed; every fix is pinned on a
+bundled dataset or a deterministic design, with the Stata or R value in the
+test.
+
+#### ⚠️ Correctness
+
+- **`sp.etwfe` returned arbitrary numbers when every unit is eventually
+  treated.** With no never-treated unit, the periods from the last cohort's
+  adoption on have no untreated comparison. The saturated design was solved
+  by `pinv` anyway. On the Baker-Larcker-Wang simulated panel the overall
+  ATT came back as 4.7e11 with a rank-deficiency warning (the truth is 68).
+  The last cohort is now the reference and those periods are dropped, as R
+  `etwfe` does, with a `UserWarning` and
+  `model_info['last_cohort_reference']`. R `etwfe` 0.6.2 gives
+  68.3290597638 and cohort effects 94.9877509885 / 52.0066074672 /
+  20.9978906826, reproduced to 1e-11. A single adoption date with no
+  untreated group raises `DataInsufficient`.
+- **Data-driven RD bandwidths were off whenever the interquartile range set
+  the pilot bandwidth.** `rdbwselect` starts from
+  `C * min(sd, IQR / 1.349) * n^(-1/5)` with quartiles by Hyndman-Fan
+  definition 2. StatsPAI used `method="lower"`, a different order statistic
+  at the upper quartile for most sample sizes. It showed only when the IQR
+  was the smaller scale. On the Lee (2008) House data `h` was 0.1356186677
+  against 0.1356263072 in R `rdrobust` 4.0.0 and Stata `rdrobust` 10.0.0,
+  and estimates moved by 2e-5 to 2e-4. Now within 6e-12 across selectors,
+  kernels and polynomial orders. Affects `sp.rdrobust`, `sp.rdbwselect` and
+  everything that calls the CCT selector. The three Track A RD modules are
+  unchanged (the standard deviation binds there).
+- **The LIML `kappa` lost as many digits as it is close to 1.** It was the
+  generalized eigenvalue of two matrices each formed as a cross product
+  minus a projection. On the Angrist-Krueger sample `kappa` was
+  1.00000662005 where `ivregress` and `ivreg2` both give 1.0000066192058,
+  which moved the coefficient by 1e-6. Adding 1e6 to the outcome, which the
+  intercept absorbs, turned `kappa - 1` negative. The part the excluded
+  instruments explain is now formed directly. Track A `59_liml` moves at
+  1e-15.
+- **`sp.cr2_se` used approximate degrees of freedom, and one of them for
+  every coefficient.** The Satterthwaite df came from a formula that is
+  not Bell and McCaffrey's, and all coefficients were then referred to a t
+  with the smallest df among them. On a 110-cluster design with a
+  treatment, a covariate and ten block dummies the treatment's df was 83.6
+  where the exact value is 79.1, and its interval used the intercept's 3.5,
+  a critical value of 2.93 in place of 1.99. The df is now the exact one
+  and each coefficient uses its own. Df and confidence limits agree with R
+  `estimatr::lm_robust(se_type = "CR2")` and `clubSandwich::coef_test` to
+  1e-10. Standard errors are unchanged. `EconometricResults` reads
+  `data_info['df_by_coefficient']` when a fit records it.
+
+#### Added
+
+- **`sp.difference_in_means`, the Neyman estimator with the variance of the
+  design.** The textbook opens with randomized experiments, and its
+  stratified estimates had to be assembled by hand. One call now covers
+  complete randomization (Satterthwaite df), blocks (`N - 2J` df), matched
+  pairs, clusters (CR2 with Bell-McCaffrey df), blocks of clusters and
+  matched pairs of clusters, chosen from `blocks=` and `cluster=`.
+  `estimand='ATT'` weights blocks by their treated units. All six designs
+  agree with R `estimatr::difference_in_means` 2.0.0 to 1e-11 in the
+  estimate, the standard error, the df and the interval. A block with a
+  single treated or control unit, a cluster in both arms and a cluster in
+  two blocks raise.
+- **`sp.didregress`, Stata's `didregress` and `xtdidregress`.** The
+  two-way fixed-effects DID with the variance of each command: group
+  dummies counted as regressors for `didregress`, the `xtreg, fe`
+  convention with `id=` for `xtdidregress`, clustering on the group, and
+  t(G - 1). `sp.estat(result, 'ptrends')` and `sp.estat(result, 'granger')`
+  are `estat ptrends` and `estat granger`. On `sp.datasets.mpdta()` the
+  ATET, its standard error and the Granger test agree with Stata 18 to
+  1e-11, with and without a covariate, for both commands and under
+  staggered adoption. The linear-trend test agrees with `estat ptrends` to
+  3e-6, and the gap is on Stata's side: the same model fitted in Stata by
+  `areg` with time centred gives the value here to 1e-12, and with raw
+  years it differs from both. Like Stata, the two tests are refused when
+  treatment dates vary.
+- **`sp.sdid(covariate_method='optimized')`**, the covariate method of R
+  `synthdid_estimate(X=)` and the default of Stata `sdid`. Single adoption
+  date, point estimate only. The estimate, `beta` and the weights agree
+  with R `synthdid` 0.0.9 to 1e-11. Stata lands 3e-4 away from R on the
+  same data. Both run a gradient iteration to its cap of 10,000 steps, so
+  neither returns a converged optimum, and the result depends on the units
+  of the covariate. The test pins both facts. `'projected'` remains the
+  method with standard errors.
+- **`sp.rddensity` returns the rest of Stata's output.**
+  `model_info['conventional']` is the statistic without bias correction
+  that `rddensity, all` prints, and `model_info['binomial_tests']` is the
+  table of exact binomial tests in ten windows around the cutoff. Both
+  match Stata on the Lee senate data to 1e-9 and to the printed digits.
+  The robust statistic is still the test.
+- **`sp.match(method='nnmatch')`, Abadie-Imbens covariate matching as Stata
+  `teffects nnmatch`.** Every tie kept, `metric=` Mahalanobis / inverse
+  variance / Euclidean, `exact=` (`ematch`), `caliper=`, `bias_adjust=` on a
+  chosen set of covariates, ATE or ATT, robust or homoskedastic variance
+  (`vce=`, `vce_nn=`). `detail` is `tebalance summarize`. Nine
+  configurations on `sp.datasets.nsw_dw()` agree with Stata 18 to 5e-13 in
+  the estimate and the standard error. Two details of Stata's variance that
+  its manual does not state were found by rebuilding `e(V)` term by term.
+  The same-arm set behind `vce(robust, nn(h))` holds the unit plus `h`
+  neighbours, and those neighbours must satisfy `ematch()` too. The existing
+  `sp.match(distance='mahalanobis')` is a different estimator (one match
+  unless `ties='all'`, within-group covariance, sample-ATT variance) and is
+  unchanged.
+- **`sp.mediate(inference='robust')`, potential-outcome mediation as Stata
+  18 `mediate`.** New options `interaction=` (treatment by mediator) and
+  `mediator_model='linear' | 'logit' | 'probit'`. Reports NIE, NDE, PNIE,
+  TNDE, TE and the proportion mediated with a standard error, from the
+  sandwich of the stacked estimating equations. Estimates agree with Stata
+  to 1e-9 and the coefficient covariance to 1e-9. Effect standard errors
+  agree to 2e-4, which is the numerical-derivative noise in Stata's own
+  variance. Its standard errors move by 1e-4 when a covariate is centred,
+  an equivalent model, and the gradient it implies is 0.0065 where the
+  exact one is zero. The analytic ones here do not move. The default
+  behaviour of `sp.mediate` is unchanged.
+- **`sp.synth(v_method='regression')`, the default of Stata `synth`.**
+  Without its `nested` option Stata does not search for the predictor
+  weights. It regresses the pre-treatment outcomes on the predictors and
+  takes the diagonal of the outer product of the slopes. That is
+  deterministic and takes a least-squares fit, where the nested search took
+  79 seconds for one fit on the Proposition 99 data (39 fits for the
+  placebo test). On `sp.california_prop99()` the predictor weights agree
+  with `e(V_matrix)` to 1e-10 and the pre-treatment RMSPE to 2e-10. Stata
+  stores donor weights rounded to three decimals and builds
+  `e(Y_synthetic)` from the rounded weights, which there sum to 0.999. Its
+  post-treatment average is -18.70 where the exact weights give -18.81.
+  Rounding our weights reproduces its path to 1e-9. The donor weights in
+  this path are polished to the exact optimum.
+- **`sp.rdrobust(scalepar=)`**, the rescaling of a regression kink
+  estimate by the kink in the policy rule. Matches Stata to 1e-11.
+- **`sp.mediate(inference='robust')` takes `C(g)` in `covariates`**, one
+  indicator per level but the lowest.
+- **`sp.effective_f_test` reports the Montiel Olea-Pflueger critical
+  values.** It compared the effective F with 23.1, which is the critical
+  value for one instrument at a 10% bias tolerance. With several instruments
+  the critical value depends on the data and on the estimator. Passing
+  `y=` now returns `critical_values` for TSLS and LIML at tolerances of 5,
+  10, 20 and 30%, with the effective degrees of freedom and the worst-case
+  bias behind them. Without `y` the simplified, estimator-free values are
+  returned. On `sp.datasets.card_1995()` with two and with four instruments
+  every value agrees with Stata `weakivtest` to its seven printed digits.
+  With four instruments the 10% TSLS value is 12.0, not 23.1. `weakivtest`
+  evaluates its 30% column at 3.33 where the definition is 1/0.3. The exact
+  value is returned here. `alpha=` sets the level.
+- **`sp.estat(result, 'endogenous')` after a robust or clustered IV fit
+  returns the robust tests.** It returned the Durbin and Wu-Hausman
+  statistics, which assume homoskedastic errors, whatever the VCE of the
+  fit. After `robust=` or `cluster=` the result now carries the robust
+  regression-based F and Wooldridge's robust score chi-squared, as Stata's
+  `estat endogenous` does. They agree with Stata to 1e-9 with one and with
+  two endogenous regressors, robust and clustered. The classical fit is
+  unchanged.
+- **`sp.pretrends_power` and `sp.pretrends_slope_for_power` take
+  coefficients and a covariance.** Stata's `pretrends` reads `e(b)` and
+  `e(V)` of any event-study regression. These two functions took only a
+  StatsPAI event-study result, so a hand-built lead and lag regression had
+  no way in. `sigma=` with `num_pre_periods=` or `event_times=` now does
+  that, a fitted regression with `event_times={name: time}` does too, and
+  `slope=` is shorthand for a linear violation. The likelihood ratio agrees
+  with Stata `pretrends` to 1e-13. The power is a numerically integrated
+  probability on both sides and agrees to 2e-4. The integration tolerance
+  here went from SciPy's default 1e-5 to 1e-7, so the power no longer moves
+  in the fifth digit between two calls.
+- **Guide: a design-based econometrics textbook in StatsPAI**
+  (`docs/guides/design_based_econometrics.md`). A chapter map from the
+  Stata commands of the do-files to the StatsPAI call, the same analyses on
+  bundled datasets with the numbers Stata gives, and the places where two
+  correct programs print different numbers.
+- **`sp.bacon_decomposition` returns `summary`**, the total weight and the
+  weight-averaged estimate of each comparison type. These are the summary
+  rows of Stata `estat bdecomp`, matched on the castle-doctrine panel to
+  the digits Stata prints.
+- **`sp.panel` formulas accept `C(g)`, interactions and `I()`.**
+  `sp.panel(df, "y ~ d + C(year)", method="fe")`, the textbook way to write
+  a two-way model, failed with "Column 'C(year)' not found in data".
+  `method='twfe'` is accepted as a name for `'twoway'`.
+- **IV formulas accept `C(g)`, `C(g, Treatment(k))`, interactions and
+  `I()`** among the exogenous regressors and the instruments, in `sp.iv`,
+  `sp.ivreg` and the absorbed-effects path. They used to fail with
+  "Variables not found in data: ['C', ...]". Expanded columns are named
+  `g[2]`.
+
+#### Fixed
+
+- **`sp.from_stata` / `sp.stata` on equation syntax.** `(y x)(treat)` and
+  `(d=z)` without blanks were refused. `(d = z1 - z3)`, a varlist range
+  written with blanks, became the formula `d ~ z1 + - + z3` and was reported
+  as faithful. `(d = i.q)` passed `i.q` through untranslated.
+- **Grouped factor notation.** `c.(x x2)`, `d##c.(x x2 x3)` and
+  `c.(a - b)#1.post` are expanded. A level term such as `1.d` is the
+  indicator of that level (it used to be pasted into the formula).
+  `treat#1.pre` is refused with the reason.
+- **`ivregress` / `ivreg2` without `small`** now request large-sample
+  statistics for every VCE through `sp.iv(..., small=False)`, not only for
+  `robust`. The chapter's IV commands reproduce Stata to 1e-9.
+- **`teffects`.** `nnmatch` and `psmatch` emitted `method='nn'` / `'ps'`,
+  which `sp.match` does not have, so the translation never ran. They now map
+  to calls that reproduce the Stata estimate (`psmatch, atet` with the
+  Abadie-Imbens 2016 standard error), with `nn()`, `metric()`, `ematch()`,
+  `biasadj()`, `caliper()` and `vce()` carried over. `teffects ra` and
+  `ipwra` were mapped to `sp.regress` and `sp.ipw`, a different estimator,
+  and are now refused. `teffects aipw` with different covariates in the two
+  equations is refused.
+- **`did_imputation`** reads `h()` and `pre()`, the abbreviations of
+  `horizons()` and `pretrends()`.
+- **New translations.** `synth` predictors with periods (`y(1988)`,
+  `y(1980(1)1988)`, `y(1975&1980)`) and `xperiod()` become
+  `special_predictors`, and the call asks for the V method Stata used.
+  `sdid` maps to `sp.sdid`, `mediate` to `sp.mediate(inference='robust')`,
+  `bacondecomp` to `sp.bacon_decomposition`, with the panel taken from an
+  earlier `tsset` / `xtset`. `rdplot` carries `p()`, `nbins()`, `ci()`,
+  `shade`, `kernel()` and `h()`; `rddensity` carries `p()` and `h()`;
+  `rdrobust` carries `scalepar()`. A command name may be followed by its
+  first equation without a blank (`mediate(y x)(m x)(d)`).
+- **Commands with no line-by-line translation name what to call.**
+  `ritest`, `honestdid`, `pretrends`, `fect`, `xthdidregress`,
+  `hdidregress`, `synth_runner`, `ddml`, `qddml`, `poregress`, `dsregress`,
+  `xporegress`, `telasso`, `tebalance`, `teoverlap`, `weakivtest`,
+  `panelview` and `event_plot` used to come back as "unknown command".
+- On the textbook's 13 do-files the share of estimation commands that
+  `sp.stata` can run as written went from 59% to 88%. The rest are loops
+  over macros, `xthdidregress`, `synth_runner` and one factor term, all
+  refused with a reason.
+- **`didregress` and `xtdidregress` were translated to a different
+  estimator.** `sp.stata` sent them to `sp.did(method='twfe')`, which
+  collapses a panel with more than two periods to a 2x2 at the median
+  period. On a five-period panel that returned -0.0149 where Stata gives
+  -0.0300. They now go to `sp.didregress`. `wildbootstrap()`,
+  `aggregate()` and `nogteffects` are reported as untranslated, and
+  `estat <test>` after an estimation command runs `sp.estat`.
+- **Synthetic-control weights that are not unique are now the minimum-norm
+  ones, and a nested fit with its placebos takes seconds.** A treated unit
+  inside the donors' hull, or a predictor the V search has weighted to
+  zero, is fitted equally well by a whole face of weight vectors. The
+  weights returned were whatever SLSQP reached from a uniform start: a
+  choice that depends on the solver, and one that took 20 to 350 seconds
+  per placebo unit. Every such minimiser has the same fitted values, so the
+  rule is now a property of the problem: among them, the weights with the
+  smallest norm (the most evenly spread). It is computed exactly in two
+  steps, the optimal fit and then the least-norm weights that reproduce
+  it, and it does not depend on the starting point or the order of the
+  donors. On Proposition 99 a nested fit with 38 placebo fits, which had
+  not finished after ten minutes, takes 41 seconds, with no fallback to
+  SLSQP in 120,000 inner problems. Where the true weights are unique but the fit is exact
+  (Track A `52_scm_unique`) the error falls from 1.5e-7 to 2e-14. Fits
+  whose solution was already unique do not change, which includes Track A
+  `07_scm` and the README's Proposition 99 fit. Placebo fits of units
+  inside the hull do change, and with them a placebo p-value can.
+- **A nested synthetic-control fit took a minute.** With fewer predictors
+  than donors every evaluation of the outer search solved its inner
+  problem with SLSQP, a few thousand times. When the treated unit lies
+  outside the donors' hull that problem has one solution, which is now
+  found exactly by a small active-set method and returned with a
+  certificate of optimality and uniqueness. One fit on the Proposition 99
+  data goes from 55 seconds to 2. Where the certificate fails (a treated
+  unit inside the hull, a predictor weighted to zero) SLSQP's choice is
+  kept, so those fits are as slow as before and their answers do not
+  move. Weights change by up to 2e-5, towards the exact minimiser. The
+  README's Proposition 99 fit goes from -19.760529 to -19.760541 (it
+  prints -19.76). Track A `07_scm`, `18_augsynth` and `52_scm_unique` move
+  by at most 4e-7.
+- **`sp.iv_diag` with several instruments** printed `nan` for the tF
+  critical value and interval. The report now says the tF adjustment is
+  defined for one instrument and points to the Anderson-Rubin interval.
+- **`sp.panel(robust=...)` with an unknown value** such as `'hc1'` or
+  `'cluster'` returned classical standard errors without a word. It raises.
+
+### Stata translation, checked against a textbook's own logs
+
+The replication files of Stock and Watson's *Introduction to Econometrics*
+(4th edition) ship the Stata logs that produced the book's tables. Replaying
+those 13 logs through `sp.stata` compares 1,300 printed numbers. The
+estimators agreed; the translation layer did not always ask them for the
+convention Stata uses, and it could not run a do-file that prepared its own
+data. Both are addressed here. `docs/dev/2026-10-02-stock-watson-4e-review.md`
+has the findings and what is still open.
+
+#### ⚠️ Correctness
+
+- **`sp.sumstats` ignored an unknown statistic.** `stats=['mean', 'p99']`
+  returned the mean and no `p99` column, without a word. An unknown name
+  now raises and lists the available ones.
+- **`sp.stata` / `sp.from_stata`: `probit`, `logit`, `poisson` and `nbreg`
+  with `vce(robust)` were run with HC1.** Stata's robust variance for a
+  maximum-likelihood command carries `N/(N-1)`; the translation asked for
+  `robust='hc1'`, which is `N/(N-K)`. Standard errors were too large by
+  `sqrt((N-1)/(N-K))`, 0.4% on the textbook's mortgage data with 21
+  regressors, and every Wald test after such a fit was off by the square.
+  The translation now emits `robust='robust'`. Calling `sp.probit` and the
+  others directly is unchanged.
+- **`ivreg2` and `ivregress` with `robust` and no `small` were run with
+  HC1.** Without `small` Stata applies no degrees-of-freedom factor; the
+  translation now emits `robust='hc0'`, which matches exactly. `ivreg2`'s
+  `small` option was also reported as untranslated; it is now read.
+- **A descriptive command between a fit and `test` replaced the fit.**
+  `regress ...; summarize x; test x` applied `test` to the summary table.
+  `summarize`, `correlate`, `pwcorr` and `ttest` now leave the last
+  estimation result in place, as r-class commands do in Stata.
+
+#### Added
+
+- **`sp.stata` runs the data steps of a do-file and applies `if` / `in`.**
+  A qualifier used to make the runner refuse the line. It is now applied
+  with Stata's rules for missing values: a missing value is larger than any
+  number, so `if x > 0` keeps the rows where `x` is missing, which a pandas
+  filter drops. `generate`, `replace`, `keep`, `drop`, `sort`, `mvdecode`,
+  `encode`, `preserve` and `restore` run on a private copy of the data;
+  `generate` stores single precision unless the line says `double`, as
+  Stata does, so regressions on generated variables reproduce Stata's
+  digits. `predict` gives fitted values and residuals after a linear fit.
+  `scalar` and `display` evaluate an expression that may use `_b[x]`,
+  `_se[x]`, `e(N)`, `e(r2)`, `e(r2_a)` and the `r()` results of
+  `summarize`, `test` and `ttest`, and named scalars are written into
+  `test` restrictions. Expressions go through a parser with a closed set of
+  operators and functions; nothing is passed to `eval`. What is outside the
+  set (`e(sample)`, string functions, `egen`, `use`) is refused with the
+  reason.
+- **Time-series operators in `sp.stata`.** After `tsset time` or
+  `xtset id time`, `L.x`, `L2.x`, `F.x`, `D.x`, `D2.x`, `LD.x` and lag
+  lists such as `L(1/4).x` are resolved against the time variable inside
+  each panel: a lag is missing where the earlier period is absent, as in
+  Stata, which a row shift does not reproduce on gapped or panel data.
+  `test` and `lincom` accept the operator spelling of a coefficient.
+- **`summarize, detail` and `tabstat` reproduce Stata.** `sp.sumstats`
+  gains `percentile_method='stata'` (Stata's rule for a percentile between
+  two order statistics; the default stays linear interpolation) and the
+  statistics `p1`, `p5`, `p95`, `p99`, `variance`, `skewness`, `kurtosis`,
+  `sum`, `range`, `semean`, `cv`, `iqr`. `summarize, detail` translates to
+  exactly what Stata prints except the four smallest and largest values,
+  and `tabstat` is translated. Checked on the five `summarize, detail`
+  blocks of the textbook's earnings data. `tin(d1, d2)` works in `if` after
+  `tsset`.
+- **Guide: Stock & Watson, 4th edition** (`docs/guides/stock_watson_4e.md`).
+  How to run the book's do-files with `sp.stata`, how to check the numbers
+  against its logs, and, chapter by chapter, what a paper written today
+  adds to the book's analysis and the call for it.
+- `sp.stata` stops at `exit`, as a do-file does. `sp.from_stata` no longer
+  suggests a pandas filter for an `if` qualifier without saying that pandas
+  and Stata treat missing values differently; it points to `sp.stata`.
+- **`scripts/stata_log_replay.py`**: replays a Stata log through `sp.stata`
+  and compares every printed number to the precision Stata printed it.
+  `tests/external_parity/test_stock_watson_4e_logs.py` runs it on the
+  textbook's logs when `STATSPAI_SW4E_DIR` points at them.
+- **`sp.unitroot`**: augmented Dickey-Fuller and DF-GLS tests for one
+  series, with a constant or a trend and a lag order that is fixed or chosen
+  by AIC / BIC. The ADF statistic, p-value, critical values and chosen lag
+  agree with `statsmodels.adfuller`, and the regression reproduces the RATS
+  output in the textbook's chapter 15. The DF-GLS statistic agrees with the
+  `arch` package to 1e-14. Its critical values depend on the sample size and
+  the lag order, from a response surface fitted to 200,000 simulated null
+  draws per grid point (`scripts/simulate_dfgls_critical_values.py`); the
+  asymptotic values reject too often in short samples.
+- **`sp.ardl`**: AR(p) and ADL(p, q) forecasting regressions, with the lag
+  order fixed or chosen by BIC / AIC on a common sample, the one-step
+  forecast and its interval, a Granger-causality F test (`.granger()`) and
+  pseudo out-of-sample forecasts with their RMSFE and bias (`.poos()`).
+  Coefficients agree with `statsmodels` `ARDL`. On the textbook's GDP-growth
+  application it reproduces the RATS output digit for digit: four
+  regressions with robust standard errors, their forecasts, the Granger
+  statistic, both BIC / AIC tables and the out-of-sample forecast errors
+  (`tests/external_parity/test_stock_watson_4e_ch15.py`).
+- **`sp.structural_break(method='sup-f', break_vars=, vce=)`**: a break in
+  a subset of the coefficients, with a heteroskedasticity-robust statistic.
+  This is the QLR test as applied to a forecasting regression, where the
+  lags of `y` are held fixed. Reproduces the textbook's QLR of 6.4746 at
+  1980:Q4. Under heteroskedasticity and no break the classical sup-F
+  rejected in more than 15% of simulated samples and the robust one in
+  under 10%. The defaults are unchanged.
+- **`sp.regress(robust='ewc')`**: the equal-weighted cosine estimator of
+  the long-run variance (Lazarus, Lewis, Stock and Watson 2018), with
+  `ewc_df` cosine terms (default `floor(0.4 * T ** (2/3))`). P-values and
+  intervals use the t distribution with that many degrees of freedom, and
+  `sp.test` uses the rescaled F of the paper's equation (14). It is what
+  the textbook's authors recommend in place of Newey-West with a short lag
+  length and normal critical values. With every cosine term it equals HC0
+  times `T / (T - 1)`, exactly. On an AR(1) design with a true null (T =
+  200, both autocorrelations 0.7) a 5% t test rejected 26% of the time with
+  HC1, 11% with Newey-West at the textbook's truncation and 7% with EWC.
+- **`sp.regress(robust='hac', hac_lags=, hac_small=)`**. The lag length of
+  the Newey-West estimator could not be set, and Stata's `newey` could only
+  be matched to 0.5% because it scales the covariance by `N/(N-K)`. With
+  `hac_small=True` the Stata golden of Track A module 51 is matched to
+  3e-16; the default still matches `sandwich::NeweyWest(adjust = FALSE)`.
+  The default lag rule is unchanged.
+- **`sp.ttest`**: one-sample, paired and two-sample t tests (Stata `ttest`,
+  R `t.test`), with pooled, Satterthwaite or Welch degrees of freedom and
+  both one-sided p-values. Checked against `scipy.stats` and Stata's output
+  for the textbook's class-size comparison.
+- **Stata commands now translated**: the pre-Stata-10 `ivreg` (small-sample
+  standard errors by construction), `ttest`, `correlate` (casewise),
+  `pwcorr` (pairwise), `newey` and `dfuller`. `tobit` carries `vce(robust)`
+  and `vce(cluster)`. `dfgls` is answered with the equivalent `sp.unitroot`
+  call and why its numbers differ.
+- **Command abbreviations**: `regr`, `summ`, `cor`, `prob`, `logi`, `poi`,
+  `tob`, `te` resolve to the full command, down to the minimal abbreviation
+  in Stata's syntax diagrams and no further.
+- `xtreg, fe` and `summarize, detail` now state in `semantics` what Stata
+  prints that the call does not return (`_cons`; Stata's percentile rule,
+  skewness, kurtosis).
+- `scripts/stata_corpus_scan.py` counts `ivreg`, `ttest`, `dfuller` and other
+  commands the translator does not know. They were left out of the
+  denominator, so a corpus that used them looked fully covered.
+
+### Agent surface
+
+Agent-surface hardening from the 2026-10-02 repository review
+(`docs/dev/2026-10-02-review-status.md` tracks every item). No estimator
+changes its numbers.
+
+### ⚠️ Correctness
+
+- **`sp.panel(vce=...)` silently ignored any value outside its extended
+  menu.** `vce='robust'`, `vce='cluster'` and `vce='nonsense'` all
+  returned the classical standard errors with no warning, on every panel
+  method. They now raise `MethodIncompatibility`, and the message names
+  the working spelling (`robust='robust'`, `cluster='<column>'`). The
+  supported values (`'CR2'`, `'CR3'`, `'jackknife'`, `'conley'`, `'wild'`)
+  and calls that omit `vce=` are unchanged. A result obtained with one of
+  the ignored values carried classical SEs: refit with `robust=` or
+  `cluster=`. See `MIGRATION.md`.
+
+### Fixed
+
+- **A tight MCP output budget could hide most of a result's risk flags.**
+  `violations`, `runtime_warnings`, `degradations` and `warnings` were cut
+  like any other list: under a 1,500-byte budget 100 violations came back
+  as one, and the only trace was a `truncated` entry the agent had to
+  decode. These lists are now cut last, after every table. When they are
+  cut the result carries `risk_details_complete: false` and a
+  `risk_summary` with `total` / `shown` / `omitted`, counts by severity
+  and by category per field. The configuration-level evidence block of
+  `result_card` is never cut.
+- **More than 20 distinct runtime warnings were dropped without a count.**
+  The server keeps the first 20; `risk_summary.runtime_warnings` now
+  reports how many were raised.
+- **`max_output_bytes` failed silently when it could not be met.** A result
+  whose never-cut fields alone exceed the budget (a vector `estimate`, a
+  long `replay`) was returned over budget with an empty ledger. Every
+  result that did not fit untouched now carries `output_budget` with
+  `status` (`truncated` or `unavoidable_overflow`), `max_bytes`,
+  `actual_bytes`, `scope` and, on overflow, `oversized_fields`. The ledger
+  is counted in the size, so `truncated` guarantees
+  `actual_bytes <= max_bytes`. The documentation now says the budget
+  covers `structuredContent` only.
+- **A second `tools/call` reusing an in-flight request id took over its
+  cancel handle.** It is refused with `-32600`.
+- **Agent cards that told an agent the wrong thing** (found by the card
+  audit). `sp.match`'s schema marked `treatment=` and `outcome=` as
+  required; the function accepts only `treat=` and `y=`, so a call built
+  from the schema failed. `sp.panel` advertised `method='cre'`,
+  `sp.sun_abraham` advertised `control_group='notyettreated'` (it takes
+  `'lastcohort'`), `sp.aipw` advertised `estimand='ATC'`: none is
+  accepted. `sp.feols` and `sp.match` named the wrong result class.
+- **Agent cards carried statements of their family that are false of the
+  variant.** Binary `sp.logit` / `sp.probit` listed the multinomial
+  model's IIA and the ordered models' proportional odds among their
+  assumptions. `sp.callaway_santanna`, `sp.sun_abraham`,
+  `sp.did_imputation` and `sp.etwfe` advised "use CS or SA" and carried
+  the failure mode "staggered timing with TWFE". `sp.rdrobust` described
+  the sharp design only and called the continuity framework local
+  randomization; it now states the fuzzy, kink and clustered conditions.
+  Point-treatment `sp.ipw` was described in the longitudinal g-methods'
+  terms. `sp.dml` promised a "√n CATE". Fourteen cards corrected through
+  a per-variant override table (`statspai._family_cards.VARIANT_OVERRIDES`)
+  after reading the thirty audited cards.
+- **Family cards copied member-specific assumptions to every member.**
+  All 30 family cards were read. 52 statements in 24 families that
+  name the members they are about ("Cox: ...", "Frailty models: ...",
+  "Romano-Wolf ...") are now scoped to those members (`STATEMENT_SCOPE`),
+  shortening 220 cards:
+  `sp.kaplan_meier` no longer lists the Cox model's proportional hazards,
+  `sp.bonferroni` no longer lists Romano-Wolf's bootstrap, `sp.icc` no
+  longer lists stochastic-frontier assumptions. `sp.interflex`, `sp.negd`
+  and `sp.icc` get assumptions of their own; utilities that have none
+  (`sp.W`, `sp.scdata`, exporters) now state none.
+- **Family cards copied member-specific failure modes to every member.**
+  The same reading for `failure_modes`: 28 of the 41 family failure modes
+  are about named members (`FAILURE_SCOPE`), and 142 cards carried one
+  that was not theirs. `sp.kaplan_meier` was told what to do when a
+  proportional-hazards test rejects, `sp.lincom` when a Hausman statistic
+  is negative, `sp.mice` when one subgroup of many is significant. The 55
+  methods this left with no failure mode get ones written for them
+  (`MEMBER_FAILURE_MODES`, 31 entries): competing events treated as
+  censoring for Kaplan-Meier, crossing curves for the log-rank test,
+  an imputation model that omits the outcome for `sp.mice`, a direct path
+  around the mediator for `sp.frontdoor`. The two bundled network
+  datasets and `sp.validation_scope` state none.
+- **`sp.match(method='llr')` raised `ZeroDivisionError` at the default
+  bandwidth.** In a bootstrap replicate whose local linear weights sum to
+  zero for some treated unit, the matched-outcome bookkeeping divided by
+  that sum and took the whole call down. The unit's matched outcome is now
+  left missing. Point estimates are unchanged.
+- **Tools reached through the registry returned no result card.** Only
+  the hand-curated MCP tools attached it, so the long tail (the forest
+  family among them) answered with no configuration-level evidence and no
+  diagnostic status.
+- **`sp.from_stata("areg ...")` did not say that the constant differs.**
+  Slopes and SEs equal `areg`'s; `Intercept` is the first group's level,
+  not `areg`'s `_cons`. The translation note now says so.
+- **Six seed spellings were invisible to the result card.** `sp.result_card`
+  reports `seed` / `reproducible` / `seed_source` by argument name and
+  knew only `seed` and `random_state`. `boot_seed` (`did_imputation`,
+  `gardner_did` and aliases), `bootstrap_seed`, `rng_seed`, `wild_seed`,
+  `halton_seed` and `rng` are now read, the two imputation-family results
+  record the bootstrap seed they used, and
+  `tests/test_seed_contract.py` fails on a new spelling.
+  `python scripts/seed_inventory.py` lists all 259 seeded functions and
+  their defaults (`None` 125, `42` 73, `0` 56, `12345` 7, `1234` 2); the
+  defaults are deliberately left as they are.
+- **Loading the data was outside the tool timeout.** `data_path` was read
+  before the supervised runner started, so a read that never returns (a
+  FIFO, a stalled network mount, a slow URL) held the worker forever and
+  every later call queued behind it. The load now runs under the same
+  timeout and cancel as the estimator and reports `stage: data_load`.
+- **A computation that outlived its timeout could still commit a handle.**
+  The result and data caches now refuse a `put` from a call that has
+  already timed out or been cancelled, so a late handle cannot evict live
+  ones.
+
+### Added
+
+- **Admission limits on the MCP stdio loop.** `STATSPAI_MCP_MAX_QUEUED_CALLS`
+  (default 32) and `STATSPAI_MCP_MAX_ORPHANED_CALLS` (default 4) answer a
+  call that cannot be admitted with an `isError` result of kind
+  `server_busy` instead of queueing without bound. A timed-out
+  computation cannot be killed, so before this each timeout left one more
+  estimator running beside the next call. `STATSPAI_MCP_MAX_REQUEST_BYTES`
+  (default 64 MiB) refuses an oversized request line unparsed.
+- **Killable workers: `STATSPAI_MCP_ISOLATION=process`.** Opt-in. A call
+  that touches no server-side state runs in a child process and is killed
+  on timeout or client cancel. Measured on a regression whose read blocks
+  forever: five consecutive timeouts leave no orphaned thread and no child
+  process, and the next call runs; the default thread runner reports an
+  orphan on the same call. Calls that use or request handles stay on the
+  thread runner. Each isolated call pays a fresh interpreter start.
+- **`STATSPAI_MCP_MAX_QUEUE_SECONDS`** (default 900): a call that waited
+  longer than this in the queue is answered `server_busy` when its turn
+  comes instead of being run.
+- **A tested client matrix** (`tests/test_mcp_client_matrix.py`): each
+  supported protocol revision, an unknown revision, a text-only client, a
+  client without sampling, a client that sends cursors, a server restart
+  with stale handles, and a client that skips `initialize`.
+- **Joint Wald tests are pinned against Stata by variance option**
+  (`tests/reference_parity/test_joint_wald_stata_parity.py`, 33 tests run
+  on Stata 18 MP). `sp.test` matches `test` / `testparm` in statistic,
+  both degrees of freedom and p-value after `sp.regress` (classical,
+  robust, HC2, HC3, cluster), `sp.ivreg` (Stata's `ivregress, small`
+  convention), `sp.panel` fixed effects, `sp.logit` and `sp.poisson`.
+  Cells of the evidence inventory with a joint-test reference go from 3
+  to 16. One convention is recorded as a disclosure rather than a match:
+  `sp.panel(cluster=)` with the default small-sample convention refers a
+  1.7% larger statistic to `F(q, N - K)`, giving p = 0.0017 where
+  `xtreg, fe vce(cluster)` gives 0.0040 on 60 clusters; `ssc='stata'`
+  reproduces Stata exactly.
+- **Reproduction bundles: `statspai://result/<id>/bundle`.** A cached
+  result can be exported as the data file and its SHA-256, the
+  `transform_data` steps in order, the `sp.<fn>(...)` call, the headline
+  numbers, and a script that re-runs all of it in a new process and
+  checks the numbers. Tested by running load, transform and fit in one
+  server and executing the exported script in a separate interpreter. The
+  script refuses a data file whose hash changed. Inline or remote data
+  gets no script, and the bundle says why.
+- **Agent card audit of the 30 most-used entry points**
+  (`scripts/agent_card_audit.py`, `docs/dev/agent_card_audit.md`). Each
+  card is checked against a real call: required arguments, result class,
+  all 289 schema enum values, recommended alternatives. See Fixed for
+  what it found.
+- **Stata translation holdout** (`tests/stata_translation_holdout/`): 39
+  commands written against Stata's documented grammar, with the numbers
+  Stata 18 MP gives for the 33 that run. Scored on five layers
+  (recognised, translated, executed, same sample, same numbers). First
+  run: 29 of 33 reproduce Stata, 4 are refused out loud (`[fweight=]`,
+  `noconstant`, `qreg`, `xtreg, re`), none is silently wrong, and all 6
+  commands that must be refused are. All four gaps are now closed and
+  all 33 reproduce Stata. `[fweight=]` and `xtreg, re` were translated the
+  same night by a separate line of work that had not seen the corpus, so
+  for those two the holdout was a blind test, and they pass: coefficients,
+  classical and clustered SEs, and the normal-based interval of
+  `xtreg, re` equal Stata's.
+- **`sp.from_stata` / `sp.stata` translate `qreg`.** `qreg y x
+  [, quantile(#)]` maps to `sp.qreg`, whose default variance is Stata's
+  (agreement to 1e-14 at three quantiles); a percentage `quantile(75)` and
+  the abbreviation `q()` are read. `qreg, vce()` is not translated and is
+  refused rather than dropped.
+- **Red-line scenarios** (`tests/agent_eval/test_red_line_scenarios.py`):
+  for each way an agent can produce a confidently wrong report (weak
+  instrument, few clusters, diagnostics not run, an unvalidated SE, a lost
+  handle, a truncated risk list, an untranslated Stata option) the real
+  MCP output must carry an unambiguous signal a reference policy can
+  read. No model is called.
+- **`docs/reproduction_manifest.json`**: per module and side, the status
+  of the last re-derivation, the reference version and platform, the
+  hashes of the bytes compared, whether CI re-derives it, and the measured
+  reason where a Stata side is missing.
+- **Evidence inventory additions**: a scope map for nonlinear `sp.etwfe`
+  (`family='poisson'` / `'logit'`); the Track B coverage, stress-design
+  and size/power results with Monte Carlo standard errors, failed
+  replications kept in the denominator; hashes of the option-fixture
+  inputs and of the translation holdout.
+  `scripts/evidence_track_manifest.py` reports, for all six evidence
+  tracks, which hash lock covers each file and whether anything reads it.
+- **Skill short path** (`references/quick-path.md`): route, describe, fit,
+  inspect, export for a single estimate, and the three points at which to
+  stop. Its code blocks are executed by the test suite. Calls to
+  functions that take `**kwargs` are now checked against the agent schema,
+  the routing questions (`sp.route`) or the wrapper signature
+  (`sp.power`), so all 275 calls in the skill are verified.
+- **`sp.result_card`: which expected diagnostics ran.** The `assumptions`
+  section gains `checks` and `checks_summary`: every diagnostic the
+  estimator family expects, with status `passed` / `failed` / `not_run` /
+  `not_applicable`, why the check exists, and the function that runs it.
+  An empty `violations()` no longer reads the same whether every check
+  passed or none ran. Read from `sp.audit`; nothing is re-estimated. A
+  result whose estimator cannot be identified gets
+  `checks_available: false` rather than a guessed checklist.
+- **`replay_completeness` on every MCP result that has a `replay`.**
+  `level` is `standalone` (a new process can re-run the string given the
+  file named in `needs`), `session_replayable` (it depends on a `data_id`
+  or `result_id` held by the server) or `call_only` (inline or remote
+  data, or an argument without a literal form).
+- **The packaged skill's code blocks are bound to real signatures.**
+  `statspai skill validate` parses every Python block in `SKILL.md` and
+  `references/` and checks each `sp.*(...)` call for unknown keywords and
+  excess positional arguments (275 calls; the 81 whose target takes
+  `**kwargs` are checked for positional count only). Before this a
+  resolvable name with a wrong argument passed the gate. The skill's
+  "verified" note now states this scope instead of claiming every
+  signature and attribute.
+
+- **`docs/evidence_inventory.md` / `.json`: the entry x configuration x
+  output evidence view, generated.** `scripts/build_evidence_inventory.py`
+  walks every cell of each `sp.validation_scope` grid and counts, per
+  output, the cells with reference evidence. It replaces the hand-kept
+  1.22.0 table as the current view and is drift-gated on push. The counts
+  say what a function tier cannot: `rdrobust` has reference evidence in
+  12 of 25,920 cells, `dml` in 4 of 9,120, and no estimator is covered on
+  its whole grid.
+- **Sun-Abraham joint covariance evidence is now in the scope map.** The
+  full event-study matrix was already pinned against `fixest::sunab`
+  (8.9e-11) but not registered. `sp.validation_scope` gains a
+  `share_variance` dimension for `sun_abraham`: `vcov` is `reference` with
+  `share_variance=False` and `not_covered` under the default, where no
+  reference pins the off-diagonal blocks. The coverage simulation is now
+  credited to the default setting only, which is what it ran.
+- **`did_imputation` standard errors under the Y(0)-model options are
+  compared with Stata.** The seven SEs were recorded in the option fixture
+  and asserted by no test; they agree to 1.3e-9 or better.
+- **`sp.validation_scope` covers `did_imputation` and `gardner_did`.** Both
+  results now record the configuration the map reads (`y0_fe`,
+  `y0_covariates`, `horizon_requested`; `covariates`). The joint
+  event-study covariance of each, already pinned against Stata
+  `did_imputation` and `did2s::did2s`, is registered. `gardner_did(vce=
+  'stage2')` reads as `estimate_only`; covariates, weights and bootstrap
+  SEs read as not covered.
+- **`sp.validation_scope` covers `event_study` and `etwfe`.** The TWFE
+  event study is covered where Track A module 85 ran it (one adoption
+  date, window `(-4, 4)`, unit clustering); a staggered panel or another
+  window reads as not covered. For `etwfe` the estimate and the
+  event-study covariance are `reference`, and the headline SE is a
+  `disclosure`: it sits 2e-6 from `etwfe::emfx` (forward-difference
+  Jacobian in the reference) and 6e-4 from Stata `jwdid` (K convention).
+  The default call, `panel=True` with not-yet-treated controls, had no
+  evidence row because module 17 runs `panel=False`; it is now attached
+  through a test asserting the two are bit-identical. Both results record
+  the configuration the map reads (`n_adoption_dates`, `covariates`,
+  `intensity`, `absorb`, `cluster_level`; `family`).
+
+### ⚠️ Correctness (reference fixtures, not estimators)
+
+- **The six option-level Stata fixtures were generated in single
+  precision.** Their do-files do not source Track A's `_common.do`, so
+  `import delimited` stored the decimal columns as float and Stata
+  estimated on data rounded in the 8th digit. The resulting gaps had been
+  explained as optimizer and absorption tolerance and absorbed by loose
+  test tolerances. All six were regenerated on Stata 18 MP with
+  `set type double` and `asdouble`. No StatsPAI number changes; what
+  changes is how close the references are:
+
+  | reference | before | after | test tolerance |
+  | --- | --- | --- | --- |
+  | `csdid` ATT(g,t) | 2e-5 rel | 4.9e-13 | abs 5e-7 -> rel 1e-9 |
+  | `eventstudyinteract` ATT / SE | 2e-5 / 3e-7 | 1.9e-10 / 2.0e-11 | abs 1e-6, rel 2e-3 -> rel 1e-9 |
+  | `did_imputation` ATT, `fe(t)` / `fe(.)` | 5e-7 | 5e-14 | abs 1e-6 -> rel 1e-6 |
+  | `did_imputation` ATT, unit effects absorbed | 2e-6 to 3.4e-6 | 3e-8 to 4e-7 | abs 1e-6 -> rel 1e-6 |
+  | `did_imputation` SE | 1.8e-7 | 1.3e-9 | none -> rel 1e-8 |
+  | `did_multiplegt_dyn`, `lprobust`, `did_had` (217 assertions) | within 1e-6 / 1e-7 | within 1e-9 | abs 1e-6 / 1e-7 -> abs 1e-9 |
+
+  One row does not reach 1e-6 and is recorded as a reference-precision
+  disclosure, not a match: `did_imputation, unitcontrols(year)`.
+  StatsPAI equals a dense exact least-squares fit to 7.5e-12; Stata sits
+  1.4e-6 from it, and its ATT moves by 6e-7 across `tol()` settings
+  without converging. Track A is not affected: `_common.do` has always
+  forced double precision there.
+
+### Changed
+
+- `CrossValidationResult.next_steps()` returns `{"action", "reason",
+  "priority", "category"}` dicts like every other result class; it was the
+  one class returning plain strings. See `MIGRATION.md`.
+- The option-level Stata fixtures are bound to their tests. Three of the
+  six were opened by no test (the numbers are literals in the test
+  source) and none is in the Track A hash lock. Every consumer now opens
+  its fixture, each fixture's SHA-256 is recorded in the evidence
+  inventory, and a fixture no test reads fails the build.
+- **The R parity workflow says what it does, and runs weekly.** Its
+  header claimed the R closed-form parity "refreshes on every push". It
+  runs on pushes that touch `tests/r_parity/**`, re-derives 17 of the 89 R
+  modules, installs current CRAN binaries rather than `renv.lock`, and
+  never imports `statspai`. The header and a new "What CI re-derives"
+  section of `tests/r_parity/R_ENVIRONMENT.md` now state this, with the
+  other 72 R modules and all 85 Stata modules named as frozen artefacts
+  re-derived locally. A Monday schedule was added so that an upstream
+  package release that moves a number surfaces without waiting for a
+  push. `tests/test_r_parity_ci_scope.py` keeps the document, the
+  workflow and the artefacts on disk in step.
+- CI fast gate runs the whole agent chain: a full analysis over a real
+  stdio subprocess (route, load, transform, fit under two covariance
+  options, audit, follow-up, resource reads, tight budget, stale handle),
+  the hardening and handle suites, the metadata ratchet, validation scope
+  and the packaged skill. The packaged skill's smoke fits are now run by
+  pytest; previously only the archived JOSS-era copy had its full gate
+  wired in, behind the `slow` marker.
+- MCP subprocess tests start the server with `posix_spawn`. On macOS a
+  `fork` taken after an estimator ran in the same pytest process
+  segfaulted in the child before `exec`.
+
+## [1.35.0] — 2026-10-02
+
+A correctness release. Estimators that had no reference or known-truth
+evidence were run against simulated designs with a planted answer, and
+the ones that missed it were fixed: 33 functions change their numbers,
+listed in `MIGRATION.md` under `oct2026-known-truth-fixes`. No
+Track A module moves (89 reproduce, 0 drift). Estimator callables with
+evidence go from 572 of 822 to 735 of 736, the denominator now excluding
+84 plots, datasets and exporters that cannot carry a grade.
+
+Defaults that change: `sp.deepiv` uses the unbiased paired-sample loss,
+`sp.event_study` drops event times with no treated observation,
+`sp.did_few_treated` reports the exact inversion interval,
+`sp.llm_annotator_correct` reports the delta-method standard error, and
+`sp.rd_compare` no longer includes the local-randomisation row.
+
+### ⚠️ Correctness
+
+- **`sp.sensitivity_rr` made no allowance for a linear pre-trend.** The
+  interval is the ATT plus or minus the bias implied by extrapolating the
+  fitted pre-trend, plus `Mbar` of slack. The extrapolation was
+  multiplied by the first post-period's relative time measured from zero,
+  and relative time 0 was left out of the treated periods. Coefficients
+  are measured against the reference period, so a drift of `b` per period
+  biases the coefficient at relative time `k` by `b (k - ref)`. With a
+  drift of 0.2 and four treated periods the average ATT is off by 0.5 and
+  the `Mbar = 0` interval covered the truth in 2% of replications. The
+  bias term is now `|b|` times the mean distance of the treated periods
+  from the reference period, `Mbar` scales by the same distance, and the
+  standard error of the fitted slope is carried into the width. Coverage
+  is 100% in the same design, with or without a trend: the interval is
+  an upper bound. Intervals are wider than before; `breakdown_mbar`
+  moves accordingly.
+- **`sp.iv_compare` reported `first_stage_F` as NaN in every row.** The
+  lookup used a diagnostics key without the endogenous regressor's name.
+  The column now carries the first-stage F of each fit.
+- **`sp.llm_annotator_correct` used the wrong attenuation factor for a
+  binary label.** It divided the naive coefficient by `1 - p_01 - p_10`.
+  That is the attenuation for a misclassified outcome. For a
+  misclassified regressor the factor is the gap in predictive values,
+  `P(T=1 | T_obs=1) - P(T=1 | T_obs=0)`, which equals
+  `(1 - p_01 - p_10) Var(T) / Var(T_obs)`. The two agree only for a
+  balanced label with symmetric errors. At a prevalence of 0.2 with 10%
+  errors each way a true effect of 1.0 came back as 0.835 (12% coverage);
+  with asymmetric errors, 1.07 to 1.09. All four tested configurations
+  now average 1.00. The multi-class and continuous paths were already
+  built on the right quantity and are unchanged in their estimates.
+- **`sp.llm_annotator_correct` standard errors ignored the validation
+  sample.** The reported `se` was the first-order one, which treats the
+  estimated error rates as known. It is now the delta-method SE (the
+  first-order SE times `model_info['se_inflation_factor']`), for all
+  three paths: 0.077 against an across-seed SD of 0.074, where the
+  first-order SE is 0.059. The first-order numbers stay in
+  `model_info['first_order_se']` / `['first_order_ci']`, and
+  `bootstrap=True` still replaces both.
+- **`sp.discos_test(test='ks')` was not a test.** It ran a two-sample
+  Kolmogorov-Smirnov test on the points of the two quantile functions as
+  if they were observations. Their number is the grid size, whatever the
+  data, and neighbours are almost perfectly dependent: a true null was
+  rejected in 57% of replications at the 5% level, and one treated unit
+  could report `p = 2e-59`. The statistic is now the largest absolute gap
+  between the quantile functions, ranked among the placebo units' (3.3%
+  rejection under the null, 60% power at a 0.8 SD shift with 29
+  placebos). Without placebo fits `'ks'`, `'cvm'` and the dominance test
+  return a NaN p-value instead of one from a chi-squared or KS
+  approximation that treated grid nodes as independent.
+- **`sp.vcnet` and `sp.scigan` stretched the dose-response curve on a
+  user-supplied grid.** The spline basis for the evaluation grid was
+  built on the grid's own range, not on the range of the observed doses
+  the coefficients were fitted on. The first grid point therefore
+  returned the curve at the smallest observed dose and the last at the
+  largest: with doses on `[0, 1]` and `t_grid=[0.2, 0.5, 0.8]` the result
+  was 1.01 and 1.99 at the ends, the truth at 0 and 1, where the truth at
+  0.2 and 0.8 is 1.36 and 1.96. The default grid, which spans the observed
+  range, was not affected. The grid is now evaluated on the fitted basis
+  (1.354, 1.752, 1.963 over 60 seeds). Grid points outside the observed
+  range report NaN with a warning instead of a silent zero basis row.
+- **`sp.vcnet` standard errors left out the average over covariates.**
+  The bootstrap refitted the coefficients and evaluated them at the
+  full-sample covariate mean. Each draw now averages over its own rows:
+  at mid-range the SE goes from 0.012 to 0.016 against an across-seed SD
+  of 0.016, and coverage from 78% to 93%. Failed bootstrap fits are
+  counted and reported instead of being filled with the point estimate.
+- **`sp.scigan` applied `propensity_weights` by drawing a weighted
+  resample of the rows.** Unit weights therefore returned a noisier
+  `sp.vcnet`, different for each `random_state`. The weights now enter the
+  ridge fit directly: unit weights reproduce `sp.vcnet` exactly, and
+  integer weights equal row duplication to 1e-13.
+- **`sp.deepiv`'s default loss was attenuated toward zero.** The default
+  `n_gradient_samples=0` minimised the mean over first-stage draws of
+  `(y - h(t, x))^2`, an upper bound on the DeepIV loss whose solution is
+  the regression of `y` on a draw from the first stage. With a linear
+  response that converges to the true slope times the share of treatment
+  variance the instruments explain. On `y = d + 0.5 x + u` with a share
+  of 0.56 it returned 0.50 to 0.71 per unit of `d`, with a reported SE of
+  0.003, and raising `n_samples` changed nothing. The default is now
+  `n_gradient_samples=1`, the unbiased paired-sample loss of the original
+  paper: 0.90 to 1.14 over eight seeds, mean 1.04. `n_gradient_samples=0`
+  reproduces the old numbers and warns. The reported `se` holds both
+  networks fixed and is now flagged with
+  `model_info['se_valid_for_ate'] = False`.
+- **`sp.conformal_ite_multidp` intervals covered a potential outcome,
+  not the individual effect.** The half-width at a stage was one quantile
+  of the pooled single-outcome residuals. An individual effect is a
+  difference of two potential outcomes, and with independent noise the
+  stage intervals covered 83% where the Bonferroni split promises 95%.
+  The half-width is now the sum of two arm-specific split-conformal
+  quantiles, each at `1 - alpha_k / 2`, which holds for any dependence
+  between the potential outcomes (99.8% with independent noise, about
+  97.5% in the worst case). Intervals are wider by roughly a factor of
+  2.3. A calibration set too small for the requested level now warns
+  instead of silently using the largest residual, and an empty arm
+  raises.
+- **`sp.dgp_rd(fuzzy=True)` did not generate a fuzzy RD.** Treatment was
+  drawn from a logistic curve that is smooth through the cutoff, so there
+  was no jump in the probability of treatment and nothing for a fuzzy
+  estimator to identify: over 60 seeds `sp.rdrobust(fuzzy=)` had a median
+  of 0.34 for a declared 0.3 and no finite mean. The probability now jumps
+  by 0.6 at the cutoff (recorded in `attrs['first_stage_jump']`) and the
+  same estimator averages 0.301. `cutoff=` now centres the running
+  variable (it used to stay on `(-1, 1)`, so `cutoff=5` produced no
+  treated units) and `bandwidth_relevant=`, which was ignored, sets its
+  spread. The default sharp design is unchanged draw for draw.
+- **`sp.dgp_rdit` declared an effect of 2.0 and generated 2.86.** The
+  AR(1) recursion ran on the outcome, so the level shift fed back into
+  itself and settled at `effect / (1 - 0.3)`. The recursion now runs on
+  the errors only and the shift is `effect` at every horizon. Data from
+  this simulator change for every seed.
+- **`sp.kernel_iv` returned a function that was not the structural
+  function.** On `y = sin(d) + u` with `d` correlated with `u`, the
+  estimate sat 0.25 (RMSE over the grid) from `sin(d)`, about where the
+  plain regression of `y` on `d` sits, and the band excluded the truth.
+  The estimator is now a control-function kernel IV: a local-linear first
+  stage, a bivariate local-linear surface in `(d, v)`, and increments of
+  that surface averaged over the residuals with support at both grid
+  points. RMSE on the same designs is 0.05 to 0.06 at `n = 3000` and the
+  uniform band (multiplier bootstrap) covered in every replication. The
+  signature and the result fields are unchanged. The band conditions on
+  the first stage and says so in the docstring.
+- **`sp.bcf_longitudinal` overstated the effect by about a quarter.** With
+  treatment assigned by a coin flip each period and a constant effect of
+  6.0 it returned 7.44, 7.77 and 7.61 on three seeds; a difference in
+  means gives 6.0. Two things combined. The propensity score was fitted
+  and predicted on the same rows, so it was higher for treated rows than
+  for controls. And the residual that feeds the unit effects subtracted
+  `tau * D` from a mean that already contained `e * tau`, which left
+  `-e * tau` in it. The unit effects then carried each unit's treatment
+  share and the second pass moved the arms apart. The propensity score is
+  now out-of-fold and the residual is `Y - mu - tau * (D - e)`. Same three
+  seeds: 5.995, 5.996, 5.993.
+- **`sp.bcf_longitudinal` averaged a zero for periods with no treatment
+  variation.** A period where everyone (or no one) is treated has no
+  identified effect. It was reported as 0.0 and entered the average, and
+  its raw outcome level went into the unit effects. Such periods now
+  report NaN, are left out of the average, and raise an
+  `AssumptionWarning`; a panel with no identified period raises
+  `ValueError`. The per-period seed no longer depends on `hash(time)`,
+  which varied between interpreter runs for string time labels.
+- **`sp.bcf_ordinal` reported standard errors about thirty times too
+  small.** `ate_se` was the root of the mean CATE variance divided by
+  `n`, about 0.001, against an across-seed standard deviation of 0.03 to
+  0.05, so `ate_ci` almost never covered. It is now the root of the summed
+  variances of the adjacent-level effects up to each level: 0.024, 0.034
+  and 0.042 on the same design. The point estimates are unchanged.
+- **`sp.event_study` averaged a non-existent event time into the ATT.**
+  `window=(-4, 4)` on data whose exposure reaches +3 left an all-zero
+  dummy in the regression. It came back as coefficient 0 with SE 0, was
+  listed in the table, and entered the headline average as an estimated
+  zero: 1.56 for a true 2.0. Event times with no treated observation are
+  now left out of the table and of the average, with a warning, and
+  listed in `model_info['empty_event_times']`. A window that fits the data
+  is unchanged.
+- **`sp.event_study` treated some never-treated codings as treated.** The
+  documented contract is "NaN or a value outside the data range". A value
+  far below the range happened to work; within `max_lag` of the first
+  period it did not, so the common `0` for never-treated with periods
+  numbered from 1 spread the control group over the post-treatment
+  dummies. Non-finite values and values before the first period are now
+  never-treated outright. A value equal to the first period is taken as
+  treated throughout, as before, with an `AssumptionWarning` that says to
+  recode it to NaN if it is a never-treated code: with periods numbered
+  from 0 and `0` for the controls the estimate is 0.20 for a true 2.0. The
+  docstring examples of `sp.pretrends_test`, `sp.pretrends_power`,
+  `sp.pretrends_slope_for_power` and `sp.sensitivity_rr` were written that
+  way and are corrected.
+- **`sp.power_did`, `sp.power_rd` and `sp.power_iv` did not match the
+  power of the tests they describe.** Checked against simulated rejection
+  rates:
+  - `power_iv` multiplied OLS power by `F / (F + 1)`, which hardly moves
+    for any F above 10. 400 observations, an effect of 0.2 and a
+    first-stage F of 37 returned 0.95; simulation gives 0.21. It now uses
+    the 2SLS variance `sigma^2 / (n R2_z)` with `R2_z = F / (F + n)`.
+  - `power_rd` used the variance of a difference between two local means.
+    2,000 observations and an effect of 0.25 returned 0.93; the
+    local-linear test has 0.74. It now uses the boundary local-linear
+    variance `2 C_K sigma^2 / (n h f)` (`C_K` = 4.8 for the triangular
+    kernel).
+  - `power_did` applied a cluster design effect `1 + (T - 1) rho` to a
+    within-unit change and omitted the `1 / (p (1 - p))` of a two-group
+    comparison. 200 units, ten periods and `rho = 0.5` returned 0.48;
+    simulation with AR(1) errors gives 0.38. It now uses the exact
+    variance of the DiD estimator under AR(1) errors, and takes
+    `prop_treat` (default 0.5).
+  `sp.power("did" | "rd" | "iv", ...)` and `sp.mde` follow. The tests for
+  these functions restated the old formulas, so they could not fail.
+- **`sp.identify` printed the wrong estimand for queries that need the
+  full recursion.** The identifiability verdict was right; the formula was
+  not, because the ID algorithm's line 7 replaces the distribution and the
+  implementation carried only the graph. The front-door graph returned
+  `sum_{M} [P(Y) * P(M | X)]`, which is `P(Y)`. It now returns
+  `sum_{M} [P(M | X) * sum_{X'} [P(X') * P(Y | M, X')]]`. Seven graphs are
+  checked numerically against the interventional distribution of random
+  structural models (gap 2e-16), and the printed formula no longer depends
+  on the hash seed.
+- **`sp.rd_forest` and `sp.rd_boost` did not adjust for the running
+  variable.** The learners see covariates only and were fitted to the raw
+  outcome inside the bandwidth, so the result was the difference of
+  within-window means: off by the slope of the regression function times
+  the distance from the cutoff, with a standard error that ignored it. On
+  `y = D + 0.5 x + ...` they returned 1.29 with a reported SE near 0.01
+  and covered the truth 0% of the time. Now a side-specific linear trend
+  in the running variable is removed first, and the headline `estimate` /
+  `se` / `ci` are the average effect at the cutoff from a local-linear RD
+  (`sp.rdrobust`, robust bias-corrected) on the outcome residualised on
+  the covariates with the same learner, cross-fitted, as in `sp.rd_flex`.
+  Estimates average 1.03 and the interval covers. `detail` still holds the
+  CATE by covariate profile; its mean is `model_info['mean_cate']`, and
+  `estimand` reads `'ATE at cutoff'`.
+- **`sp.rd_distribution` returned a change in probability under the name
+  `qte`.** The field held the jump in `P(Y <= y_q)` at the pooled
+  quantiles, which is negative where the treatment raises the outcome: a
+  design that shifts the outcome up by 2.0 reported -0.48 at the median.
+  `qte` is now the quantile treatment effect at the cutoff, from inverting
+  the local-linear CDFs on the two sides, with bootstrap `se`, `ci_lower`
+  and `ci_upper` (coverage 92% to 97% across quantiles in simulation).
+  The old numbers are unchanged under `cdf_effect` / `cdf_se`, with the
+  thresholds in `y_at_quantile`. New arguments `n_boot=200`, `seed=0`.
+- **`sp.did_few_treated`'s interval did not match its own p-value and
+  under-covered.** The interval was the estimate minus the interpolated
+  `alpha/2` and `1 - alpha/2` quantiles of the placebo draws, which with
+  29 control groups sit between the two most extreme draws. It covered
+  88% at a nominal 95% (91% with 60 groups), and a null could lie outside
+  it while the reported p-value was above `alpha`. The interval is now the
+  exact inversion of the reported test: the estimate plus or minus the
+  `m`-th largest `|W|`, `m = floor(alpha (n_draws + 1))`. Coverage is
+  96.6% and 94.4% in the same simulations. With fewer than `1/alpha - 1`
+  draws the interval is unbounded and says so. The old interval is kept
+  in `model_info['quantile_interval']`; the estimate and the p-value are
+  unchanged.
+- **Clustered CER bandwidths were too narrow in `sp.rdbwselect` and
+  `sp.rdrobust`.** The coverage-error-rate bandwidths (`cerrd`, `certwo`,
+  `cersum`, `cercomb1`, `cercomb2`) shrink the MSE-optimal bandwidth by
+  `m ** (-p / ((3 + p)(3 + 2p)))`. With `cluster=`, rdrobust takes `m` to
+  be the number of clusters, counted on each side of the cutoff and added;
+  StatsPAI used the number of observations. On 1,200 observations in 60
+  clusters `h_cerrd` was 0.2054 where rdrobust 4.0.0 (R) and Stata 18 both
+  give 0.2305. Bandwidths, the bias-corrected estimate and the robust SE
+  now match R to 1e-8
+  (`tests/reference_parity/test_rd_cluster_cer_parity.py`). Unclustered
+  fits and every MSE bandwidth are unchanged, and all 89 Track A results
+  re-derive.
+- **Six estimators did not recover a known truth.** None had numerical
+  evidence attached. Each was run on a simulated design with a planted
+  answer, missed it, and the cause was traced to the code. The anchors are
+  in `tests/reference_parity/test_oct2026_correctness_fixes.py`.
+  - **`sp.balke_pearl` reported bounds that are not the Balke-Pearl
+    bounds.** The lower and upper bound each took the extremum of five
+    expressions, three of which are not among the eight the sharp bounds
+    need. On 300 random valid IV models the interval differed from the
+    sharp one in 260 and excluded the true ATE in 16. The bounds now equal
+    the optimum of the response-type linear program to machine precision. The
+    `lower_monotone` / `upper_monotone` fields were already correct.
+  - **`sp.rd_multi_score` / `sp.multi_score_rd` coded a unit as treated
+    when any score crossed its cutoff**, where the documented rule is all
+    of them (`max` for `min`). A design with a 0.8 jump returned 0.14;
+    it now returns 0.80.
+  - **`sp.design_robust_event_study` used already-treated rows as
+    comparisons.** Treated observations later than `lags` had no dummy and
+    fell into the omitted category. With a constant effect of 2.0 and
+    exposure up to four periods, `lags=2` returned 1.21 and a lead of
+    -0.45. They now get one unreported dummy. The count and pooled
+    coefficient are in `model_info['diagnostics']`.
+  - **`sp.cluster_staggered_rollout` compared each cohort with every
+    other cluster**, including cohorts that switched on between the
+    reference period and the event time. The never-treated clusters were
+    computed and not used. A constant effect of 1.5 came out at 0.8 to 0.9
+    at the later event times and 1.22 overall; it is now 1.51 with 95%
+    coverage. Each event time carries its own bootstrap SE, where every
+    row used to repeat the SE of the post-period average.
+  - **`sp.rd_extrapolate` understated the SE of the averaged effect by
+    about `sqrt(n_eval)`.** The evaluation points are estimated from one
+    sample and move together, and their variances were averaged as if
+    independent. Coverage of the 95% interval was 40%; it is 92%. The
+    point estimate and the per-point SEs are unchanged.
+  - **`sp.kitagawa_test` could not reject.** Bootstrap replicates were
+    drawn from the sample with its instrument labels, so their
+    distribution was centred on the observed statistic and the p-value sat
+    near 0.5. Replicates are now drawn from the pooled sample, the
+    least-favourable null. Power against a gross exclusion violation went
+    from 0 of 40 to about 70%, with no false rejections of a valid
+    instrument in 60 samples. The p-value is `(1 + #{T* >= T}) / (B + 1)`.
+- **`sp.from_stata` dropped abbreviated options without a trace.** Handlers
+  read options by full name, so the abbreviations in Stata's own syntax
+  diagrams translated to a different model with `ok=True` and empty notes:
+  `reg y x, r` and `vce(r)` lost the robust SEs, `cl(id)` and `vce(cl id)`
+  the clustering, and `reghdfe y x, a(id year)` (also `ivreghdfe`,
+  `ppmlhdfe`) every fixed effect. `nocons` and any option a handler did
+  not know (`keepsingletons`, `small`) vanished the same way, and
+  `rdrobust` carried over only `c()`, `fuzzy()` and a spelled-out
+  `kernel()`. Abbreviations are now expanded before the handler runs, and
+  every option is carried into the call, listed in the new
+  `untranslated_options` (with a note), or listed in
+  `ignored_display_options` when it only changes what Stata prints
+  (`noheader`, `or`, `irr`, `beta`). `rdrobust` maps `p q deriv h b rho
+  kernel bwselect covs vce masspoints weights level`.
+- **Macros were pasted into the call.** `reg y x $controls` returned
+  `sp.regress('y ~ x + $controls')` with `ok=True`. A `$global` or
+  `` `local' `` in the varlist, `if` / `in` or an estimation option is now
+  refused.
+- **`by g:` was dropped.** `by g: reg y x` translated to the pooled
+  regression. Prefixes that change the estimate (`by`, `bysort`,
+  `bootstrap`, `jackknife`, `permute`, `svy`, `rolling`, `statsby`) are
+  refused; `quietly` / `capture` / `noisily` (with or without the colon),
+  `eststo [name]:` and `xi:` are peeled, where `qui reg y x` used to fail
+  as an unknown command.
+- **`xtreg` without `fe` was translated as the fixed-effects model.** It
+  is Stata's random-effects estimator and is now refused, as `re`, `be`
+  and `fd` are. `xtreg, fe vce(robust)` clusters on the panel id, as Stata
+  does; it used to translate with default SEs.
+- **`csdid` was translated with StatsPAI's defaults, not csdid's.** The
+  call now follows the table in `docs/guides/callaway_santanna.md`:
+  covariates in the varlist go to `x=` (they were dropped),
+  `method(ipw)` is `estimator='ipw_abadie'` (it was mapped to the
+  stabilised `'ipw'`, a different estimator), `base_period='varying'`
+  unless `long2`, and with `notyet` the cutoff is `'cohort'` unless
+  `asinr`. `method(drimp)` is refused. `sp.stata` on the `csdid ...
+  method(reg) long2` line of parity module 04 reproduces the Stata golden
+  file to 1e-9 (simple ATT, SE and event-study cells).
+- **`did_imputation, horizons(0/3)` lost the horizons**: the numlist
+  failed an `int()` and was swallowed, and `horizon(3)` was passed as an
+  integer where `sp.did_imputation` takes a list. Stata numlists (`0/3`,
+  `-4(2)4`, `0 1 2`) are parsed; `pretrends()`, `autosample`, `controls()`
+  and `cluster()` are carried over.
+- **The printed `python_code` disagreed with `arguments`** for
+  `xtabond` / `xtdpdsys` (`lags()` missing; `robust` omitted although
+  `sp.xtabond` defaults to `robust=True` and Stata does not) and for
+  `didregress, wboot` (`se_method` missing). Running the printed code
+  gave another model than the tool call.
+- **`sp.stata` ran a partial translation with a warning.**
+  `sp.stata("reg y x if z > 0", data=df)` fitted all rows, and an
+  untranslated option only warned. Both now raise `MethodIncompatibility`
+  with the call to run by hand. See MIGRATION.
+
+- **A factor interaction in an IV varlist produced a broken formula.**
+  `ivreghdfe y c.x1##c.x2 (d = z), absorb(id)` returned
+  `'y ~ x1 + + + x2 + + + x1:x2 | id | d ~ z'` with `ok=True`: the
+  translated term was split on its blanks again. Same for `ivregress` /
+  `ivreg2`.
+- **`psmatch2` without `logit` is a probit score in Stata**, a logit in
+  `sp.psmatch2`; the translation now lists `probit` in
+  `untranslated_options` instead of passing as exact. `ties` and `ate`
+  are carried over (they were dropped / described as unsupported).
+
+### Added
+
+- **`refit_bootstrap=` on `sp.tarnet`, `sp.cfrnet` and `sp.deepiv`.** The
+  default `se` of these estimators holds the trained network fixed and is
+  flagged `model_info['se_valid_for_ate'] = False`. With
+  `refit_bootstrap=B` the networks are retrained on `B` resamples, each
+  from its own initialisation, and `se`, `ci` and `pvalue` come from the
+  spread of the refits; the fixed-network number moves to
+  `model_info['se_plugin']`. The run takes `B + 1` times as long.
+  Over 40 replications at `n = 600` with 20 refits, the refit interval
+  covered the true ATE 95% of the time for `tarnet` (SE 0.068 against an
+  across-seed SD of 0.056) and 97.5% for `cfrnet`; the fixed-network
+  interval covered 57.5% and 47.5%. For `deepiv` (40 replications at
+  `n = 1500`, 20 refits) the refit SE averaged 0.30 against an
+  across-seed SD of 0.20: conservative by about 45%, every interval
+  covering. The fixed-network SE was 0.009 and covered 2.5% of the time.
+  The default is unchanged (`refit_bootstrap=0`).
+- **`sp.synthdid_placebo(kind='time')`** is R's
+  `synthdid::synthdid_placebo`: the estimator on the pre-treatment
+  periods with the treatment date moved earlier and the original fit's
+  regularisation. On the real Proposition 99 panel it gives -1.6674165
+  against -1.6674164 from `synthdid` 0.0.9 (and -11.00774 for
+  `method='did'`, the same in both). The default `kind='unit'` is the
+  in-space table the function always returned.
+- **Release gate (`scripts/release_gate.py`, pre-push hook `release-gate`).**
+  Three things reached PyPI in 1.33.0 / 1.34.0 and were found only when a
+  paper's replication archive was built from the tag, each costing a patch
+  release. They are now checked where a release is made. `--fix-census`
+  rewrites the registry census quoted in `docs/guides/stability.md` and
+  `docs/jss_source_audit_dossier.md` from the live registry, and the check
+  enforces it between the version bump and the tag (never on an ordinary
+  push, since other lines add functions all day). Patterns passed to `re`
+  and raw string literals must survive the JSS archive's ASCII
+  transliteration (`scripts/ascii_source.py`): write `\u2026`, not the
+  character. Text shipped in the wheel must not carry promotional wording
+  the archive verifier rejects.
+- **Track C timings are bound to the code they timed
+  (`scripts/trace_perf_path.py`, `tests/perf/results/_timed_path.json`).**
+  The record holds the hash of every source file that ran inside the timed
+  calls, the harness and the Rust backend, with the `__version__` line
+  masked. `--check` says whether the committed timings still describe the
+  tree and names the files if not. The 1.34.0 timings are valid for 1.34.1
+  and 1.34.2 (no timed-path file changed); a documentation-only release no
+  longer calls for a two-hour rerun on a quiet machine.
+
+- **`sp.overlap_weighted_did(id=)`.** With a unit identifier the
+  bootstrap resamples units and keeps a unit's two observations together,
+  so a unit effect differences out of the standard error as it does out
+  of the estimate. On a two-period panel with a unit effect as large as
+  the noise the SE is 0.119 against an across-seed SD of 0.110; the
+  row-level bootstrap gives 0.172. Without `id` nothing changes.
+- **Known-truth anchors for the Bayesian estimators.**
+  `tests/reference_parity/test_oct2026_fourth_pass.py` checks
+  `sp.bayes_did`, `sp.bayes_fuzzy_rd`, `sp.bayes_hte_iv`, `sp.bayes_its`
+  and both modes of `sp.bayes_mte` against planted parameters (skipped
+  without the `bayes` extra), and `sp.bayes_dml`, the proxy-variable
+  production-function estimators and `sp.did_calibrated_simulation`
+  without it.
+- **`sp.from_stata` / `sp.stata` translate `areg` and `rdbwselect`.**
+  `areg y x, absorb(g)` becomes `sp.regress('y ~ x + C(g)')`, the
+  dummy-variable regression, because `areg` counts the absorbed groups in
+  the degrees of freedom of every variance estimator and keeps singleton
+  groups, where `reghdfe` (and `sp.hdfe_ols`) does neither. `rdbwselect`
+  maps `c p q deriv kernel bwselect covs fuzzy masspoints all` and
+  `vce(cluster v)`; any other `vce()`, `weights()` and `scaleregul()` are
+  listed in `untranslated_options`. Both are pinned to Stata 18 output at
+  1e-7 across eight `areg` and four `rdbwselect` specifications
+  (`tests/test_stata_translation_areg_rdbwselect.py`).
+- **Known-truth evidence for 60 more estimators.** Three new files under
+  `tests/reference_parity/` hold 140 tests: closed-form identities checked
+  to 1e-9 or tighter, recoveries of a planted parameter within four
+  standard errors, and the six anchors above. Estimator callables with
+  numerical evidence go from 572 to 632 of 822 (`docs/parity.md`). All of
+  it is `analytical-only`; none is a comparison with R or Stata.
+- **`scripts/silent_except_audit.py`, a ratchet on silent broad `except`
+  handlers across the package** (pre-push hook `silent-except`,
+  `tests/test_silent_except_audit.py`). A handler counts when it catches
+  `Exception` or wider and neither re-raises, warns, logs, nor reads the
+  exception. The per-file baseline may only go down. It starts at 165
+  sites; wrappers around `attach_provenance`, which guards itself, are
+  exempt. The count before this release was 227.
+- **`sp.stata` reads a do-file snippet.** `///` continuations, `/* */` and
+  `//` comments and `#delimit ;` are resolved; `global` / `local` macros
+  whose value is written out are expanded (also when defined from other
+  macros); `xtset id year` supplies the panel id and time of a later
+  `xtreg, fe` / `xtabond`. A macro set by an expression or extended
+  function, an undefined macro, and `foreach` / `forvalues` / `program`
+  blocks are refused with the reason.
+- `scripts/stata_corpus_scan.py`: translation coverage of a folder of
+  do-files, with the commands and options behind the losses ranked by the
+  number of projects they appear in. No do-file ships with StatsPAI.
+- `sp.from_stata` payload keys `untranslated_options`,
+  `ignored_display_options` and `unapplied_sample`: a translation with the
+  first empty and the last `None` fits the same model.
+
+Found by running the estimation commands of twelve published replication
+packages through the translator, then checked on do-files that played no
+part in the fix (no exception, and no option without a trace). The fixes
+follow Stata's documented grammar and are tested on synthetic commands
+(`tests/test_stata_translation_grammar.py`), including two invariants:
+adding an option changes the translation or is reported, and
+`python_code` spells out the same call as `arguments`.
+
+### Changed
+
+- **The estimator denominator of the parity index no longer counts
+  functions that cannot have a reference value.** The registry files a
+  function under the module it lives in, so 84 plots, bundled datasets,
+  exporters, language-model helpers and catalogue listings in estimator
+  modules were counted as estimators with no evidence. They are now
+  counted with the infrastructure, by name and with the reason, in
+  `statspai._parity_taxonomy.NON_NUMERIC_CALLABLES`
+  (`tests/test_parity_taxonomy_non_numeric.py` holds the list to its
+  admission rule, and fails if a listed function acquires evidence). In
+  `docs/parity.md` and `sp.parity_summary()["denominators"]` the estimator
+  row goes from 822 to 738 callables. The cross-language count is
+  unchanged at 417, so its share reads 56.5% where it read 50.7%; a
+  function that computes anything of its own, such as `did_summary`,
+  `rd_compare` or `lisa_cluster_map`, stays an estimator.
+- **Measured limitations are now stated where they apply.** `sp.rdit`
+  warns below 100 effective observations (the Newey-West SE is biased
+  downward in short windows: nominal 95% intervals cover about 83% at 30
+  and 89% at 60). `sp.dynotears` warns when the series are far from unit
+  variance, since its L1 penalties are on the scale of the data.
+  `sp.q_learning` documents that a working model without the needed
+  history interaction biases the earlier-stage rule (`sp.a_learning` and
+  `sp.snmm` do not have the problem), and `sp.overlap_weighted_did` that
+  its SE treats the two periods as independent samples and is conservative
+  on a panel.
+- **Fallbacks inside estimators now warn.** Sixty-two handlers caught an
+  exception and substituted something else without a trace: a marginal
+  mean for a propensity score (`focal_cate`, `conformal_debiased_ml`,
+  `gnn_causal`, `ivdml`), NaN for a standard error or test statistic
+  (`spatial` ML, `auto_cate` BLP, Bayesian R-hat and ESS), a dropped
+  cohort, pair or placebo unit (`did_misclassified`,
+  `cohort_anchored_event_study`, `cluster_matched_pair`, `gsynth`, `sdid`,
+  `did_sc_bridge`), an uncalibrated score for a calibrated one
+  (`dr_calib_bridge`), a heuristic for an LLM proposal (`llm_dag_propose`
+  and the two LLM sensitivity helpers), or an untransformed confidence
+  interval beside a transformed coefficient (`regtable(apply_coef=)`).
+  Each now emits a `RuntimeWarning` naming the step, the error and the
+  substitute (`ConvergenceWarning` for the Bayesian diagnostics);
+  `sp.rdsummary` records failed side analyses in
+  `result['degradations']`. Numbers on a run where nothing fails are
+  unchanged: the full suite passes and every Track A Python result
+  re-derives to 1e-9.
+- **The repository's default README is now the Chinese edition.** `README.md`
+  holds the Chinese text (formerly `README_CN.md`) and the English text moved
+  to `README_EN.md`. The PyPI long description stays English
+  (`pyproject.toml` now reads `README_EN.md`). Both editions open with the
+  Stanford REAP affiliation and the published JOSS article
+  (<https://doi.org/10.21105/joss.10604>). No code changes.
+- **Bibliography: software citations and title case.** `paper.bib` gains
+  verified entries for R, Stata, the Python reference manual,
+  `linearmodels`, `pyfixest`, `differences`, eight CRAN packages cited at
+  the version the parity harness pins (`quantreg`, `clubSandwich`,
+  `WeightIt`, `ShiftShareSE`, `DIDmultiplegt`, `data.table`, `wooldridge`,
+  `renv`) and the Stata Journal articles for `rdmulti` and `ddml`.
+  Twenty-three article titles that were stored in sentence case are now in
+  title case, so `sp.bibtex()` and `.cite()` print them that way. The
+  maintainer remark on the CBPS entry moved from `note` to `annote`, since
+  `note` is printed in a reference list. Refs verified via Crossref,
+  DataCite, CRAN metadata, Zenodo, Open Library and the projects' own
+  citation files; each entry's `annote` records its sources.
+- **`sp.dml(model="plr")` with the default learners says what its coverage
+  evidence is.** The result carries `model_info["learner_note"]`, and
+  `summary()` prints it: the default gradient boosting covered 0.88 at a
+  nominal 0.95 on the one design tested. No estimate, standard error or
+  default changes, and no warning is raised. A fit with supplied learners,
+  and the other DML models, carry no note.
+
+### Fixed
+
+- **`sp.llm_dag_validate` read an edge list as an empty graph.** Passing
+  `[("a", "b"), ("b", "c")]` or a `{parent: [children]}` dict returned
+  "0 supported, 0 unsupported", which reads like a clean validation.
+  Both forms are now accepted and give the same answer as `sp.dag(...)`;
+  an object edges cannot be read from raises.
+- **`sp.rd_compare`'s default table had a row that always failed.** The
+  default methods included local randomisation, which needs a window
+  (`wl`, `wr`) and reported `status = error` without one. The default is
+  now `('rdrobust', 'honest')`. Request the third row with
+  `methods=[..., 'randinf']` and
+  `method_kwargs={'randinf': {'wl': ..., 'wr': ...}}`.
+- **`sp.synth_mde` returned a bare `inf`** when no effect size reached
+  the power target. It now warns with the reason. The usual one is the
+  placebo test's floor: with `J` placebo units the smallest p-value is
+  `1 / (J + 1)`, so with fewer than 19 donors the test cannot reject at
+  5% whatever the effect.
+- **Parity index.** `sp.dag_simulate` and `sp.rd_dashboard` are counted
+  as a dataset and a plot (`_parity_taxonomy.NON_NUMERIC_CALLABLES`), and
+  `tests/reference_parity/test_oct2026_fifth_pass.py` anchors the
+  remaining workflow, comparison-table, dispatcher and diagnostic
+  functions to the estimators they call. Estimator callables with
+  evidence: 735 of 736.
+- **`sp.notears` documents that edge directions are not identified.** The
+  data are standardised before fitting, so on linear Gaussian data the
+  orientation within a Markov equivalence class depends on the sample.
+  The adjacencies are recovered; the docstring now says to read the
+  output as a skeleton.
+- **`sp.california_prop99()` described simulated data as the real
+  panel.** The top-level loader generates its rows from a seeded design
+  laid out like the Proposition 99 data, and its docstring called it "the
+  canonical `synthdid` example dataset". Estimates on it do not reproduce
+  published ones: `sp.sdid` gives -17.9, against the well-known -15.60. The
+  numbers are unchanged, since reference fixtures are built on them; the
+  docstring now says the data are simulated and points to
+  `sp.datasets.california_prop99()` for the real panel, on which
+  `sp.sdid` agrees with R `synthdid` 0.0.9 to 1e-9 (-15.6038279). Every
+  simulated example loader (`california_prop99`, `california_tobacco`,
+  `basque_terrorism`, `german_reunification`, `cps_wage`,
+  `chilean_households`, `mincer_wage_panel`, `disparity_panel`) now sets
+  `df.attrs['simulated'] = True` and says so in its docstring.
+- **`sp.synthdid_placebo` claimed to replicate
+  `synthdid::synthdid_placebo`.** It returns one refit per control unit
+  (an in-space placebo table). The R function is an in-time placebo: one
+  estimate on the pre-treatment periods with the treatment date moved
+  earlier. The docstring now describes what the function does. The output
+  is unchanged.
+- `statspai.agent.remediation`: the DML orthogonality rule spelled its
+  not-equal sign as a literal character inside a pattern; it is now
+  `\u2260`, so the pattern is the same in the ASCII archive. Behaviour is
+  unchanged.
+
+- **Docstring examples of `sp.olley_pakes`, `sp.levinsohn_petrin` and
+  `sp.ackerberg_caves_frazer` drew the proxy with noise**, which breaks
+  the scalar-unobservable condition the estimators rest on. The proxy in
+  the examples is now an exact function of capital and productivity; on
+  that design the three estimators recover the elasticities (0.60 / 0.30
+  for OP and LP, 0.58 / 0.32 for ACF, against 0.6 / 0.3).
+- **51 curated registry entries advertised no example.**
+  `sp.describe_function(name)["example"]`, the agent cards and the MCP
+  tool descriptions were blank for hand-written specs that left the field
+  empty, although each function's docstring has an `Examples` block. The
+  registry now takes the first docstring statement that calls the
+  function (`sp.<name>(` or through a sub-namespace such as
+  `sp.epi.<name>(`), and never overwrites a curated example. Entries
+  without an example go from 58 to 9.
+- `ivreghdfe` without an `(endog = instruments)` block is `reghdfe`; it
+  was a parse error.
+- `reghdfe, keepsingletons` becomes `drop_singletons=False`.
+- `ivregress` / `ivreg2` with `[aw=w]` or `[pw=w]` was refused ("sp.ivreg
+  takes no weights= argument"): the signature check did not see that
+  `sp.ivreg` takes `weights=` through `**kwargs`. The translated call is
+  checked against the closed-form weighted IV estimate.
+- `level(#)` becomes `alpha=` where the sp function takes it.
+
+## [1.34.2] — 2026-10-01
+
+No estimator, default, or numerical output changes from 1.34.1. Two fixes
+found by building the JSS replication archive.
+
+### Fixed
+
+- **Schema enums were lost when the source was transliterated to ASCII.**
+  `statspai._schema_enrich._OPEN_SET_RE` held a literal ellipsis (U+2026).
+  The JSS archive rewrites non-ASCII source to ASCII
+  (`scripts/ascii_source.py`), which turned it into an unescaped `...`
+  that matches any three characters, so every documented choice list read
+  as an open set and `function_schema()` / `schemas/` regenerated from the
+  archive had no enums (e.g. `causal_survival_forest(target=)`). The
+  pattern now spells it `…`; behaviour in the package is unchanged
+  and `schemas/` is byte-identical.
+- **The packaged matching guide** (`docs/guides/choosing_matching_estimator.md`
+  and its copy under `statspai/agent/_guides/`) called DML "the state of
+  the art"; it now says what DML is designed for.
+
+## [1.34.1] — 2026-10-01
+
+Documentation-only release. No code, default, or numerical output changes
+from 1.34.0; the estimators are byte-identical.
+
+### Fixed
+
+- **`docs/guides/stability.md` and `docs/jss_source_audit_dossier.md` still
+  quoted the 1.32.0 registry census**, and `docs/index.md` cited the
+  software as version 1.30.1. 1.33.0 and 1.34.0 shipped them unchanged; the
+  1.34 registry has 1,274 registered functions and 416 / 161 / 694 / 3
+  certified / validated / api_stable / experimental symbols, with 577
+  certified-or-validated symbols backed by 578 registry-evidence source
+  files. The JSS replication archive is built from a tagged release and its
+  claim linter checks these figures, so the correction ships as a release
+  (as 1.30.1 did).
+- The Track C timings on `main` since 1.34.0 (`5e02ae0a`) were measured
+  on the 1.34.0 source and are carried unchanged.
+
+## [1.34.0] — 2026-09-30
+
+Closes the remaining items of the top-5 replication list (eight QJE / AER
+papers). Each item is pinned by a reference fixture from Stata 18 or R.
+
+### Added
+
+- **`sp.xtevent`: event study of a policy that is continuous or changes
+  several times per unit** (Stata `xtevent`, Freyaldenhoven et al.). Leads
+  and lags of the policy's first difference inside the window, endpoint
+  regressors for the tails, unit and period effects, `norm=`, `static=`,
+  `engine='areg'|'reghdfe'`, `absorb=`, and Stata's `diffavg` contrast.
+  Against Stata `xtevent` 3.1.0 on five specifications (default, clustered
+  asymmetric window, another normalisation with robust SEs, the `reghdfe`
+  engine, the static model): coefficients, SEs, N and `diffavg` to 1e-12
+  (`test_xtevent_Stata_parity.py`). `sp.event_study` covers binary adoption
+  dates only.
+- **`sp.rotemberg_summary`: the Goldsmith-Pinkham, Sorkin & Swift
+  Rotemberg-weight table** of a Bartik instrument: weights and just-identified
+  estimates per industry x period, industry aggregates, first-stage F,
+  negative / positive weight panels, correlations, the by-period split, the
+  top industries with the clustered Anderson-Rubin interval of their
+  `ch_weak`, and beta by weight sign. Against GPSS's own `bartik_weight` +
+  `ch_weak` code on a synthetic panel: every number to 1e-12
+  (`test_rotemberg_summary_Stata_parity.py`); on the ADH data it reproduces
+  every number of their published ADH table.
+- **Panel Conley in `sp.hdfe_ols`: `conley_time=`, `conley_unit=`,
+  `conley_lag=`** (and `conley_lag_cross=`, `conley_kernel=`,
+  `conley_time_kernel=`): Stata `acreg`'s spatial + time HAC on the
+  FE-absorbed design, in O(neighbour pairs) memory. Equal to `acreg ...,
+  pfe1(id) pfe2(t)` to 1e-12 on three specifications
+  (`test_hdfe_conley_panel_acreg_parity.py`). Spatial-only Conley on rows
+  that share coordinates now warns: its kernel treats a unit's own rows in
+  different periods as correlated.
+- **`sp.feols(backend='native')`** fits on StatsPAI's HDFE kernel and reports
+  as `feols`: same coefficients and SEs (within ~1e-9) for iid / hetero /
+  CRV1, 10-60x faster on millions of rows (2M rows, two effects: 1.9 s vs
+  110 s). A pyfixest fit of at least a million rows that the native kernel
+  can take warns with the suggestion.
+- **`sp.cdlz_bunching`: the minimum-wage bunching estimator's summaries**
+  (Cengiz, Dube, Lindner & Zipperer 2019). From a bin x event-year
+  regression it reports missing jobs below and excess jobs above the new
+  minimum, the percentage change in affected employment and wage, and the
+  two elasticities, with analytic delta-method SEs, plus the event-year
+  path and the bin profile. From the coefficients of the paper's Table 1
+  column 1 it reproduces every statistic and SE of that column
+  (`tests/external_parity/test_cdlz_bunching_table1.py`). `sp.bunching`
+  remains the Saez / Kleven kink and notch estimator.
+- **`sp.stacked_did(events=)`: repeated (non-absorbing) events.** A 0/1
+  event column replaces `first_treat`; every event is a sub-experiment over
+  the window, its controls are the units with no event inside that window,
+  and an event whose own unit has another event in the window is dropped
+  by default (`own_overlap=`). Equal to the same stack built independently
+  in Stata and fitted by `reghdfe`, unweighted and `[aw=]`, to 1e-12
+  (`test_stacked_did_events_Stata_parity.py`).
+- **`sp.regress(collinear='omit')` omits collinear regressors as Stata
+  does.** A rank-deficient design used to raise. The later member of each
+  collinear set is now dropped with a note and listed in
+  `model_info['omitted']`, scanning terms in the order the formula writes
+  them. With factor variables this is the set Stata's `regress` omits
+  (`x i.g d1` drops `d1`, `d1 i.g x` drops `1.g`, an event study with
+  `i.unit i.period` drops the last period dummies), with coefficients and
+  SEs to 1e-10. With plain variables only, `regress` pivots on the data
+  inside its solver; the kept set is then another normalisation of the
+  same model (same R-squared, root MSE and coefficients outside the set).
+  `collinear='raise'` keeps the old error (`test_regress_collinear_Stata_parity.py`).
+- **`sp.iv(small=False)`** gives Stata `ivregress`'s default large-sample
+  statistics: `N` divisor, HC0, no cluster factor, z / chi2. `small=True`
+  (the default, unchanged) is `ivregress ..., small`. 2SLS and LIML match
+  Stata to 1e-12 in all six combinations (`test_iv_small_Stata_parity.py`).
+- **`sp.did_imputation(autosample=True)`** drops treated observations whose
+  unit or period has no untreated observation, as Stata
+  `did_imputation, autosample`. The default still refuses (Stata rc 198).
+  Overall ATT and event study with pre-trends agree with Stata to 1e-7;
+  the remaining 1e-8 is Stata's iterative solver, since ours equals the
+  exact dummy-variable solution to 1e-12
+  (`test_did_imputation_autosample_Stata_parity.py`).
+- **Covariate-tightened Lee bounds: `sp.lee_bounds(covariates=[...])`.**
+  Each covariate cell is trimmed by its own share and the trimmed means are
+  averaged over the covariates of the always-observed (Lee 2009). With
+  `trimming='leebounds'` the bounds equal Stata `leebounds, tight()` to
+  1e-14 and its analytic variances to 1e-8, including that command's
+  between-cell divisor. The bootstrap covers every trimming
+  (`test_lee_bounds_tight_Stata_parity.py`). `covariates` used to be ignored
+  with a warning.
+- **`sp.feols("... i(rel, ref=[-1, -5]) ...")`** accepts several reference
+  levels (fixest `ref = c(-1, -5)`). Names, coefficients and clustered SEs
+  equal R fixest 0.14.0 to 1e-11 (`test_feols_multiref_R_parity.py`).
+- **`C()` terms in `sp.oprobit` / `sp.ologit` / `sp.mlogit` formulas.**
+  `oprobit("y ~ x + C(g)")` equals Stata `oprobit y x i.g` to 1e-13.
+- **`sp.bootstrap` of a coefficient vector.** A statistic returning a vector
+  or a fitted result (`lambda d: sp.regress("y ~ x", data=d)`) returns an
+  `EconometricResults` with bootstrap SEs, the bootstrap covariance, z
+  inference and normal-based intervals, as Stata `bootstrap _b: regress`.
+  Percentile intervals, bias and replicates are in `model_info`.
+  `idcluster=` gives each resampled cluster its own id (Stata
+  `idcluster()`). Failed replications are now counted and reported.
+- **`sp.sqreg(reps=)`** bootstraps all quantiles jointly (Stata `sqreg`),
+  so `sp.test(r, "q25:x = q75:x")` compares coefficients across quantiles.
+  Without `reps` the table is unchanged.
+- **Result accessors.** `r2_adj` on regression results (`sp.feols` now
+  records adjusted R-squared, equal to `sp.hdfe_ols`), `nobs` and a labelled
+  `cov_params()` on `sp.hdfe_ols` results, `delta_star` in
+  `sp.oster_bounds` (alias of `delta_for_zero`), and the full coefficient
+  table in `sp.qreg`'s `params` / `std_errors` / `vcov()` / `conf_int()`.
+
+### Changed
+
+- **`sp.oprobit` / `sp.ologit` / `sp.mlogit` fit by analytic Newton-Raphson.**
+  Closed-form scores and Hessians replace BFGS on numerical gradients plus
+  a complex-step Hessian. With 100 dummies `oprobit` took 260 s and now
+  takes 0.03 s; `mlogit` with 40 dummies went from 11 s to 0.1 s. Estimates
+  are unchanged (Track A 44 / 45 / 49 move by 1e-12). Against Stata 18 with
+  119 dummies and an unscaled regressor: coefficients 7e-12, clustered SEs
+  3e-10 (`test_oprobit_dummies_Stata_parity.py`).
+- **`sp.sun_abraham` never forms the dense interacted design.** Unit and
+  period effects are eliminated exactly (a Schur complement over periods),
+  so 100 cohorts on 180,000 rows take 0.9 s instead of 36 s and a fraction
+  of the memory. Results are unchanged to 2e-12, and exact rather than
+  iterative on unbalanced panels.
+- **`sp.qreg` solves the dual linear program.** Same vertex as before (to
+  1e-15, ties included), 5-8x faster; each SE refits at `tau +/- h`, so a
+  20,000-row, 10-regressor fit takes 1.4 s instead of 8.3 s.
+- **`statspai.rd.rdrobust` is the module again,** callable as the function,
+  so `import statspai.rd.rdrobust as m; m.rdplot` works. `sp.rdrobust` is
+  the plain function as before.
+- **One event-study location.** `sp.aggte(type='dynamic')` also publishes
+  its table as `model_info['event_study']`, like Sun-Abraham, stacked DiD
+  and BJS, and `sp.event_study_table` reads every one of them.
+
+### ⚠️ Correctness
+
+- **`sp.event_study_table` returned NaN estimates** for every estimator that
+  names the point estimate `att` (Sun-Abraham, stacked DiD, BJS,
+  Callaway-Sant'Anna), with no error. It now reads `estimate`, `att` or
+  `dy/dx` and refuses a table of NaNs.
+- **Cutpoint SEs of `sp.oprobit` / `sp.ologit` ignored `robust` /
+  `cluster`.** They came from the model-based block of the covariance. They
+  now use the requested VCE, as Stata does. Coefficient SEs were already
+  right.
+- **`sp.mlogit` IIA test.** The restricted model kept the dropped category
+  in the softmax as a zero-utility option, and its variance was BFGS's
+  `hess_inv` approximation. It is now `mlogit ... if y != j`, with Stata
+  `hausman`'s generalised inverse and df (rank). Chi-squared statistics
+  agree with Stata to 2e-5, and categories that were skipped as non-PSD are
+  now reported.
+- **Brant test standard errors** in `sp.oprobit` / `sp.ologit` use the exact
+  information of each binary logit instead of BFGS's `hess_inv`.
+
+## [1.33.0] — 2026-09-30
+
+### Added
+
+- **Intensity event studies: `sp.event_study(intensity=, absorb=)`.** The
+  event-time regressors become `intensity x 1[t - T0 = k]` (a common shock
+  with heterogeneous exposure; `treat_time` may now be a number, the common
+  date), `absorb=` adds fixed effects in `sp.hdfe_ols` syntax, and either
+  routes the fit through `sp.hdfe_ols`. The result carries the joint
+  covariance, so `sp.honest_did(result)` runs on it directly. On the
+  replication of Zheng, Huang and Zhu (2026, Figure 3) it equals the
+  hand-built `exposure x quarter` regression to 7e-9 (coefficients) / 6e-8
+  (SEs) (`test_event_study_intensity.py`). Without either argument the
+  historical unit + time path is unchanged.
+- **`sp.ri_test(absorb=)` reuses its fixed-effect sweep.** `stat='ols'`
+  followed by `stat='ols_t'` on the same design sweeps the `G` cluster
+  columns once, the sweep runs at `hdfe_ols`'s tolerance, and cluster
+  permutations skip the row-level expansion: 9,999 + 9,999 permutations on
+  1.5 million rows take 4.6 minutes instead of 37, with the same p-values.
+- **Equivalence gate for the two absorbed-IV paths**
+  (`test_hdfe_iv_paths_agree.py`): `sp.iv(absorb=)` and
+  `sp.hdfe_ols("y ~ x | fe | d ~ z")` must agree to 1e-8 in coefficients,
+  SEs, KP rk LM / Wald F and Hansen J, clustered, robust and iid, with and
+  without missing interaction components.
+
+- **`sp.jwdid(data, y, ivar=, tvar=, gvar=, x=, method=, never=, hettype=,
+  exovar=, cluster=, predict=)`.** Wooldridge ETWFE under Stata `jwdid`'s
+  option names: `sp.etwfe(fe='unit')` with `method='ppmlhdfe'` -> Poisson,
+  `never` -> `cgroup='nevertreated'`, `exovar` -> `controls`, `x` -> `xvar`,
+  and `predict='xb'` for the `estat simple, predict(xb)` headline (`None` is
+  `estat simple`, counts, with `response_se='margins'` by default so the SE
+  is `estat`'s too). `model_info['stata_equivalent']` spells out the
+  command. Against Stata `jwdid` v2.2 on the 13 hettype / never / covariate
+  specifications and three new `exovar()` specifications: link-scale ATT to
+  1e-9, SEs to 1e-7 (`test_jwdid_Stata_parity.py`).
+- **Stata factor terms in `sp.etwfe(controls=, xvar=)` / `sp.jwdid(exovar=,
+  x=)`.** `"i.year#i.nodecity"`, `"c.x#i.f"`, `"i.a##i.b"`, `"i.region"`
+  build their columns (`statspai.did._factor_terms`): a lone `i.v` omits
+  its base level, a `#` product keeps every cell and the estimator omits the
+  collinear ones, as Stata does -- `exovar(c.xc#i.xcat)` needs all three
+  slopes, and equals Stata to 2e-14 only with them. A term that is already a
+  column name is left alone. On the sjjj-2026 panel `exovar="i.year#i.nodecity"`
+  reproduces the appendix column (0.1488 / 0.0676) without the 20 hand-built
+  dummies.
+- **One result API.** `CausalResult` gains `.nobs` (alias of `.n_obs`),
+  `.vcov()` and `.conf_int(alpha=None)` (the reported `ci` at the fit-time
+  level); `EconometricResults` gains `.n_obs` (absent, as before, when no
+  sample size was recorded) and `.vcov()` -- the matrix behind the reported
+  SEs, raising rather than returning a diagonal when none is stored.
+- **`sp.version_info()` and the git revision in provenance.** Many commits
+  share one `__version__` (ten `src/` commits of the 1.32 line did), and an
+  editable install keeps stale pip metadata (1.11.4 / 1.16.1 reported for a
+  1.32.0 tree). `sp.version_info()` returns the version, the git revision of
+  the imported source (`+dirty` with uncommitted changes, `None` for a
+  wheel), the pip metadata and a warning when they disagree. Every
+  `Provenance` record, `format_provenance`, the table footer of
+  `_repro` and the replication-pack manifest carry `statspai_revision`.
+- **`sp.stacked_did(family='poisson', spec='pooled', absorb=,
+  control_group='notyettreated_rows')`.** Stacked DID as applied papers run
+  it: PPML through `sp.ppmlhdfe` (Stata `ppmlhdfe` rules), a single
+  treated x post coefficient, extra fixed effects on top of unit x event
+  and period x event, and later-treated units as controls only before
+  their own treatment. A hand-built Stata stack with `ppmlhdfe` (pooled,
+  with extra `id city#year` effects, and the event study with `lincom` of
+  the post coefficients) agrees to 1e-9
+  (`test_stacked_ppml_Stata_parity.py`); one call reproduces the replicated
+  paper's stacked estimates (0.321 / z 4.223 / N 501,400; 0.285 / 3.792).
+- **Callaway-Sant'Anna analytic SEs honour `clustervars`**, and on
+  repeated cross-sections (`panel=False`) the cluster may vary within
+  unit (e.g. city x year, as `csdid ..., cluster(cy)` without `ivar()`).
+  The influence functions are summed within cluster, csdid's analytic
+  variance; `sp.aggte`'s analytic path uses the fit's clusters too (it
+  ignored them). `sp.aggte(agg_weights='csdid')` on repeated
+  cross-sections now carries the influence of csdid's estimated
+  treated-count cell weights. Every ATT(g,t), group and simple aggregate
+  and SE equals Stata `csdid` (v1) to 1e-9, on a panel with a
+  time-invariant cluster and on repeated cross-sections with a row-level
+  one (`test_cs_rc_cluster_csdid_parity.py`); on the replicated paper
+  StatsPAI returns `csdid`'s GAverage 0.104033392 with SE 0.033423408.
+  `csdid2` agrees on every point estimate but reports smaller SEs on
+  repeated cross-sections (0.0328111 in the paper): its control-row
+  influence function is scaled by the 2x2 subsample share instead of the
+  control cell's, which R `DRDID` and `csdid` do not do. StatsPAI follows
+  the latter two.
+- **`sp.psmatch2(ties=True, ate=True)`** -- Stata `psmatch2`'s `ties`
+  (every control at the minimal distance is a match, `1/m` each) and `ate`
+  (controls matched to treated too, two-sided common support, treated
+  rows weighted only by their use as a match; ATU / ATE in `model_info`).
+  PSM-DID papers regress on `_weight != .`, and without these options the
+  matched sample was half the size. With the propensity score supplied,
+  `_weight`, `_support`, ATT / ATU / ATE equal Stata `psmatch2` 4.0.12
+  row for row (`test_psmatch2_ties_ate_Stata_parity.py`); on the
+  replication's 99,878 firm-years, Stata fed StatsPAI's score returns the
+  identical 28,602-row matched sample. The paper's 28,628 differs only
+  through the logit score (1e-7 apart, within Stata's convergence
+  tolerance), which moves a few hundred nearest neighbours.
+- **`sp.oster_bounds(absorb=, absorb_controls=, moments=, cluster=)` and
+  `r_max="1.3*r2_a"`.** The exact Oster solution after a fixed-effects
+  regression, as `psacalc` computes it after `xtreg y d x i.ind#i.year,
+  fe`: within coefficients and R-squared, and `xtreg`'s `e(r2_a)` with the
+  control dummies counted at their exact rank given the panel effect (and
+  the panel means not charged under `cluster=` when the panel is nested in
+  it). `moments=` exposes the exact solution from summary statistics.
+  Equal to Stata `xtreg, fe` + `psacalc` to 1e-12 (delta 1e-8)
+  (`test_oster_absorb_Stata_parity.py`). On the replicated paper the
+  inputs are exact and R_max is 0.18268 against Stata's 0.18265: Stata's
+  `e(r2_a)` implies three more regressors than the dummies' exact rank
+  (the three extra eigenvalues are 1e-15, the next 2e-2), so delta is
+  3.480 against the paper's 3.484; with Stata's R_max it is 3.4857.
+- **`sp.hdfe_ols` results carry `df_a` and `df_a_nested`** (`reghdfe`'s
+  `e(df_a)` / `e(df_a_nested)`). A second Stata fixture pins the R-squared
+  family with no cluster, a nested unit cluster and an absorbed
+  `city#year` cluster: degrees of freedom exact, statistics to 1e-12
+  (`test_hdfe_fitstats_Stata_parity.py`); it reproduces the adjusted
+  R-squared of all seven OLS columns of the replicated fundtown paper.
+- **`sp.winsor(method=, subset=, by=)`** -- `winsor2`'s `if` qualifier and
+  `by()` option (see Changed for the percentile definition). Equal to
+  Stata `winsor2` element for element (`test_winsor_winsor2_Stata_parity.py`).
+- **`sp.logit` / `sp.probit` / `sp.cloglog(perfect_prediction='drop')`.**
+  An indicator regressor whose non-zero rows share one outcome is omitted
+  with those rows, iterated, as Stata does ("x != 0 predicts failure
+  perfectly"); a warning names them and `model_info` records them. `N`,
+  log-likelihood, pseudo R-squared and estimates equal Stata `logit` /
+  `probit y x i.g` (`test_logit_perfect_prediction_Stata_parity.py`).
+  `'keep'` restores the old fit (whose MLE does not exist).
+- **`sp.ppmlhdfe` matches Stata `ppmlhdfe`'s sample and handles absorbed
+  regressors.** Found by replicating a five-fixed-effect PPML paper whose
+  every `N` and pseudo R-squared differed from Stata. (1) Singletons of any
+  absorbed effect are dropped by default (`drop_singletons=True`), iterated
+  jointly with the separation rules to a fixed point;
+  `model_info['n_singletons']`. Slopes and robust / clustered SEs of the
+  remaining rows are unchanged; `N`, the cluster count and hence
+  `G/(G-1)`, and the pseudo R-squared now equal Stata's. (2) A regressor
+  collinear with the fixed effects (a time-invariant variable under a unit
+  effect) is omitted with a warning and listed in `model_info['omitted']`;
+  it used to overflow and end in `LinAlgError`. (3) `absorb="id + ind^year"`
+  / `"ind#year"` and `cluster="city^year"` build the interacted groups.
+  (4) Rows missing an estimation variable are marked out, as Stata does.
+  (5) With several absorbed effects the within-transform reuses the
+  accelerated kernel of `sp.fast.fepois` (see Changed for the speed); the
+  old 500-sweep cap had stopped short of the projection (estimates moved
+  in the 8th digit). Against Stata 18 `ppmlhdfe` on a fixture with
+  singletons, all-zero units, missing values, two omitted regressors,
+  `ind#year` and a `city#year` cluster: `N`, clusters and the dropped count
+  exact, slopes / SEs / pseudo R-squared to 2e-9
+  (`test_ppmlhdfe_singletons_Stata_parity.py`).
+- **`sp.etwfe(family='poisson', fe='unit', response_se='margins')`.**
+  Response-scale (count) standard errors as Stata `jwdid ...,
+  method(ppmlhdfe)` + `estat` reports them. Until now they could only be
+  rebuilt by hand from Stata's `e(V)` (0.0262 vs 0.0318 on the replication
+  panel). `margins` holds the absorbed unit and period effects fixed and
+  differentiates through `ppmlhdfe`'s `_cons`, which is normalised around
+  the mu-weighted sample mean of the regressors, so the gradient is
+  `mu (x - xbar)` plus the constant. A categorical `xvar` is mapped to
+  jwdid's level coding first, since with the periods held fixed the
+  parametrisation matters. Every `estat simple / event / group / calendar /
+  over()` SE equals Stata to 7e-7, including clusters that nest neither
+  units nor periods, where the constant's covariance with the slopes enters
+  (`test_etwfe_poisson_jwdid_parity.py`, new fixture
+  `etwfe_poisson_jwdid_margins_Stata.json`). The default stays
+  `'profile'`. A Monte Carlo study
+  (`benchmarks/etwfe_poisson_response_se_coverage.py`, 6 designs x 1,000
+  replications) finds the profiled interval covering the sample ATT at
+  94-95% with 400 units and 91-93% with 100 units or strong unit
+  heterogeneity. The margins SE is 14-15% larger in every design, so it
+  over-covers in the first case and is near 95% in the second. Point
+  estimates, link-scale SEs and every default output are unchanged.
+- **`sp.etwfe(family='poisson' | 'logit', response_se='unconditional')`.**
+  A response-scale SE for the population ATT, as Stata `margins,
+  vce(unconditional)`. The aggregate is a ratio of sample means over
+  treated rows, so its influence function per cluster adds the composition
+  term `sum (m_r - ATT) / n` to the delta-method term, with their
+  covariance; event-time aggregates keep a joint covariance. The profiled
+  SE conditions on each unit's observed level, so with heterogeneous units
+  it is far below the unit-sampling SE (0.300 against 0.646 on a panel
+  whose unit-effect sd is 1.2). Against the delete-one-unit jackknife of the
+  full refit the new SE agrees to 1% (fe='unit' and fe='cohort', simple and
+  event time; `test_etwfe_nonlinear.py`). With cohort dummies
+  (`fe='cohort'`, R `etwfe`) the ordinary delta-method SE is already close
+  to it, because the cohort intercepts carry the between-unit variance. In
+  the Monte Carlo study it covers the population ATT at 94.0-95.6% in five
+  designs where the profiled SE reaches 90.6-94.5%, and at 88.7% when unit
+  effects are lognormal with sd 1.5 (profile 54%, margins 63%).
+
+- **2SLS in `sp.hdfe_ols`: `"y ~ exog | fe1 + fe2 | endog ~ inst"`** (Stata
+  `ivreghdfe`). Every variable is swept once by the reghdfe absorber, then
+  2SLS runs on the residuals; SEs follow `ivreg2`'s small-sample rules
+  (cluster, robust, iid) and `result.iv_diagnostics` carries the first-stage
+  F tests, Kleibergen-Paap rk LM and Wald F, Cragg-Donald F, Anderson-Rubin
+  test and Hansen J / Sargan. Against `ivreghdfe` 1.1.4 every coefficient,
+  SE and statistic agrees to <= 5e-9 (`test_hdfe_iv_ivreghdfe.py`). On the
+  1.5-million-row replication of Zheng, Huang and Zhu (2026, Table 6) it
+  gives -0.1381572 (0.0305366), KP F 509.244 and KP LM 30.714 as published,
+  in 25 s where the pyfixest route took about 4 minutes.
+- **R² family and reference df on `sp.hdfe_ols` results**: `r2`, `r2_a`,
+  `r2_a_within`, `rss`, `tss`, `rmse`, `df_inference`, as `reghdfe`'s
+  `e(r2)`, `e(r2_a)`, `e(r2_a_within)`, `e(rmse)`, `e(df_r)` (FEs nested in
+  the cluster are charged in full for the adjusted statistics,
+  `df_a_nested`); equal to reghdfe 6.13.1 to 1e-16
+  (`test_hdfe_fit_stats_reghdfe.py`). `summary()` shows them.
+- **`sp.hdfe_ols(df_inference=)`**: `'resid'`, `'normal'` or a number, for
+  the reference distribution of p-values and CIs (see ⚠️ below).
+- **Non-ASCII column names in `sp.hdfe_ols` formulas** (`工资 ~ 暴露度 | 企业`).
+- **`sp.honest_did(grid_lb=, grid_ub=, grid_points=, grid_expand=)`** (and
+  `honest_did_from_moments`), HonestDiD's `grid.lb` / `grid.ub` /
+  `gridPoints`, passed to R with `backend='r'` too (see ⚠️ below).
+- **`sp.gelbach(absorb=, cluster=, shapley=)`**: absorbed fixed effects
+  (swept by the reghdfe absorber, i.e. `b1x2` with the FE dummies in
+  `x1all()`), `b1x2 ..., cluster()` covariance, and Shapley shares averaged
+  over entry orders. Equal to `b1x2` 4.1.0 to 1e-10
+  (`test_gelbach_absorb_cluster_b1x2.py`).
+- **`sp.ri_test(absorb=, interact=)` and continuous treatments** for
+  `stat='ols'` / `'ols_t'`: absorbed FEs, and an intensity design
+  (`treat='exposure', interact='post'`) with exposure permuted across
+  clusters. Under clustering only `G` columns are swept once, so 9,999
+  permutations on 1.5 million rows take about a minute.
+- **`sp.sumstats(output='numeric')`**: the unformatted values (`N` as int,
+  the rest float) instead of display strings.
+- **`sp.from_stata`**: `reghdfe` / `ivreghdfe` now map to `sp.hdfe_ols`
+  (reghdfe's singleton, dof and `t(G-1)` rules) with Stata's `a#b` absorbed
+  interactions written `a^b` and `c.x#i.g` slopes as `i.g#c.x` (1.32
+  emitted `city#quarter` into the formula: a `SyntaxError`); `absorb(...,
+  savefe)`, `vce(robust)` and multi-way clusters are handled; `summarize`
+  / `sum2docx` translate to `sp.sumstats`; `permute`, `esttab`, `estout`,
+  `outreg2` and `coefplot` return an error naming the StatsPAI function to
+  use instead of "unknown command".
+
+- **`sp.honest_did_from_moments(betahat, sigma, event_times=...)` and
+  `sp.honest_did_from_result`.** Rambachan-Roth sensitivity for an event
+  study from *any* estimator -- `reghdfe`, a stacked regression, a published
+  table -- given its coefficients and joint covariance, as R
+  `HonestDiD::createSensitivityResults(betahat, sigma, ...)`. On HonestDiD's
+  own `BCdata_EventStudy` the relative-magnitudes (Conditional) sets equal R
+  exactly and the FLCI agrees within R's simulation noise
+  (`test_honest_did_moments_R_parity.py`). `honest_did_from_result` is the
+  MCP tool's name on the Python side (`design_audit` already pointed to it).
+- **`sp.stacked_did(weights=, event_id=, treated=, event_time=)`.** Population
+  (or any analytic) weights, as Cengiz et al. use, and a pre-built stack --
+  one row per (sub-experiment, unit, period), e.g. built with a clean-control
+  rule -- used as is instead of being stacked again (which reused the
+  never-treated controls in every sub-experiment). The regression now runs on
+  the HDFE kernel, so its SEs follow `reghdfe` (they differed by a constant
+  degrees-of-freedom factor). Against `reghdfe [aw=]` on a CDLZ stack the
+  coefficients, SEs and ATT agree to 1e-9
+  (`test_stacked_did_prebuilt_weights_Stata_parity.py`).
+- **`weights=` for `sp.ssaggregate`, `sp.bartik` / `sp.BartikIV` and (through
+  the fit) `sp.shift_share_se`.** Weighted 2SLS / OLS with the AKM, AKM0,
+  EHW and Homoscedastic rows of `ShiftShareSE`'s `w`, weighted Rotemberg
+  weights, and the BHJ shock-level view with `l_weights`. Equal to R
+  `ShiftShareSE` 1.1.0 and Stata `ivregress [aw=], vce(robust) small` to
+  1e-12 (`test_shiftshare_weights_parity.py`).
+- **`sp.anderson_rubin_ci(cluster=)`.** The cluster-robust Anderson-Rubin
+  set, inverting `ivreg2`'s Wald-form AR statistic (F(k, G-1)); equal to
+  `ivreg2`'s `e(arf)` / `e(arfp)` to 1e-12 on a grid of nulls
+  (`test_ar_ci_cluster_Stata_parity.py`).
+- **`sp.ri_test(strata=, stat='ols' | 'ols_t', covariates=)`.** Re-randomize
+  within strata (and by cluster within strata), with a regression-adjusted
+  statistic including stratum effects; enumerated designs equal R `ri2` 0.5.0
+  exactly (`test_ri_strata_R_parity.py`).
+- **`sp.westfall_young`.** Westfall-Young (1993) stepdown maxT from the
+  design's own re-randomizations (within strata, by cluster, each outcome on
+  its own rows), as Stata `wyoung, permute()`; the MHT module advertised it
+  but only shipped the bootstrap Romano-Wolf. Checked against a from-scratch
+  enumeration of the textbook algorithm and for FWER under the null
+  (`test_westfall_young.py`).
+- **`sp.suest`.** Seemingly unrelated estimation across separately fitted OLS
+  equations (own samples), robust or clustered, with `wald` / `test_equal` /
+  `test_zero` for the cross-equation "joint test" rows of experimental
+  tables; equal to Stata `suest` after `regress` to 1e-12
+  (`test_suest_Stata_parity.py`).
+- **`sp.rd_diff_in_disc`.** Difference-in-discontinuities (Grembi, Nannicini
+  and Troiano 2016): one pooled local polynomial, fully interacted in side
+  and period, whose `post x above` coefficient is the change in the
+  discontinuity; clustered by unit or site it carries the covariance between
+  the two periods that differencing two `rdrobust` runs ignores. Equal to
+  Stata `regress [aw=kernel], vce(robust | cluster)` to 1e-14
+  (`test_rd_diff_in_disc_Stata_parity.py`).
+- **`sp.ssc(preset)`.** Small-sample-correction presets for `sp.feols(ssc=)`
+  named after the Stata command they reproduce (`'regress'`, `'areg'`,
+  `'reghdfe'`, `'xtreg'`, `'ivregress'`, `'ivregress_small'`, `'fixest'`) --
+  `areg` charges firm effects nested in the cluster, `reghdfe` / `xtreg, fe`
+  do not, `ivregress` applies no factor without `small`. Each reproduces its
+  command's SE to 1e-10 (`test_ssc_presets_Stata_parity.py`).
+- **`sp.rdrobust(masspoints=)` and `sp.rdbwselect(masspoints=)`**
+  (`'adjust'`, `'check'`, `'off'`, as R). The adjustment for tied running
+  variables was always on; `'off'` and `'check'` now reproduce R's
+  unadjusted bandwidths and estimates, and the tied shares are reported
+  (`model_info['masspoints']`, `.attrs`). Equal to R rdrobust 4.0.0 to 1e-8
+  on a 0.02-grid running variable (`test_rd_masspoints_R_parity.py`).
+- **`cluster=` for `sp.rd_honest`, `sp.rdbwsensitivity`, `sp.rdplacebo`,
+  `sp.rdbalance`, `sp.rdsummary` and `sp.rdplot`.** `rd_honest` follows
+  `RDHonest(clusterid=)` -- cluster-robust SE and the Moulton-corrected
+  bandwidth search -- and equals it to 1e-9 with `M`, `h` fixed and 1e-6
+  with them selected (`test_rdhonest_cluster_R_parity.py`); the diagnostics
+  pass the cluster to every `rdrobust` fit; `rdplot`'s per-bin intervals
+  become Stata `mean, vce(cluster)` within the bin and its band CR1
+  (`test_rd_cluster_diagnostics.py`).
+- **`sp.cgs_continuous_did(cluster=)`.** The overall ACRT SE sums the unit
+  influence functions within a time-invariant cluster; with cluster-level
+  doses and shocks it tracks the Monte Carlo spread (0.63 vs 0.74) where
+  the unclustered SE gives 0.22 (`test_cgs_continuous_cluster.py`).
+- **`sp.bacon_decomposition(balance='drop_units')`.** Decomposes the
+  balanced subpanel of an unbalanced panel (Stata `xtbalance` first) and
+  lists the dropped units; the default still refuses, as R/Stata
+  `bacondecomp` do (`test_bacon_unbalanced.py`).
+- **`sp.spec_curve(fe=)`.** Fixed-effect sets as a choice dimension of the
+  specification curve, estimated as `reghdfe` (singletons dropped, absorbed
+  levels charged, those nested in the cluster not); equal to Stata `reghdfe`
+  / `regress` under all three VCEs to 1e-10
+  (`test_spec_curve_fe_Stata_parity.py`).
+
+- **Skill: `references/modern-methods.md` covers the 1.29–1.32 estimators.**
+  The packaged `statspai-analysis` skill had no entry for about thirty
+  functions added since 1.29. The new reference file covers the robust
+  staggered-DID family, joint event-study covariance and sup-t bands,
+  pre-trend equivalence and power, few-treated inference, the `sp.iv_diag`
+  bundle, the GRF forest family (fe forests, `rate_split`,
+  `forest_policy_tree`, IV / multi-arm / survival forests), `sp.dynamic_dml`,
+  `fect` / `rd_honest` / `rdhte`, and `sp.validation_scope`. `SKILL.md` gets
+  five new hard rules. Every call shape was run before writing it down;
+  the validation gate gains 30 signature claims and a smoke fit that checks
+  the fe-forest ATT equals `sp.did_imputation` and that
+  `forest_policy_tree` / `compare_event_study_conventions` reject pooled
+  forests and staggered timing.
+
+- **`sp.etwfe(family='poisson')` reproduces Stata `jwdid ..., method(ppmlhdfe)` in one call.**
+  Found by redoing a published jwdid table (21 regressions) with StatsPAI
+  (`sjjj2026_replication-StatsPAI复现程度.ipynb`): the cell coefficients
+  matched, but the paper's number could only be rebuilt by hand. New:
+  `scale='link'` reports the treated-observation-weighted mean of the
+  cohort x period coefficients (`estat simple, predict(xb)` /
+  `emfx(predict='link')`; log points for Poisson) — the default stays
+  `'response'`, the average marginal effect. Both scales, and the
+  simple / group / event / calendar aggregations of each with their own
+  delta-method SEs, are stored in `model_info['aggregations']`, with the
+  per-cell counts, coefficients and SEs in `model_info['cells']`;
+  `sp.etwfe_emfx(res, type=..., scale=...)` serves either scale.
+  `fe='unit'` absorbs unit fixed effects as jwdid does (R etwfe's
+  cohort-dummy design stays the default, `fe='cohort'`); the two agree on
+  balanced panels and differ on unbalanced ones, where `fe='cohort'` now
+  warns. With `fe='unit'` all-zero units are separated out of IRLS but kept
+  in `N` and the cluster count, as jwdid reports them
+  (`model_info['n_separated']`); on a 923k-row, 44k-unit panel the fit takes
+  about 5 s. `cgroup='nevertreated'` is now supported for Poisson and logit
+  (pre-period cells relative to `g - 1`, i.e. event-study leads, as
+  `jwdid, never`). The `fe='unit'` cells equal an explicit
+  `sp.ppmlhdfe` fit of the same design to 1e-8
+  (`tests/test_etwfe_nonlinear.py`). The clustered small-sample factor
+  under `fe='unit'` is `G/(G-1)`, `ppmlhdfe`'s convention; on the
+  replication panel every link-scale estimate and SE (21 regressions,
+  group / calendar / event aggregates, `never` leads, a 26-cluster city
+  panel, `exovar`-style `controls`, re-timed cohorts, dropped years)
+  matches `jwdid` to 7 significant digits. Response-scale SEs follow the
+  profiled delta method and differ from `jwdid`'s `margins`, which holds
+  the absorbed effects fixed and differentiates through `ppmlhdfe`'s
+  `_cons` normalisation (0.0262 vs 0.0318 there; point estimates agree).
+- **Nonlinear ETWFE covers the rest of a jwdid table: `hettype=`,
+  `xvar=`, `separated=`.** `sp.etwfe(family='poisson' | 'logit',
+  hettype='event' | 'cohort' | 'time' | 'twfe')` pools the cohort x period
+  cells as `jwdid, hettype()`; `xvar=` follows `jwdid y x` (each effect
+  moderated by the covariate demeaned within the hettype cells, plus
+  covariate-by-period and, for time-varying covariates, covariate-by-cohort
+  terms), a categorical column entering as `i.x` level dummies, and
+  `sp.etwfe_emfx(res, ..., by_xvar=True)` reports every aggregation per
+  level (`estat ..., over()`, R `emfx(by_xvar = TRUE)`). Linearly
+  dependent columns are omitted as `ppmlhdfe` does (a covariate level
+  missing from one cohort used to stall IRLS for 1,000 iterations and
+  return NaN). `separated='keep' | 'drop'` (fe='unit') decides whether
+  separated all-zero rows stay in `N`, the cluster count and the
+  aggregation weights: jwdid drops them exactly when `ppmlhdfe` flags the
+  separation, which it does on some panels and not on others, so the
+  published number depends on it. Against Stata `jwdid` v2.201 /
+  `ppmlhdfe` 2.3.0 on a new fixture (13 specifications: every hettype,
+  `never`, categorical and time-varying continuous covariates) link-scale
+  estimates agree to 2e-14, SEs to 1e-10 relative, the response-scale
+  point estimate to 2e-7 (`test_etwfe_poisson_jwdid_parity.py`); on the
+  replication panel, Appendix Table 3's hettype columns and Figure 4's
+  `over()` ATTs match to 6 digits. The nonlinear design moved to
+  `did/_etwfe_glm_design.py` (with `_etwfe_glm_fit.py`,
+  `_etwfe_glm_emfx.py`). With `fe='cohort'` (R etwfe's design) `xvar=`
+  follows R `etwfe` instead -- the covariate demeaned within cohort x
+  period cells, interacted with the cells and with the periods: a
+  continuous covariate matches `etwfe` 0.6.2 / `fixest` 0.14.0 to 1e-7
+  (`emfx` simple and event, both scales). For a factor covariate `etwfe`
+  0.6.2 writes the period term as `i(year, (x2_dm + x3_dm))`, which
+  `fixest` reads as one summed slope; StatsPAI keeps a slope per level and
+  matches that per-level design fitted with `fixest::feglm` to 5e-8
+  overall and per level (`test_etwfe_poisson_xvar_R_parity.py`, which
+  also pins that `etwfe`'s own numbers differ).
+- **Linear `sp.etwfe(hettype=)` and `fe='unit'` reproduce Stata `jwdid`
+  without `method()`.** Any `hettype`, or `fe='unit'`, fits `jwdid`'s
+  `reghdfe` design: unit and period effects, SEs clustered on the unit
+  with `reghdfe`'s `(N-1)/(N-K) * G/(G-1)` (K = regressors + constant),
+  `jwdid`'s `xvar` design and the aggregations (`estat simple / event /
+  over()`) of the nonlinear branch. Against `jwdid` v2.201 / `reghdfe`
+  6.12.3 on an unbalanced fixture (13 specifications: every hettype,
+  `never`, categorical and time-varying covariates) estimates agree to
+  1e-13 and SEs to 3e-12 (`test_etwfe_linear_jwdid_parity.py`). The
+  default linear design (R etwfe, cohort dummies) is unchanged;
+  `fe='cohort'` with a non-default hettype, `panel=False` or `weights=`
+  raise.
+- **`sp.honest_did(l_vec=, window=)`.** `l_vec` targets `l' tau_post`
+  (HonestDiD's `l_vec`; `'average'` for the mean post-treatment effect)
+  instead of a single period; `window=(lo, hi)` restricts the event study
+  first, as an analysis run on `estat event, window()`. Against Stata
+  `honestdid` 1.3.0 the FLCI agrees to 3e-6 and the Conditional
+  relative-magnitudes bounds to within one grid step
+  (`test_honest_did_lvec_window_Stata_parity.py`). `backend='r'` takes
+  both: it hands R `HonestDiD` the windowed event study and `l_vec`, and
+  its Conditional relative-magnitudes sets equal the native ones to 1e-10
+  (`average`, `e=1`, a custom `l_vec`).
+- **Poisson / logit ETWFE event studies carry their joint covariance.**
+  `model_info['event_study_vcov']` is `G V G'` over the event-time
+  aggregates (leads and horizons share one regression), on the fit's
+  scale; `sp.etwfe_emfx` switches table and matrix together. So
+  `sp.event_study_vcov`, `sp.pretrends_test`, `sp.honest_did` and
+  `sp.uniform_bands` use the full covariance instead of falling back to
+  the diagonal / worst-case approximation.
+- **`sp.pretrends_test(window=(lo, hi))`** tests only the leads inside an
+  inclusive event-time window, taking the sub-block of the joint
+  covariance — Stata `estat event, window(-5 5) pretrend`. The result
+  reports the `pre_periods` tested.
+- **Every result class speaks the agent contract.** `to_dict(detail=
+  "minimal"|"standard"|"agent")`, `violations()`, `next_steps()` and
+  `result_card()` used to exist only on the `CausalResult` /
+  `EconometricResults` trees (16 of ~300 result classes);
+  `sp.oaxaca(...).to_dict(detail="agent")` raised `TypeError`. They now live
+  on `ResultProtocolMixin` (`statspai._result_contract`), legacy
+  `to_dict()` overrides are wrapped so they accept `detail=` (`"standard"`
+  returns the old dict byte for byte), and NamedTuple / plain result types
+  get the same surface through `attach_result_protocol` without losing
+  tuple unpacking. 298 of 300 result classes carry the contract; the two
+  exceptions (the JAX-absent placeholder and `HelpResult`) are listed in
+  `scripts/result_protocol_audit.py::AGENT_CONTRACT_GAPS`, and the audit
+  fails on any other gap. `result_card()["provenance"]` now names the
+  `result_class` and, for stochastic estimators, records `seed` /
+  `reproducible` / `seed_source` (`reproducible: false` when the call ran
+  unseeded, `null` when the estimator did not record its seed). No
+  estimator's numbers or default seed changed.
+- **MCP protocol completeness.** `ping` is answered; `tools/call` runs on a
+  worker pool (`STATSPAI_MCP_WORKERS`, default 1, so estimation stays
+  serialised) while the main loop keeps answering `ping`, `tools/list` and
+  resources; `notifications/cancelled` stops a running tool at its next
+  progress checkpoint. Results carry `replay` — the equivalent
+  `sp.<fn>(...)` call — so an MCP analysis can be re-run in Python.
+  Payloads over `max_output_bytes` (argument or
+  `STATSPAI_MCP_MAX_OUTPUT_BYTES`, default 256 KiB) are cut largest-table
+  first with every cut listed under `truncated` (headline estimate / se /
+  ci / p-value are never cut); non-finite values are listed under
+  `_nonfinite` so `null` no longer conflates "missing" with NaN / inf.
+- **MCP data access is bounded.** `STATSPAI_MCP_DATA_ROOTS` confines
+  `data_path` (symlinks resolved, `file://` included) to the listed
+  directories; the data-handle cache has a byte cap
+  (`STATSPAI_MCP_DATA_CACHE_BYTES`, default 2 GiB) next to its count cap;
+  tools with an output-path parameter (e.g. `synth_report(output=...)`)
+  are derived from their schemas and advertised `readOnlyHint: false`.
+- **Errors an agent can act on.** `ColumnNotFound` (kind
+  `column_not_found`, still a `MethodIncompatibility` / `DataInsufficient`
+  / `ValueError`) carries `diagnostics["did_you_mean"]` —
+  `sp.did(df, y="yy", ...)` now says "did you mean 'y'?".
+  `MissingDependencyError` (kind `missing_dependency`, also an
+  `ImportError`) carries the install command (`pip install
+  "statspai[fixest]"` for `sp.feols`). Remediation recognises
+  `missing_arguments` (lists the schema's required parameters) and
+  `unknown_argument` (suggests the closest parameter or alias).
+  `pipeline_*` stages keep the structured error payload instead of a
+  string, and their fallback serialisers record degradations.
+- **Discovery that understands research questions.**
+  `sp.search_functions` maps estimand / design vocabulary (LATE /
+  compliers, ATT, CATE, RKD, synthetic control, 2SLS, TWFE, IPW, AIPW,
+  TMLE, …) to the functions that estimate it, ranks dispatchers first and
+  canonical names above aliases, scores agent-card text at low weight, and
+  returns the best partial matches (`match: "partial"`) instead of `[]`.
+  "minimum wage employment difference in differences" used to return
+  nothing.
+- **Schemas say what comes back and what a string means.**
+  `FunctionSpec.result_class` (98 % of callables) is exported as
+  `x_statspai.returns = {class, fields, …}` in the agent-native schema,
+  as `returns` in the agent card and `result_schema` in
+  `describe_function`. Parameters carry `x-statspai-role`
+  (`dataframe` / `formula` / `column` / `columns`), `x-aliases` /
+  `x-canonical` for legacy spellings, enums derived from `Literal`
+  annotations, dispatcher method tables and docstring choice lists
+  (option-parameter enum coverage 57 % → 67 %), and array item types
+  inferred from defaults. `FunctionSpec.alias_of` marks 30 aliases
+  (`statspai.registry.is_alias`); aliases stay callable but are listed
+  once in the MCP tool manifest. Merged agent cards record per-field
+  `provenance` (`curated` / `family` / `baseline` / `docstring`) so family
+  boilerplate is distinguishable from method-specific statements. 28 new
+  estimator cards (e.g. `kitagawa_test`, `evalue_rd`, `ppi_ols`,
+  `bayes_its`, the conformal family, `stochastic_dominance`,
+  `cluster_staggered_rollout`); placeholder parameter descriptions fall
+  from 53 % to 39 %. Ratchets: card / curated-card floors re-frozen at
+  current values, enum and `result_class` coverage pinned.
+
+- **MCP tool-list profiles and discovery meta-tools.** `tools/list` used to
+  return every auto-generated tool (579 entries, ~2 MB, roughly half a
+  million tokens — more than any client context window). `statspai-mcp`
+  now takes `--profile core|curated|full` (also `STATSPAI_MCP_PROFILE`);
+  the CLI default is `curated`: the hand-written estimator / workflow /
+  pipeline tools plus three new meta-tools — `search_functions`,
+  `describe_function`, `call_function` — through which every registered
+  function stays reachable (discover → describe → call). `tools/call`
+  accepts any tool name under every profile. (In-process
+  `handle_request` now defaults to `curated` too — see Changed.)
+- **MCP data handles, inline tables and transform chains.** `load_data`
+  (from `data_path`, `data_records` or `data_csv`) returns a `data_id`
+  that every tool accepts in place of `data_path`; `transform_data`
+  applies an ordered list of operations (`query`, `select`, `drop`,
+  `rename`, `dropna`, `fillna`, `assign`, `sort`, `sample`, `winsor`,
+  `wide_to_long`, `long_to_wide`, `mice`, or any DataFrame-returning
+  `sp.<function>`) and returns a new handle with the parent and every
+  step recorded; `describe_data` profiles a handle; `statspai://data/{id}`
+  reads it back. Results fitted from a handle carry the whole lineage
+  (and the root file's SHA-256) in `data_provenance`. Inline tables are
+  capped by the same byte budget as file loads and hashed. A failing
+  transform step aborts the chain with the step index and a
+  `WorkflowDegradedWarning`; a missing handle explains whether it was
+  evicted or never existed. Before this, a frame derived in one call
+  could not reach the next, and any hand-made table needed a temp file.
+- **Registry metadata harvested from docstrings; family inheritance;
+  consistent schemas.** The 982 auto-registered entries now carry
+  `returns` (first sentence of the `Returns` block), `example` (the
+  shortest `sp.<name>(...)` statement from `Examples` that parses and
+  binds to the signature — the same check `scripts/registry_example_audit.py`
+  applies) and `reference` (paper.bib keys when the `References` block
+  cites them, else the author's own first entry). Coverage moves from
+  example 34 % / returns 22 % / reference 22 % to 96 % / 83 % / 33 %.
+  Family variants without a card (`rd_* → rdrobust`, `did_* → did`,
+  `synth_* → synth`, `dml_* → dml`, `iv_* → iv`, `forest_* →
+  causal_forest`, …) inherit their dispatcher's assumptions,
+  pre-conditions, failure modes and alternatives; `describe_function`
+  now merges inherited fields exactly as the agent card does and says so
+  (`inherited_from`, `inheritance`), and reports `auto_generated` and,
+  for result / exception / model classes, `kind: "class"` (320 exported
+  classes are no longer offered as tools). Exported JSON schemas are
+  reconciled: numeric enums become numbers, an enum on an array moves to
+  `items.enum`, a default of another JSON type widens `type` to the
+  union, a default outside its enum is stated in the description instead
+  of contradicting the schema, and `List[float]` / `Sequence[int]`
+  parameters get typed `items`. `tests/test_registry_metadata_ratchet.py`
+  pins the coverage shares and the schema consistency so they can only
+  move up. `sp.rd` (the RD dispatcher) is registered and exported.
+  A per-family card layer (`statspai._family_cards`, 28 families, 272
+  members) states the shared assumptions, data pre-conditions, failure
+  modes with remedies and alternatives for the parity-ledger entry points
+  no earlier card reached — limited-dependent-variable and count
+  regressions, survival, clustered / spatial-HAC inference, weak-IV
+  tools, RD bandwidth helpers, multiple testing, spatial statistics and
+  models, networks, power, decompositions, mediation, selection /
+  attrition bounds, survey estimation, time series, dynamic panels,
+  post-estimation, rlasso, DiD diagnostics, ML-causal helpers, the
+  g-formula / transport / target-trial toolkit, missing data and
+  randomization inference. Agent-card coverage on callables moves from
+  46 % to 75 %; the ratchet floor is raised to 70 %. A second, per-function
+  card layer (`statspai._function_cards`, 80 entries) refines the
+  highest-traffic DiD, IV, RD, synthetic-control and DML entry points:
+  the failure the agent will actually see from *this* estimator, the
+  situation in which *this* variant is the wrong pick even though the
+  call succeeds (`not_recommended_when`), and the scaling hazard of
+  *this* implementation (`cost_profile`). Precedence is now explicit and
+  tested (`tests/test_function_cards.py`): a family card or family
+  template is the floor, a per-function card overrides it field by field
+  and inherits the fields it does not state, and a hand-written registry
+  entry keeps its own content first (per-function cards only append to
+  it). Before this the family-template copies in the registry's in-file
+  seed table silently shadowed any later per-name card, and `rdrandinf`
+  carried the RD template's continuity-at-the-cutoff assumption although
+  it is the local-randomisation estimator; it now states its own. An
+  `alternatives` entry can no longer point at the function itself, and
+  `evalue_*` / `dgp_*` / `plot_*` / `sim_*` helpers no longer inherit an
+  estimator card through the family name rule. Every discovery
+  view (`describe_function`, `agent_card`, `function_schema(...,
+  agent_native=True)['x_statspai']`) now carries a structured `evidence`
+  record read from the committed parity index — `status` (bit-exact /
+  aligned / analytical-only / external-replication / unverified),
+  `grade` (T1–T4 / S / external) with `grade_basis` (recorded by the
+  index builder, or derived from status and sides per CLAUDE.md §5.1),
+  `sides`, `reference`, `reference_versions`, `tolerance`, `tests`,
+  `module_id` — so an agent no longer parses evidence tiers out of
+  prose notes or needs a separate `sp.parity_status` call.
+- **Machine-readable estimator routing: `sp.route`, `sp.decision_guide`,
+  MCP `route_estimator`, `statspai://guide/{family}`.** The decision
+  logic of the seven `docs/guides/choosing_*_estimator.md` guides (DiD,
+  IV, RD, matching, ML-causal, QTE, dynamic panel) is restated as data
+  in `statspai._routing`: each family has questions with allowed
+  answers and routes that name a registered function, an example call,
+  why it is right, the assumptions it adds and the guide heading to
+  read. `sp.route(family, **answers)` returns the matching routes, the
+  unanswered questions and the one that narrows the choice most;
+  `sp.decision_guide(family)` returns the whole table. Tests pin every
+  route target to the registry and every `read_more` to a heading in
+  the guide, and the guides themselves now ship in the wheel
+  (`statspai/agent/_guides/`, byte-identical to `docs/guides` via
+  `scripts/sync_guides.py --check`, a pre-push hook) so an installed
+  package can serve them over MCP.
+- **CLI runs estimators.** `statspai run <function> --data FILE --arg
+  key=value ...` executes any registered function through the same
+  dispatch layer as the MCP server and prints the agent payload
+  (`--detail`, `--out`, `--format summary`); schema-driven family
+  shortcuts (`statspai did|callaway_santanna|event_study|regress|feols|
+  ivreg|rdrobust|synth|dml|match|ipw|aipw --data FILE --y ... `) build
+  their flags from the registry so they cannot drift; `statspai route
+  <family> --answer key=value` routes a question without data; `statspai
+  mcp [--profile]` starts the server. Unknown arguments are reported
+  under `_unsupported_args`, estimator errors are the structured payload
+  on stderr with exit code 3, usage errors exit 2.
+- **Packaged Claude Code skill `statspai-analysis`, `AGENTS.md`, `llms.txt`.**
+  The JOSS-era `StatsPAI_full_data_analysis_skill/` (2,263-line
+  `SKILL.md`, invalid skill name, description over the 1,024-character
+  limit, stamped 1.19.0, not shipped) is superseded by a packaged skill
+  under `statspai/agent/_skill/`: a valid frontmatter, a 130-line
+  `SKILL.md` (operating loop, pipeline map, hard rules) and nine
+  `references/` files split from the original playbook plus a new
+  `mcp-and-cli.md` (discover → describe → call over MCP and the shell,
+  data handles, routing, the result contract). No version stamp: the
+  bundled `validate_api_claims.py` gate, now run over every skill file,
+  is the stamp (`statspai skill validate [--quick]`). `statspai skill
+  install [--target DIR] [--force]` copies it into `~/.claude/skills`;
+  `statspai skill path` prints the packaged location. `AGENTS.md` (how
+  an agent discovers, calls and reads StatsPAI) and `llms.txt` (an index
+  of the agent-facing docs and machine-readable schemas) are added at the
+  repository root. The original directory is kept unchanged as the JOSS
+  archive artifact.
+- **`sp.search_functions` understands task phrases.** Stopwords are
+  ignored, common econometrics spellings are expanded (`did` ↔
+  difference-in-differences, `rd` ↔ discontinuity, `iv` ↔ instrument,
+  `staggered` ↔ Callaway / Sun-Abraham, …), a function matches when at
+  least half of the content words hit, name / tag hits outrank
+  description hits, and result / exception classes are no longer
+  listed. "effect of a policy with panel data" and "two-way fixed
+  effects bias" returned nothing before; they now return the DiD family
+  and `bacon_decomposition`.
+- **`sp.did` accepts `outcome=` / `treatment=`** (aliases for `y` /
+  `treat`, alongside the existing `unit=` / `controls=`), and
+  `sp.did(method='auto', id=...)` with a 0/1 treatment indicator on a
+  multi-period panel derives the first-treatment cohort (0 = never
+  treated) and runs Callaway-Sant'Anna instead of failing with "No
+  treatment cohorts found". A non-absorbing indicator raises
+  `MethodIncompatibility`. The registry / MCP schema for `did` now lists
+  `covariates`, `cluster`, `weights`, `aggregation`, `control_group`,
+  `estimator` and `anticipation`, which the live signature always had.
+- **`CausalResult.to_json(detail=...)`** and `ResultProtocolMixin.to_json()`
+  so every result type serialises through the same entry point; the
+  agent payload gains a `degradations` list (see Fixed).
+
+### Changed
+
+- **`sp.etwfe` estimand labels are short**: `"ATT (link scale)"` and
+  `"ATT (linear ETWFE)"` (they are regression-table row labels, and the old
+  sentence-long label was truncated by `sp.etable`). The full definition
+  moved to `model_info['estimand_description']`; the response-scale label is
+  unchanged.
+- **Regression tables leave FE / cluster cells blank for a `CausalResult`
+  that does not declare them**, instead of printing `No`: the table does not
+  know that CS-DiD or an imputation estimator absorbs nothing. A causal
+  result that writes `model_info['fixed_effects']` / `cluster_var` (now
+  `sp.etwfe`) gets `Yes` / `No` and the cluster variable like any
+  regression.
+- **`CausalResult.pretrend_test(window=None, type='auto', alpha=None)`**
+  falls back to `sp.pretrends_test(result, ...)` when the estimator stored
+  no test (`sp.etwfe`), so the method and the function agree; with no
+  arguments a stored test is returned as before.
+- **`sp.ppmlhdfe` is 10x faster on multi-way fixed effects.** The IRLS
+  step now updates the linear predictor as the working variable minus the
+  within residual (the `ppmlhdfe` algorithm) instead of solving the
+  effects' score equations by Gauss-Seidel, which needed thousands of
+  sweeps per iteration with nested or many crossed effects; the inner
+  within-transform follows a tolerance schedule and is warm-started from
+  the previous iteration (exact: the projection removes the fixed-effect
+  span under any weights); fixed-effect dimensions nested in another are
+  dropped from the projection. A five-way PPML on 10^5 rows: 24 s -> 2.4 s
+  (Stata 2.9 s); a seven-way stacked PPML on 6.9x10^5 rows: 347 s -> 45 s.
+  Estimates move by at most ~1e-9 (relative), inside the IRLS tolerance;
+  all Stata `ppmlhdfe` parity fixtures are unchanged.
+- **`sp.callaway_santanna(clustervars=...)` no longer requires
+  `bstrap=True`**; analytic SEs are clustered. With `bstrap=True` the
+  pre-trend Wald test now clusters as well (it used unit-level influence
+  functions).
+- **`sp.fepois` names `sp.ppmlhdfe` when pyfixest cannot absorb the fixed
+  effects** (`NumericalInstability`, still a `ValueError`), instead of
+  surfacing pyfixest's "Demeaning failed after 100_000 iterations"; a
+  five-way PPML that fails there runs in `sp.ppmlhdfe`.
+- **`sp.winsor` uses Stata's percentile definition** (`_pctile`, numpy
+  `averaged_inverted_cdf`) by default, as the `winsor2` equivalence in its
+  docstring promised; it used linear interpolation, which moved every
+  cutoff whose `n p / 100` is not an integer (a replication's 99th
+  percentile: 51,003.45 against Stata's 51,015). `method='linear'` gives
+  the old cutoffs.
+- **`sp.logit` / `sp.probit` / `sp.cloglog` drop perfectly predicting
+  indicators by default** (see Added); `N` and the pseudo R-squared change
+  on data that has them.
+- **`sp.aggte` inherits `bstrap` / `cband` / `biters` from the fit** (R
+  `did::aggte(bstrap = NULL)`), instead of defaulting to an unseeded
+  1000-draw bootstrap: `sp.aggte(fit)` on a default `callaway_santanna` fit
+  is now analytic and returns the same SE on every call. `cband=True` or an
+  explicit `n_boot` still requests the bootstrap; an unseeded bootstrap now
+  draws a seed and records it in `model_info['random_state']`. See
+  MIGRATION.md.
+- **⚠️ MCP tool failures are `isError` results, not protocol errors.**
+  An unknown or expired `data_id` / `result_id`, a data-load failure, an
+  invalid argument value or a timeout used to come back as a JSON-RPC
+  error (-32602 / -32000), which many clients never show to the model.
+  They are now `{"isError": true, "structuredContent": {error_kind,
+  message, hint, miss_reason, …}}`. Malformed requests, unknown methods
+  and unknown tool names stay JSON-RPC errors (an unknown tool name is
+  now -32602). A stale `result_id` is an error on every path instead of
+  being ignored. Text blocks are compact JSON. See MIGRATION.md.
+- **⚠️ MCP network data is opt-in.** `data_path` URLs (`http(s)://`,
+  `s3://`, `gs://`) need `STATSPAI_MCP_ALLOW_REMOTE=1` and obey
+  `STATSPAI_MCP_MAX_DATA_BYTES` like local files; `openWorldHint` is
+  `true` only while remote loading is enabled. `transform_data`
+  expressions (`query` / `assign`) pass an AST allowlist first
+  (`unsafe_expression` otherwise).
+- **⚠️ In-process `handle_request` defaults to the `curated` profile,**
+  like the `statspai-mcp` CLI; pass the profile explicitly (or set
+  `STATSPAI_MCP_PROFILE=full`) for the full manifest.
+  `statspai://functions` always serves the full index.
+- **`CausalResult.next_steps()` / `EconometricResults.next_steps()` no
+  longer print.** They returned the checklist *and* printed a ~1.2 KB
+  banner to stdout, which polluted MCP stdio and piped CLI output; pass
+  `print_result=True` to print.
+- **CLI output contract.** Stdout is strict JSON (`allow_nan=False`, numpy
+  values serialised, not `repr`), carries `runtime_warnings`, and estimator
+  prints go to stderr. Exit codes by `error_kind`: 2 usage, 4 input errors
+  (`column_not_found` / `missing_arguments` / `unknown_argument`; were 3),
+  5 `missing_dependency` (was 3), 3 other estimator errors.
+- **Remediation category `bad_argument` is now `unknown_argument`.**
+- **`sp.all_schemas()` omits classes** (pass `include_classes=True`); the
+  `data` parameter is typed `object` with `x-statspai-role: dataframe`
+  instead of `string`.
+- **`sp.cluster_staggered_rollout` reports skipped cells and failed
+  bootstrap draws** with a `RuntimeWarning` instead of dropping them
+  silently, and warns when its standard error is the 1e-6 placeholder
+  (fewer than two usable draws). Estimates are unchanged.
+
+- **MCP stdio loop reads on a thread; server-side sampling no longer
+  deadlocks.** `serve_stdio` used to read stdin on the same thread that
+  ran `tools/call`, so a tool that asked the client's LLM a question
+  (`interpret_result` → `sampling/createMessage`) could never receive the
+  reply and fell back after the 60 s timeout. stdin is now consumed on a
+  reader thread that routes JSON-RPC replies to the sampling matcher
+  immediately and queues requests for the loop; responses, progress
+  notifications and sampling requests share one locked stdout sink so
+  lines cannot interleave. Covered by a real-subprocess test
+  (`tests/test_mcp_stdio_subprocess.py`: initialize → tools/list →
+  fit → interpret_result with a fake sampling client), which also pins
+  the `core` tools/list under 100 KB on the wire and that stdout stays
+  pure JSON-RPC. (The CI change adding these suites to the push-time gate
+  and `statspai-mcp --help` to the wheel smoke test waits in
+  `plans/pending-workflow-patches/` — workflow files cannot be pushed by
+  the GitHub App.)
+- **MCP payloads say what did not happen.** `tools/call` results carry
+  `runtime_warnings` (deduplicated Python warnings raised during the
+  estimator call — `ConvergenceWarning`, `AssumptionWarning`,
+  weak-instrument / few-cluster notices — which previously went to
+  stderr where no MCP client reads them). Registry-dispatched tools
+  report arguments they could not bind under `_unsupported_args`
+  instead of dropping them silently (a misspelt `cluster=` used to
+  change the standard errors with no trace); the accepted set is now the
+  live signature ∪ registry params ∪ `@accepts_aliases` spellings, so a
+  registry entry that lags the signature never rejects a real argument.
+  Estimator `print()` output is redirected to stderr during a tool call
+  so it cannot corrupt the JSON-RPC stream. Report / export tools that
+  write files (`cs_report`, `did_report`, `rd_dashboard`,
+  `synth_to_excel`, `synth_report_to_file`, `influence_functions`) are
+  annotated `readOnlyHint=false`.
+- `to_dict(detail=...)` keeps one level of nested diagnostics whose
+  values are scalars (`diagnostics['mccrary']['pvalue']`,
+  `diagnostics['pretrend_test']`); previously every nested test result
+  was dropped, so an RD result carried a McCrary p-value that the agent
+  payload could not see.
+- `scripts/error_taxonomy_audit.py`: the structured-raise floor moves
+  from 42 (never ratcheted since the taxonomy was introduced) to 2,600.
+
+### Changed
+
+- **`sp.bartik` / `sp.BartikIV` / `sp.shift_share_political`:
+  `leave_one_out` defaults to `None`.** Leave-one-out needs
+  `regional_shocks`; the old default `True` only ever warned and fell back
+  on the basic API. `None` uses leave-one-out exactly when `regional_shocks`
+  is given; an explicit `True` without it now raises `MethodIncompatibility`.
+- **`EconometricResults.pvalues` is a labelled Series** like `params` and
+  `std_errors` (it was a bare ndarray on `sp.regress`), and results expose
+  `.nobs` and `.r2`.
+
+### Fixed
+
+- **Event-study plots of `sp.etwfe` results raised `KeyError: 'ci_lower'`.**
+  `result.plot()`, `result.event_study_plot()` and
+  `sp.enhanced_event_study_plot(...)` indexed the interval columns, which
+  `sp.etwfe` / `sp.etwfe_emfx` leave out of `model_info['event_study']`; the
+  plots now rebuild a missing interval as `att -/+ z * se` (the interval
+  `etwfe_emfx` reports) and leave an existing one untouched. Found by the
+  sjjj-2026 replication, whose Figure 3 had to be drawn by hand.
+- **`sp.regtable` printed "No FE, no clustering" for `sp.etwfe`**, which
+  absorbs unit (or cohort) and period effects and clusters on the unit: the
+  nonlinear / jwdid branch recorded neither. It now writes
+  `model_info['fixed_effects']` and `cluster_var`.
+- `sp.stacked_did(controls=...)` crashed in the event-study ATT: the delta
+  method multiplied event-time weights by the full covariance, which also
+  carried the controls.
+- **Original-data parity results refreshed; module 02 made deterministic.**
+  `tests/orig_parity` modules 04, 04b, 08 and 11 had result files older than
+  the library fixes they exercise (the matched ATT covering every treated
+  unit and the Abadie-Imbens default SE for `sp.psm`, the logit propensity
+  default of `sp.g_estimation`, the E-value CI rule), so a rerun changed
+  them. Regenerated: g-estimation now equals R to 6e-10 (was 4.3e-4), the
+  SMD E-value to 1.5e-11 (was 4.9e-3), and the IPW E-value's CI bound is 1
+  because its RR interval contains 1. The Lalonde PSM row differs from
+  MatchIt by 2.2% because 15 treated units have tied nearest controls:
+  `sp.psm` takes the first in data order, MatchIt breaks ties its own way.
+  Module 02 compared a multiplier-bootstrap SE (unseeded, different on every
+  run) with R's analytic one; it now uses `aggte(bstrap=False)` like the R
+  side and equals R to 1e-15.
+- **Evidence attachment: `sp.feols` inherited Track A modules `03_hdfe` /
+  `15_hdfe_cluster` by name resolution.** Those modules run the native
+  `sp.fast.feols`; the index builder credited the leaf name `feols`, which is
+  the top-level `sp.feols` -- a pyfixest delegate the modules never called.
+  The two agree on the module bytes (coefficients and iid SEs ~1e-14,
+  clustered SEs 2e-10 to 3e-9 under pyfixest's `fixef_tol=1e-6`), so the
+  grade stands, but it is now an explicit measured proof
+  (`_parity_taxonomy.SUBNAMESPACE_LEAF_PROOFS`,
+  `test_track_a_alias_equivalence.py`) whose note discloses the delegation,
+  and `build_parity_index.py` refuses any dotted call whose leaf name is a
+  different, unproven object. Grades and estimates unchanged.
+- **`sp.fect` registry limitation was stale.** It said fect's cross-validated
+  choice of `r` / `lam` was not supported; `cv=True` has existed since
+  1.29.0. The limitation now states what is actually limited: the folds are
+  random, and cross-language parity covers fits at a user-supplied `r` / `lam`.
+
+- **`sp.cgs_continuous_did`: the overall ACRT standard error was about half
+  its true value.** The cell influence function is a treated-sample
+  quantity (the ACRT is a mean over dosed units) but was aggregated as if
+  it were on the whole cell, dropping a factor `n / n_treated`. With half
+  the units dosed the SE was 0.059 against a Monte Carlo spread of 0.123;
+  it is now 0.123 against 0.121 (`test_cgs_continuous_cluster.py`).
+- **`sp.spec_curve`: clustered p-values and CIs used t(n - k)** where Stata
+  `regress, vce(cluster)` uses t(G - 1), overstating significance with few
+  clusters; the SE was already right (`test_spec_curve_fe_Stata_parity.py`).
+- **Stata reference fixtures read the data in double precision.** The
+  fixtures added for `hdfe_ols`, the wild bootstraps and the weak-IV
+  statistics used `import delimited` without `asdouble`, so Stata worked
+  on float-rounded data and the comparisons stopped at ~1e-7 -- attributed
+  at the time to the demeaning tolerance. Regenerated; they now agree to
+  ~1e-14 and the tolerances are tightened accordingly.
+- **`sp.rdrobust` accepts asymmetric bandwidths `h=(left, right)`,
+  `b=(left, right)`.** The signature and estimator supported them, but the
+  input check called `float()` and rejected every pair (Watering Down, QJE
+  2020). Matches R `rdrobust` 4.0.0 to 1e-9 with and without clusters
+  (`test_rdrobust_asym_bandwidth_R_parity.py`).
+- **`sp.oprobit` / `sp.ologit` / `sp.mlogit` report convergence at the
+  polished optimum.** The flag came from the BFGS start, which often stops
+  on a line-search failure; after the exact Newton polish the estimate was
+  right but `converged` read `False` (Princelings, QJE 2019). It is now
+  Stata's `g' (-H)^{-1} g < 1e-5`.
+- **Schema bundle: result-field types use the public pandas path.** The
+  `returns.fields` of agent cards rendered `pandas.core.frame.DataFrame`
+  under pandas < 3, so the bundle changed with the pandas version and
+  `test_schema_bundle_has_no_internal_pandas_paths` failed; they now go
+  through the same canonicalisation as signatures.
+- **`sp.gsynth` names the problem when `treated_unit` is a list or missing.**
+  It supports one treated unit. A list, tuple or array used to fail deep in
+  the factor fit with numpy's `LinAlgError: Incompatible dimensions`; it now
+  raises `MethodIncompatibility` pointing to `sp.fect`. An identifier not
+  in the unit column raised a bare `KeyError`; it now raises
+  `DataInsufficient` naming the column. Estimates are unchanged (the Track A
+  19_gsynth result file reproduces byte for byte; trace re-recorded).
+
+- **Nonlinear ETWFE aggregation after 027813fb (unreleased regression).**
+  That commit counted only non-separated rows in each cell's
+  `n_treated`, which is also every aggregate's weight: the one-call
+  reproduction of the jwdid table fell from 21/21 to 1/21 (link-scale
+  headline off in the third decimal wherever two cohorts overlap) and the
+  response-scale ATT inflated about sixfold (0.0944 to 0.548). Separated
+  rows are treated observations with a marginal effect of exactly zero, so
+  they belong in the denominator; weights are back to all treated rows.
+  Its `event_study_vcov` weighted the cell covariance by `1/(n1 n2)`,
+  shrinking variances by about `1/n^2`, so `sp.honest_did` returned NaN or
+  near-zero-width sets; replaced by `G V G'` (above). `pretrends_test`
+  never reached that matrix and still used the diagonal (chi2 29.9 against
+  jwdid's 52.65); it now does, and the loosened `rtol=1e-3` /
+  `atol=1e-6` diagonal check it added is back to the strict one.
+  Regression tests in `tests/test_etwfe_nonlinear.py` fail on 027813fb.
+- **`scripts/stability_audit.py --check` is green again.** `sp.rd`,
+  `sp.route` and `sp.decision_guide` were registered as stable without an
+  evidence record; they now cite their unit-contract tests
+  (`tests/test_rd_dispatcher.py`, `tests/test_routing.py`).
+- `sp.rd(..., cutoff=0)` raised `TypeError: rdrobust() received both
+  'cutoff' and its canonical target 'c'` because the dispatcher forwarded
+  the alias inside `**kwargs` alongside `c=c`. `cutoff=` / `running=`
+  are now folded into `c` / `x` before dispatch.
+- `@accepts_aliases` on a `**kwargs` function (`sp.did`) let an unknown
+  spelling fall through to Python's "missing 2 required positional
+  arguments: 'y' and 'treat'"; it now raises the did-you-mean
+  `TypeError` (`'outcom' (did you mean 'outcome'?)`).
+- `to_dict(detail='agent')` wrapped `violations()` / `next_steps()` in a
+  bare `except Exception` that returned an empty list, so a crashing
+  diagnostic read as "no violations". Failures now emit
+  `WorkflowDegradedWarning` and land in `degradations`
+  (`{section, error_type, message}`).
+- The MCP `did` tool advertised `post=` (which `sp.did` rejects) and
+  omitted `id` / `method`, so staggered designs could not run through
+  it; the schema now mirrors the dispatcher.
+- Remediation hints pointed at `sp.weak_iv_ci(...)` and
+  `sp.fixest(..., fe=[...])`, neither of which exists; they now name
+  `sp.anderson_rubin_ci` and `sp.feols`. A test pins every `sp.<name>(`
+  in `remediation.py` to the registry.
+- Stale tool counts in `docs/guides/agent_api.md` ("~100 tools", "three
+  prompts"), the MCP server and dispatcher docstrings.
+
+- **`sp.sdid(treat=...)`: staggered adoption, projected covariates and
+  Stata's inference rules.** `treat=` takes a 0/1 indicator, as Stata's
+  `sdid Y unit time W`. Each adoption cohort is fitted against the
+  never-treated units with the block estimator's own weight solver and the
+  cohort effects are averaged by treated units x post periods
+  (`clarke2024synthetic`, eq. 7); per-cohort effects, weights and SEs are in
+  `model_info["tau_by_cohort"]`, and `unit_weights` / `time_weights` become
+  unit x cohort and period x cohort tables. `covariates=` with
+  `covariate_method="projected"` removes `X beta` fitted by a two-way
+  fixed-effects regression on the never-treated units (Stata's `projected`;
+  `optimized`, Stata's default, is not implemented and is never chosen
+  silently). `se_method` gains `"noinference"`; the jackknife holds the
+  cohort weights fixed and re-projects covariates on every leave-one-out
+  sample; bootstrap and placebo re-solve from the original weights. Stata's
+  refusals are reproduced (jackknife needs two treated units in every
+  cohort, bootstrap more than one treated unit with a single cohort, placebo
+  more controls than treated units). Pinned against Stata `sdid` 2.0.2 on the
+  paper's two datasets: ATT, every cohort effect, the projected-covariate
+  beta and the jackknife SEs (sdid / did / sc, with and without covariates)
+  to 1e-13 or better (`tests/reference_parity/test_sdid_staggered_parity.py`,
+  T2); bootstrap / placebo are a stochastic screen only. The
+  `treated_unit=` / `treatment_time=` interface is unchanged and stays pinned
+  to R `synthdid`.
+
+- **`sp.did_had` — heterogeneous-adoption DiD** (de Chaisemartin, Ciccia,
+  D'Haultfœuille & Knau; `dechaisemartin2024nounit`). The design where
+  every group adopts at the same period F with a *heterogeneous dose* and
+  **no group stays untreated**, so the counterfactual cannot come from a
+  control group: it is the local-polynomial intercept at dose zero,
+  supplied by the quasi-untreated. Ports Stata's `did_had` including
+  `effects=` / `placebo=` / `trends_lin=` / `dynamic=`, the
+  quasi-untreated-group diagnostic, and a Yatchew differencing test of
+  linearity (`yatchew1999elementary` — note Stata's own `did_had` help
+  dates this to 1997 while citing the 1999 paper's volume and pages;
+  StatsPAI carries the verified 1999 record). Pinned against Stata 18 MP
+  (`87_did_had.do`) to 1.6e-8 at supplied bandwidths and 9.8e-8
+  end-to-end with selection.
+
+  Note the interval is deliberately **not** symmetric around the
+  estimate: `did_had` pairs a conventional point estimate with a
+  bias-corrected interval centred at `β̂ − B̂`, and StatsPAI follows it.
+
+- **`sp.lprobust_at_point` and the bandwidth-selection family.**
+  Local polynomial regression with robust bias correction — the engine
+  under `did_had` — matching Stata to 9.2e-9 across three kernels ×
+  three bandwidths, plus ports of five of the six `nprobust` selectors:
+
+  | | `sp.` function | vs R |
+  | --- | --- | --- |
+  | `mse-dpi` | `lpbwselect_mse_dpi` | 5.6e-13 |
+  | `mse-rot` | `lpbwselect_mse_rot` | 4.3e-12 |
+  | `imse-dpi` | `lpbwselect_imse_dpi` | 4.5e-13 |
+  | `imse-rot` | `lpbwselect_imse_rot` | 1.6e-12 |
+  | `ce-rot` | `lpbwselect_ce_rot` | 4.2e-13 |
+
+  Stata agrees with R on all five (worst 1.1e-7); its residual is its
+  own — `lpbwselect.ado` integrates the kernel moment constants
+  numerically where these evaluate them in closed form. All five are
+  also pinned **end-to-end through `sp.did_had`** against Stata's
+  `bw_method()`, which is what catches a wiring bug that leaves the
+  selectors themselves correct.
+
+  Three details the reference forces and that are followed rather than
+  harmonized: `imse-rot` grids on **x-quantiles** while `imse-dpi` grids
+  on **equal spacing**; the IMSE `B_h` uses `rB·B1²` with **no**
+  regularization term, unlike the pointwise `mse-dpi` bandwidth, which
+  carries `bwregul·R`; and `ce-dpi` shares `ce-rot`'s `b` exactly,
+  differing only in `h`.
+
+  `mse-rot` and `imse-rot` deliberately report no `b`: R derives one by
+  re-entering the selector on the even `(p − deriv)` branch, which is not
+  ported, and neither consumer needs it — `lprobust` and `did_had` both
+  run at `rho = 1`, so their bias bandwidth is `h`.
+
+  **`ce-dpi` is not ported** (it needs `nprobust`'s ~150-line
+  coverage-error plug-in). Passing it raises `NotImplementedError`
+  naming the gap, so a valid Stata spelling does not read as a typo and
+  is never silently swapped for a different selector.
+
+  Mass points matter here and are handled: with tied doses at the
+  evaluation point — the *normal* case in this design, since true stayers
+  all sit at dose 0 — a plain k-NN variance picked an arbitrary subset of
+  the tie group and got the standard error wrong by 3–6% while the point
+  estimate stayed exact to 2e-9. Tie groups are consumed whole.
+
+- **`ScalarEffect`'s docstring example could not run.** It called
+  `ScalarEffect(...)` bare, with no import, so the example-execution
+  gate failed on it. Now `import statspai as sp` +
+  `sp.ScalarEffect(...)`, matching the house rule that every example is
+  runnable as written.
+
+- `sigmamore=True` on `sp.hausman_test` / `PanelResults.hausman_test`
+  (Stata's `hausman fe re, sigmamore`, pinned to Stata 18).
+- `sp.test` / `sp.lincom` use the full covariance of `sp.panel` results, so
+  joint restrictions -- e.g. the Mundlak test of the unit-mean terms -- work.
+
+### ⚠️ Correctness
+
+- **`sp.stacked_did` standard errors charge the absorbed stack-by-period
+  effects, as `reghdfe` does.** The stacked regression now runs on the HDFE
+  kernel (see `sp.stacked_did(weights=, ...)` under Added). Its CR1 factor
+  `(N-1)/(N-K)` used to count only the event-time dummies in `K`; the
+  stack-by-period effects are not nested in the unit cluster and belong in
+  `K` (the stack-by-unit effects are nested and still do not). Every SE and
+  interval widens by the constant `sqrt((N - k_event)/(N - K))`: 1.5% on
+  the castle-doctrine panel (`window=(-5, 5)`, never-treated controls,
+  50 states) and 7.0% on the unilateral-divorce panel (41 states), where
+  `se` now equals `reghdfe` on the same stack to 1e-13. Point estimates are
+  unchanged. See MIGRATION `#stacked-did-reghdfe-k`.
+
+- **`sp.from_stata` no longer passes Stata varlist wildcards / ranges
+  through.** `reghdfe y t2pre* t2current t2post*` came back `ok=True` with
+  `t2pre*` left in the formula, where `*` reads as an interaction: a
+  confidently wrong model. Wildcards (`x*`, `x?`) and ranges (`a-b`) name
+  dataset columns, so `from_stata(line, columns=list(df.columns))` now
+  expands them in dataset order (`sp.stata` passes its data's columns) and
+  without `columns` the command is refused with that hint. Found by the
+  AIGC-wage replication's do file (`TestVarlistAbbreviations`).
+
+- **`sp.iv(absorb="... + a^b")` reported no Olea-Pflueger effective F.**
+  The weak-IV helpers looked up `a^b` as a column, raised `KeyError`, and
+  the diagnostic was replaced by an error string. Interacted terms are now
+  materialised as in `sp.iv` itself; with one instrument the effective F
+  equals the KP rk Wald F, as it should.
+
+- **`sp.hdfe_ols` converges further when a varying slope is absorbed.**
+  `tol` now defaults to `1e-12` with an `i.f#c.x` / `f[x]` term (`1e-8`
+  otherwise). Slope sweeps converge slowly, and the per-sweep stopping rule
+  stopped early: on the replication of Zheng, Huang and Zhu (2026, Table 5B
+  col. 3, four FE groups plus a quarter-specific slope) the clustered SE was
+  1.05e-5 (relative) from reghdfe's at the old default and 3.8e-8 now; the
+  coefficient agreed either way. reghdfe's collinearity screen still uses its
+  `1e-8`-based threshold (new `sp.absorb_ols(collinear_tol=)`). The fit takes
+  roughly 1.5x as long. Old numbers: `tol=1e-8`
+  (`test_hdfe_slope_default_tol.py`).
+
+- **`sp.iv(absorb="a^b")` dropped no rows with a missing `a` or `b`.** The
+  interacted FE was built from strings, so a missing component became the
+  level `"nan"` and the row stayed in the sample, where `ivreghdfe` drops it.
+  On the 1.5-million-row replication of Zheng, Huang and Zhu (2026, Table 6)
+  the 2SLS coefficient was -0.136797 instead of -0.1381572. Such rows are now
+  dropped (`test_hdfe_iv_ivreghdfe.py`). The absorbed sweep also warns
+  (`ConvergenceWarning`) if it stops at `fe_maxiter` without converging; it
+  used to return the unconverged residuals silently.
+- **`sp.hdfe_ols` clustered p-values and CIs use `t(G - 1)`**, reghdfe's
+  `e(df_r)` (`min(G) - 1`, capped at the residual df); they used
+  `t(N - K - df_a)`, practically the normal with many observations. SEs are
+  unchanged. With 100 occupation clusters in the replication of Zheng,
+  Huang and Zhu (2026), p = 0.091 and CI [-0.1423, 0.0107] as Stata, where
+  1.32 gave 0.0878 and [-0.1414, 0.0098]. The same for the no-FE path
+  (`regress, vce(cluster)`). Old numbers: `df_inference='resid'`.
+- **`sp.honest_did(method='relative_magnitude')` no longer reports the grid
+  edge as the bound.** When the confidence set reached the end of the
+  +/-20 sd test-inversion grid, the grid end was returned (with a warning):
+  the interval was understated, e.g. [-0.325, 0.325] where Stata `honestdid`
+  gives [-0.531, 0.390]. The grid now extends at the same step until the set
+  closes (`attrs['grid_extended_at']`), matching Stata to the grid step and
+  the C-LF simulation (`test_honest_did_grid.py`). HonestDiD (R) truncates
+  like 1.32; `grid_expand=False` reproduces it.
+- **`sp.ri_test(cluster=)` refuses a treatment that varies within clusters.**
+  It used to give every cluster the treatment of its first row and permute
+  those values, a null distribution of a design nobody ran (the HIV-results
+  incentive replication, randomized to individuals, with
+  `cluster='villnum'`). Pass the
+  cluster-level variable with `interact=` for `exposure x post`, or permute
+  rows. `'diff_means'` / `'t'` / `'ks'` also refuse a non-binary treatment.
+
+- **`sp.callaway_santanna` without never-treated units no longer averages in
+  zeros.** Found by the QJE 2019 (Princelings) and QJE 2023 (AI-tocracy)
+  replications. With `control_group='notyettreated'` and every unit
+  eventually treated, the late ATT(g, t) cells have no comparison units; they
+  came back as `att = 0, se = inf` and entered every aggregate as genuine
+  zero effects (simple ATT 0.55 against R `did`'s 0.92 on a design with true
+  effect 1). StatsPAI now applies R `did`'s rule: periods from the last
+  cohort's treatment date (minus anticipation) on are dropped and that
+  cohort serves as the not-yet-treated comparison only, with a warning;
+  `model_info['comparison_only_cohorts']` records it. Any cell that still has
+  no comparison units is left out of the estimates and aggregates with a
+  warning (`model_info['dropped_gt_cells']`), instead of counting as zero.
+  Against R `did` 2.3.0 the cells and the simple aggregate agree to 1e-8 on
+  panel and repeated cross-section data, both base periods, anticipation 0/1,
+  `reg` and `dr` (`test_cs_no_never_unbalanced_parity.py`).
+- **`sp.callaway_santanna(allow_unbalanced_panel=True, estimator='reg')`
+  honours `control_group='notyettreated'`.** Without covariates this path
+  used a cell-mean estimator whose comparison arm was hard-wired to the
+  never-treated units, so the not-yet-treated request returned the
+  never-treated numbers while `model_info` reported `notyettreated`. Cells
+  now match R `did` to 1e-14 under both control groups. The same fix applies
+  to `panel=False`. Covariates that are constant or collinear within a cell
+  on the repeated-cross-section path are now dropped (as R's `lm` aliases
+  them) instead of making every cell fail and the fit return zeros.
+- **`sp.hdfe_ols(wild=True)` re-absorbs the fixed effects in the bootstrap.**
+  The wild cluster bootstrap ran on already-demeaned data, which is right
+  only when every absorbed effect is nested in the cluster; with a year
+  effect and county clusters the bootstrap t distribution was too narrow
+  (Web of Power, QJE 2023, Table 5 col. 1: p = 0.045 against `boottest`'s
+  0.218). It is now `boottest`'s WCR bootstrap: null imposed, each bootstrap
+  outcome re-projected on the FE space (reduced to G x G algebra, so a draw
+  is cheap), the confidence set by test inversion, Rademacher sign vectors
+  enumerated when `2^G <= wild_n_boot`, and `|t*| = |t|` counted as a tie.
+  Against Stata `boottest` with full enumeration the p-values agree exactly
+  and the bounds to `boottest`'s own `ptol`
+  (`test_hdfe_wild_boottest_parity.py`). `wild=True` with `weights=` now
+  raises instead of returning an unweighted bootstrap.
+- **`sp.hdfe_ols` / `sp.absorb_ols` omit collinear regressors and count
+  nested fixed effects as `reghdfe` does.** A regressor spanned by the fixed
+  effects made the solve raise (exact) or, with float noise, returned a
+  coefficient of order 1e5 that moved the others (Web of Power Huai column:
+  0.0196 against 0.0214); it is now omitted with a warning and reported as
+  NaN, using `reghdfe`'s `collinear_tol`. Absorbed degrees of freedom follow
+  `reghdfe`'s default `dofadjustments(pairwise clusters continuous)`: a FE
+  nested in another (`year` inside `region x year`, `county` inside
+  `prefecture`) is no longer charged in full, which made SEs 0.5-0.8% too
+  large. Against `reghdfe` 6.12.3 estimates, SEs and `e(df_a)` agree
+  (`test_hdfe_nested_collinear_parity.py`); the documented
+  `absorb(county i.pref##c.year)` gap (df_a 41 against 36) is closed.
+- **`sp.ivreg(vce='wild')` reports the test-inversion confidence set.** The
+  interval was the null-imposed bootstrap-t quantiles placed around the
+  estimate, valid only at the null value (ADH, AER 2013: [-0.496, -0.078]
+  against `boottest`'s [-0.580, -0.112]). It is now `boottest`'s: the
+  `{b0 : p(b0) > alpha}` set over the same draws. With one endogenous
+  regressor the draws are vectorised (Frisch-Waugh-Lovell per draw), so the
+  inversion takes seconds; several endogenous regressors use the per-draw
+  loop. Against Stata `boottest` after `ivregress` with enumerated
+  Rademacher weights the p-value is exact and the bounds within
+  `boottest`'s `ptol` (`test_iv_wild_ci_inversion_parity.py`).
+- **`sp.romano_wolf` uses each outcome's own sample and has no p-value
+  floor.** Rows missing *any* outcome were dropped from every regression
+  (Kinship, QJE 2019: six samples of 66-79 countries shrank to 15); each
+  outcome now uses its own non-missing rows, as Stata `rwolf`, reported in
+  `table['n_obs']`. A bootstrap draw in which a control dummy was all zero
+  made the fit singular and was scored as `t* = 0`, i.e. as exceeding every
+  observed statistic -- a floor under `p_rw` (UCT, QJE 2016: 0.027 at
+  `|t| = 10`); aliased controls are now omitted per draw and only draws with
+  an unidentified treatment coefficient are discarded, with a warning. The
+  bootstrap statistic is the studentised `|b* - b| / se*` of Clarke, Romano
+  & Wolf (2020) rather than `|b*/se* - b/se|`.
+- **`sp.rlasso_iv` returns NaN when no instrument is selected.** The
+  coefficient is then not identified; it used to come back with an SE of
+  order 1e14 (AI-tocracy, QJE 2023). A warning names the regressor.
+- **Weak-IV statistics with absorbed fixed effects match `ivreghdfe`.**
+  `sp.anderson_rubin_test(absorb=, cluster=)` computed the cluster-robust
+  AR statistic in score form -- the cluster meat built from `y - b0 d`
+  instead of the reduced-form residual -- which disagrees with the
+  reduced-form test whenever the instrument matters (Web of Power Table 4
+  col. 4: p = 0.068 against `ivreghdfe`'s 0.0246). It is now the Wald form
+  `ivreg2` reports. The absorbed-FE charge shared by `anderson_rubin_test`,
+  `effective_f_test`, `iv_diag` and `sp.iv(absorb=)` also applies `reghdfe`'s
+  pairwise mobility-group rule, so a FE nested in another (`year` inside
+  `prefecture x year`) is no longer charged (223 against `ivreghdfe`'s 209
+  there; AR F, effective F and the IV SE were ~1.6% off). Against
+  `ivreghdfe ..., ffirst` the AR F and p-value, the Kleibergen-Paap F, the
+  coefficient and its SE agree to 1e-10 (`test_weakiv_nested_fe_Stata_parity.py`).
+- **AKM shift-share inference drops collinear shares exactly as
+  `ShiftShareSE`.** `sp.shift_share_se` / `sp.ssaggregate` dropped
+  collinear share columns with a one-pass Gram-Schmidt test; R's
+  `qr()` (LINPACK `dqrdc2`, limited pivoting with downdated norms) keeps a
+  different set on nearly collinear matrices (ADH's raw 794 industries: 781
+  columns against R's 776, AKM SE 4.6e4 against R's 1.5e4). The selection
+  is now a port of `dqrdc2`, and the kept columns and AKM SE equal
+  `ShiftShareSE` 1.1.0 (`test_akm_collinear_shares_R_parity.py`). A share
+  matrix that stays numerically singular after the drop (condition number
+  above 1e8) now warns that the AKM / AKM0 SEs are unreliable -- R returns
+  them silently; BHJ's cleaned 773-industry file gives R's 0.1103 on both
+  sides.
+- **`sp.lee_bounds(trimming='leebounds')` reproduces Stata `leebounds`.**
+  `leebounds` stores the trimming percentage and the quantile threshold in
+  16-digit local macros; the rounded threshold can land one unit in the
+  last place beyond the data and drop the quantile observation, so its
+  bounds differ from Lee's rule on six of eight float-stored test samples
+  (UCT, QJE 2016, Table III assets: lower bound -3.38 in Stata, -2.51 under
+  Lee's rule). The new option performs the same rounding and tie branch;
+  bounds agree to 1e-12 and analytic SEs to 1e-8
+  (`test_lee_bounds_leebounds_Stata_parity.py`). The default stays Lee's
+  rule; the docstring no longer claims it equals `leebounds` for
+  continuous outcomes.
+- **`sp.ppmlhdfe` drops separated observations by default.** The default
+  `separation=True` used to warn and keep them: fixed effects of all-zero
+  groups were chased towards minus infinity, IRLS crawled (a 923k-row panel
+  did not finish in 86 minutes), and on a subsample the slopes differed from
+  Stata `ppmlhdfe` / `sp.fepois` at 1e-3 relative with no error, with `N`
+  and the cluster count including the separated rows. It now removes them
+  with the `fe` and single-regressor `simplex` rules Stata applies by
+  default (`correia2020fast`), reports `model_info['n_separated']` and
+  warns; regressors left identically zero are omitted, as in Stata.
+  `separation='warn'` restores the old behaviour. The fixed-effect
+  projections are also vectorised (`np.bincount` instead of a per-group
+  mask loop): the 46k-row, 2.2k-unit subsample that took 299 s now takes
+  well under a second. The Track A fixtures that run through this code
+  (37, 42, 47, 58) have no separated rows and reproduce their committed
+  results to within 6e-15 relative.
+
+- **`sp.did(method="sdid")` and `sp.did_analysis(method="sdid")` estimated
+  staggered panels as a block design, silently.** Both read each unit's first
+  treated period from `treat` and took the earliest one as every treated
+  unit's adoption period, so a later cohort's pre-adoption periods counted as
+  treated: 1.54 against a true effect of 2 on a two-cohort test panel, with
+  no warning. Several adoption periods are now estimated cohort by cohort
+  through `sp.sdid(treat=...)` (below); a single-cohort panel returns exactly
+  what it did before. `sp.did(method="sdid")` also passes `seed=` /
+  `random_state=` on -- they were accepted and dropped, so its placebo /
+  bootstrap SE changed on every run -- and `did_analysis(method="sdid")`
+  requires `id=`. See MIGRATION.md#sdid-staggered.
+
+- **`sp.optimal_design` reported every sample size twice as large as needed.**
+  The individual and stratified branches returned the total sample of the
+  two-sample power formula as `n_per_arm` (and doubled it again for
+  `n_total`); the cluster branch doubled the cluster count the same way; the
+  `mde=None` branch ignored the sample size; the cost-optimal cluster size was
+  never used. Sizes now follow the formula (documented in the docstring) and
+  agree with `sp.power` / `sp.power_cluster_rct`; solving for the MDE needs
+  `n=` or `n_clusters=`. See MIGRATION.md#design-and-diagnostic-fixes.
+- **Hausman test.** `sp.hausman_test` estimated the FE / RE variances itself
+  and disagreed with Stata by up to 50x on the statistic; it now shares the
+  `PanelResults.hausman_test` implementation, which matches Stata 18
+  `hausman fe re` to 1e-6 (`tests/reference_parity/test_hausman_stata_parity.py`).
+  Both clamped a negative statistic to 0 and recommended RE with p = 1 -- on
+  panels where the unit effect loads on the regressors, i.e. exactly where FE is
+  needed; a negative statistic is now `recommendation="inconclusive"`,
+  `pvalue=nan`, with an `AssumptionWarning`.
+- **`sp.compare_estimators` dropped methods silently.** `matching` (in the
+  default list) and `dml` called their estimators with keywords they do not
+  take; the per-method `try` turned the error into a warning and the row
+  vanished. All seven methods now run, and the IPW bootstrap is seeded so the
+  table is reproducible.
+- **`sp.estat` IV tests never ran.** `endogenous` / `overid` looked up
+  `model_info` keys no IV estimator writes, and `estat(result, "all")` did not
+  recognise `sp.ivreg`'s `"IV-2SLS"` label; they now read the fit's Wu-Hausman
+  F and Sargan / Hansen J statistics.
+
+### Changed
+
+- **`sp.event_study_vcov` is now pinned against R and Stata, off-diagonal
+  blocks included.** Track A modules 05 / 17 / 73 / 85 compared each
+  event-time coefficient and its SE, i.e. only the diagonal of the
+  covariance that `sp.uniform_bands` and the HonestDiD FLCI consume.
+  `tests/reference_parity/test_event_study_vcov_R_parity.py` and
+  `test_event_study_vcov_Stata_parity.py` now compare the full matrix, read
+  through `sp.event_study_vcov`, for six estimators on the Track A CSV
+  bytes: `sp.callaway_santanna` against `did::aggte`'s influence-function
+  covariance (3.4e-15), `sp.event_study` against `fixest` (5.1e-13),
+  `sp.sun_abraham(share_variance=False)` against `fixest::sunab` (8.9e-11),
+  `sp.gardner_did(event_study=True)` against `did2s` (6.7e-11),
+  `sp.did_imputation` against Stata `did_imputation` (1.2e-9) and
+  `sp.etwfe` against `etwfe::emfx(type="event")` (3.4e-9 not-yet, 8.1e-8
+  never-treated). Each reference is run with its iterative or numerical
+  step tightened so that it is the exact solution. At their defaults,
+  `did2s` sits ~1e-7 away (fixest `fixef.tol` 1e-6), `did_imputation`
+  2e-5 (imputation-weight `tol` 1e-6) and `etwfe` 1e-6 to 3e-5
+  (marginaleffects' forward-difference Jacobian; StatsPAI's is analytic).
+  `did_imputation`'s own point estimates stay 3.6e-7 away because
+  `reghdfe`'s solver tolerance is not exposed; an exact dense `regress` in
+  the same Stata run matches StatsPAI to 1.0e-11. No numbers moved. The
+  parity grade goes from unverified to bit-exact. `sp.uniform_bands` draws
+  its sup-t critical value by Monte Carlo, so it is graded analytical-only.
+  It passes an equivalence test against `mvtnorm::qmvnorm` (20 seeds,
+  margin +/-0.005). Its docstring understated the Monte Carlo error: the
+  seed-to-seed SD at the default 100,000 draws is about 5e-3, not 1e-3.
+
+- `sp.parity_status(...).summary()` no longer contradicts itself on
+  analytical-only and external-replication rows that name a reference. It
+  used to print `no external software reference vs <reference>` even when
+  the reference was software (e.g. `wooldridge_prod` against Stata
+  `prodest`). Such rows now read `known-value check against <reference>;
+  not graded as cross-language parity`. Grades are unchanged.
+
+- **CI: the pandas-3 lane runs nightly instead of on every push.**
+  `test-pandas3` (~45 min, the full suite under pandas 3.x) now runs on a
+  nightly schedule, on pull requests, on releases and on manual `full` /
+  publish dispatches. Every push to main still gets the fast gate, the
+  quality ratchets, `import-budget`, `security` and the `Parity guards`
+  workflow, which is unchanged. The concurrency group now includes the event
+  name so a push never cancels the nightly run.
+
+- `scripts/signature_house_style.py` counts a legacy-named parameter as
+  converged when the function accepts the canonical spelling through
+  `@accepts_aliases`, and the ratchet baseline was lowered to the observed
+  counts (legacy sites 376 -> 69). Signatures keep the reference package's
+  parameter names by decision -- see `docs/guides/grammar.md`.
+- **`sp.regtable` / `sp.esttab` / `sp.modelsummary` tabulate Tobit and other
+  limited-dependent-variable fits term by term.** They collapsed these
+  `CausalResult`s to the headline estimand: one row named `beta_x1`, with the
+  intercept (`const`) and `sigma` missing. `sp.etable` on non-pyfixest results
+  now renders through `sp.regtable` (same `"coef*** (se)"` layout), so every
+  table entry point reports identical numbers from one formatter; results
+  whose standard errors are bare arrays no longer break `sp.regtable`.
+- `sp.dgp_bunching` generated no bunching (it scaled incomes above the kink
+  without moving anyone onto it), so `sp.bunching` found nothing on the
+  package's own demonstration data. It now follows the iso-elastic kink model
+  (new `t0=` / `t1=` marginal tax rates; `df.attrs` records `dt`, the bunching
+  interval and the number of bunchers).
+- About 120 docstring examples across 91 modules failed under
+  `pytest --doctest-modules` (undefined `sp` / `df`, unchecked or stale output,
+  references to names that do not exist such as `sp.synth.bsts_synth` and
+  `statspai.compat.SklearnDID`); they are now self-contained and checked.
+- **One precision system for every exit of a result object.**
+  `CausalResult.to_latex()` was pinned at `%.4f` with no precision argument
+  and `.summary()` printed six decimals, while the other exporters used the
+  adaptive default -- the same ATT read `0.3326`, `0.333` and `0.332635`.
+  Both now accept `fmt=` / `digits=` and default to `"auto"`; `.summary()`
+  floors p-values at `<0.001`. The generic `Field | Value` table used `%.4g`
+  in LaTeX and `%.6g` elsewhere; all three display surfaces now share the
+  adaptive formatter (`538,582`, not `5.386e+05`). `to_dict()` /
+  `to_excel()` keep full precision. Display only -- no estimate changes. See
+  MIGRATION.md#result-display-precision.
+- **`regtable(stats_fmt=...)` defaults to `"stat"` instead of `"%.3f"`:**
+  three decimals, given up only as the integer part grows past six figures,
+  so R2 still reads `0.090` and an F of 538582.398 reads `538,582`. Pass
+  `stats_fmt="%.3f"` for the old rendering.
+
+### Fixed
+
+- **Printing a large `sp.forest_group_effects` or `best_linear_projection`
+  table from a fixed-effects forest no longer raises.** Both put their
+  covariance matrix in `DataFrame.attrs["vcov"]`; pandas compares attrs with
+  `==` when it concatenates or truncates a frame for display, and a raw array
+  made that `ValueError: The truth value of an array ... is ambiguous`. The
+  matrix is now a read-only array whose `==` returns one bool; indexing, `@`
+  and ufuncs are unchanged (`np.equal` still compares elementwise). No
+  numbers change.
+- **`CausalResult.to_latex()` emitted LaTeX that does not compile.** Cells,
+  headers and notes went out unescaped: a matching result's
+  `propensity_score` row and `mean_treated` / `mean_control` headers halt
+  `pdflatex` on the bare `_`, and the star legend's `p<0.1` typesets as
+  `p¡0.1` under the default OT1 encoding. Escaping now runs over cells,
+  headers and notes (a caller-supplied `caption=` still passes through
+  verbatim). `tests/test_latex_escaping.py` compiles the output with a real
+  TeX engine when one is installed.
+- **Five copies of the LaTeX escaper had drifted** (`output/estimates.py`,
+  `synth/exports.py`, `synth/report.py`, `did/report.py`,
+  `_result_serialize.py`); two omitted `\`, none covered `<` / `>`. All now
+  delegate to `output._format.latex_escape`.
+- **The generic `Field | Value` table (`ResultProtocolMixin.to_latex`) had
+  three LaTeX faults:** escaping covered only `_ % &`; booleans rendered as
+  the amsmath macro `\text{True}` (undefined without amsmath); and the
+  generated caption (the class name) was raw. Multi-line values are
+  flattened and truncated to 120 characters.
+- **The star legend printed `p<0.00`** for `star_levels=(0.05, 0.01,
+  0.001)`; thresholds now widen only as far as they need (`p<0.001`).
+- **`sp.etable([m1, m2])` returned an empty table, silently.** A lone list is
+  unwrapped for `etable` / `modelsummary` / `esttab` / `outreg2`, and the
+  `TypeError` for an argument that cannot be tabulated now names its
+  position and type and says how to recover.
+- **The registry example for `sp.match` could not run** (`treatment=` /
+  `outcome=` instead of `treat=` / `y=`). A new audit,
+  `scripts/registry_example_audit.py` (gated at zero findings by
+  `tests/test_registry_example_audit.py`), parses every registry `example=`
+  and checks its keywords against the real signature, through
+  `@accepts_aliases`.
+
 ## [1.32.0] — 2026-09-27
 
 ### Added
@@ -3540,7 +17264,6 @@ Stata. Not fixed in this release: `src/statspai/postestimation/` is being rework
   `cmprsk` code is copied, and `cmprsk` is used only to generate test
   reference values.
 
-
 ### Added
 
 - **Opt-in IRM ATE OOF audit records.** `sp.dml`, `sp.DoubleML.fit`, and
@@ -4276,7 +17999,6 @@ reference sides re-derive with zero drift (R 89/89, Stata 85/85, Python 89/89).
   (Montana 0.84 / Nevada 0.16, ATT -13.09). It now shows what the code prints
   (ATT -19.76, p = 3/39, six donors led by Utah 0.377), explains the rank-based
   p-value, and points to `covariates=` for an ADH-style specification.
-
 
 ### ⚠️ Evidence-grade corrections
 
@@ -5070,7 +18792,6 @@ two maintained by the methods' authors or their groups).
   test, joined by `test_wooldridge_did_recovers_known_cohort_atts`, which
   checks the per-cohort ATTs against the fixture's own `tau` column.
 
-
 - **`sp.rdsensitivity` no longer hangs.** It built a matplotlib figure
   unconditionally and ended with `plt.show()`, which under an interactive
   backend blocks until a human closes the window — so the call never
@@ -5471,7 +19192,6 @@ estimates are unchanged throughout; standard errors move as described.
   script no longer needs `ssc(fixef.K = "none")`. SEs move by 0.28% on
   that fixture.
 
-
 First full CI matrix run after v1.23.0 (13 legs: Linux / macOS / Windows ×
 Python 3.9–3.13) came back 12 red. Triaging it turned up three defects that
 were real, not runner noise: two estimators whose answer depended on which
@@ -5738,7 +19458,6 @@ via Crossref and the published PDF.
   row never joined and the 18% gap sat in the archive uncompared by
   construction, documented as "SE rows are side-specific". All three now
   emit `se_att` and the comparison is live.
-
 
 - **`sp.did_imputation` pre-treatment event-study coefficients were the
   `fect`/`did2s` in-sample residual averages, not the BJS ones the
@@ -6032,7 +19751,6 @@ via Crossref and the published PDF.
 
   Object coverage moves from 26 pinned / 35 unpinned to **30 / 31**.
 
-
 - **Parity module 84: the BJS pre-treatment lead vector.** Module 16 pins
   the pooled ATT; this pins the object the v1.23.0 correctness fix
   actually lived in. The three leads reproduce Stata `did_imputation,
@@ -6127,7 +19845,6 @@ via Crossref and the published PDF.
   bare `t` before `tau`. Horizon rows were crediting coverage the
   archive did not have. Object coverage is now 61 reported / 26 with a
   reference value / 35 without.
-
 
 - **R-style covariate formulas on `sp.callaway_santanna` and
   `sp.drdid`.** `x=` / `covariates=` now accept a one-sided formula as
@@ -6714,7 +20431,6 @@ via Crossref and the published PDF.
 
 ### ⚠️ Correctness
 
-
 - **`sp.cardinality_match` violated its own SMD tolerance.** The estimator
   maximises the number matched *subject to* a standardised-mean-difference
   bound on every covariate — the bound is the whole point. It relaxed the
@@ -6758,7 +20474,6 @@ via Crossref and the published PDF.
   estimate or standard error changes. Zero total weight now returns `nan`
   instead of dividing by zero. See
   [`MIGRATION.md`](MIGRATION.md#weighted-ks-exact).
-
 
 - **`sp.aggte` and `sp.callaway_santanna` standard errors were too small.**
   The Callaway–Sant'Anna aggregation weights are *estimated* cohort shares
@@ -6818,7 +20533,6 @@ via Crossref and the published PDF.
   decimal ceiling escapes to scientific notation rather than displaying a
   nonzero estimate as an exact zero. Values at or above `0.001` are
   unaffected.
-
 
 - **`sp.regress` / `sp.ivreg` silently ignored `vcov=`, returning
   unclustered standard errors.** The pyfixest spelling a user carries
@@ -6956,7 +20670,6 @@ via Crossref and the published PDF.
 
 ### Added
 
-
 - **DiD option depth vs Stata — one campaign, six estimators.** Audited
   against the installed `.ado` help files rather than a summary, which
   overturned two commonly-repeated claims: `csdid`'s `asinr` is a
@@ -7000,8 +20713,6 @@ via Crossref and the published PDF.
   All new paths are pinned against Stata 18 MP with reproducible
   do-files under `tests/stata_parity/` (82-85).
 
-
-
 - **One precision vocabulary across every exporter**, borrowed from the
   spellings Stata and R users already type. `sp.regtable`, `sp.esttab`,
   `sp.modelsummary`, `sp.sumstats`, `sp.mean_comparison`, `sp.outreg2`,
@@ -7039,8 +20750,6 @@ via Crossref and the published PDF.
   omitted precision entirely, so agents had no way to discover the knob.
 
 ### Changed
-
-
 
 - **`sp.regtable` defaults to `fmt="auto"`** (was `"%.3f"`), and
   `sp.esttab` / `sp.modelsummary` follow it (both were `"%.4f"`). For
@@ -7168,7 +20877,6 @@ via Crossref and the published PDF.
   observation. `tests/panel/test_demean_parity_within.py` encoded the same
   inconsistency (it hard-coded the R index under a comment claiming it was
   the Python one) and now checks the observation all three sides share.
-
 
 - **Every remaining `STATA_SKIP_REASON` re-measured.** Three reasons
   asserted that a package was "not installed in the verified local
@@ -7305,7 +21013,6 @@ via Crossref and the published PDF.
   random-assignment baselines. Accepts raw arrays, CATE-bearing
   results, or fitted forests.
 
-
 - **Event-study rows lost their event time in `tidy()`.** Every row of
   a dynamic `sp.aggte(..., type="dynamic")` result was labelled
   `att(g=,t=)` — the group-time template applied to a frame that has
@@ -7346,7 +21053,6 @@ via Crossref and the published PDF.
   `model_info` keys such as `_pscore` no longer leak into the footer.
 
 ### Fixed
-
 
 - **128 registry entries hid parameters from `sp.function_schema()`.**
   The agent-facing schema is built from hand-written `params=` lists that
@@ -7404,7 +21110,6 @@ via Crossref and the published PDF.
   errors plus linear-algebra failures respectively). **No behaviour change
   on paths that already worked** — an unexpected exception now surfaces
   instead of being miscounted.
-
 
 - **`sp.ri_test` dropped rows with missing values silently.** Passing
   `cluster=` where the cluster id is itself missing shrank the sample
@@ -7564,8 +21269,6 @@ via Crossref and the published PDF.
   with a binary treatment every control already shares the baseline of zero.
   This closes the `[待核验]` marker on switch-off; the paper's own variance
   formula is what remains.
-
-
 
 - **All eight bool-typed `robust=` sites now reject the string form; seven
   of them used to accept it silently.** `sp.interactive_fe` and
@@ -9115,7 +22818,6 @@ via Crossref and the published PDF.
   the remaining gap. New guard:
   `tests/reference_parity/test_honest_did_backend_parity.py`.
   See [MIGRATION](MIGRATION.md#honest-did-flci).
-
 
 - **⚠️ `sp.callaway_santanna(panel=False, estimator='reg')` with covariates
   changed estimator.** It previously residualised the outcome on the
@@ -12445,7 +26147,7 @@ Three independent hardening tracks land together:
   [`tests/perf/_common.py`](tests/perf/_common.py) shared utilities;
   `tests/perf/05_feols_jax_bootstrap_bench.py` rewritten on top.
 - Full-suite validation snapshot refreshed in
-  [`test_results_full_suite.md`](test_results_full_suite.md).
+  [`docs/test_results_full_suite.md`](docs/test_results_full_suite.md).
 
 ## [1.15.1] — 2026-05-07
 

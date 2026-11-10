@@ -12,6 +12,7 @@ References
 - Cameron, A.C. and Trivedi, P.K. (2005). Microeconometrics: Methods and Applications. [@mccullagh1989generalized]
 """
 
+import re
 import warnings
 from typing import Any, Dict, List, Optional, Type, Union
 
@@ -20,11 +21,12 @@ import pandas as pd
 from scipy import optimize, special, stats
 
 from .._aliases import accepts_aliases
+from ..core._call_record import records_call
 from ..core._vcov_spec import markout_clusters
 from ..core.base import BaseEstimator, BaseModel
 from ..core.results import EconometricResults
 from ..core.utils import _coerce_string_extension_dtypes, create_design_matrices
-from ..exceptions import DataInsufficient, MethodIncompatibility
+from ..exceptions import ColumnNotFound, DataInsufficient, MethodIncompatibility
 from ..output._lineage import records_provenance
 
 
@@ -230,6 +232,76 @@ class CLogLogLink(LinkFunction):
         return _as_float_array(1.0 / ((1 - mu) * (-np.log(1 - mu))))
 
 
+class CauchitLink(LinkFunction):
+    """Cauchy quantile link, ``eta = tan(pi (mu - 1/2))``.
+
+    The heavy-tailed member of the binary-link family (R ``binomial(link =
+    "cauchit")``): fitted probabilities approach 0 and 1 far more slowly
+    than under logit or probit, so a few observations the linear index
+    predicts badly move the fit less.
+    """
+
+    name = "cauchit"
+
+    def link(self, mu: np.ndarray) -> np.ndarray:
+        mu = np.clip(mu, 1e-15, 1 - 1e-15)
+        return _as_float_array(np.tan(np.pi * (mu - 0.5)))
+
+    def inverse(self, eta: np.ndarray) -> np.ndarray:
+        return _as_float_array(0.5 + np.arctan(eta) / np.pi)
+
+    def deriv(self, mu: np.ndarray) -> np.ndarray:
+        mu = np.clip(mu, 1e-15, 1 - 1e-15)
+        eta = np.tan(np.pi * (mu - 0.5))
+        return _as_float_array(np.pi * (1.0 + eta**2))
+
+
+class RobitLink(LinkFunction):
+    """Student-t quantile link, ``mu = T_dof(eta)`` (Liu 2004).
+
+    Binary regression whose latent error is Student-t rather than
+    logistic or normal. With few degrees of freedom an observation far
+    on the wrong side of the fitted index costs little likelihood, so
+    isolated miscoded or atypical outcomes move the coefficients less
+    than under logit. ``dof = 1`` is the cauchit link, ``dof -> inf``
+    the probit link; with ``dof = 7`` the curve is close to the
+    logistic one after dividing the index by about 1.55.
+
+    ``unit_variance=True`` rescales the latent error to variance one
+    (scale ``sqrt((dof - 2) / dof)``, needs ``dof > 2``), the
+    parameterisation of Gelman, Hill and Vehtari (2020). The fitted
+    probabilities are the same; the coefficients are multiplied by that
+    scale.
+    """
+
+    name = "robit"
+
+    def __init__(self, dof: float = 7.0, unit_variance: bool = False):
+        if not dof > 0:
+            raise MethodIncompatibility(
+                f"The robit link needs positive degrees of freedom; got {dof}."
+            )
+        if unit_variance and not dof > 2:
+            raise MethodIncompatibility(
+                "A unit-variance robit link needs more than 2 degrees of freedom."
+            )
+        self.dof = float(dof)
+        self.scale = float(np.sqrt((dof - 2.0) / dof)) if unit_variance else 1.0
+        self.name = f"robit({dof:g})"
+
+    def link(self, mu: np.ndarray) -> np.ndarray:
+        mu = np.clip(mu, 1e-15, 1 - 1e-15)
+        return _as_float_array(self.scale * stats.t.ppf(mu, self.dof))
+
+    def inverse(self, eta: np.ndarray) -> np.ndarray:
+        return _as_float_array(stats.t.cdf(np.asarray(eta) / self.scale, self.dof))
+
+    def deriv(self, mu: np.ndarray) -> np.ndarray:
+        mu = np.clip(mu, 1e-15, 1 - 1e-15)
+        z = stats.t.ppf(mu, self.dof)
+        return _as_float_array(self.scale / stats.t.pdf(z, self.dof))
+
+
 class PowerLink(LinkFunction):
     name = "power"
 
@@ -274,6 +346,7 @@ LINK_FUNCTIONS: Dict[str, Type[LinkFunction]] = {
     "probit": ProbitLink,
     "inverse": InverseLink,
     "cloglog": CLogLogLink,
+    "cauchit": CauchitLink,
     "power": PowerLink,
     "sqrt": SqrtLink,
 }
@@ -611,6 +684,44 @@ FAMILIES: Dict[str, Type[Family]] = {
 }
 
 
+def require_outcome_in_support(
+    y: Any, family: "Family", who: str, dependent_var: Any = "y"
+) -> None:
+    """Refuse an outcome outside the support of ``family``.
+
+    IRLS on a negative count or on a "proportion" of 2 does not fail, it
+    returns coefficients of order 1e15. Non-integer counts are allowed
+    (PPML), and so are proportions in [0, 1] (fractional / grouped
+    binomial). Shared by ``sp.glm``, ``sp.gee`` and ``sp.gam``.
+    """
+    _y = np.asarray(y, dtype=float)
+    if isinstance(family, (Poisson, NegativeBinomial)):
+        _n_bad = int(np.sum(_y < 0))
+        _support = "non-negative"
+    elif isinstance(family, Binomial):
+        _n_bad = int(np.sum((_y < 0) | (_y > 1)))
+        _support = "in [0, 1] (a 0/1 outcome or a proportion)"
+    else:
+        _n_bad = 0
+    if _n_bad:
+        raise MethodIncompatibility(
+            f"{who}: the outcome '{dependent_var}' has {_n_bad} "
+            f"value(s) outside the support of the {family.name} "
+            f"family; it must be {_support}.",
+            recovery_hint=(
+                "Check the outcome coding. For counts of successes out "
+                "of several trials use cbind(successes, failures) ~ x, "
+                "or the share with weights= set to the number of trials."
+            ),
+            diagnostics={
+                "family": family.name,
+                "n_out_of_support": _n_bad,
+                "y_min": float(np.min(_y)),
+                "y_max": float(np.max(_y)),
+            },
+        )
+
+
 def _get_family(family: str) -> Family:
     family = _require_string(family, "family")
     key = family.lower().replace("-", "_").replace(" ", "_")
@@ -626,11 +737,85 @@ def _get_family(family: str) -> Family:
     return FAMILIES[key]()
 
 
+_CBIND_LHS = re.compile(r"^\s*cbind\(\s*([^,()]+?)\s*,\s*([^()]+?)\s*\)\s*~")
+
+
+def _grouped_binomial(
+    match: Any, formula: str, data: pd.DataFrame, family: str, weights: Any
+) -> tuple:
+    """``cbind(successes, failures) ~ x`` as a share weighted by trials.
+
+    R's way of writing a binomial regression on grouped counts. The
+    likelihood of ``successes`` out of ``successes + failures`` trials is
+    the Bernoulli likelihood of the share with the number of trials as a
+    frequency weight, which is how the fit is carried out.
+    """
+    if "binomial" not in str(family).lower():
+        raise MethodIncompatibility(
+            "A cbind(successes, failures) outcome is for family='binomial'.",
+            recovery_hint="Pass family='binomial'.",
+            diagnostics={"family": family},
+        )
+    if weights is not None:
+        raise MethodIncompatibility(
+            "With a cbind(successes, failures) outcome the number of trials "
+            "is the weight; weights= cannot be combined with it.",
+            recovery_hint="Drop weights=, or fit the share with your own weights.",
+            diagnostics={"weights": weights},
+        )
+    try:
+        successes = np.asarray(data.eval(match.group(1)), dtype=float)
+        failures = np.asarray(data.eval(match.group(2)), dtype=float)
+    except (
+        SyntaxError,
+        NameError,
+        KeyError,
+        TypeError,
+        ValueError,
+        AttributeError,
+        pd.errors.UndefinedVariableError,
+    ) as exc:
+        raise MethodIncompatibility(
+            f"Could not evaluate cbind({match.group(1)}, {match.group(2)}) "
+            f"on the data: {exc}",
+            recovery_hint="Use column names or arithmetic on columns.",
+            diagnostics={"formula": formula},
+        ) from exc
+    trials = successes + failures
+    bad = (successes < 0) | (failures < 0)
+    if np.any(bad[np.isfinite(trials)]):
+        raise MethodIncompatibility(
+            "Successes and failures must be non-negative counts.",
+            recovery_hint="Check the two columns inside cbind().",
+            diagnostics={"n_negative": int(np.sum(bad))},
+        )
+    with np.errstate(divide="ignore", invalid="ignore"):
+        share = np.where(trials > 0, successes / trials, np.nan)
+    label = f"cbind({match.group(1)}, {match.group(2)})"
+    frame = data.assign(**{label: share, "_trials": trials})
+    frame = frame.loc[trials > 0]
+    rhs = formula.split("~", 1)[1]
+    return f'Q("{label}") ~{rhs}', frame, "_trials"
+
+
+_ROBIT_SPEC = re.compile(r"^robit(?:\(([0-9.eE+]+)(,unit)?\))?$")
+
+
 def _get_link(link: Optional[str], family: Family) -> LinkFunction:
     if link is None:
         link = family.canonical_link
     link = _require_string(link, "link")
     key = link.lower()
+    robit = _ROBIT_SPEC.match(key.replace(" ", ""))
+    if robit is not None:
+        if not isinstance(family, Binomial):
+            raise MethodIncompatibility(
+                "The robit link is for family='binomial'.",
+                recovery_hint="Use family='binomial' with link='robit(dof)'.",
+                diagnostics={"link": link},
+            )
+        dof = float(robit.group(1)) if robit.group(1) else 7.0
+        return RobitLink(dof, unit_variance=robit.group(2) is not None)
     if key not in LINK_FUNCTIONS:
         raise MethodIncompatibility(
             f"Unknown link function '{link}'. Choose from: "
@@ -835,6 +1020,11 @@ class GLMEstimator(BaseEstimator):
         if isinstance(family, NegativeBinomial):
             family.alpha = self._estimate_nb_alpha(y, mu, weights, family.alpha)
 
+        if isinstance(family, Binomial) and np.all((y == 0) | (y == 1)):
+            from .logit_probit import _warn_if_separated
+
+            _warn_if_separated(y, mu)
+
         # ----------------------------------------------------------------
         # Variance-covariance matrix
         # ----------------------------------------------------------------
@@ -857,6 +1047,14 @@ class GLMEstimator(BaseEstimator):
         # Scale (dispersion)
         df_resid = n - k
         phi = family.dispersion(y, mu, weights, df_resid)
+        # The likelihood below keeps the deviance-based scale it has always
+        # been evaluated at; the reported dispersion and the covariance of
+        # the gamma and inverse-Gaussian families use the Pearson statistic,
+        # as R ``summary.glm`` and Stata ``glm`` both do (a gamma fit with a
+        # log link, n = 40: 0.3624 in both, deviance / df is 0.4470).
+        phi_likelihood = phi
+        if family.name in ("gamma", "inverse_gaussian"):
+            phi = float(np.sum(weights * pearson_resid**2) / df_resid)
 
         # Bread: the observed information, Stata ``glm``'s default vce(oim)
         # and the bread of its vce(robust) / vce(cluster). It equals the
@@ -874,12 +1072,47 @@ class GLMEstimator(BaseEstimator):
         if information == "observed" and link.name != family.canonical_link:
             bread = self._observed_information_inverse(X, y, mu, weights, family, link)
 
+        # ``scale=``: the factor on the model-based covariance. Left alone,
+        # it is 1 for the binomial and Poisson families -- the variance the
+        # likelihood implies. ``'x2'`` (Pearson chi-squared / df) and
+        # ``'dev'`` (deviance / df) estimate it instead, which is the
+        # quasi-likelihood covariance (Stata ``glm, scale(x2)``, R's
+        # ``quasipoisson``): valid when the mean is right and the variance
+        # is proportional to the family's.
+        scale = kwargs.pop("scale", None)
+        vcov_scale = phi
+        if scale is not None:
+            if cluster is not None or robust != "nonrobust":
+                raise MethodIncompatibility(
+                    "glm: scale= rescales the model-based covariance; a "
+                    "robust or clustered covariance does not use it.",
+                    recovery_hint="Pass scale= or a robust covariance, not both.",
+                    diagnostics={"scale": scale, "robust": robust},
+                )
+            if isinstance(scale, str):
+                key = scale.lower()
+                if key in ("x2", "pearson"):
+                    vcov_scale = float(np.sum(weights * pearson_resid**2) / df_resid)
+                elif key in ("dev", "deviance"):
+                    vcov_scale = float(family.deviance(y, mu, weights) / df_resid)
+                else:
+                    raise MethodIncompatibility(
+                        f"glm: scale={scale!r} is not 'x2', 'dev' or a number.",
+                        recovery_hint="Use scale='x2' for the Pearson estimate.",
+                    )
+            else:
+                vcov_scale = float(scale)
+                if not np.isfinite(vcov_scale) or vcov_scale <= 0:
+                    raise MethodIncompatibility(
+                        f"glm: scale must be positive, got {scale!r}.",
+                    )
+
         if cluster is not None:
             var_cov = self._cluster_cov(
                 X, y, mu, V, g_prime, weights, bread, cluster, n, k
             )
         elif robust == "nonrobust":
-            var_cov = phi * bread
+            var_cov = vcov_scale * bread
         elif robust == "robust":
             # Stata ``glm, vce(robust)``: the HC0 sandwich times N/(N-1).
             var_cov = (n / (n - 1.0)) * self._robust_cov(
@@ -916,12 +1149,12 @@ class GLMEstimator(BaseEstimator):
 
         # Deviance, log-likelihood, information criteria
         deviance = family.deviance(y, mu, weights)
-        ll = family.log_likelihood(y, mu, weights, phi)
+        ll = family.log_likelihood(y, mu, weights, phi_likelihood)
         null_mu = np.full(n, np.average(y, weights=weights))
         if isinstance(family, Binomial):
             null_mu = np.clip(null_mu, 1e-15, 1 - 1e-15)
         null_dev = family.deviance(y, null_mu, weights)
-        ll_null = family.log_likelihood(y, null_mu, weights, phi)
+        ll_null = family.log_likelihood(y, null_mu, weights, phi_likelihood)
 
         aic = -2 * ll + 2 * k
         bic = -2 * ll + np.log(n) * k
@@ -948,6 +1181,9 @@ class GLMEstimator(BaseEstimator):
             "bic": bic,
             "pseudo_r2": pseudo_r2,
             "dispersion": phi,
+            "vcov_scale": vcov_scale,
+            "scale": scale,
+            "information": information,
             "converged": converged,
             "n_iter": iteration + 1,
         }
@@ -1087,15 +1323,24 @@ class GLMEstimator(BaseEstimator):
         k: int,
         lags: Optional[int] = None,
     ) -> np.ndarray:
-        """Newey-West HAC covariance."""
+        """Newey-West HAC covariance.
+
+        ``V = B [G_0 + sum_{j=1..L} (1 - j/(L+1)) (G_j + G_j')] B`` with
+        ``G_j = sum_t s_t s_{t-j}'`` the *unnormalised* score autocovariance
+        sums and ``B`` the unnormalised inverse information passed in as
+        ``bread`` (Newey & West 1987; ``sandwich::NeweyWest(adjust=FALSE,
+        prewhite=FALSE)``, statsmodels ``cov_type='HAC'``). No small-sample
+        factor, the ``hac_small=False`` default of ``sp.regress``. Through
+        1.39.1 each ``G_j`` was divided by ``n`` while ``B`` was not, which
+        made every standard error too small by ``sqrt(n)``.
+        """
         S = self._score_obs(X, y, mu, V, g_prime, weights)
         if lags is None:
             lags = int(np.floor(4 * (n / 100) ** (2 / 9)))
 
-        gamma_0 = S.T @ S / n
-        gamma_sum = gamma_0.copy()
+        gamma_sum = S.T @ S
         for j in range(1, lags + 1):
-            gamma_j = S[j:].T @ S[:-j] / n
+            gamma_j = S[j:].T @ S[:-j]
             w = 1 - j / (lags + 1)
             gamma_sum += w * (gamma_j + gamma_j.T)
 
@@ -1136,7 +1381,15 @@ class GLMEstimator(BaseEstimator):
                 method="bounded",
             )
             return float(np.exp(res.x))
-        except Exception:
+        except Exception as exc:
+            from ..core._fallback import warn_fallback
+
+            warn_fallback(
+                "NB2 dispersion (alpha) profile likelihood",
+                exc,
+                "keeping the starting value of alpha, so the reported "
+                "dispersion is not a maximum-likelihood estimate",
+            )
             return alpha_init
 
 
@@ -1283,6 +1536,19 @@ class GLMRegression(BaseModel):
                 },
             )
 
+        # A dependent regressor has no maximum-likelihood coefficient; IRLS
+        # used to run to its iteration limit and return values of order 1e14.
+        from ..core._collinear import drop_collinear
+
+        self.X, self.var_names, collinear_omitted, _ = drop_collinear(
+            np.asarray(self.X, dtype=float),
+            self.var_names,
+            "glm",
+            formula=self.formula if self.data is not None else None,
+            design_info=getattr(self, "_design_info", None),
+            stacklevel=4,
+        )
+
         n = len(self.y)
         if n == 0:
             raise DataInsufficient(
@@ -1291,13 +1557,17 @@ class GLMRegression(BaseModel):
                 diagnostics={"nobs": 0},
             )
 
+        require_outcome_in_support(self.y, self.family, "glm", self.dependent_var)
+
         def _aligned_numeric_column(column: str, role: str) -> np.ndarray:
             if self.data is None:
                 raise MethodIncompatibility(f"{role} requires data=.")
             if column not in self.data.columns:
-                raise MethodIncompatibility(
-                    f"{role} column '{column}' is not in data.",
-                    diagnostics={"column": column, "role": role},
+                raise ColumnNotFound.from_missing(
+                    {role: column},
+                    list(self.data.columns),
+                    message=f"{role} column '{column}' is not in data.",
+                    extra_diagnostics={"column": column, "role": role},
                 )
             series = self.data[column]
             if design_index is not None:
@@ -1381,9 +1651,11 @@ class GLMRegression(BaseModel):
             if self.data is None:
                 raise MethodIncompatibility("cluster requires data=.")
             if cluster not in self.data.columns:
-                raise MethodIncompatibility(
-                    f"cluster column '{cluster}' is not in data.",
-                    diagnostics={"column": cluster},
+                raise ColumnNotFound.from_missing(
+                    {"cluster": cluster},
+                    list(self.data.columns),
+                    message=f"cluster column '{cluster}' is not in data.",
+                    extra_diagnostics={"column": cluster},
                 )
             cluster_var = self.data[cluster]
             if design_index is not None:
@@ -1403,6 +1675,10 @@ class GLMRegression(BaseModel):
                     "cluster-robust GLM inference requires at least two " "clusters.",
                     diagnostics={"column": cluster},
                 )
+
+        # weights_as= is a statement about the weights, read here; it is
+        # not an option of the estimator.
+        _weights_as = kwargs.pop("weights_as", None)
 
         # --- estimate ---
         results = self.estimator.estimate(
@@ -1434,15 +1710,54 @@ class GLMRegression(BaseModel):
         )
 
         model_info = {
+            "omitted": collinear_omitted,
             "model_type": "GLM",
             "method": "IRLS (MLE)",
             "family": self.family.name,
             "link": self.link.name,
             "robust": se_label,
             "cluster": cluster,
+            "scale": results.get("scale"),
+            "vcov_scale": results.get("vcov_scale"),
+            # Observed vs expected information changes the SE on a
+            # non-canonical link (Stata glm vs R glm); validation_scope reads it.
+            "information": results.get("information"),
             "converged": results["converged"],
             "n_iter": results["n_iter"],
         }
+        if w is not None:
+            from ..core._agent_summary import note_weight_diagnostics
+
+            _gaussian = self.family.name.lower() in ("gaussian", "normal")
+            note_weight_diagnostics(
+                model_info,
+                w,
+                (
+                    "cluster"
+                    if cluster_var is not None
+                    else ("classical" if robust == "nonrobust" else "robust")
+                ),
+                entry="sp.glm",
+                robust_option="robust='robust' (Stata [pw=])",
+                classical_reading=(
+                    "analytic weights (Stata [aw=])"
+                    if _gaussian
+                    else "frequency weights (Stata [fw=])"
+                ),
+                classical_assumption=(
+                    "precisions (error variance proportional to 1 / w)"
+                    if _gaussian
+                    else "frequencies (each row standing for w identical "
+                    "observations)"
+                ),
+                cluster_keys=(
+                    np.asarray(cluster_var)
+                    if cluster_var is not None and len(cluster_var) == len(w)
+                    else None
+                ),
+                cluster=cluster,
+                weights_as=_weights_as,
+            )
         # Picklable design recipe for postestimation (sp.margins rebuilds
         # the design, incl. C() factors and I() transforms, from it).
         if self.formula is not None:
@@ -1474,6 +1789,13 @@ class GLMRegression(BaseModel):
             "family_obj": self.family,
             "link_obj": self.link,
         }
+        if self._design_info is not None and self.data is not None:
+            from ..postestimation._design import fitted_factor_levels
+
+            # for predict(): which values of each factor the fit saw
+            seen = fitted_factor_levels(self._design_info, self.data.columns)
+            if seen:
+                data_info["factor_levels"] = seen
 
         diagnostics = {
             "Deviance": results["deviance"],
@@ -1577,7 +1899,14 @@ class GLMRegression(BaseModel):
 
             # pandas >= 3.0 string columns are StringDtype, which patsy cannot
             # sniff; coerce to object so prediction rebuilds the same design.
-            data = _coerce_string_extension_dtypes(data)
+            data = _coerce_string_extension_dtypes(
+                data,
+                (
+                    self._design_info
+                    if self._design_info is not None
+                    else self.formula.split("~", 1)[1]
+                ),
+            )
 
             try:
                 if self._design_info is not None:
@@ -1587,9 +1916,26 @@ class GLMRegression(BaseModel):
                         return_type="dataframe",
                     )[0]
                 else:
-                    rhs = self.formula.split("~", 1)[1].strip()
-                    X_new = dmatrix(rhs, data, return_type="dataframe")
+                    from ..core.utils import formula_eval_env, r_formula_idioms
+
+                    rhs = r_formula_idioms(self.formula.split("~", 1)[1].strip())
+
+                    X_new = dmatrix(
+                        rhs,
+                        data,
+                        eval_env=formula_eval_env(),
+                        return_type="dataframe",
+                    )
             except (PatsyError, KeyError, ValueError) as exc:
+                if isinstance(exc, PatsyError):
+                    from ..core.utils import raise_if_formula_names_missing
+
+                    raise_if_formula_names_missing(
+                        self.formula.split("~", 1)[1],
+                        data,
+                        exc,
+                        context="predict: the prediction design matrix",
+                    )
                 raise MethodIncompatibility(
                     "Could not build prediction design matrix from new data.",
                     recovery_hint=(
@@ -1705,6 +2051,7 @@ class GLMRegression(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+@records_call("glm")
 @accepts_aliases(vce="robust")
 @records_provenance("sp.glm")
 @markout_clusters
@@ -1724,6 +2071,8 @@ def glm(
     tol: float = 1e-8,
     alpha: float = 0.05,
     information: str = "observed",
+    scale: Optional[Union[str, float]] = None,
+    weights_as: Optional[str] = None,
 ) -> EconometricResults:
     """
     Fit a Generalized Linear Model.
@@ -1734,7 +2083,14 @@ def glm(
     Parameters
     ----------
     formula : str, optional
-        Model formula (e.g. ``"y ~ x1 + x2"``).
+        Model formula (e.g. ``"y ~ x1 + x2"``). With
+        ``family="binomial"`` the outcome may be grouped counts written
+        the R way, ``"cbind(successes, failures) ~ x"``: the share of
+        successes is fitted with the number of trials as weight.
+        Coefficients, standard errors and deviance are those of the
+        binomial model; the reported log-likelihood is that of the
+        ungrouped 0 / 1 data and omits the binomial coefficients, a
+        constant that cancels in likelihood-ratio tests.
     data : pd.DataFrame, optional
         Data frame containing the variables.
     y : str, optional
@@ -1744,19 +2100,38 @@ def glm(
     family : str, default ``"gaussian"``
         Distribution family. One of ``"gaussian"``, ``"binomial"``,
         ``"poisson"``, ``"gamma"``, ``"inverse_gaussian"``,
-        ``"negative_binomial"``.
+        ``"negative_binomial"``. ``"quasipoisson"`` and
+        ``"quasibinomial"`` (R's names) fit the Poisson / binomial mean
+        model with ``scale="x2"``: same coefficients, standard errors
+        multiplied by the square root of the Pearson dispersion, so
+        overdispersed counts do not produce overconfident intervals.
     link : str or None
         Link function. If ``None`` the canonical link for the chosen
         family is used. Options: ``"identity"``, ``"log"``, ``"logit"``,
-        ``"probit"``, ``"inverse"``, ``"cloglog"``, ``"power"``,
-        ``"sqrt"``.
+        ``"probit"``, ``"inverse"``, ``"cloglog"``, ``"cauchit"``,
+        ``"power"``, ``"sqrt"``, and for a binary outcome
+        ``"robit(dof)"``: a Student-t link with ``dof`` degrees of
+        freedom (``"robit"`` alone is 7), robust to isolated outcomes
+        the index predicts badly; ``"robit(dof,unit)"`` scales the
+        latent error to variance one.
     robust : str, default ``"nonrobust"``
         Standard-error type (``"nonrobust"``, ``"hc0"``-``"hc3"``,
         ``"hac"``).
     cluster : str, optional
         Variable name for clustered standard errors.
     weights : str, optional
-        Variable name for observation weights.
+        Variable name for observation weights. Alone they are frequency
+        weights (Stata ``[fw=]`` / ``[iw=]``), or analytic weights
+        (``[aw=]``) for the gaussian family; for sampling weights say so
+        with ``weights_as='sampling'``.
+    weights_as : {'analytic', 'frequency', 'sampling'}, optional
+        What the weights are. The model-based reading is ``'analytic'``
+        for ``family='gaussian'`` and ``'frequency'`` for every other
+        family; the other of the two is refused. ``'sampling'`` (Stata
+        ``[pw=]``) gives the same coefficients with the robust variance,
+        unless ``robust=`` or ``cluster=`` asks for another. Saying which
+        also silences the warning about dispersed weights under the
+        model-based variance.
     offset : str, optional
         Variable name for offset.
     exposure : str, optional
@@ -1773,6 +2148,25 @@ def glm(
         cluster sandwiches); ``'expected'`` is the IRLS Fisher information
         that R's ``glm`` reports. They coincide for canonical links (logit
         binomial, log Poisson, identity Gaussian) and differ otherwise.
+    scale : {'x2', 'dev'} or float, optional
+        Factor on the model-based covariance matrix. By default the
+        binomial and Poisson families use 1, the variance their likelihood
+        implies, and the Gaussian, gamma and inverse-Gaussian families use
+        the Pearson chi-squared over the residual degrees of freedom, as R
+        ``summary.glm`` and Stata ``glm`` do (through 1.39.3 the gamma and
+        inverse-Gaussian families used the deviance; ``scale='dev'`` gives
+        that back). Stata's default standard errors are these with the
+        observed information, which is the default here; R's use the
+        expected information, ``information='expected'``. The two differ
+        only for a non-canonical link.
+        ``'x2'`` estimates it by the Pearson chi-squared over the
+        residual degrees of freedom and ``'dev'`` by the deviance over
+        them (Stata ``glm, scale(x2)`` / ``scale(dev)``). With
+        ``family='poisson'``, ``scale='x2'`` is the quasi-Poisson
+        covariance: standard errors are multiplied by the square root of
+        the estimated dispersion, the coefficients are unchanged. It
+        cannot be combined with a robust or clustered covariance, which
+        does not rely on the variance function at all.
 
     Returns
     -------
@@ -1822,6 +2216,27 @@ def glm(
     >>> res = sp.glm("cost ~ x1 + x2", data=df, family="gamma", link="log")
     >>> bool(np.isfinite(res.params['x1']))
     True
+
+    A robit (Student-t link) fit of the binary outcome:
+
+    >>> res = sp.glm("admit ~ x1 + x2", data=df, family="binomial",
+    ...              link="robit(4)")
+    >>> bool(res.params['x1'] > 0)
+    True
+
+    Notes
+    -----
+    A regressor that is an exact linear combination of earlier ones (all
+    the indicators of a category next to the constant, a duplicated
+    column) has no maximum-likelihood coefficient. It is omitted with a
+    note, the later member of the dependent set going first as in Stata,
+    and listed in ``result.model_info["omitted"]``. With a binary outcome
+    a ``ConvergenceWarning`` is raised when the outcome is separated by
+    the linear index.
+
+    References
+    ----------
+    liu2004robit, gelman2020regression
     """
     # Handle y/x style specification
     if data is not None:
@@ -1846,10 +2261,42 @@ def glm(
             },
         )
 
+    from ..core._agent_summary import resolve_weights_as
+
+    weights_as = resolve_weights_as(
+        weights_as,
+        has_weights=weights is not None,
+        native=(
+            "analytic" if str(family).lower() in ("gaussian", "normal") else "frequency"
+        ),
+        entry=f"sp.glm(family={str(family)!r})",
+    )
+    if (
+        weights_as == "sampling"
+        and cluster is None
+        and str(robust).lower() == "nonrobust"
+    ):
+        robust = "robust"
+
+    grouped = _CBIND_LHS.match(formula) if isinstance(formula, str) else None
+    if grouped is not None and data is not None:
+        formula, data, weights = _grouped_binomial(
+            grouped, formula, data, family, weights
+        )
+
+    quasi = str(family).lower().replace("-", "").replace("_", "")
+    if quasi in ("quasipoisson", "quasibinomial"):
+        # R's spelling of "same mean model, dispersion estimated from the
+        # Pearson statistic"; the coefficients are those of the base family.
+        family = quasi[len("quasi") :]
+        if scale is None and robust == "nonrobust" and cluster is None:
+            scale = "x2"
+
     model = GLMRegression(formula=formula, data=data, family=family, link=link)
     return model.fit(
         robust=robust,
         cluster=cluster,
+        weights_as=weights_as,
         weights=weights,
         offset=offset,
         exposure=exposure,
@@ -1857,4 +2304,5 @@ def glm(
         tol=tol,
         alpha=alpha,
         information=information,
+        scale=scale,
     )

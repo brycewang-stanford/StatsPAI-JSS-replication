@@ -7,43 +7,75 @@ only (no statsmodels dependency).
 
 Usage
 -----
+>>> import numpy as np
+>>> import pandas as pd
+>>> import statspai as sp
+>>> rng = np.random.default_rng(42)
+>>> df = pd.DataFrame({"x1": rng.normal(size=200), "x2": rng.normal(size=200)})
+>>> df["y"] = 1.0 + 0.5 * df["x1"] - 0.3 * df["x2"] + rng.normal(size=200)
 >>> result = sp.regress("y ~ x1 + x2", data=df)
->>> sp.estat(result, "hettest")       # Breusch-Pagan
->>> sp.estat(result, "white")         # White's general test
->>> sp.estat(result, "reset")         # Ramsey RESET
->>> sp.estat(result, "bgodfrey")      # Breusch-Godfrey serial correlation
->>> sp.estat(result, "dwatson")       # Durbin-Watson
->>> sp.estat(result, "vif")           # Variance Inflation Factors
->>> sp.estat(result, "ic")            # AIC / BIC / HQIC
->>> sp.estat(result, "linktest")      # Specification link test
->>> sp.estat(result, "normality")     # Jarque-Bera + Shapiro-Wilk
->>> sp.estat(result, "leverage")      # Cook's D, DFBETAS
->>> sp.estat(result, "endogenous")    # Durbin-Wu-Hausman (IV)
->>> sp.estat(result, "overid")        # Sargan / Hansen J (IV)
->>> sp.estat(result, "firststage")    # First-stage F (IV)
->>> sp.estat(result, "all")           # Run all applicable tests
+>>> out = sp.estat(result, "hettest", print_results=False)   # Breusch-Pagan
+>>> out["test"]
+'Breusch-Pagan test for heteroskedasticity'
+>>> for name in ["white",       # White's general test
+...              "reset",       # Ramsey RESET
+...              "bgodfrey",    # Breusch-Godfrey serial correlation
+...              "dwatson",     # Durbin-Watson
+...              "vif",         # Variance Inflation Factors
+...              "ic",          # AIC / BIC / HQIC
+...              "linktest",    # Specification link test
+...              "normality",   # Jarque-Bera + Shapiro-Wilk
+...              "leverage"]:   # Cook's D, DFBETAS
+...     print(sp.estat(result, name, print_results=False)["test"])
+White's test for heteroskedasticity
+Ramsey RESET test
+Breusch-Godfrey LM test (1 lag)
+Durbin-Watson test
+Variance Inflation Factors
+Information Criteria
+Specification link test
+Normality of residuals
+Leverage and influence diagnostics
+>>> len(sp.estat(result, "all", print_results=False))  # all applicable tests
+10
+
+IV-specific tests (``"endogenous"`` for Durbin-Wu-Hausman, ``"overid"`` for
+Sargan / Hansen J, ``"firststage"`` for the first-stage F) take an IV result:
+
+>>> z = rng.normal(size=500)
+>>> u = rng.normal(size=500)
+>>> d = z + 0.5 * u + rng.normal(size=500)
+>>> iv_df = pd.DataFrame({"y": 1 + 0.5 * d + u, "d": d, "z": z})
+>>> iv_res = sp.ivreg("y ~ (d ~ z)", data=iv_df)
+>>> fs = sp.estat(iv_res, "firststage", print_results=False)
+>>> fs["statistic_label"], bool(fs["statistic"] > 10)
+('F', True)
 
 References
 ----------
 Breusch, T.S. and Pagan, A.R. (1979). *Econometrica*, 47(5), 1287--1294.
+    [@breusch1979simple]
 White, H. (1980). *Econometrica*, 48(4), 817--838.
 Ramsey, J.B. (1969). *JRSS-B*, 31(2), 350--371.
 Breusch, T.S. (1978). "Testing for Autocorrelation in Dynamic Linear Models."
     *Australian Economic Papers*, 17(31), 334--355. [@breusch1978testing]
 Godfrey, L.G. (1978). *Econometrica*, 46(6), 1293--1301.
 Jarque, C.M. and Bera, A.K. (1987). *International Statistical Review*, 55, 163--172.
-Cook, R.D. (1977). *Technometrics*, 19(1), 15--18. [@breusch1979simple]
+Cook, R.D. (1977). *Technometrics*, 19(1), 15--18. [@cook1977detection]
 """
 
 from __future__ import annotations
 
+import re
 import textwrap
-from itertools import combinations
-from typing import Any, Dict, List, Union
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
-import pandas as pd
 from scipy import stats as sp_stats
+
+from ..exceptions import MethodIncompatibility
+from . import _estat_regression as _reg
+from ._estat_did import DID_AGGREGATIONS, estat_did_aggregate
 
 # ======================================================================
 #  Line characters for pretty-printing
@@ -62,10 +94,16 @@ def estat(
     test: str = "all",
     *,
     print_results: bool = True,
-    lags: int = 1,
+    lags: Optional[int] = None,
     powers: int = 3,
     alpha: float = 0.05,
-) -> Union[Dict[str, Any], List[Dict[str, Any]]]:
+    variables: Union[None, str, Sequence[str], np.ndarray] = None,
+    version: str = "iid",
+    rhs: bool = False,
+    fill: str = "zero",
+    threshold: Optional[float] = None,
+    window: Optional[Sequence[float]] = None,
+) -> Any:
     """
     Unified post-estimation diagnostics dispatcher.
 
@@ -75,24 +113,84 @@ def estat(
         A fitted result object with ``params``, ``data_info``, etc.
     test : str
         Name of the diagnostic test.  One of ``'hettest'``, ``'white'``,
-        ``'reset'``, ``'ovtest'``, ``'bgodfrey'``, ``'dwatson'``, ``'vif'``,
+        ``'imtest'`` (White's test with the skewness and kurtosis parts),
+        ``'reset'``, ``'ovtest'``, ``'bgodfrey'``, ``'durbinalt'`` (Durbin's
+        alternative test), ``'archlm'`` (Engle's LM test for ARCH effects),
+        ``'dwatson'``, ``'vif'``, ``'beta'`` (standardized coefficients, Stata
+        ``regress, beta``),
         ``'ic'``, ``'linktest'``, ``'normality'``, ``'leverage'``,
-        ``'endogenous'``, ``'overid'``, ``'firststage'``, ``'all'``.
+        ``'endogenous'``, ``'overid'``, ``'firststage'``,
+        ``'classification'`` (after ``sp.logit`` / ``sp.probit``), ``'all'``.
+        After ``sp.var``: ``'varlmar'`` (LM test for residual
+        autocorrelation, at lag orders 1 .. ``lags``),
+        ``'varwle'`` (lag exclusion), ``'varstable'`` (eigenvalues),
+        ``'vargranger'`` (Granger causality); after ``sp.vec``:
+        ``'veclmar'``, ``'vecstable'``. Each returns ``{'test', 'table'}``.
+        After ``sp.didregress``: ``'ptrends'`` and ``'granger'``.
+        After ``sp.callaway_santanna`` or ``sp.jwdid`` / ``sp.etwfe``:
+        ``'simple'``, ``'group'``, ``'calendar'`` and ``'event'``, the
+        aggregations of Stata's ``csdid`` / ``jwdid`` ``estat``. These
+        return the aggregated result (``sp.aggte`` / ``sp.etwfe_emfx``),
+        not a test dictionary.
     print_results : bool, default True
         If True, print a formatted table to stdout.
-    lags : int, default 1
-        Number of lags for the Breusch-Godfrey test.
+    lags : int, optional
+        Number of lags: of the Breusch-Godfrey test, of Durbin's
+        alternative test and of the ARCH LM test (default 1), or the highest lag order of
+        ``'varlmar'`` (default 2).
     powers : int, default 3
-        Highest power of y-hat for the RESET test.
+        Highest power added by the RESET test (``3`` adds the square and the
+        cube, as R's ``lmtest::resettest``; Stata's ``estat ovtest`` is
+        ``powers=4``).
     alpha : float, default 0.05
         Significance level for interpretation strings.
+    variables : {'rhs', 'fitted'}, list of str or ndarray, optional
+        ``'hettest'``: what the error variance may depend on. Default
+        ``'rhs'``, every regressor (R's ``lmtest::bptest``). ``'fitted'``
+        is the default of Stata's ``estat hettest``; a list names
+        regressors of the model. With ``'white'``, ``variables='fitted'``
+        is the special form of White's test: the squared residuals on the
+        fitted values and their squares, two restrictions whatever the
+        number of regressors.
+    version : {'iid', 'normal', 'fstat'}, default 'iid'
+        ``'iid'`` is Koenker's N R-squared, valid without normal errors;
+        ``'normal'`` (``'hettest'`` only) is the original score statistic,
+        the default of Stata's ``estat hettest``; ``'fstat'`` is the F
+        statistic of the auxiliary regression, for ``'hettest'``,
+        ``'bgodfrey'``, ``'durbinalt'`` and ``'archlm'``.
+    rhs : bool, default False
+        ``'reset'`` only: add powers of the regressors instead of powers of
+        the fitted values (Stata's ``estat ovtest, rhs``).
+    fill : {'zero', 'drop'}, default 'zero'
+        ``'bgodfrey'`` only: the lagged residual of the first ``lags``
+        observations is set to zero (the default of Stata and of R's
+        ``lmtest::bgtest``) or those observations are dropped (Stata's
+        ``nomiss0``).
+    threshold : float, optional
+        ``'classification'`` only: the probability above which an
+        observation is classified as a positive. Default 0.5.
+    window : (int, int), optional
+        ``'event'`` after ``sp.callaway_santanna`` only: the first and last
+        event time kept, as in ``estat event, window(-4 5)``. The overall
+        estimate then averages the post-treatment event times inside it.
 
     Returns
     -------
     dict or list of dict
         Test result(s).  Each dict has keys ``'test'``, ``'statistic'``
         (or equivalent), ``'pvalue'`` (when applicable), and
-        ``'interpretation'``.
+        ``'interpretation'``. The difference-in-differences aggregations
+        return a ``CausalResult`` instead: the overall effect in
+        ``.estimate`` / ``.se`` and one row per cohort, period or event
+        time in ``.detail``.
+
+    Notes
+    -----
+    ``sp.estat(result, 'group')`` after ``sp.callaway_santanna`` holds the
+    cohort shares fixed, which is what ``csdid`` reports as ``GAverage``.
+    ``sp.aggte(result, type='group')`` by default also carries the sampling
+    error of the estimated shares, as R ``did`` does; the point estimates
+    are the same and only the standard error of the overall row differs.
 
     Examples
     --------
@@ -114,6 +212,13 @@ def estat(
     False
     """
     test = test.strip().lower()
+    if test in DID_AGGREGATIONS:
+        aggregated = estat_did_aggregate(result, test, window=window, alpha=alpha)
+        if print_results:
+            print(aggregated.summary())
+        return aggregated
+    var_lags = lags
+    lags = 1 if lags is None else lags
 
     # Alias
     if test == "ovtest":
@@ -139,20 +244,77 @@ def estat(
         "abond": lambda: estat_abond(result, alpha=alpha),
         "sargan": lambda: estat_sargan(result, alpha=alpha),
         "difhansen": lambda: estat_difference_in_hansen(result, alpha=alpha),
-        "hettest": lambda: _estat_hettest(result, alpha=alpha),
-        "white": lambda: _estat_white(result, alpha=alpha),
-        "reset": lambda: _estat_reset(result, powers=powers, alpha=alpha),
-        "bgodfrey": lambda: _estat_bgodfrey(result, lags=lags, alpha=alpha),
+        "hettest": lambda: _reg.hettest(
+            result, variables=variables, version=version, alpha=alpha
+        ),
+        "white": lambda: _reg.white(
+            result,
+            variables=variables if isinstance(variables, str) else None,
+            alpha=alpha,
+        ),
+        "imtest": lambda: _reg.imtest(result, alpha=alpha),
+        "reset": lambda: _reg.reset(result, powers=powers, rhs=rhs, alpha=alpha),
+        "bgodfrey": lambda: _reg.bgodfrey(
+            result,
+            lags=lags,
+            fill=fill,
+            version="fstat" if version == "fstat" else "iid",
+            alpha=alpha,
+        ),
+        "beta": lambda: _reg.beta(result),
+        "durbinalt": lambda: _reg.durbinalt(
+            result,
+            lags=lags,
+            version="fstat" if version == "fstat" else "iid",
+            alpha=alpha,
+        ),
+        "archlm": lambda: _reg.archlm(
+            result,
+            lags=lags,
+            version="fstat" if version == "fstat" else "iid",
+            alpha=alpha,
+        ),
         "dwatson": lambda: _estat_dwatson(result, alpha=alpha),
-        "vif": lambda: _estat_vif(result, alpha=alpha),
-        "ic": lambda: _estat_ic(result),
+        "vif": lambda: _reg.vif(result, alpha=alpha),
+        "ic": lambda: _reg.information_criteria(result),
+        "classification": lambda: _reg.classification(result, threshold=threshold),
         "linktest": lambda: _estat_linktest(result, alpha=alpha),
         "normality": lambda: _estat_normality(result, alpha=alpha),
         "leverage": lambda: _estat_leverage(result, alpha=alpha),
         "endogenous": lambda: _estat_endogenous(result, alpha=alpha),
         "overid": lambda: _estat_overid(result, alpha=alpha),
         "firststage": lambda: _estat_firststage(result, alpha=alpha),
+        "ptrends": lambda: _estat_did_test(result, "ptrends", alpha=alpha),
+        "granger": lambda: _estat_did_test(result, "granger", alpha=alpha),
     }
+
+    # A VAR has its own post-estimation suite (Stata: varlmar, varwle,
+    # varstable, vargranger); each returns a table.
+    _var_tests = {
+        "varlmar": lambda: result.lm_test(lags=2 if var_lags is None else var_lags),
+        "varwle": lambda: result.lag_exclusion(),
+        "varstable": lambda: result.stability(),
+        "vargranger": lambda: result.granger_table(),
+        "veclmar": lambda: result.lm_test(lags=2 if var_lags is None else var_lags),
+        "vecstable": lambda: result.stability(),
+    }
+    if test in _var_tests:
+        needs = "companion" if test.startswith("vec") else "lag_exclusion"
+        if not hasattr(result, needs):
+            from ..exceptions import MethodIncompatibility
+
+            raise MethodIncompatibility(
+                f"sp.estat: {test!r} applies to a model fitted by "
+                + ("sp.vec." if test.startswith("vec") else "sp.var."),
+                recovery_hint="Pass the result of sp.var(...) / sp.vec(...).",
+            )
+        table = _var_tests[test]()
+        out_var: Dict[str, Any] = {"test": test, "table": table}
+        if test in ("varstable", "vecstable"):
+            out_var["stable"] = bool(table.attrs.get("stable"))
+        if print_results:
+            print(table.to_string(index=False))
+        return out_var
 
     if test == "all" and is_dynamic_panel_result(result):
         # 'all' on an OLS/IV fit means the regression diagnostics; on a
@@ -252,230 +414,6 @@ def _r_squared(y: np.ndarray, resid: np.ndarray) -> float:
 # ======================================================================
 
 # ------------------------------------------------------------------
-#  Breusch-Pagan heteroskedasticity test
-# ------------------------------------------------------------------
-
-
-def _estat_hettest(result: Any, *, alpha: float = 0.05) -> Dict[str, Any]:
-    """Breusch-Pagan / Cook-Weisberg test for heteroskedasticity."""
-    resid = _get_residuals(result)
-    X = _get_X(result)
-    n, k = X.shape
-
-    e2 = resid**2
-    _, aux_resid, _ = _ols_fit(X, e2)
-    tss_e2 = np.sum((e2 - e2.mean()) ** 2)
-    rss_e2 = np.sum(aux_resid**2)
-    r2 = 1.0 - rss_e2 / tss_e2 if tss_e2 > 0 else 0.0
-
-    lm = n * r2
-    df = k - 1  # regressors excl. constant
-    pval = float(sp_stats.chi2.sf(lm, df))
-
-    reject = pval < alpha
-    interp = (
-        f"REJECT H0 at {alpha:.0%}: evidence of heteroskedasticity. "
-        "Consider robust standard errors."
-        if reject
-        else f"Cannot reject H0 at {alpha:.0%}: no evidence of heteroskedasticity."
-    )
-
-    return {
-        "test": "Breusch-Pagan test for heteroskedasticity",
-        "H0": "Constant variance (homoskedasticity)",
-        "H1": "Variance depends on regressors",
-        "statistic": float(lm),
-        "statistic_label": f"chi2({df})",
-        "df": df,
-        "pvalue": pval,
-        "interpretation": interp,
-    }
-
-
-# ------------------------------------------------------------------
-#  White's general heteroskedasticity test
-# ------------------------------------------------------------------
-
-
-def _estat_white(result: Any, *, alpha: float = 0.05) -> Dict[str, Any]:
-    """White's test: regress e^2 on X, X^2, and cross-products."""
-    resid = _get_residuals(result)
-    X = _get_X(result)
-    n, k = X.shape
-
-    e2 = resid**2
-
-    # Build auxiliary regressors: original X, squares, cross-products
-    # Skip constant column (assume col 0 is constant if all-ones)
-    cols = list(range(k))
-    const_col = None
-    for j in range(k):
-        if np.allclose(X[:, j], 1.0):
-            const_col = j
-            break
-
-    var_cols = [j for j in cols if j != const_col]
-
-    aux_parts = [np.ones((n, 1))]  # constant
-    # Original regressors (excl. constant)
-    for j in var_cols:
-        aux_parts.append(X[:, j : j + 1])
-    # Squared terms
-    for j in var_cols:
-        aux_parts.append((X[:, j] ** 2).reshape(-1, 1))
-    # Cross-products
-    for j1, j2 in combinations(var_cols, 2):
-        aux_parts.append((X[:, j1] * X[:, j2]).reshape(-1, 1))
-
-    X_aux = np.column_stack(aux_parts)
-    k_aux = X_aux.shape[1]
-
-    _, aux_resid, _ = _ols_fit(X_aux, e2)
-    tss_e2 = np.sum((e2 - e2.mean()) ** 2)
-    rss_e2 = np.sum(aux_resid**2)
-    r2 = 1.0 - rss_e2 / tss_e2 if tss_e2 > 0 else 0.0
-
-    lm = n * r2
-    df = k_aux - 1
-    pval = float(sp_stats.chi2.sf(lm, df))
-
-    reject = pval < alpha
-    interp = (
-        f"REJECT H0 at {alpha:.0%}: evidence of heteroskedasticity "
-        "(general form). Consider robust or HC standard errors."
-        if reject
-        else f"Cannot reject H0 at {alpha:.0%}: no evidence of heteroskedasticity."
-    )
-
-    return {
-        "test": "White's test for heteroskedasticity",
-        "H0": "Homoskedasticity",
-        "H1": "Unrestricted heteroskedasticity",
-        "statistic": float(lm),
-        "statistic_label": f"chi2({df})",
-        "df": df,
-        "pvalue": pval,
-        "interpretation": interp,
-    }
-
-
-# ------------------------------------------------------------------
-#  Ramsey RESET
-# ------------------------------------------------------------------
-
-
-def _estat_reset(
-    result: Any, *, powers: int = 3, alpha: float = 0.05
-) -> Dict[str, Any]:
-    """Ramsey RESET: add yhat^2, yhat^3, ... to detect misspecification."""
-    y = _get_y(result)
-    X = _get_X(result)
-    resid = _get_residuals(result)
-    yhat = _get_fitted(result)
-    n, k = X.shape
-
-    # Augmented design: original X + yhat^2 ... yhat^powers
-    aug_cols = [X]
-    for p in range(2, powers + 1):
-        aug_cols.append((yhat**p).reshape(-1, 1))
-    X_aug = np.column_stack(aug_cols)
-    k_aug = X_aug.shape[1]
-
-    _, resid_aug, _ = _ols_fit(X_aug, y)
-
-    rss_r = np.sum(resid**2)
-    rss_u = np.sum(resid_aug**2)
-    df1 = k_aug - k
-    df2 = n - k_aug
-
-    if rss_u > 0 and df1 > 0 and df2 > 0:
-        f_stat = ((rss_r - rss_u) / df1) / (rss_u / df2)
-        pval = float(sp_stats.f.sf(f_stat, df1, df2))
-    else:
-        f_stat = 0.0
-        pval = 1.0
-
-    reject = pval < alpha
-    interp = (
-        f"REJECT H0 at {alpha:.0%}: functional form may be misspecified. "
-        "Consider adding nonlinear terms or transformations."
-        if reject
-        else f"Cannot reject H0 at {alpha:.0%}: no evidence of misspecification."
-    )
-
-    return {
-        "test": "Ramsey RESET test",
-        "H0": "Model has no omitted nonlinearities",
-        "H1": "Nonlinear terms of fitted values are significant",
-        "statistic": float(f_stat),
-        "statistic_label": f"F({df1}, {df2})",
-        "df1": df1,
-        "df2": df2,
-        "pvalue": pval,
-        "interpretation": interp,
-    }
-
-
-# ------------------------------------------------------------------
-#  Breusch-Godfrey serial correlation
-# ------------------------------------------------------------------
-
-
-def _estat_bgodfrey(
-    result: Any, *, lags: int = 1, alpha: float = 0.05
-) -> Dict[str, Any]:
-    """Breusch-Godfrey LM test for serial correlation up to *lags* lags."""
-    resid = _get_residuals(result)
-    X = _get_X(result)
-    n, k = X.shape
-
-    # Auxiliary regression: e_t on X, e_{t-1}, ..., e_{t-lags}
-    # We lose the first `lags` observations
-    e_trimmed = resid[lags:]
-    X_trimmed = X[lags:]
-
-    lag_cols: List[np.ndarray] = []
-    for lag in range(1, lags + 1):
-        lag_cols.append(resid[lags - lag : n - lag].reshape(-1, 1))
-
-    aux_cols: List[np.ndarray] = [X_trimmed]
-    aux_cols.extend(lag_cols)
-    X_aux = np.column_stack(aux_cols)
-    n_aux = X_aux.shape[0]
-
-    _, aux_resid, _ = _ols_fit(X_aux, e_trimmed)
-    tss = np.sum((e_trimmed - e_trimmed.mean()) ** 2)
-    rss = np.sum(aux_resid**2)
-    r2 = 1.0 - rss / tss if tss > 0 else 0.0
-
-    lm = n_aux * r2
-    df = lags
-    pval = float(sp_stats.chi2.sf(lm, df))
-
-    reject = pval < alpha
-    lag_label = "lag" if lags == 1 else "lags"
-    interp = (
-        f"REJECT H0 at {alpha:.0%}: evidence of serial correlation "
-        f"up to {lags} {lag_label}. Consider Newey-West SEs."
-        if reject
-        else f"Cannot reject H0 at {alpha:.0%}: no evidence of serial correlation "
-        f"up to {lags} {lag_label}."
-    )
-
-    return {
-        "test": f"Breusch-Godfrey LM test ({lags} {lag_label})",
-        "H0": "No serial correlation",
-        "H1": f"Serial correlation up to order {lags}",
-        "statistic": float(lm),
-        "statistic_label": f"chi2({df})",
-        "df": df,
-        "pvalue": pval,
-        "lags": lags,
-        "interpretation": interp,
-    }
-
-
-# ------------------------------------------------------------------
 #  Durbin-Watson
 # ------------------------------------------------------------------
 
@@ -512,106 +450,6 @@ def _estat_dwatson(result: Any, *, alpha: float = 0.05) -> Dict[str, Any]:
         "statistic_label": "d",
         "range": "[0, 4]; d = 2 means no autocorrelation",
         "interpretation": interp,
-    }
-
-
-# ------------------------------------------------------------------
-#  Variance Inflation Factors
-# ------------------------------------------------------------------
-
-
-def _estat_vif(result: Any, *, alpha: float = 0.05) -> Dict[str, Any]:
-    """Compute VIF for each regressor (excluding constant)."""
-    X = _get_X(result)
-    n, k = X.shape
-
-    # Identify constant column
-    const_col = None
-    for j in range(k):
-        if np.allclose(X[:, j], 1.0):
-            const_col = j
-            break
-
-    var_cols = [j for j in range(k) if j != const_col]
-
-    # Variable names from params index
-    var_names = list(result.params.index)
-
-    rows = []
-    for j in var_cols:
-        y_j = X[:, j]
-        other_cols = [c for c in var_cols if c != j]
-        X_other = np.column_stack([np.ones(n)] + [X[:, c] for c in other_cols])
-        _, resid_j, _ = _ols_fit(X_other, y_j)
-        tss_j = np.sum((y_j - y_j.mean()) ** 2)
-        rss_j = np.sum(resid_j**2)
-        r2_j = 1.0 - rss_j / tss_j if tss_j > 0 else 0.0
-        vif_j = 1.0 / (1.0 - r2_j) if r2_j < 1.0 else np.inf
-
-        name = var_names[j] if j < len(var_names) else f"x{j}"
-        rows.append(
-            {
-                "variable": name,
-                "VIF": round(vif_j, 2),
-                "1/VIF": round(1.0 / vif_j, 4) if np.isfinite(vif_j) else 0.0,
-            }
-        )
-
-    vif_df = pd.DataFrame(rows)
-    max_vif = vif_df["VIF"].max() if len(vif_df) > 0 else 0.0
-
-    if max_vif > 10:
-        interp = (
-            f"Max VIF = {max_vif:.2f}: serious multicollinearity. "
-            "Consider dropping or combining variables."
-        )
-    elif max_vif > 5:
-        interp = (
-            f"Max VIF = {max_vif:.2f}: moderate multicollinearity. "
-            "Monitor but may be acceptable."
-        )
-    else:
-        interp = f"Max VIF = {max_vif:.2f}: no multicollinearity concern."
-
-    return {
-        "test": "Variance Inflation Factors",
-        "vif_table": vif_df,
-        "mean_vif": float(vif_df["VIF"].mean()) if len(vif_df) > 0 else 0.0,
-        "max_vif": float(max_vif),
-        "interpretation": interp,
-    }
-
-
-# ------------------------------------------------------------------
-#  Information criteria
-# ------------------------------------------------------------------
-
-
-def _estat_ic(result: Any) -> Dict[str, Any]:
-    """AIC, BIC, and HQIC."""
-    resid = _get_residuals(result)
-    n = _get_nobs(result)
-    X = _get_X(result)
-    k = X.shape[1]
-
-    rss = float(np.sum(resid**2))
-    ll_term = n * np.log(rss / n) if rss > 0 else 0.0
-
-    aic = ll_term + 2.0 * k
-    bic = ll_term + k * np.log(n)
-    hqic = ll_term + 2.0 * k * np.log(np.log(n)) if n > 1 else ll_term
-
-    return {
-        "test": "Information Criteria",
-        "AIC": float(aic),
-        "BIC": float(bic),
-        "HQIC": float(hqic),
-        "n": n,
-        "k": k,
-        "interpretation": (
-            "Lower values indicate better fit-complexity trade-off. "
-            "BIC penalises complexity more than AIC."
-        ),
     }
 
 
@@ -739,18 +577,17 @@ def _estat_normality(result: Any, *, alpha: float = 0.05) -> Dict[str, Any]:
 
 
 def _estat_leverage(result: Any, *, alpha: float = 0.05) -> Dict[str, Any]:
-    """Cook's distance, DFBETAS, and leverage diagnostics."""
+    """Cook's distance, DFBETAS, DFFITS, leverage and leave-one-out fits."""
     resid = _get_residuals(result)
     X = _get_X(result)
     n, k = X.shape
 
-    # Hat matrix diagonal
+    # Hat matrix diagonal, without forming the n x n hat matrix
     try:
         XtX_inv = np.linalg.inv(X.T @ X)
     except np.linalg.LinAlgError:
         XtX_inv = np.linalg.pinv(X.T @ X)
-    H = X @ XtX_inv @ X.T
-    h = np.diag(H)
+    h = np.einsum("ij,jk,ik->i", X, XtX_inv, X)
 
     mse = np.sum(resid**2) / (n - k)
 
@@ -760,26 +597,39 @@ def _estat_leverage(result: Any, *, alpha: float = 0.05) -> Dict[str, Any]:
 
     influential_idx = np.where(cooks_d > threshold)[0]
 
-    # DFBETAS: change in each beta when obs i removed
-    # beta_full already known; compute leave-one-out efficiently
-    # DFBETAS_ij = e_i / (1-h_ii) * (X'X)^{-1} x_i' / se(beta_j)_loo
-    # Simplified: DFBETAS_ij = (e_i * (X'X)^{-1} x_i_j) / (sqrt(MSE_i) * (1-h_ii))
-    # where MSE_i is the leave-one-out MSE
-    # For efficiency, use the approximation:
-    #   MSE_{(i)} = (n-k)*MSE - e_i^2/(1-h_ii)) / (n-k-1)
+    # Leave-one-out error variance:
+    #   s_(i)^2 = ((n-k) s^2 - e_i^2 / (1-h_i)) / (n-k-1)
     mse_loo = np.maximum(
         ((n - k) * mse - resid**2 / (1.0 - h)) / (n - k - 1),
         1e-16,
     )
+    # Internally and externally studentized residuals (Stata: rstandard,
+    # rstudent). The second is the t statistic of a dummy for observation i.
+    rstandard = resid / np.sqrt(mse * (1.0 - h))
+    rstudent = resid / np.sqrt(mse_loo * (1.0 - h))
 
-    # DFBETAS matrix: n x k
-    # DFBETAS[i, j] = e_i / ((1-h_ii) * sqrt(MSE_{(i)})) * (X'X)^{-1} X[i,:]_j
-    leverage_factor = resid / (1.0 - h)  # n-vector
-    dfbetas = np.zeros((n, k))
-    for j in range(k):
-        w_j = XtX_inv @ X.T  # k x n
-        # Each obs contribution
-        dfbetas[:, j] = leverage_factor * w_j[j, :] / np.sqrt(mse_loo)
+    # DFBETAS (Belsley, Kuh & Welsch): the change in coefficient j when
+    # observation i is dropped, in units of its leave-one-out standard error,
+    #   DFBETAS_ij = [(X'X)^{-1} x_i]_j e_i / ((1-h_i) s_(i) sqrt((X'X)^{-1}_jj)).
+    # correctness fix (2026-10): the sqrt((X'X)^{-1}_jj) divisor was missing,
+    # so the values were on the scale of the regressor, not of the standard
+    # error, and the 2/sqrt(n) rule was applied to the wrong quantity.
+    dfbeta = (X @ XtX_inv) * (resid / (1.0 - h))[:, None]
+    dfbetas = dfbeta / (np.sqrt(mse_loo)[:, None] * np.sqrt(np.diag(XtX_inv))[None, :])
+
+    # DFFITS: the change in the fitted value of observation i when it is
+    # dropped, in units of its leave-one-out standard error.
+    dffits = rstudent * np.sqrt(h / (1.0 - h))
+
+    # Leave-one-out prediction errors without refitting: y_i - yhat_(i) =
+    # e_i / (1 - h_i). Their sum of squares is PRESS. The exact normal
+    # prediction interval for y_i from the fit without it is
+    #   yhat_(i) +/- t_{n-k-1} s_(i) / sqrt(1 - h_i),
+    # since 1 + x_i'(X_(i)'X_(i))^{-1} x_i = 1 / (1 - h_i).
+    loo_resid = resid / (1.0 - h)
+    loo_half = sp_stats.t.ppf(1.0 - alpha / 2.0, n - k - 1) * np.sqrt(
+        mse_loo / (1.0 - h)
+    )
 
     # Threshold: |DFBETAS| > 2/sqrt(n)
     dfbetas_thresh = 2.0 / np.sqrt(n)
@@ -791,7 +641,8 @@ def _estat_leverage(result: Any, *, alpha: float = 0.05) -> Dict[str, Any]:
     if n_influential > 0:
         pct = 100.0 * n_influential / n
         interp_parts.append(
-            f"{n_influential} observation(s) ({pct:.1f}%) have Cook's D > {threshold:.4f} (= 4/n)."
+            f"{n_influential} observation(s) ({pct:.1f}%) have Cook's D > "
+            f"{threshold:.4f} (= 4/n)."
         )
     else:
         interp_parts.append("No observations exceed the Cook's D threshold (4/n).")
@@ -808,6 +659,12 @@ def _estat_leverage(result: Any, *, alpha: float = 0.05) -> Dict[str, Any]:
         "influential_obs": influential_idx.tolist(),
         "n_influential": n_influential,
         "leverage": h,
+        "rstandard": rstandard,
+        "rstudent": rstudent,
+        "dffits": dffits,
+        "loo_residuals": loo_resid,
+        "loo_interval_halfwidth": loo_half,
+        "press": float(np.sum(loo_resid**2)),
         "dfbetas": dfbetas,
         "dfbetas_threshold": dfbetas_thresh,
         "dfbetas_flagged_obs": dfbetas_flagged_idx.tolist(),
@@ -820,25 +677,39 @@ def _estat_leverage(result: Any, *, alpha: float = 0.05) -> Dict[str, Any]:
 # ------------------------------------------------------------------
 
 
+def _iv_stat(result: Any, *keys: str) -> Any:
+    """First non-missing value among ``keys`` in model_info, then diagnostics."""
+    for store in (
+        getattr(result, "model_info", None),
+        getattr(result, "diagnostics", None),
+    ):
+        if not isinstance(store, dict):
+            continue
+        for key in keys:
+            value = store.get(key)
+            if value is not None:
+                return value
+    return None
+
+
 def _estat_endogenous(result: Any, *, alpha: float = 0.05) -> Dict[str, Any]:
     """Durbin-Wu-Hausman endogeneity test (for IV results)."""
-    mi = result.model_info
-
-    # Look for pre-computed DWH statistic
-    dwh = mi.get("wu_hausman") or mi.get("dwh_statistic")
-    dwh_pval = mi.get("wu_hausman_pvalue") or mi.get("dwh_pvalue")
+    # sp.ivreg / sp.iv record the Wu-Hausman F test in ``diagnostics``;
+    # ``model_info`` keys are the older spelling.
+    dwh = _iv_stat(result, "wu_hausman", "dwh_statistic", "Hausman F-stat")
+    dwh_pval = _iv_stat(result, "wu_hausman_pvalue", "dwh_pvalue", "Hausman p-value")
 
     if dwh is None:
         return {
             "test": "Durbin-Wu-Hausman endogeneity test",
             "error": (
-                "DWH statistic not found in model_info. "
+                "Durbin-Wu-Hausman statistic not found on this result. "
                 "This test requires an IV/2SLS estimation result."
             ),
             "interpretation": "Not applicable: model was not estimated via IV.",
         }
 
-    reject = dwh_pval < alpha if dwh_pval is not None else None
+    reject = bool(dwh_pval < alpha) if dwh_pval is not None else None
     if reject is True:
         interp = (
             f"REJECT H0 at {alpha:.0%}: regressors are endogenous. "
@@ -852,7 +723,48 @@ def _estat_endogenous(result: Any, *, alpha: float = 0.05) -> Dict[str, Any]:
     else:
         interp = "p-value not available."
 
-    return {
+    # After a robust or clustered fit the Wu-Hausman F is not valid; the
+    # regression-based robust F is the test, as in Stata `estat endogenous`.
+    robust_f = _iv_stat(result, "Robust regression F (endogeneity)")
+    if robust_f is not None:
+        robust_p = _iv_stat(result, "Robust regression F p-value")
+        df_num = _iv_stat(result, "Robust regression F df (num)")
+        df_den = _iv_stat(result, "Robust regression F df (denom)")
+        df_pair = None if df_num is None or df_den is None else (df_num, df_den)
+        reject = bool(robust_p < alpha) if robust_p is not None else None
+        if reject is True:
+            interp = (
+                f"REJECT H0 at {alpha:.0%}: regressors are endogenous. "
+                "IV estimation is warranted."
+            )
+        elif reject is False:
+            interp = (
+                f"Cannot reject H0 at {alpha:.0%}: no evidence of endogeneity. "
+                "OLS may be consistent and more efficient."
+            )
+        out: Dict[str, Any] = {
+            "test": "Robust regression-based endogeneity test",
+            "H0": "Regressors are exogenous",
+            "H1": "Regressors are endogenous",
+            "statistic": float(robust_f),
+            "statistic_label": (
+                f"F({int(df_pair[0])}, {int(df_pair[1])})"
+                if df_pair is not None
+                else "F"
+            ),
+            "pvalue": float(robust_p) if robust_p is not None else None,
+            "interpretation": interp,
+            "wu_hausman_F": float(dwh),
+            "wu_hausman_pvalue": float(dwh_pval) if dwh_pval is not None else None,
+        }
+        score = _iv_stat(result, "Robust score chi2 (endogeneity)")
+        if score is not None:
+            out["robust_score_chi2"] = float(score)
+            score_p = _iv_stat(result, "Robust score chi2 p-value")
+            out["robust_score_pvalue"] = float(score_p) if score_p is not None else None
+        return out
+
+    out = {
         "test": "Durbin-Wu-Hausman endogeneity test",
         "H0": "Regressors are exogenous",
         "H1": "Regressors are endogenous",
@@ -861,6 +773,24 @@ def _estat_endogenous(result: Any, *, alpha: float = 0.05) -> Dict[str, Any]:
         "pvalue": float(dwh_pval) if dwh_pval is not None else None,
         "interpretation": interp,
     }
+    # Durbin's score form of the same test: with q endogenous regressors and
+    # the Wu-Hausman F on (q, m) degrees of freedom, D = N q F / (m + q F),
+    # chi-squared with q degrees of freedom.
+    info = getattr(result, "data_info", None) or {}
+    q = _iv_stat(result, "N endogenous")
+    n, k = info.get("nobs"), len(getattr(result, "params", []))
+    if q and n and k:
+        q, m = int(q), int(n) - k - int(q)
+        if m > 0:
+            durbin = int(n) * q * float(dwh) / (m + q * float(dwh))
+            out.update(
+                df1=q,
+                df2=m,
+                statistic_label=f"F({q}, {m})",
+                durbin=durbin,
+                durbin_pvalue=float(sp_stats.chi2.sf(durbin, q)),
+            )
+    return out
 
 
 # ------------------------------------------------------------------
@@ -868,26 +798,79 @@ def _estat_endogenous(result: Any, *, alpha: float = 0.05) -> Dict[str, Any]:
 # ------------------------------------------------------------------
 
 
+def _estat_did_test(result: Any, which: str, *, alpha: float = 0.05) -> Dict[str, Any]:
+    """``estat ptrends`` / ``estat granger`` after ``sp.didregress``.
+
+    The tests are fitted with the model (they need the data), so this
+    reads them from the result.
+    """
+    info = getattr(result, "model_info", None) or {}
+    stored = info.get(which)
+    if not isinstance(stored, dict):
+        raise MethodIncompatibility(
+            f"estat {which} is a post-estimation test of sp.didregress; this "
+            "result does not carry it.",
+            recovery_hint="Fit the model with sp.didregress(...).",
+        )
+    if "unavailable" in stored:
+        raise MethodIncompatibility(
+            f"estat {which}: {stored['unavailable']}.",
+            recovery_hint=(
+                "With staggered adoption test pre-trends on an event study: "
+                "sp.callaway_santanna(...) then sp.pretrends_test(...)."
+            ),
+            diagnostics={"treatment_times": info.get("treatment_times")},
+        )
+    label = (
+        "Parallel-trends test (pretreatment time period)"
+        if which == "ptrends"
+        else "Granger causality test"
+    )
+    pvalue = float(stored["pvalue"])
+    return {
+        "test": label,
+        "H0": stored["H0"],
+        "statistic": float(stored["F"]),
+        "statistic_label": f"F({int(stored['df'])}, {int(stored['df_denom'])})",
+        "df": (int(stored["df"]), int(stored["df_denom"])),
+        "pvalue": pvalue,
+        "interpretation": (
+            f"REJECT H0 at {alpha:.0%}."
+            if pvalue < alpha
+            else f"Do not reject H0 at {alpha:.0%}."
+        ),
+    }
+
+
+def _clustered(result: Any) -> bool:
+    info = getattr(result, "model_info", None) or {}
+    return info.get("cluster") is not None or info.get("n_clusters") is not None
+
+
 def _estat_overid(result: Any, *, alpha: float = 0.05) -> Dict[str, Any]:
     """Sargan/Hansen J test for over-identifying restrictions."""
-    mi = result.model_info
-
-    sargan = mi.get("sargan_stat") or mi.get("hansen_j")
-    sargan_pval = mi.get("sargan_pvalue") or mi.get("hansen_j_pvalue")
-    sargan_df = mi.get("sargan_df") or mi.get("overid_df")
+    # sp.ivreg reports Sargan under i.i.d. errors and Hansen's J once the
+    # vcov is robust or clustered, both in ``diagnostics``.
+    sargan = _iv_stat(
+        result, "sargan_stat", "hansen_j", "Sargan statistic", "Hansen J statistic"
+    )
+    sargan_pval = _iv_stat(
+        result, "sargan_pvalue", "hansen_j_pvalue", "Sargan p-value", "Hansen J p-value"
+    )
+    sargan_df = _iv_stat(result, "sargan_df", "overid_df", "Sargan df", "Hansen J df")
 
     if sargan is None:
         return {
             "test": "Sargan/Hansen J over-identification test",
             "error": (
-                "Over-identification statistic not found in model_info. "
+                "Over-identification statistic not found on this result. "
                 "This test requires an IV estimation with more instruments "
                 "than endogenous regressors."
             ),
             "interpretation": "Not applicable or model is exactly identified.",
         }
 
-    reject = sargan_pval < alpha if sargan_pval is not None else None
+    reject = bool(sargan_pval < alpha) if sargan_pval is not None else None
     if reject is True:
         interp = (
             f"REJECT H0 at {alpha:.0%}: instruments may not all be valid. "
@@ -903,7 +886,7 @@ def _estat_overid(result: Any, *, alpha: float = 0.05) -> Dict[str, Any]:
 
     label = f"chi2({sargan_df})" if sargan_df else "J"
 
-    return {
+    out = {
         "test": "Sargan/Hansen J over-identification test",
         "H0": "All instruments are valid (exclusion restrictions hold)",
         "H1": "At least one instrument is invalid",
@@ -913,11 +896,86 @@ def _estat_overid(result: Any, *, alpha: float = 0.05) -> Dict[str, Any]:
         "pvalue": float(sargan_pval) if sargan_pval is not None else None,
         "interpretation": interp,
     }
+    # The statistics that assume i.i.d. errors (Stata: `estat overid,
+    # forcenonrobust`). After a robust fit they are shown for comparison
+    # only; the headline statistic above is the one to read.
+    diag = getattr(result, "diagnostics", None) or {}
+    iid = {}
+    for key, name in (
+        ("sargan", "Sargan chi2 (i.i.d.)"),
+        ("basmann", "Basmann chi2"),
+        ("anderson_rubin", "Anderson-Rubin chi2"),
+        ("basmann_f", "Basmann F"),
+    ):
+        if name in diag:
+            iid[key] = float(diag[name])
+            iid[f"{key}_pvalue"] = float(diag[f"{name} p-value"])
+    if iid:
+        out["iid_errors"] = iid
+    if "sargan" in iid and iid["sargan"] != out["statistic"] and not _clustered(result):
+        # After 2SLS with a heteroskedasticity-robust covariance Hansen's J
+        # at the 2SLS residuals is also Wooldridge's (1995) robust score
+        # statistic, the one Stata's `estat overid` prints after
+        # `ivregress 2sls, vce(robust)`.
+        out["score"], out["score_pvalue"] = out["statistic"], out["pvalue"]
+    return out
 
 
 # ------------------------------------------------------------------
 #  IV-specific: first-stage F
 # ------------------------------------------------------------------
+
+
+def _minimum_eigenvalue(design: Dict[str, Any]) -> Optional[Tuple[float, int, int]]:
+    """Cragg and Donald's minimum eigenvalue statistic, with the numbers of
+    endogenous regressors and of excluded instruments.
+
+    With the exogenous regressors partialled out of the endogenous ones
+    (``Y``) and of the excluded instruments (``Z``), it is the smallest
+    eigenvalue of ``S^{-1/2}' Y' P_Z Y S^{-1/2} / K``, where ``S`` is the
+    residual covariance of the first stages with ``N - K1 - K`` degrees of
+    freedom and ``K`` the number of excluded instruments. ``None`` when the
+    fit does not carry its design or was weighted.
+    """
+    X, W = design.get("X"), design.get("W")
+    names, endog = design.get("var_names"), design.get("endog_names")
+    n_exog = design.get("n_exog")
+    if X is None or W is None or not names or not endog or n_exog is None:
+        return None
+    if design.get("weighted"):
+        return None
+    X = np.asarray(X, dtype=float)
+    W = np.asarray(W, dtype=float)
+    columns = [list(names).index(e) for e in endog if e in names]
+    n_excluded = W.shape[1] - int(n_exog)
+    if len(columns) != len(endog) or n_excluded < len(endog):
+        return None
+    exog = np.delete(X, columns, axis=1)
+
+    def residual(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+        if b.shape[1] == 0:
+            return a
+        _ret: np.ndarray = a - b @ np.linalg.lstsq(b, a, rcond=None)[0]
+        return _ret
+
+    Y = residual(X[:, columns], exog)
+    # the excluded instruments: what W adds to the exogenous regressors
+    Z = residual(W, exog)
+    u, sing, _ = np.linalg.svd(Z, full_matrices=False)
+    basis = u[:, sing > 1e-10 * sing.max()]
+    if basis.shape[1] != n_excluded:
+        return None
+    fitted = basis @ (basis.T @ Y)
+    dof = X.shape[0] - exog.shape[1] - n_excluded
+    if dof <= 0:
+        return None
+    S = (Y - fitted).T @ (Y - fitted) / dof
+    try:
+        half = np.linalg.inv(np.linalg.cholesky(S))
+    except np.linalg.LinAlgError:
+        return None
+    G = half @ (fitted.T @ fitted) @ half.T / n_excluded
+    return float(np.linalg.eigvalsh(G).min()), len(columns), int(n_excluded)
 
 
 def _estat_firststage(result: Any, *, alpha: float = 0.05) -> Dict[str, Any]:
@@ -942,13 +1000,13 @@ def _estat_firststage(result: Any, *, alpha: float = 0.05) -> Dict[str, Any]:
     if weak:
         interp = (
             f"F = {float(f_stat):.2f} < 10: instruments are weak "
-            "(Stock-Yogo rule of thumb). Consider LIML, Fuller, or "
+            "(rule of thumb). Consider LIML, Fuller, or "
             "Anderson-Rubin confidence sets."
         )
     else:
         interp = (
             f"F = {float(f_stat):.2f} >= 10: instruments are not weak "
-            "(Stock-Yogo rule of thumb)."
+            "(rule of thumb)."
         )
 
     out: Dict[str, Any] = {
@@ -961,6 +1019,49 @@ def _estat_firststage(result: Any, *, alpha: float = 0.05) -> Dict[str, Any]:
     }
     if f_pval is not None:
         out["pvalue"] = float(f_pval)
+    # the rest of Stata's first-stage summary
+    stages = mi.get("first_stage")
+    if isinstance(stages, list) and len(stages) == 1 and isinstance(stages[0], dict):
+        stage = stages[0]
+        same = stage.get("f_statistic") is not None and np.isclose(
+            float(stage["f_statistic"]), float(f_stat)
+        )
+        if same and "pvalue" not in out and stage.get("f_pvalue") is not None:
+            out["pvalue"] = float(stage["f_pvalue"])
+        if same and isinstance(stage.get("f_df"), tuple):
+            out["df1"], out["df2"] = (int(v) for v in stage["f_df"])
+            out["statistic_label"] = f"F({out['df1']}, {out['df2']})"
+        if stage.get("partial_r_squared") is not None:
+            out["partial_r2"] = float(stage["partial_r_squared"])
+    # The minimum eigenvalue statistic of Cragg and Donald (with one
+    # endogenous regressor, the first-stage F under homoskedasticity) and
+    # the critical values of Stock and Yogo that it is compared with.
+    design = (getattr(result, "data_info", None) or {}).get("iv") or {}
+    found = _minimum_eigenvalue(design)
+    if found is not None:
+        from ._stock_yogo import stock_yogo_critical_values
+
+        mineig, n_endog, n_excluded = found
+        values = stock_yogo_critical_values(n_endog, n_excluded)
+        out["minimum_eigenvalue"] = mineig
+        out["n_endogenous"] = n_endog
+        out["n_excluded_instruments"] = n_excluded
+        if values is not None:
+            out["stock_yogo"] = values
+            for key, what in (
+                ("size_2sls", "2SLS Wald test of nominal size 5% with true "
+                 "size at most 10%"),
+                ("bias_2sls", "2SLS bias at most 10% of the OLS bias"),
+            ):  # fmt: skip
+                bar = values.get(key, {}).get(0.10)
+                if bar is not None:
+                    verdict = "above" if mineig > bar else "not above"
+                    out["interpretation"] += (
+                        f" Minimum eigenvalue statistic {mineig:.2f} is "
+                        f"{verdict} the Stock-Yogo critical value {bar:.2f} "
+                        f"({what}); these values assume homoskedastic errors."
+                    )
+                    break
 
     return out
 
@@ -988,22 +1089,26 @@ def _estat_all(
     has_fitted = result.data_info.get("fitted_values") is not None
 
     if has_resid and has_X:
-        outputs.append(_estat_hettest(result, alpha=alpha))
-        outputs.append(_estat_white(result, alpha=alpha))
-        outputs.append(_estat_bgodfrey(result, lags=lags, alpha=alpha))
+        outputs.append(_reg.hettest(result, alpha=alpha))
+        outputs.append(_reg.white(result, alpha=alpha))
+        outputs.append(_reg.bgodfrey(result, lags=lags, alpha=alpha))
         outputs.append(_estat_dwatson(result, alpha=alpha))
-        outputs.append(_estat_vif(result, alpha=alpha))
-        outputs.append(_estat_ic(result))
+        outputs.append(_reg.vif(result, alpha=alpha))
+        outputs.append(_reg.information_criteria(result))
         outputs.append(_estat_normality(result, alpha=alpha))
 
     if has_y and has_X and has_resid and has_fitted:
-        outputs.append(_estat_reset(result, powers=powers, alpha=alpha))
+        outputs.append(_reg.reset(result, powers=powers, alpha=alpha))
         outputs.append(_estat_linktest(result, alpha=alpha))
         outputs.append(_estat_leverage(result, alpha=alpha))
 
-    # IV-specific tests (always attempt; they handle missing info gracefully)
-    mi = result.model_info
-    is_iv = mi.get("model_type", "").lower() in ("iv", "2sls", "gmm", "liml")
+    # IV-specific tests. sp.ivreg labels its fits "IV-2SLS", "IV-LIML", ...,
+    # which an exact match against ("iv", "2sls", ...) never recognised.
+    model_type = str(result.model_info.get("model_type", "")).lower()
+    tokens = set(re.split(r"[^a-z0-9]+", model_type))
+    is_iv = bool(tokens & {"iv", "2sls", "gmm", "liml", "fuller", "jive"}) or (
+        _iv_stat(result, "Hausman F-stat", "wu_hausman", "dwh_statistic") is not None
+    )
     if is_iv:
         outputs.append(_estat_endogenous(result, alpha=alpha))
         outputs.append(_estat_overid(result, alpha=alpha))
@@ -1101,14 +1206,32 @@ def _print_result(out: Dict[str, Any]) -> None:
         return
 
     # VIF table
-    if "vif_table" in out:
+    if "beta_table" in out:
+        table = out["beta_table"]
+        print(table.to_string(index=False, float_format=lambda v: f"{v:.6f}"))
+        print()
+
+    elif "vif_table" in out:
         vif_df = out["vif_table"]
-        print(vif_df.to_string(index=False))
+        print(vif_df.to_string(index=False, float_format=lambda v: f"{v:.4f}"))
         print(f"\n  Mean VIF = {out.get('mean_vif', 0):.2f}")
+        print()
+
+    elif "table" in out and "sensitivity" in out:
+        print(out["table"].to_string())
+        print()
+        for key in ("sensitivity", "specificity", "ppv", "npv"):
+            print(f"  {key:<22} = {100 * out[key]:>8.2f}%")
+        print(
+            f"  {'correctly classified':<22} = "
+            f"{100 * out['correctly_classified']:>8.2f}%"
+        )
         print()
 
     # Information criteria
     elif "AIC" in out:
+        if "ll" in out:
+            print(f"  {'ll':<10} = {out['ll']:>12.4f}")
         print(f"  {'AIC':<10} = {out['AIC']:>12.4f}")
         print(f"  {'BIC':<10} = {out['BIC']:>12.4f}")
         print(f"  {'HQIC':<10} = {out['HQIC']:>12.4f}")

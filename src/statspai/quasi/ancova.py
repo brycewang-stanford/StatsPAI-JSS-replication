@@ -19,6 +19,8 @@ import numpy as np
 import pandas as pd
 
 from .._aliases import accepts_aliases
+from .._input_validation import check_columns
+from ..core._call_record import records_call
 from ..core.results import CausalResult
 
 __all__ = ["ancova", "negd"]
@@ -93,10 +95,16 @@ def _fit_adjusted(
     from ..regression import regress
 
     covariates = list(covariates or [])
-    needed = [outcome, group] + covariates + ([cluster] if cluster else [])
-    missing = [c for c in needed if c not in data.columns]
-    if missing:
-        raise ValueError(f"columns not found in data: {missing}.")
+    check_columns(
+        data,
+        {
+            "outcome": outcome,
+            "group": group,
+            "covariates": covariates,
+            "cluster": cluster,
+        },
+        function="sp.ancova",
+    )
 
     treated, control_level, treated_level = _encode_treatment(data, group, group_value)
     work = data.copy()
@@ -149,6 +157,7 @@ def _fit_adjusted(
     )
 
 
+@records_call("ancova")
 @accepts_aliases(y="outcome", vce="robust")
 def ancova(
     data: pd.DataFrame,
@@ -217,6 +226,7 @@ def ancova(
     )
 
 
+@records_call("negd")
 @accepts_aliases(vce="robust")
 def negd(
     data: pd.DataFrame,
@@ -274,6 +284,17 @@ def negd(
     if method not in ("ancova", "change_score"):
         raise ValueError(f"method must be 'ancova' or 'change_score'; got {method!r}.")
     covariates = list(covariates or [])
+    check_columns(
+        data,
+        {
+            "group": group,
+            "pre": pre,
+            "post": post,
+            "covariates": covariates,
+            "cluster": cluster,
+        },
+        function="sp.negd",
+    )
 
     if method == "ancova":
         return _fit_adjusted(
@@ -289,9 +310,6 @@ def negd(
             extra_info={"pre": pre, "post": post, "negd_method": "ancova"},
         )
 
-    for col in (pre, post):
-        if col not in data.columns:
-            raise ValueError(f"column {col!r} not found in data.")
     work = data.copy()
     delta = _unique_col(work, "_sp_change")
     work[delta] = work[post].to_numpy(dtype=float) - work[pre].to_numpy(dtype=float)

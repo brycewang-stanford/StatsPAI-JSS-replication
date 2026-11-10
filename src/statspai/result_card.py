@@ -177,7 +177,15 @@ def _function_name(result: Any) -> Optional[str]:
         return fn.rsplit(".", 1)[-1]
     from .validation_scope import _function_of
 
-    return _function_of(result)
+    name = _function_of(result)
+    if name is not None:
+        return name
+    # Domain result classes without a provenance record: the registry's
+    # ``returns`` field names the class; used only when exactly one
+    # registered function returns it (never a guess).
+    from ._result_contract import resolve_function
+
+    return resolve_function(result)
 
 
 def _estimand(result: Any, mi: Dict[str, Any], scale: Optional[str]) -> Dict[str, Any]:
@@ -266,8 +274,13 @@ def _inference(result: Any, mi: Dict[str, Any], di: Dict[str, Any]) -> Dict[str,
     if type(result).__name__ != "CausalResult" and isinstance(
         getattr(result, "params", None), pd.Series
     ):
-        V, _ = coefficient_covariance(result)
-        out["full_covariance"] = V is not None
+        if getattr(result, "std_errors", None) is None:
+            # Shrinkage, Bayesian and smoothing fits (ridge, ets, bart, gp,
+            # dlm) carry point estimates without a sampling covariance.
+            out["full_covariance"] = None
+        else:
+            V, _ = coefficient_covariance(result)
+            out["full_covariance"] = V is not None
     else:
         es_vcov = mi.get("event_study_vcov")
         out["joint_covariance"] = es_vcov is not None or (
@@ -276,7 +289,9 @@ def _inference(result: Any, mi: Dict[str, Any], di: Dict[str, Any]) -> Dict[str,
     return out
 
 
-def _provenance_section(result: Any, mi: Dict[str, Any]) -> Dict[str, Any]:
+def _provenance_section(
+    result: Any, mi: Dict[str, Any], function: Optional[str] = None
+) -> Dict[str, Any]:
     prov = getattr(result, "_provenance", None)
     out: Dict[str, Any] = {}
     for k in (
@@ -301,9 +316,23 @@ def _provenance_section(result: Any, mi: Dict[str, Any]) -> Dict[str, Any]:
     if backend:
         out["backend"] = backend
     mod = type(result).__module__
-    if mod and not mod.startswith("statspai"):
-        out["result_class"] = f"{mod}.{type(result).__name__}"
+    out["result_class"] = f"{mod}.{type(result).__name__}"
+    # Seed / reproducibility: recorded even when the stochastic estimator
+    # ran with seed=None (``seed: None, reproducible: False``) rather than
+    # silently omitted. Empty when the function takes no seed argument.
+    from ._result_contract import seed_record
+
+    params = dict(getattr(prov, "params", None) or {})
+    out.update(
+        {k: _jsonable(v) for k, v in seed_record(function or None, params, mi).items()}
+    )
     if not out.get("function"):
+        if "statspai_version" not in out:
+            import statspai
+
+            # Version that built the card, not necessarily the fit's.
+            out["statspai_version"] = statspai.__version__
+            out["statspai_version_source"] = "card"
         out["note"] = (
             "no provenance record attached; call arguments and data fingerprint "
             "are unavailable"
@@ -387,7 +416,79 @@ def _assumptions(
             checks[str(k)] = _jsonable(v)
     if checks:
         out["diagnostics_run"] = checks
+    out.update(_check_status(result))
     return out
+
+
+#: sp.audit's ``missing`` is "this check was not run": say so in the
+#: vocabulary the card uses, so it cannot be read as "nothing was found".
+_CHECK_STATUS = {
+    "passed": "passed",
+    "failed": "failed",
+    "missing": "not_run",
+    "not_applicable": "not_applicable",
+}
+
+
+def _check_status(result: Any) -> Dict[str, Any]:
+    """Which expected diagnostics passed, failed, or were never run.
+
+    ``violations() == []`` does not distinguish "every check passed" from
+    "no check ran". This lists, for the estimator family, each check the
+    reviewer checklist expects (:func:`statspai.smart.audit`, read-only)
+    with one status from ``passed`` / ``failed`` / ``not_run`` /
+    ``not_applicable``, the reason the check exists, and the function that
+    would run it.
+    """
+    try:
+        from .smart.audit import audit
+
+        found = audit(result)
+        report = found.to_dict() if hasattr(found, "to_dict") else dict(found)
+    except (ImportError, AttributeError, KeyError, TypeError, ValueError) as exc:
+        return {
+            "checks_available": False,
+            "checks_note": (
+                f"no diagnostic checklist for this result ({type(exc).__name__}); "
+                "an empty violations list is not evidence that checks passed"
+            ),
+        }
+    raw = report.get("checks") or []
+    if not report.get("method"):
+        # sp.audit falls back to the regression checklist when it cannot
+        # tell what was estimated; listing those checks would be a guess.
+        raw = []
+    if not raw:
+        return {
+            "checks_available": False,
+            "checks_note": (
+                "no diagnostic checklist is defined for this estimator family; "
+                "an empty violations list is not evidence that checks passed"
+            ),
+        }
+    entries = []
+    summary = {"passed": 0, "failed": 0, "not_run": 0, "not_applicable": 0}
+    for check in raw:
+        status = _CHECK_STATUS.get(str(check.get("status")), "not_run")
+        summary[status] += 1
+        entry = {
+            "name": check.get("name"),
+            "status": status,
+            "severity": check.get("severity"),
+            "reason": check.get("question"),
+        }
+        if check.get("suggest_function") and status in ("not_run", "failed"):
+            entry["run_with"] = check["suggest_function"]
+        for key in ("value", "threshold"):
+            if check.get(key) is not None:
+                entry[key] = _jsonable(check[key])
+        entries.append(entry)
+    return {
+        "checks_available": True,
+        "checks_family": report.get("method_family"),
+        "checks": entries,
+        "checks_summary": summary,
+    }
 
 
 def _limitations(result: Any, mi: Dict[str, Any], reg: Dict[str, Any]) -> List[str]:
@@ -446,12 +547,19 @@ def result_card(result: Any) -> ResultCard:
           (t(df) or normal), CI level, whether the full covariance is
           available for joint tests;
         * ``provenance`` -- function, versions, data hash and shape, run id,
-          backend;
+          backend, result class, and -- for functions taking ``seed`` /
+          ``random_state`` -- ``seed`` / ``reproducible`` /
+          ``seed_source`` (``seed: None, reproducible: False`` when the
+          call left the seed unset);
         * ``evidence`` -- configuration-level coverage from
           :func:`sp.validation_scope` where a map exists, otherwise the
           function-level tier flagged as such;
         * ``assumptions`` -- identifying assumptions (declared, not
-          verified) and the diagnostics that were actually run;
+          verified), the diagnostics that were actually run, and
+          ``checks`` / ``checks_summary``: every diagnostic the estimator
+          family expects with status ``passed`` / ``failed`` / ``not_run``
+          / ``not_applicable``, so an empty ``violations()`` cannot be read
+          as "all checks passed" when none ran;
         * ``limitations`` -- registry limitations, non-finite SEs,
           degraded workflow steps, experimental status.
 
@@ -480,7 +588,7 @@ def result_card(result: Any) -> ResultCard:
             "sample": _sample(result, mi, di),
             "specification": _specification(result, mi),
             "inference": _inference(result, mi, di),
-            "provenance": _provenance_section(result, mi),
+            "provenance": _provenance_section(result, mi, function),
             "evidence": {
                 **_evidence(result, function),
                 **(

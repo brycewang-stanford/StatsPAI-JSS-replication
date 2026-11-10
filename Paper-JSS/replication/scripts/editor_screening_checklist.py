@@ -548,13 +548,13 @@ def _build_items(artifacts: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
                 if data_summary.get("csv_parse_failure_count") not in (0, None)
                 else "",
                 "data provenance public dataset count drift"
-                if data_summary.get("packaged_public_dataset_csv_count") != 9
+                if data_summary.get("packaged_public_dataset_csv_count") != 10
                 else "",
                 "data provenance original extract count drift"
                 if data_summary.get("public_original_extract_csv_count") != 7
                 else "",
                 "data provenance R/Stata fixture CSV count drift"
-                if data_summary.get("same_byte_r_stata_fixture_csv_count") != 91
+                if data_summary.get("same_byte_r_stata_fixture_csv_count") != 94
                 else "",
             ],
         ),

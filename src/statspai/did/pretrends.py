@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import warnings
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import pandas as pd
@@ -73,6 +73,26 @@ def _require_open_unit_float(value: Any, name: str, context: str) -> float:
         raise MethodIncompatibility(
             f"{context}: `{name}` must be in (0, 1).",
             diagnostics={"context": context, name: out},
+        )
+    return out
+
+
+def _require_positive_float(value: Any, name: str, context: str) -> float:
+    """Return ``value`` as a finite float > 0, or raise."""
+    if isinstance(value, (bool, np.bool_)) or not isinstance(
+        value, (int, float, np.number)
+    ):
+        raise MethodIncompatibility(
+            f"{context}: `{name}` must be a positive number.",
+            diagnostics={"context": context, name: repr(value)},
+            recovery_hint=f"Pass `{name}` as a finite number > 0, e.g. 1.96.",
+        )
+    out = float(value)
+    if not np.isfinite(out) or out <= 0:
+        raise MethodIncompatibility(
+            f"{context}: `{name}` must be finite and > 0, got {out!r}.",
+            diagnostics={"context": context, name: out},
+            recovery_hint=f"Pass `{name}` as a finite number > 0, e.g. 1.96.",
         )
     return out
 
@@ -157,6 +177,34 @@ def _extract_event_study(result: Any) -> pd.DataFrame:
             diagnostics={"context": "pretrends", "type": type(es).__name__},
         )
     return es
+
+
+def _from_moments(
+    result: Any,
+    sigma: Any,
+    event_times: Any,
+    num_pre_periods: Optional[int],
+    alpha: float,
+) -> Any:
+    """``result`` itself, or the event study built from coefficients and
+    their covariance when any of the moment arguments is given.
+
+    Lets the pre-trend functions take what Stata's ``pretrends, b() v()
+    numpre()`` and R's ``pretrends(betahat, sigma, tVec)`` take: the
+    coefficients of a hand-built lead/lag regression (or a fitted regression
+    with ``event_times={name: time}``), not only a StatsPAI event study.
+    """
+    if sigma is None and event_times is None and num_pre_periods is None:
+        return result
+    from .honest_did import event_study_from_moments
+
+    return event_study_from_moments(
+        result,
+        sigma,
+        event_times=event_times,
+        num_pre_periods=num_pre_periods,
+        alpha=alpha,
+    )
 
 
 def _resolve_columns(df: pd.DataFrame) -> tuple:
@@ -261,6 +309,9 @@ def _pre_arrays(
     return beta_pre_all, se_pre_all, estimated
 
 
+_RECTANGLE_TOL = 1e-7
+
+
 def _normal_rectangle_probability(
     mean: np.ndarray,
     cov: np.ndarray,
@@ -285,8 +336,19 @@ def _normal_rectangle_probability(
     upper = np.asarray(upper, dtype=float)
     mvn = sp_stats.multivariate_normal
     try:
+        # SciPy's default absolute tolerance is 1e-5, which leaves the power
+        # (and the slope solved from it) moving in the fifth digit from one
+        # call to the next. 1e-7 costs a few hundredths of a second.
         prob = float(
-            mvn.cdf(upper, mean=mean, cov=cov, lower_limit=lower, allow_singular=True)
+            mvn.cdf(
+                upper,
+                mean=mean,
+                cov=cov,
+                lower_limit=lower,
+                allow_singular=True,
+                abseps=_RECTANGLE_TOL,
+                releps=_RECTANGLE_TOL,
+            )
         )
     except TypeError:  # pragma: no cover - SciPy < 1.10
         import itertools
@@ -379,6 +441,9 @@ def _joint_pre_block(
     :func:`event_study_vcov`. Returns ``None`` (so the caller takes its
     loud diagonal fallback) when there is none, when it misses a pre-period,
     or when its diagonal does not reproduce the table's standard errors.
+    The diagonal check is strict on purpose: a matrix that only roughly
+    matches the table belongs to some other quantity, and testing with it
+    would be silently wrong.
     """
     from .es_inference import event_study_vcov
 
@@ -428,10 +493,43 @@ def _default_test_type(result: Any) -> str:
     return "wald"
 
 
+def _window_mask(window: Any, times: np.ndarray, context: str) -> np.ndarray:
+    """Boolean mask of ``times`` inside the inclusive ``(lo, hi)`` window."""
+    try:
+        lo, hi = (float(v) for v in window)
+    except (TypeError, ValueError) as exc:
+        raise MethodIncompatibility(
+            f"{context}: window must be a (lo, hi) pair of event times.",
+            recovery_hint="e.g. window=(-5, -2) tests the leads -5 ... -2.",
+            diagnostics={"context": context, "window": repr(window)},
+        ) from exc
+    if not (np.isfinite(lo) and np.isfinite(hi)) or lo > hi:
+        raise MethodIncompatibility(
+            f"{context}: window must satisfy lo <= hi, got {window!r}.",
+            recovery_hint="e.g. window=(-5, -2).",
+            diagnostics={"context": context, "window": repr(window)},
+        )
+    mask = (times >= lo) & (times <= hi)
+    if not mask.any():
+        raise DataInsufficient(
+            f"{context}: no estimated pre-treatment period falls inside "
+            f"window={window!r}.",
+            recovery_hint="Widen the window; available pre-periods are "
+            f"{sorted(int(t) for t in times)}.",
+            diagnostics={"context": context, "window": repr(window)},
+        )
+    return mask
+
+
 def pretrends_test(
     result: Any,
     type: str = "auto",
     alpha: float = 0.05,
+    window: Optional[Tuple[float, float]] = None,
+    *,
+    sigma: Any = None,
+    event_times: Any = None,
+    num_pre_periods: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Joint test of pre-treatment coefficients.
 
@@ -459,12 +557,30 @@ def pretrends_test(
         ``model_info['pretrend_test']``.
     alpha : float, default 0.05
         Significance level.
+    window : tuple of (lo, hi), optional
+        Test only the pre-treatment periods with ``lo <= relative time <=
+        hi`` (inclusive), e.g. ``(-5, -2)`` for Stata ``estat event,
+        window(-5 5) pretrend``.  The sub-block of the full pre-period
+        covariance is used, so the test is the same Wald statistic a
+        refit on the window would give when the leads share one
+        regression.  ``None`` (default) tests every estimated
+        pre-treatment period.
+    sigma, event_times, num_pre_periods : optional
+        Test coefficients instead of a StatsPAI result: ``result`` is then
+        the coefficient vector with ``sigma`` its joint covariance (or a
+        fitted regression with ``event_times={coefficient name: event
+        time}``), with the conventions of :func:`honest_did_from_moments`.
+        The test is then the chi-squared Wald test (``type='f'`` is refused:
+        coefficients alone carry no denominator degrees of freedom).
+
+        .. versionadded:: 1.40.1
 
     Returns
     -------
     dict
         Keys: ``statistic``, ``pvalue``, ``df``, ``type``,
-        ``reject``, ``interpretation``.
+        ``reject``, ``interpretation``, ``pre_periods`` (the event
+        times tested).
 
     References
     ----------
@@ -476,20 +592,35 @@ def pretrends_test(
     >>> rng = np.random.default_rng(0)
     >>> rows = []
     >>> for i in range(80):
-    ...     cohort = 4 if i < 40 else 0          # 0 = never treated
+    ...     cohort = 4 if i < 40 else np.nan     # NaN = never treated
     ...     for t in range(8):
-    ...         post = cohort > 0 and t >= cohort
+    ...         post = i < 40 and t >= 4
     ...         y = 0.3 * t + (2.0 if post else 0.0) + (i % 5) + rng.normal()
     ...         rows.append((i, t, cohort, y))
     >>> df = pd.DataFrame(rows, columns=["id", "t", "cohort", "y"])
-    >>> es = sp.event_study(df, y="y", treat_time="cohort", time="t", unit="id")
-    >>> sp.pretrends_test(es)
+    >>> es = sp.event_study(df, y="y", treat_time="cohort", time="t", unit="id",
+    ...                     window=(-4, 3))
+    >>> out = sp.pretrends_test(es)
+    >>> out["type"], out["df"], bool(out["reject"])
+    ('f', 3, False)
     """
     context = "pretrends_test"
     test_type = _require_string_option(type, "type", context).lower()
+    alpha = _require_open_unit_float(alpha, "alpha", context)
+    from_moments = not (
+        sigma is None and event_times is None and num_pre_periods is None
+    )
+    if from_moments and test_type == "f":
+        raise MethodIncompatibility(
+            f"{context}: type='f' needs denominator degrees of freedom, which "
+            "coefficients and their covariance do not carry.",
+            recovery_hint="Use type='wald' (the default with sigma=), or fit "
+            "the event study with a StatsPAI estimator.",
+            diagnostics={"context": context, "type": type},
+        )
+    result = _from_moments(result, sigma, event_times, num_pre_periods, alpha)
     if test_type == "auto":
         test_type = _default_test_type(result)
-    alpha = _require_open_unit_float(alpha, "alpha", context)
     es = _extract_event_study(result)
     time_col, est_col, se_col = _resolve_columns(es)
     pre, _ = _split_pre_post(es, time_col, est_col, se_col)
@@ -508,6 +639,12 @@ def pretrends_test(
     # Build variance-covariance matrix (diagonal if full VCV unavailable)
     pre_times = pre[time_col].to_numpy(dtype=float)[estimated]
     vcv = _pre_vcv(result, se_pre, estimated, K_all, K, context, pre_times)
+    if window is not None:
+        in_win = _window_mask(window, pre_times, context)
+        beta_pre = beta_pre[in_win]
+        vcv = vcv[np.ix_(in_win, in_win)]
+        pre_times = pre_times[in_win]
+        K = int(in_win.sum())
     vcv_inv = _invert_vcv(vcv, context, "pre-trend test")
     wald_stat = float(beta_pre @ vcv_inv @ beta_pre)
 
@@ -563,6 +700,9 @@ def pretrends_test(
         "reject": reject,
         "alpha": alpha,
         "interpretation": interpretation,
+        "pre_periods": [
+            int(t) if float(t).is_integer() else float(t) for t in pre_times
+        ],
     }
 
 
@@ -576,6 +716,12 @@ def pretrends_power(
     delta: Optional[np.ndarray] = None,
     alpha: float = 0.05,
     test: str = "individual",
+    *,
+    slope: Optional[float] = None,
+    sigma: Any = None,
+    event_times: Any = None,
+    num_pre_periods: Optional[int] = None,
+    threshold: Optional[float] = None,
 ) -> Dict[str, Any]:
     """Power of the pre-trend test against a hypothesised violation.
 
@@ -595,6 +741,18 @@ def pretrends_power(
         at the furthest lag, declining linearly to near-zero.
     alpha : float, default 0.05
         Significance level of the pre-trend test.
+    slope : float, optional
+        Shorthand for a linear violation ``delta_t = slope * (t - t_ref)``
+        with the reference period ``t_ref = -1`` (Stata / R ``pretrends``'s
+        ``slope``). Give ``slope`` or ``delta``, not both.
+    sigma, event_times, num_pre_periods : optional
+        Take the event study from coefficients instead of a StatsPAI result:
+        ``result`` is then the coefficient vector with ``sigma`` its
+        covariance, or a fitted regression with
+        ``event_times={coefficient name: event time}``. Same conventions as
+        :func:`honest_did_from_moments` (``num_pre_periods=k`` places the
+        leads at ``-k-1, ..., -2`` and the rest at ``0, 1, ...``). This is
+        the input of Stata ``pretrends, b() v() numpre()``.
     test : {"individual", "joint"}, default "individual"
         Which pre-test the power refers to.
 
@@ -625,6 +783,12 @@ def pretrends_power(
            number matches Roth's ``pretrends`` package. This changes the
            returned ``power`` for existing calls -- see MIGRATION.md.
            Pass ``test="joint"`` to recover the previous behaviour.
+    threshold : float, optional
+        Critical ``|t|`` of the coefficient-by-coefficient pre-test
+        (``test="individual"``). Default ``z_{1-alpha/2}`` (1.959964 at
+        ``alpha=0.05``). Roth's ``pretrends`` package fixes it at 1.96,
+        which moves the power in the fifth digit; ``threshold=1.96``
+        reproduces that package.
 
     Returns
     -------
@@ -655,14 +819,19 @@ def pretrends_power(
     >>> rng = np.random.default_rng(0)
     >>> rows = []
     >>> for i in range(80):
-    ...     cohort = 4 if i < 40 else 0          # 0 = never treated
+    ...     cohort = 4 if i < 40 else np.nan     # NaN = never treated
     ...     for t in range(8):
-    ...         post = cohort > 0 and t >= cohort
+    ...         post = i < 40 and t >= 4
     ...         y = 0.3 * t + (2.0 if post else 0.0) + (i % 5) + rng.normal()
     ...         rows.append((i, t, cohort, y))
     >>> df = pd.DataFrame(rows, columns=["id", "t", "cohort", "y"])
-    >>> es = sp.event_study(df, y="y", treat_time="cohort", time="t", unit="id")
-    >>> sp.pretrends_power(es)
+    >>> es = sp.event_study(df, y="y", treat_time="cohort", time="t", unit="id",
+    ...                     window=(-4, 3))
+    >>> pw = sp.pretrends_power(es)
+    >>> pw["test"], pw["df"]
+    ('individual', 3)
+    >>> bool(0 <= pw["power"] <= 1)
+    True
     """
     context = "pretrends_power"
     alpha = _require_open_unit_float(alpha, "alpha", context)
@@ -672,6 +841,7 @@ def pretrends_power(
             f"{context}: `test` must be 'individual' or 'joint'.",
             diagnostics={"context": context, "test": test},
         )
+    result = _from_moments(result, sigma, event_times, num_pre_periods, alpha)
     es = _extract_event_study(result)
     time_col, est_col, se_col = _resolve_columns(es)
     pre, _ = _split_pre_post(es, time_col, est_col, se_col)
@@ -682,6 +852,14 @@ def pretrends_power(
     se_pre = se_pre_all[estimated]
     beta_pre = beta_pre_all[estimated]
     K = len(se_pre)
+    if slope is not None:
+        if delta is not None:
+            raise MethodIncompatibility(
+                f"{context}: pass `slope` or `delta`, not both.",
+                diagnostics={"context": context},
+            )
+        slope_value = _finite_vector([slope], "slope", context)[0]
+        delta = slope_value * (pre[time_col].to_numpy(dtype=float) + 1.0)
 
     # Build VCV (diagonal if full VCV unavailable)
     vcv = _pre_vcv(
@@ -723,7 +901,10 @@ def pretrends_power(
     ncp = float(delta @ vcv_inv @ delta)
     crit = float(sp_stats.chi2.ppf(1.0 - alpha, df=K))
     joint_power = float(sp_stats.ncx2.sf(crit, df=K, nc=ncp))
-    thresh = float(sp_stats.norm.ppf(1.0 - alpha / 2.0))
+    if threshold is None:
+        thresh = float(sp_stats.norm.ppf(1.0 - alpha / 2.0))
+    else:
+        thresh = _require_positive_float(threshold, "threshold", context)
 
     if test == "joint":
         power = joint_power
@@ -792,6 +973,11 @@ def pretrends_slope_for_power(
     target_power: float = 0.5,
     alpha: float = 0.05,
     test: str = "individual",
+    *,
+    sigma: Any = None,
+    event_times: Any = None,
+    num_pre_periods: Optional[int] = None,
+    threshold: Optional[float] = None,
 ) -> Dict[str, Any]:
     """Slope of a linear pre-trend the pre-test would detect ``target_power``
     of the time.
@@ -821,6 +1007,12 @@ def pretrends_slope_for_power(
         Significance level of the pre-test.
     test : {"individual", "joint"}, default "individual"
         Which pre-test to solve against; see :func:`pretrends_power`.
+    sigma, event_times, num_pre_periods : optional
+        Coefficients and covariance instead of a StatsPAI result, as in
+        :func:`pretrends_power`.
+    threshold : float, optional
+        Critical ``|t|`` of the coefficient-by-coefficient pre-test; see
+        :func:`pretrends_power` (``pretrends`` uses 1.96).
 
     Returns
     -------
@@ -834,16 +1026,17 @@ def pretrends_slope_for_power(
     >>> rng = np.random.default_rng(0)
     >>> rows = []
     >>> for i in range(80):
-    ...     cohort = 4 if i < 40 else 0          # 0 = never treated
+    ...     cohort = 4 if i < 40 else np.nan     # NaN = never treated
     ...     for t in range(8):
-    ...         post = cohort > 0 and t >= cohort
+    ...         post = i < 40 and t >= 4
     ...         y = 0.3 * t + (2.0 if post else 0.0) + (i % 5) + rng.normal()
     ...         rows.append((i, t, cohort, y))
     >>> df = pd.DataFrame(rows, columns=["id", "t", "cohort", "y"])
-    >>> es = sp.event_study(df, y="y", treat_time="cohort", time="t", unit="id")
+    >>> es = sp.event_study(df, y="y", treat_time="cohort", time="t", unit="id",
+    ...                     window=(-4, 3))
     >>> out = sp.pretrends_slope_for_power(es)
-    >>> round(out["slope"], 3)
-    0.245
+    >>> round(out["slope"], 2)
+    0.19
     >>> out["target_power"]
     0.5
 
@@ -855,6 +1048,7 @@ def pretrends_slope_for_power(
     context = "pretrends_slope_for_power"
     target_power = _require_open_unit_float(target_power, "target_power", context)
     alpha = _require_open_unit_float(alpha, "alpha", context)
+    result = _from_moments(result, sigma, event_times, num_pre_periods, alpha)
 
     es = _extract_event_study(result)
     time_col, est_col, se_col = _resolve_columns(es)
@@ -889,6 +1083,7 @@ def pretrends_slope_for_power(
                     delta=slope * (times - (-1.0)),
                     alpha=alpha,
                     test=test,
+                    threshold=threshold,
                 )["power"]
             )
 
@@ -903,15 +1098,20 @@ def pretrends_slope_for_power(
             diagnostics={"context": context, "target_power": target_power},
         )
 
-    for _ in range(100):
-        mid = 0.5 * (lo + hi)
-        if _power_at(mid) < target_power:
-            lo = mid
-        else:
-            hi = mid
-        if hi - lo < 1e-10 * max(1.0, hi):
-            break
-    slope = 0.5 * (lo + hi)
+    # The power is integrated numerically to about 1e-7, so there is nothing
+    # to gain from locating the root more finely than that.
+    from scipy.optimize import brentq
+
+    slope = float(
+        brentq(
+            lambda s: _power_at(s) - target_power,
+            lo,
+            hi,
+            xtol=1e-9 * hi,
+            rtol=1e-8,
+            maxiter=200,
+        )
+    )
 
     return {
         "slope": slope,
@@ -1139,13 +1339,27 @@ def sensitivity_rr(
     alpha: float = 0.05,
     n_grid: int = 20,
 ) -> SensitivityResult:
-    """Rambachan & Roth (2023) honest confidence intervals.
+    """Linear-extrapolation sensitivity band in the spirit of Rambachan & Roth (2023).
 
-    Computes confidence intervals for the ATT that are valid under
-    bounded departures from parallel trends.  The *conditional
+    This is a quick, conservative heuristic, **not** the Rambachan-Roth
+    confidence set: for the fixed-length CI under smoothness
+    restrictions or the conditional / hybrid set under relative
+    magnitudes use :func:`sp.honest_did` (and :func:`sp.breakdown_m` for
+    the breakdown value), which solve the actual Rambachan-Roth
+    programs. The two can disagree, sometimes in sign of the conclusion.
+
+    Computes intervals for the ATT under bounded departures from
+    parallel trends.  The *conditional
     linear-in-relative-time* (C-LF) restriction assumes the
     post-treatment violation is bounded by a linear extrapolation of the
-    pre-trend plus an additional M-bar of slack.
+    pre-trend plus an additional M-bar of slack on its slope. With a
+    fitted pre-trend slope ``b`` and post-period coefficients at an average
+    distance ``h`` from the reference period, the interval is
+    ``ATT +/- ((|b| + Mbar) * h + z * (se + h * se_b))``. It is
+    symmetric: it allows for a trend of the fitted size in either
+    direction and does not recentre the estimate. ``se_b`` is the
+    standard error of the fitted slope; adding ``h * se_b`` to the ATT's
+    standard error is an upper bound that ignores their covariance.
 
     Parameters
     ----------
@@ -1193,15 +1407,21 @@ def sensitivity_rr(
     >>> rng = np.random.default_rng(0)
     >>> rows = []
     >>> for i in range(80):
-    ...     cohort = 4 if i < 40 else 0          # 0 = never treated
+    ...     cohort = 4 if i < 40 else np.nan     # NaN = never treated
     ...     for t in range(8):
-    ...         post = cohort > 0 and t >= cohort
+    ...         post = i < 40 and t >= 4
     ...         y = 0.3 * t + (2.0 if post else 0.0) + (i % 5) + rng.normal()
     ...         rows.append((i, t, cohort, y))
     >>> df = pd.DataFrame(rows, columns=["id", "t", "cohort", "y"])
-    >>> es = sp.event_study(df, y="y", treat_time="cohort", time="t", unit="id")
+    >>> es = sp.event_study(df, y="y", treat_time="cohort", time="t", unit="id",
+    ...                     window=(-4, 3))
     >>> sens = sp.sensitivity_rr(es, Mbar=[0, 0.01, 0.02, 0.05])
-    >>> sens.summary()
+    >>> round(sens.att, 2)                   # the planted effect is 2.0
+    2.04
+    >>> "No breakdown" in sens.summary()     # robust over this grid
+    True
+    >>> sens.mbar_grid.tolist()
+    [0.0, 0.01, 0.02, 0.05]
     """
     context = "sensitivity_rr"
     method = _require_string_option(method, "method", context).upper()
@@ -1295,18 +1515,48 @@ def sensitivity_rr(
                 diagnostics={"context": context, "n_pre": int(len(pre_t))},
             ) from exc
         slope = coefs[1]
+        try:
+            slope_var = float(np.linalg.inv(XtWX)[1, 1])
+        except np.linalg.LinAlgError:
+            slope_var = float("nan")
+        # With exactly two pre-periods, one of them the pinned reference,
+        # the line is fitted through a single estimate and (X'WX)^-1 is
+        # the variance of that estimate over the squared distance.
+        slope_se = float(np.sqrt(slope_var)) if slope_var >= 0 else float("nan")
     else:
         # Single pre-period: slope = estimate / |time|
         slope = pre_est[0] / max(abs(pre_t[0]), 1.0)
+        slope_se = float(np.asarray(pre[se_col], dtype=float)[0]) / max(
+            abs(pre_t[0]), 1.0
+        )
+    if not np.isfinite(slope_se):
+        slope_se = 0.0
 
     # ── Extrapolate linear trend to post-period ──────────────────── #
     post_t = _finite_vector(post[time_col], time_col, context)
-    # Baseline bias for the first post-period
-    baseline_bias = abs(slope) * post_t[0]
+    # Event-study coefficients are measured against a reference period
+    # (the one pinned to zero, -1 by convention), so a differential trend
+    # of ``slope`` per period shows up at relative time k as
+    # ``slope * (k - ref)``. The headline ATT averages the post-period
+    # coefficients, so its bias under the extrapolated trend is the slope
+    # times the average distance from the reference period. Measuring the
+    # distance from zero instead gives the first post-period (k = 0) no
+    # bias at all, and with it the average.
+    pre_se_all = np.asarray(pre[se_col], dtype=float)
+    pinned = np.asarray(pre_t)[pre_se_all == 0]
+    ref_t = float(pinned.max()) if pinned.size else -1.0
+    # Relative time 0 is the first treated period and is part of the
+    # averaged ATT, so it counts here even though the shared pre/post
+    # split starts the post-period at 1.
+    all_t = np.asarray(es[time_col], dtype=float)
+    treated_t = all_t[np.isfinite(all_t) & (all_t >= 0)]
+    mean_horizon = float(np.mean(treated_t - ref_t))
+    baseline_bias = abs(slope) * mean_horizon
 
-    # Sensitivity factor: how much each unit of Mbar adds to the bias.
-    # Under C-LF, the sensitivity factor for relative time h is h itself.
-    sensitivity_factor = float(np.max(post_t))
+    # Mbar is slack on the slope: the post-period trend may differ from
+    # the pre-period one by up to Mbar per period, which moves the average
+    # by Mbar times the same average distance.
+    sensitivity_factor = mean_horizon
 
     # ── Build Mbar grid ──────────────────────────────────────────── #
     max_pre_slope = max(abs(slope), 1e-6)
@@ -1325,10 +1575,15 @@ def sensitivity_rr(
     ci_lower = np.empty(len(mbar_grid))
     ci_upper = np.empty(len(mbar_grid))
 
+    # The slope is estimated. Its sampling error moves the extrapolated
+    # bias by ``mean_horizon * slope_se``, added to the ATT's own standard
+    # error (their covariance is not used; the sum bounds the standard
+    # deviation of the trend-adjusted estimate from above).
+    noise = att_se + mean_horizon * slope_se
     for i, m in enumerate(mbar_grid):
         max_bias = baseline_bias + m * sensitivity_factor
-        ci_lower[i] = att - max_bias - z * att_se
-        ci_upper[i] = att + max_bias + z * att_se
+        ci_lower[i] = att - max_bias - z * noise
+        ci_upper[i] = att + max_bias + z * noise
 
     # ── Breakdown M-bar ──────────────────────────────────────────── #
     includes_zero = (ci_lower <= 0) & (ci_upper >= 0)
@@ -1394,7 +1649,10 @@ def pretrends_summary(
     >>> df = pd.DataFrame(rows)
     >>> result = sp.event_study(df, y="y", treat_time="g", time="time",
     ...                         unit="unit", window=(-3, 3))
-    >>> report = sp.pretrends_summary(result)  # also prints the report
+    >>> report = sp.pretrends_summary(result)  # doctest: +ELLIPSIS
+    ━...
+      Pre-Trends Analysis
+    ...
     >>> bool(isinstance(report, str))
     True
     """

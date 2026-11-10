@@ -22,16 +22,20 @@ So for nodes :math:`X, Y`:
   or share a latent
 * ``X o-o Y`` : no orientation determined
 
-This module implements:
+The algorithm, as in ``pcalg::fci``:
 
-1. **Adjacency phase** — CI-test-based skeleton learning, reusing the
-   PC algorithm's Fisher-Z test (identical to ``pc_algorithm``).
-2. **Initial V-structure orientation** using the separating sets.
-3. **FCI orientation rules R1, R2, R3, R4** from Zhang (2008).
+1. **Skeleton**: the PC-stable search of ``sp.pc_algorithm``.
+2. **Possible-D-SEP**: with latent variables a separating set need not lie
+   among the neighbours of either node. Colliders are oriented on the
+   skeleton and each remaining edge is tested given subsets of the nodes
+   reachable along collider-or-triangle paths. ``possible_dsep=False``
+   skips this pass (the skeleton of RFCI, [@colombo2012learning]).
+3. **Orientation**: every edge back to ``o-o``, colliders on unshielded
+   triples, then Zhang's rules R1-R10 to a fixed point.
 
-The full FCI also involves a *Possible-D-SEP* refinement; that extra
-pass can be enabled with ``refine_dsep=True`` (on by default for small
-graphs, disabled automatically for large ones).
+With ``ci_test='fisherz'`` the PAG equals that of ``pcalg::fci(indepTest =
+gaussCItest)`` mark for mark on the 24 reference data sets of
+``tests/reference_parity/test_fci_pcalg_parity.py``.
 
 References
 ----------
@@ -48,12 +52,12 @@ Intelligence*, 172(16-17), 1873-1896. [@zhang2008completeness]
 from __future__ import annotations
 
 from dataclasses import dataclass
-from itertools import combinations
 from typing import Dict, List, Optional, Sequence, Set, Tuple
 
 import numpy as np
 import pandas as pd
 from scipy import stats
+
 from .._result_serialize import ResultProtocolMixin
 
 # Edge-mark constants used in the mark matrix.
@@ -66,6 +70,14 @@ _MARK_SYMBOL = {
     MARK_NONE: ".",
     MARK_CIRCLE: "o",
     MARK_ARROW: ">",
+    MARK_TAIL: "-",
+}
+
+#: Marks as drawn at the left end of an edge.
+_LEFT_SYMBOL = {
+    MARK_NONE: ".",
+    MARK_CIRCLE: "o",
+    MARK_ARROW: "<",
     MARK_TAIL: "-",
 }
 
@@ -92,6 +104,8 @@ class FCIResult(ResultProtocolMixin):
         Significance level of the CI tests.
     ci_test : str
         Name of the conditional-independence test.
+    n_removed_by_possible_dsep : int
+        Edges of the PC skeleton that the Possible-D-SEP pass removed.
 
     Examples
     --------
@@ -117,6 +131,7 @@ class FCIResult(ResultProtocolMixin):
     n_obs: int
     alpha: float
     ci_test: str
+    n_removed_by_possible_dsep: int = 0
 
     def summary(self) -> str:  # pragma: no cover
         lines = ["FCI / PAG edges:"]
@@ -166,215 +181,17 @@ def _learn_skeleton(
     sep_sets: Dict[Tuple[int, int], Set[int]] = {}
     max_k = max_cond_size if max_cond_size is not None else d - 2
 
-    for k in range(max_k + 1):
-        any_removed = False
-        for i in range(d):
-            neigh = [m for m in range(d) if adj[i, m] == 1]
-            for j in list(neigh):
-                if adj[i, j] == 0:
-                    continue
-                others = [m for m in neigh if m != j]
-                if len(others) < k:
-                    continue
-                for S in combinations(others, k):
-                    pval = _fisher_z(X, i, j, list(S), n)
-                    if pval > alpha:
-                        adj[i, j] = 0
-                        adj[j, i] = 0
-                        sep_sets[(i, j)] = set(S)
-                        sep_sets[(j, i)] = set(S)
-                        any_removed = True
-                        break
-        if not any_removed and k > 0:
-            # When nothing changes we can't refine further.
-            break
+    # The same search as sp.pc_algorithm. The loop that stood here stopped
+    # at the first level that removed no edge, so an edge whose separating
+    # set was two sizes larger than anything found so far was never tested
+    # against it: X <- {A, B, C} -> Y kept a spurious X - Y edge at any
+    # sample size.
+    from .pc import stable_skeleton
+
+    stable_skeleton(
+        adj, sep_sets, max_k, alpha, lambda x, y, S: _fisher_z(X, x, y, S, n)
+    )
     return adj, sep_sets
-
-
-# --------------------------------------------------------------------
-# PAG helpers
-# --------------------------------------------------------------------
-
-
-def _init_pag(adj: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-    """Start with every edge as circle-circle."""
-    left = np.where(adj == 1, MARK_CIRCLE, MARK_NONE)
-    right = np.where(adj == 1, MARK_CIRCLE, MARK_NONE)
-    np.fill_diagonal(left, MARK_NONE)
-    np.fill_diagonal(right, MARK_NONE)
-    return left, right
-
-
-def _has_edge(left: np.ndarray, right: np.ndarray, i: int, j: int) -> bool:
-    return bool(left[i, j] != MARK_NONE and right[i, j] != MARK_NONE)
-
-
-def _set_mark_i(left: np.ndarray, right: np.ndarray, i: int, j: int, mark: int) -> None:
-    """Set the mark on the i-side of edge (i,j). Also mirror via (j,i)."""
-    left[i, j] = mark
-    right[j, i] = mark
-
-
-def _set_mark_j(left: np.ndarray, right: np.ndarray, i: int, j: int, mark: int) -> None:
-    """Set mark on the j-side of edge (i,j)."""
-    right[i, j] = mark
-    left[j, i] = mark
-
-
-def _mark_i(left: np.ndarray, i: int, j: int) -> int:
-    return int(left[i, j])
-
-
-def _mark_j(right: np.ndarray, i: int, j: int) -> int:
-    return int(right[i, j])
-
-
-# --------------------------------------------------------------------
-# V-structure & FCI orientation rules (Zhang 2008, R1-R4)
-# --------------------------------------------------------------------
-
-
-def _orient_vstructures(
-    adj: np.ndarray,
-    sep_sets: Dict[Tuple[int, int], Set[int]],
-    left: np.ndarray,
-    right: np.ndarray,
-) -> None:
-    d = adj.shape[0]
-    for b in range(d):
-        for a in range(d):
-            if adj[a, b] == 0 or a == b:
-                continue
-            for c in range(a + 1, d):
-                if c == b or adj[b, c] == 0 or adj[a, c] == 1:
-                    continue
-                sep = sep_sets.get((a, c), None)
-                if sep is None:
-                    continue
-                if b not in sep:
-                    _set_mark_j(left, right, a, b, MARK_ARROW)  # a *-> b
-                    _set_mark_j(left, right, c, b, MARK_ARROW)  # c *-> b
-
-
-def _apply_fci_rules(left: np.ndarray, right: np.ndarray, max_iter: int = 100) -> None:
-    d = left.shape[0]
-    for _ in range(max_iter):
-        changed = False
-
-        # R1: if a*->b o-* c and a,c not adjacent ⇒ b -> c (tail on b side,
-        #     arrowhead on c side). In PAG terms: change b's mark toward c
-        #     from circle to tail, and c's mark toward b from circle to arrow.
-        for b in range(d):
-            for a in range(d):
-                if not _has_edge(left, right, a, b):
-                    continue
-                if _mark_j(right, a, b) != MARK_ARROW:
-                    continue
-                for c in range(d):
-                    if c == a or c == b:
-                        continue
-                    if not _has_edge(left, right, b, c):
-                        continue
-                    if _has_edge(left, right, a, c):
-                        continue
-                    if _mark_i(left, b, c) == MARK_CIRCLE:
-                        _set_mark_i(left, right, b, c, MARK_TAIL)
-                        _set_mark_j(left, right, b, c, MARK_ARROW)
-                        changed = True
-
-        # R2: if a -> b *-> c or a *-> b -> c, and a *o c, then a *-> c
-        for a in range(d):
-            for c in range(d):
-                if a == c or not _has_edge(left, right, a, c):
-                    continue
-                if _mark_j(right, a, c) != MARK_CIRCLE:
-                    continue
-                for b in range(d):
-                    if b in (a, c):
-                        continue
-                    if not (
-                        _has_edge(left, right, a, b) and _has_edge(left, right, b, c)
-                    ):
-                        continue
-                    cond1 = (
-                        _mark_i(left, a, b) == MARK_TAIL
-                        and _mark_j(right, a, b) == MARK_ARROW
-                        and _mark_j(right, b, c) == MARK_ARROW
-                    )
-                    cond2 = (
-                        _mark_j(right, a, b) == MARK_ARROW
-                        and _mark_i(left, b, c) == MARK_TAIL
-                        and _mark_j(right, b, c) == MARK_ARROW
-                    )
-                    if cond1 or cond2:
-                        _set_mark_j(left, right, a, c, MARK_ARROW)
-                        changed = True
-
-        # R3: if a *-> b <-* c, a *-o theta o-* c, theta *-o b,
-        #     and a,c not adjacent ⇒ theta *-> b
-        for b in range(d):
-            for theta in range(d):
-                if theta == b or not _has_edge(left, right, theta, b):
-                    continue
-                if _mark_j(right, theta, b) != MARK_CIRCLE:
-                    continue
-                # need a and c with arrows into b, not adjacent,
-                # each theta o-o / arrow-circle to them.
-                preds = [
-                    x
-                    for x in range(d)
-                    if x != b
-                    and _has_edge(left, right, x, b)
-                    and _mark_j(right, x, b) == MARK_ARROW
-                ]
-                for a, c in combinations(preds, 2):
-                    if _has_edge(left, right, a, c):
-                        continue
-                    if not (
-                        _has_edge(left, right, a, theta)
-                        and _has_edge(left, right, theta, c)
-                    ):
-                        continue
-                    if _mark_j(right, a, theta) != MARK_CIRCLE:
-                        continue
-                    if _mark_j(right, c, theta) != MARK_CIRCLE:
-                        continue
-                    _set_mark_j(left, right, theta, b, MARK_ARROW)
-                    changed = True
-
-        # R4: discriminating-path rule — simplified heuristic:
-        # if there's a path a *-> b <-* c with b -> d and a adjacent to d,
-        # orient the circle on b's side toward d as tail.  (Not a full R4
-        # but catches common cases; full R4 requires path-enumeration.)
-        for a in range(d):
-            for b in range(d):
-                if b == a or not _has_edge(left, right, a, b):
-                    continue
-                for c in range(d):
-                    if c in (a, b) or not _has_edge(left, right, c, b):
-                        continue
-                    if (
-                        _mark_j(right, a, b) == MARK_ARROW
-                        and _mark_j(right, c, b) == MARK_ARROW
-                    ):
-                        for dnode in range(d):
-                            if dnode in (a, b, c):
-                                continue
-                            if not _has_edge(left, right, b, dnode):
-                                continue
-                            if not _has_edge(left, right, a, dnode):
-                                continue
-                            if _mark_i(left, b, dnode) == MARK_CIRCLE:
-                                _set_mark_i(left, right, b, dnode, MARK_TAIL)
-                                changed = True
-
-        if not changed:
-            break
-
-
-# --------------------------------------------------------------------
-# Public API
-# --------------------------------------------------------------------
 
 
 def fci(
@@ -383,6 +200,7 @@ def fci(
     alpha: float = 0.05,
     max_cond_size: Optional[int] = None,
     ci_test: str = "fisherz",
+    possible_dsep: bool = True,
 ) -> FCIResult:
     """
     Run FCI. Returns a :class:`FCIResult` with the learned PAG.
@@ -399,6 +217,12 @@ def fci(
     ci_test : {"fisherz"}
         Only Fisher-Z partial-correlation test is supported; extensions
         (kernel / chi-square) can be added later.
+    possible_dsep : bool, default True
+        Run the Possible-D-SEP pass, which FCI needs to be correct when
+        there are latent common causes: without it an edge can survive
+        that no subset of either node's neighbours separates but a larger
+        set does. ``False`` keeps the PC skeleton, which is faster on wide
+        data and is what this function returned before 1.39.
 
     Returns
     -------
@@ -436,41 +260,47 @@ def fci(
     n = X.shape[0]
     d = X.shape[1]
     if d < 2:
-        raise ValueError("Need at least 2 variables")
+        dropped = [c for c in data.columns if c not in variables]
+        raise ValueError(
+            "Need at least 2 variables"
+            + (
+                f"; {len(dropped)} non-numeric column(s) were left out "
+                f"({dropped[:6]}). FCI here tests partial correlations: for "
+                "categorical data without latent variables use "
+                "sp.pc_algorithm(df, ci_test='chi-square')."
+                if dropped
+                else "."
+            )
+        )
+
+    from ._fci_core import orient_pag, possible_dsep_removal
 
     adj, sep_sets = _learn_skeleton(X, alpha, max_cond_size)
-    left, right = _init_pag(adj)
-    _orient_vstructures(adj, sep_sets, left, right)
-    _apply_fci_rules(left, right)
+    n_removed = 0
+    if possible_dsep:
+        n_removed = possible_dsep_removal(
+            adj,
+            sep_sets,
+            alpha,
+            lambda x, y, S: _fisher_z(X, x, y, S, n),
+            max_cond_size,
+        )
+    # marks[i, j] is the mark at the j end of the edge between i and j
+    marks = orient_pag(adj, sep_sets)
+    left, right = marks.T.copy(), marks.copy()
 
     # Build human-readable edge list
     edges: List[Tuple[str, str, str]] = []
     seen = set()
     for i in range(d):
         for j in range(i + 1, d):
-            if not _has_edge(left, right, i, j):
+            if marks[i, j] == MARK_NONE:
                 continue
-            li, lj = _mark_i(left, i, j), _mark_j(right, i, j)
-            label = f"{_MARK_SYMBOL[li]}-{_MARK_SYMBOL[lj]}"
-            # Compact common labels
-            if label == "o-o":
-                arrow = "o-o"
-            elif label == "--":
-                arrow = "---"
-            elif label == "->" or label == "-->":
-                arrow = "-->"
-            elif label == "<-":
-                arrow = "<--"
-            elif label == ">-" or label == "-<":
-                arrow = "<--"
-            elif label == "o->" or label == "o>":
-                arrow = "o->"
-            elif label == "<-o" or label == "<o":
-                arrow = "<-o"
-            elif label == ">>" or label == "->>":
-                arrow = "<->"
-            else:
-                arrow = f"{_MARK_SYMBOL[li]}-{_MARK_SYMBOL[lj]}"
+            li, lj = int(left[i, j]), int(right[i, j])
+            # An arrowhead at the left end is drawn '<'. It used to be drawn
+            # '>' like the right one, so a bidirected edge read 'X >-> Y'
+            # and 'X <-- Y' read 'X >-- Y'.
+            arrow = f"{_LEFT_SYMBOL[li]}-{_MARK_SYMBOL[lj]}"
             edges.append((variables[i], arrow, variables[j]))
             seen.add((i, j))
 
@@ -493,6 +323,7 @@ def fci(
         n_obs=n,
         alpha=alpha,
         ci_test=ci_test,
+        n_removed_by_possible_dsep=int(n_removed),
     )
     try:
         from ..output._lineage import attach_provenance as _attach_prov
@@ -505,6 +336,7 @@ def fci(
                 "alpha": alpha,
                 "max_cond_size": max_cond_size,
                 "ci_test": ci_test,
+                "possible_dsep": possible_dsep,
             },
             data=data,
             overwrite=False,

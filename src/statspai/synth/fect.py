@@ -48,8 +48,10 @@ import pandas as pd
 from scipy import stats
 
 from .._aliases import accepts_aliases
+from .._input_validation import check_columns
+from ..core._call_record import records_call
 from ..core.results import CausalResult
-from ..exceptions import DataInsufficient, MethodIncompatibility
+from ..exceptions import ConvergenceWarning, DataInsufficient, MethodIncompatibility
 
 __all__ = ["fect"]
 
@@ -170,6 +172,14 @@ def _xx_inv(X: np.ndarray) -> np.ndarray:
     for i in range(p):
         for j in range(p):
             G[i, j] = float(np.sum(X[:, :, i] * X[:, :, j]))
+    # np.linalg.inv raises only on an exactly zero pivot; a Gram matrix that
+    # is singular to rounding would come back as noise of order 1e15
+    scale = np.sqrt(np.clip(np.diag(G), 1e-300, None))
+    if p > 1 and np.linalg.eigvalsh(G / np.outer(scale, scale)).min() < 1e-10:
+        raise MethodIncompatibility(
+            "fect: the covariates are collinear over the panel, so their "
+            "coefficients are not identified. Drop the redundant covariate(s)."
+        )
     return np.linalg.inv(G)
 
 
@@ -189,6 +199,9 @@ def _initial_fit(
     untreated cells, predicted on every cell. Returns (Y0, beta0)."""
     T, N = Y.shape
     p = 0 if X is None else X.shape[2]
+    n_coef = 1 + (N - 1 if force in (1, 3) else 0) + (T - 1 if force in (2, 3) else 0)
+    if T * N * (n_coef + p) > _DENSE_INITIAL_FIT_CELLS:
+        return _initial_fit_iterative(Y, X, II, force)
     obs = np.where(II.ravel(order="F") == 1)[0]  # column-major like R's c()
     y_all = Y.ravel(order="F")
     unit_id = np.repeat(np.arange(N), T)
@@ -222,6 +235,79 @@ def _initial_fit(
     bad = ~np.isfinite(Y0)
     if bad.any():
         fill = float(np.nanmean(y_all[obs]))
+        Y0[bad] = fill if np.isfinite(fill) else 0.0
+    return Y0, beta0
+
+
+#: Size (rows x columns) of the dummy design above which the initial fit is
+#: solved by alternating projections instead of dense least squares. A panel
+#: of 7,000 units and 40 periods would need a 17 GB design.
+_DENSE_INITIAL_FIT_CELLS = 50_000_000
+
+
+def _initial_fit_iterative(
+    Y: np.ndarray, X: Optional[np.ndarray], II: np.ndarray, force: int
+) -> Tuple[np.ndarray, np.ndarray]:
+    """The same fit as :func:`_initial_fit` without the dummy design.
+
+    The fixed effects are solved by alternating between the unit and the
+    period means over the untreated cells (to 1e-12), and the covariate
+    slopes by Frisch-Waugh-Lovell on the residualised columns. On a panel
+    where every unit and every period has an untreated cell this is the
+    least-squares fit of the dense path. A unit (period) with no untreated
+    cell has no identified effect and is given the average one.
+    """
+    T, N = Y.shape
+    p = 0 if X is None else X.shape[2]
+    M = II == 1
+    n_unit = M.sum(axis=0).astype(float)
+    n_time = M.sum(axis=1).astype(float)
+    use_unit, use_time = force in (1, 3), force in (2, 3)
+
+    def _effects(V: np.ndarray) -> Tuple[float, np.ndarray, np.ndarray]:
+        """Constant, unit and period effects of ``V`` on the untreated cells."""
+        Vz = np.where(M, V, 0.0)
+        mu = float(Vz.sum() / max(M.sum(), 1))
+        alpha, xi = np.zeros(N), np.zeros(T)
+        for _ in range(10_000):
+            change = 0.0
+            if use_unit:
+                r = np.where(M, V - mu - xi[:, None], 0.0).sum(axis=0)
+                new = np.divide(r, n_unit, out=np.zeros(N), where=n_unit > 0)
+                change = max(change, float(np.max(np.abs(new - alpha), initial=0.0)))
+                alpha = new
+            if use_time:
+                r = np.where(M, V - mu - alpha[None, :], 0.0).sum(axis=1)
+                new = np.divide(r, n_time, out=np.zeros(T), where=n_time > 0)
+                change = max(change, float(np.max(np.abs(new - xi), initial=0.0)))
+                xi = new
+            if change < 1e-12 or not (use_unit and use_time):
+                break
+        if use_unit and (n_unit == 0).any() and (n_unit > 0).any():
+            alpha[n_unit == 0] = float(alpha[n_unit > 0].mean())
+        if use_time and (n_time == 0).any() and (n_time > 0).any():
+            xi[n_time == 0] = float(xi[n_time > 0].mean())
+        return mu, alpha, xi
+
+    def _fit(V: np.ndarray) -> np.ndarray:
+        mu, alpha, xi = _effects(V)
+        return mu + alpha[None, :] + xi[:, None]
+
+    beta0 = np.zeros(0)
+    target = Y
+    if p > 0:
+        assert X is not None
+        y_res = (Y - _fit(Y))[M]
+        x_res = np.column_stack([(X[:, :, k] - _fit(X[:, :, k]))[M] for k in range(p)])
+        beta0, *_ = np.linalg.lstsq(x_res, y_res, rcond=None)
+        target = Y - np.tensordot(X, beta0, axes=([2], [0]))
+    Y0 = _fit(target)
+    if p > 0:
+        assert X is not None
+        Y0 = Y0 + np.tensordot(X, beta0, axes=([2], [0]))
+    bad = ~np.isfinite(Y0)
+    if bad.any():
+        fill = float(np.nanmean(Y[M])) if M.any() else 0.0
         Y0[bad] = fill if np.isfinite(fill) else 0.0
     return Y0, beta0
 
@@ -409,7 +495,8 @@ def _inter_fe_core(
                 YY, Y0, II, force, mc, r if mc == 0 else 1, 0, lam, tol, max_iter
             )
         elif force == 0:
-            mu_Y = float(YY.sum() / II.sum())
+            # mu_Y is the untreated grand mean taken above, before YY was
+            # centred; recomputing it here from the centred YY gives zero.
             out = {
                 "mu": mu_Y,
                 "fit": np.full((T, N), mu_Y),
@@ -540,10 +627,18 @@ def _fect_fit(
     force: int,
     tol: float,
     max_iter: int,
+    hide: Optional[np.ndarray] = None,
 ) -> Dict[str, Any]:
-    """One full fect fit on matrices; returns fit surface and effects."""
+    """One full fect fit on matrices; returns fit surface and effects.
+
+    ``hide`` marks untreated cells left out of the fit (fect's placebo /
+    carryover / leave-one-period-out tests); their effects are then out of
+    sample.
+    """
     T, N = Y.shape
     II = ((I == 1) & (D == 0)).astype(int)
+    if hide is not None:
+        II = np.where(hide, 0, II)
     Y0, beta0 = _initial_fit(Y, X, II, force)
     if method == "fe":
         est = _inter_fe_core(Y, Y0, X, II, beta0, 0, force, tol, max_iter)
@@ -601,9 +696,11 @@ def _fect_fit(
         "count": count_on,
         "T_on": T_on,
         "treated_units": tr,
+        "II": II,
     }
 
 
+@records_call("fect")
 @accepts_aliases(_strict=True, id="unit", controls="covariates")
 def fect(
     data: pd.DataFrame,
@@ -620,7 +717,7 @@ def fect(
     tol: float = 1e-3,
     max_iter: int = 1000,
     vce: Optional[str] = None,
-    n_boot: int = 200,
+    n_boot: Optional[int] = None,
     seed: Optional[int] = None,
     alpha: float = 0.05,
     cv: bool = False,
@@ -636,6 +733,13 @@ def fect(
     criterion: str = "mspe",
     cv_rule: str = "1se",
     random_state: Optional[int] = None,
+    placebo_period: Optional[Any] = None,
+    carryover_period: Optional[Any] = None,
+    loo: bool = False,
+    tost_threshold: Optional[float] = None,
+    f_threshold: float = 0.5,
+    proportion: float = 0.3,
+    pre_periods: Optional[Sequence[int]] = None,
 ) -> CausalResult:
     """
     Counterfactual estimators for TSCS data (fect; Liu, Wang and Xu 2024).
@@ -681,8 +785,10 @@ def fect(
     vce : {None, 'bootstrap', 'jackknife'}, optional
         Resampling standard errors over units (fect ``vartype``); ``None``
         reports the point estimates only.
-    n_boot : int, default 200
-        Bootstrap replications.
+    n_boot : int, optional
+        Bootstrap replications when ``vce='bootstrap'`` (default 200,
+        fect's ``nboots``). Passing it with any other ``vce`` has no
+        effect and warns: no bootstrap runs unless ``vce='bootstrap'``.
     seed : int, optional
         Random seed for the bootstrap.
     alpha : float, default 0.05
@@ -743,6 +849,41 @@ def fect(
         Seed for the fold draws. fect draws its folds with R's stream,
         so the selection is compared to R statistically (across seeds),
         not byte for byte.
+    placebo_period : int or (int, int), optional
+        fect's placebo test (``placeboTest = TRUE``): the treated units'
+        untreated cells whose relative period (fect coding, ``<= 0``) lies
+        in this window are removed from the fit, and their out-of-sample
+        effect is averaged (``model_info['placebo_test']``: estimate, SE,
+        p-value of zero effect and TOST equivalence p-value). The whole
+        result then comes from that fit, as in fect. Needs ``vce``.
+    carryover_period : int or (int, int), optional
+        fect's carryover test (``carryoverTest = TRUE``) for treatments that
+        switch off: untreated cells ``1 .. k`` periods after a switch-off
+        (in the window) leave the fit, and their effect is tested
+        (``model_info['carryover_test']``). Needs reversals and ``vce``.
+    loo : bool, default False
+        fect's leave-one-period-out test (``loo = TRUE``): each
+        pre-treatment period in turn leaves the fit and its effect is
+        estimated out of sample, with its own resampling SE
+        (``model_info['loo']``: table and tests). Needs ``vce``.
+    tost_threshold : float, optional
+        Equivalence bound of the TOST tests; default fect's
+        ``0.36 * sqrt(sigma2)`` of the two-way fixed-effects fit.
+    f_threshold : float, default 0.5
+        fect ``f.threshold``: the equivalence F test's non-centrality is
+        ``N_bar * f_threshold``.
+    proportion : float, default 0.3
+        fect ``proportion``: pre-periods enter the pre-trend tests when
+        their treated-cell count is at least this share of the largest.
+    pre_periods : (int, int), optional
+        fect ``pre.periods``: restrict the pre-trend tests to this window.
+
+    With ``vce`` set, ``model_info['pretrend_test']`` holds fect's
+    ``test.out``: the pre-trend F test, its equivalence version and the
+    TOST equivalence p-value over the pre-periods. For ``vce='jackknife'``
+    the F statistic uses the jackknife covariance of the replicates; fect
+    uses their plain covariance, which is smaller by ``(n - 1)^2 / n``, so
+    its F is that factor larger (see ``synth/_fect_tests.py``).
 
     Returns
     -------
@@ -787,10 +928,18 @@ def fect(
             "cv=True selects r for method='ife' or lam for method='mc'"
         )
     if method == "ife" and not cv and int(r) <= 0:
-        raise ValueError("method='ife' needs r >= 1 factors (or cv=True)")
+        raise MethodIncompatibility(
+            "method='ife' needs r >= 1 factors (or cv=True)",
+            recovery_hint="Pass r=1 (or more), or cv=True to choose r by "
+            "cross-validation.",
+            diagnostics={"method": method, "r": int(r)},
+        )
     if method == "mc" and not cv and (lam is None or float(lam) <= 0):
-        raise ValueError(
-            "method='mc' needs a positive nuclear-norm penalty lam= (or cv=True)"
+        raise MethodIncompatibility(
+            "method='mc' needs a positive nuclear-norm penalty lam= (or cv=True)",
+            recovery_hint="Pass lam= (a positive number), or cv=True to choose "
+            "it by cross-validation.",
+            diagnostics={"method": method, "lam": lam},
         )
     force_key = str(force).lower()
     if force_key not in _FORCE:
@@ -798,10 +947,34 @@ def fect(
     force_int = _FORCE[force_key]
     if vce not in (None, "bootstrap", "jackknife"):
         raise ValueError("vce must be None, 'bootstrap', or 'jackknife'")
+    if n_boot is not None and vce != "bootstrap":
+        # Before 2026-10-19 n_boot= alone ran nothing and returned se=None
+        # without a word, which reads as "the bootstrap failed" at best.
+        warnings.warn(
+            f"fect: n_boot={n_boot!r} has no effect with vce={vce!r}; "
+            + (
+                "no standard errors are computed. Pass vce='bootstrap' to "
+                "bootstrap them (fect's se = TRUE, vartype = 'bootstrap')."
+                if vce is None
+                else "the jackknife leaves out each unit once."
+            ),
+            UserWarning,
+            stacklevel=2,
+        )
+    if n_boot is None:
+        n_boot = 200
+    elif isinstance(n_boot, bool) or int(n_boot) < 1:
+        raise MethodIncompatibility(
+            f"n_boot must be a positive int, got {n_boot!r}.",
+            recovery_hint="Pass n_boot=200 (fect's nboots default) or more.",
+            diagnostics={"n_boot": repr(n_boot)},
+        )
     covs = list(covariates) if covariates else []
-    for c in [y, treat, unit, time, *covs]:
-        if c not in data.columns:
-            raise ValueError(f"column {c!r} not in data")
+    check_columns(
+        data,
+        {"y": y, "treat": treat, "unit": unit, "time": time, "covariates": covs},
+        function="sp.fect",
+    )
 
     df = data[[unit, time, y, treat, *covs]].copy()
     units = np.array(sorted(df[unit].unique(), key=lambda v: (str(type(v)), v)))
@@ -856,6 +1029,74 @@ def fect(
         N = len(units)
     Yz = np.where(I == 1, Y, 0.0)
 
+    # fect's placebo / carryover / leave-one-period-out tests
+    from . import _fect_tests as _ft
+
+    test_kind: Optional[str] = None
+    test_window: Optional[Tuple[int, int]] = None
+    test_term: Optional[np.ndarray] = None
+    hide: Optional[np.ndarray] = None
+    if placebo_period is not None or carryover_period is not None or loo:
+        if vce is None:
+            raise MethodIncompatibility(
+                "fect: the placebo, carryover and leave-one-period-out tests "
+                "need resampling standard errors",
+                recovery_hint="Pass vce='jackknife' (deterministic) or "
+                "vce='bootstrap'.",
+            )
+        if (placebo_period is not None) + (carryover_period is not None) + bool(
+            loo
+        ) > 1:
+            raise MethodIncompatibility(
+                "fect: run the placebo, carryover and leave-one-period-out "
+                "tests one at a time, as fect does",
+                recovery_hint="Pass only one of placebo_period=, "
+                "carryover_period= and loo=True.",
+            )
+    T_on_all = np.full((T, N), np.nan)
+    for j in range(N):
+        if I[:, j].sum() > 0:
+            T_on_all[:, j] = _get_term(D[:, j], I[:, j])
+    if placebo_period is not None:
+        test_kind = "placebo"
+        test_window = _ft.normalize_window(
+            placebo_period, name="placebo_period", upper=0, lower=None
+        )
+        test_term = T_on_all
+    elif carryover_period is not None:
+        if not _ft.has_reversals(D, I):
+            raise MethodIncompatibility(
+                "fect: treatment never switches off, so there is no carryover "
+                "period to test",
+                recovery_hint="Drop carryover_period=, or use placebo_period=.",
+            )
+        test_kind = "carryover"
+        test_window = _ft.normalize_window(
+            carryover_period, name="carryover_period", upper=None, lower=1
+        )
+        test_term = _ft.off_term(D, I, _get_term)
+    if test_kind is not None:
+        lo_w, hi_w = test_window
+        hide = (I == 1) & (test_term >= lo_w) & (test_term <= hi_w)
+        keep2 = _ft.drop_short_units(
+            ((I == 1) & (D == 0) & ~hide).astype(int), D, I, int(min_t0), test_kind
+        )
+        if not keep2.all():
+            warnings.warn(
+                f"fect: {int((~keep2).sum())} unit(s) left with fewer than "
+                f"min_t0={min_t0} fitted periods in the {test_kind} test were "
+                "dropped, as in fect.",
+                UserWarning,
+                stacklevel=2,
+            )
+            dropped = dropped + units[~keep2].tolist()
+            Y, D, I, Yz = Y[:, keep2], D[:, keep2], I[:, keep2], Yz[:, keep2]
+            if X is not None:
+                X = X[:, keep2, :]
+            units, hide = units[keep2], hide[:, keep2]
+            test_term, T_on_all = test_term[:, keep2], T_on_all[:, keep2]
+            N = len(units)
+
     cv_info: Optional[Dict[str, Any]] = None
     if cv:
         from ._fect_cv import run_fect_cv
@@ -888,9 +1129,22 @@ def fect(
         else:
             lam = float(cv_info["selected"])
 
-    main = _fect_fit(
-        Yz, D, I, X, method, int(r), lam, force_int, float(tol), int(max_iter)
-    )
+    def _refit(Yb, Db, Ib, Xb, hb):
+        return _fect_fit(
+            Yb,
+            Db,
+            Ib,
+            Xb,
+            method,
+            int(r),
+            lam,
+            force_int,
+            float(tol),
+            int(max_iter),
+            hide=hb,
+        )
+
+    main = _refit(Yz, D, I, X, hide)
     att = main["att_avg"]
     est = main["est"]
 
@@ -906,49 +1160,24 @@ def fect(
     co = np.array([j for j in range(N) if j not in set(tr.tolist())])
     if vce is not None:
         rng = np.random.default_rng(seed)
-        reps: List[float] = []
-        period_reps: List[Dict[float, float]] = []
-        if vce == "bootstrap":
-            draws = n_boot
-        else:
-            draws = N
-        for b in range(draws):
-            if vce == "bootstrap":
-                # fect: resample treated and control units separately, with replacement.
-                idx = np.concatenate(
-                    [
-                        rng.choice(tr, size=len(tr), replace=True),
-                        (
-                            rng.choice(co, size=len(co), replace=True)
-                            if len(co)
-                            else np.zeros(0, int)
-                        ),
-                    ]
-                ).astype(int)
-            else:
-                idx = np.array([j for j in range(N) if j != b])
-            Yb, Db, Ib = Yz[:, idx], D[:, idx], I[:, idx]
-            Xb = X[:, idx, :] if X is not None else None
-            if ((Db * Ib).sum(axis=0) > 0).sum() == 0 or (Db == 0).sum() == 0:
-                continue
-            try:
-                fb = _fect_fit(
-                    Yb,
-                    Db,
-                    Ib,
-                    Xb,
-                    method,
-                    int(r),
-                    lam,
-                    force_int,
-                    float(tol),
-                    int(max_iter),
-                )
-            except (np.linalg.LinAlgError, ValueError, DataInsufficient):
-                continue
-            if np.isfinite(fb["att_avg"]):
-                reps.append(fb["att_avg"])
-                period_reps.append(dict(zip(fb["time"].tolist(), fb["att"].tolist())))
+        rep_fits = _ft.resample(
+            _refit,
+            Yz,
+            D,
+            I,
+            X,
+            hide,
+            tr,
+            co,
+            vce,
+            int(n_boot),
+            rng,
+            (np.linalg.LinAlgError, ValueError, DataInsufficient),
+        )
+        reps: List[float] = [fb["att_avg"] for _, _, fb in rep_fits]
+        period_reps: List[Dict[float, float]] = [
+            dict(zip(fb["time"].tolist(), fb["att"].tolist())) for _, _, fb in rep_fits
+        ]
         boot_draws = reps
         if len(reps) >= 2:
             reps_arr = np.asarray(reps)
@@ -987,6 +1216,88 @@ def fect(
                 stacklevel=2,
             )
 
+    tests_info: Dict[str, Any] = {}
+    if vce is not None and len(boot_draws) >= 2:
+        if tost_threshold is None:
+            fe_est = (
+                est
+                if method == "fe"
+                else _fect_fit(
+                    Yz,
+                    D,
+                    I,
+                    X,
+                    "fe",
+                    0,
+                    None,
+                    force_int,
+                    float(tol),
+                    int(max_iter),
+                    hide,
+                )["est"]
+            )
+            tost_thr = 0.36 * float(np.sqrt(fe_est["sigma2"]))
+        else:
+            tost_thr = float(tost_threshold)
+        if test_kind is not None:
+            lo_w, hi_w = test_window
+            est_w, n_w = _ft.window_mean(main["eff"], test_term, lo_w, hi_w)
+            reps_w = [
+                _ft.window_mean(fb["eff"], test_term[:, idx], lo_w, hi_w)[0]
+                for _, idx, fb in rep_fits
+            ]
+            tests_info[f"{test_kind}_test"] = {
+                **_ft.effect_test(est_w, reps_w, vce, alpha, tost_thr),
+                "period": (lo_w, hi_w),
+                "n_cells": n_w,
+            }
+        else:
+            se_arr = np.asarray(att_by_period_se, dtype=float)
+            rep_mat = _ft.period_table([fb for _, _, fb in rep_fits], main["time"])
+            kw_pt = dict(
+                vce=vce,
+                tost_threshold=tost_thr,
+                f_threshold=float(f_threshold),
+                proportion=float(proportion),
+                pre_periods=pre_periods,
+            )
+            tests_info["pretrend_test"] = _ft.pretrend_tests(
+                main["time"], main["count"], main["att"], se_arr, rep_mat, **kw_pt
+            )
+            if loo:
+                pre_k = [int(k) for k in main["time"] if k <= 0]
+                loo_out = _ft.run_loo(
+                    _refit,
+                    Yz,
+                    D,
+                    I,
+                    X,
+                    T_on_all,
+                    pre_k,
+                    vce=vce,
+                    n_boot=int(n_boot),
+                    rng=rng,
+                    min_t0=int(min_t0),
+                    alpha=alpha,
+                    skip=(np.linalg.LinAlgError, ValueError, DataInsufficient),
+                )
+                tab = loo_out["table"]
+                tests_info["loo"] = {
+                    "table": pd.DataFrame(tab),
+                    "reps": loo_out["reps"],
+                    "test": _ft.pretrend_tests(
+                        main["time"],
+                        main["count"],
+                        main["att"],
+                        se_arr,
+                        rep_mat,
+                        loo_att=tab["att"],
+                        loo_se=tab["se"],
+                        loo_reps=loo_out["reps"],
+                        **kw_pt,
+                    ),
+                }
+
     detail = pd.DataFrame(
         {
             "fect_time": main["time"].astype(int),
@@ -997,6 +1308,20 @@ def fect(
     )
     if att_by_period_se is not None:
         detail["se"] = att_by_period_se
+
+    if int(est.get("niter", 0)) > max_iter:
+        # The EM iterations stopped at the cap, not at the tolerance. With
+        # weak factors the fit can keep moving for thousands of iterations
+        # and the ATT with it, so the number reported is the stopping
+        # rule's as much as the model's.
+        warnings.warn(
+            f"fect: the {method} iterations did not reach tol={tol:g} within "
+            f"max_iter={max_iter}; the estimate still depends on where they "
+            "stopped. Raise max_iter, and check that the ATT is stable when "
+            "tol is tightened.",
+            ConvergenceWarning,
+            stacklevel=2,
+        )
 
     model_info: Dict[str, Any] = {
         "estimator": f"fect ({method})",
@@ -1041,6 +1366,7 @@ def fect(
             "StatsPAI convention (0 = first treated period)."
         ),
     }
+    model_info.update(tests_info)
     if cv_info is not None:
         model_info["cv"] = cv_info
         if method == "ife":

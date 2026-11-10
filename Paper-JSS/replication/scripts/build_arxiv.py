@@ -179,6 +179,8 @@ def _write_metadata(pages: int) -> int:
 
     abstract = re.sub(r"(\w+)-\n(\w+)", _rejoin, match.group(1))
     abstract = re.sub(r"\s+", " ", abstract).strip()
+    # pdftotext drops superscripts: "\(10^{-6}\)" comes out as "10\u22126 ".
+    abstract = re.sub(r"10\u2212(\d+) ?", r"10^-\1", abstract)
     abstract = abstract.translate(str.maketrans({"\u2019": "'", "\u2018": "'",
                                                  "\u201c": '"', "\u201d": '"'}))
     if len(abstract) > ARXIV_ABSTRACT_MAX:

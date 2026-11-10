@@ -35,6 +35,7 @@ from dataclasses import dataclass
 from typing import Any, Optional
 
 import numpy as np
+import pandas as pd
 from scipy import stats
 
 from .._result_serialize import ResultProtocolMixin
@@ -287,6 +288,7 @@ def roc_curve(
     *,
     alpha: float = 0.05,
     se_method: str = "delong",
+    weights: Any = None,
 ) -> ROCResult:
     """ROC curve with the AUC and its standard error.
 
@@ -295,6 +297,17 @@ def roc_curve(
     y_true : array-like of {0, 1}
     scores : array-like of continuous predictions (higher = more "positive")
     alpha : float, default 0.05
+    weights : array-like, optional
+        Non-negative observation weights. The rates become weighted
+        shares and the AUC the weighted Mann-Whitney probability
+        ``sum_ij w_i w_j [1(s_i > s_j) + 1(s_i = s_j)/2] / (W+ W-)``.
+        The main use is as a balance check: with ``y_true`` the exposure,
+        ``scores`` the propensity score and ``weights`` the propensity
+        weights, an AUC near 0.5 says the score no longer separates the
+        two groups in the weighted sample. No standard error is reported
+        with weights (``auc_se`` and ``auc_ci`` are NaN): the weights are
+        themselves estimated from the scores, and the DeLong and Hanley
+        variances do not account for that.
     se_method : {"delong", "hanley", "hanley-empirical"}, default "delong"
         ``"hanley"``: the Hanley-McNeil (1982) variance with the
         exponential approximations ``Q1 = A/(2-A)``, ``Q2 = 2A^2/(1+A)``.
@@ -352,6 +365,8 @@ def roc_curve(
     n_neg = len(y) - n_pos
     if n_pos == 0 or n_neg == 0:
         raise ValueError("Need both positive and negative labels for ROC.")
+    if weights is not None:
+        return _weighted_roc(y, s, np.asarray(weights, dtype=float), se_method)
 
     # One ROC point per distinct score (ties move TPR and FPR together).
     thr = np.unique(s)[::-1]
@@ -430,8 +445,40 @@ def roc_curve(
     )
 
 
-def auc(y_true: Any, scores: Any) -> float:
-    """Shortcut: just return the AUC.
+def _weighted_roc(
+    y: np.ndarray, s: np.ndarray, w: np.ndarray, se_method: str
+) -> ROCResult:
+    """Weighted ROC curve and AUC; no standard error (see ``roc_curve``)."""
+    if w.shape != s.shape:
+        raise MethodIncompatibility("weights and scores must have the same shape.")
+    if not np.isfinite(w).all() or (w < 0).any():
+        raise MethodIncompatibility("weights must be finite and non-negative.")
+    w_pos, w_neg = float(w[y == 1].sum()), float(w[y == 0].sum())
+    if w_pos <= 0 or w_neg <= 0:
+        raise MethodIncompatibility("Each label needs positive total weight.")
+    thr = np.unique(s)[::-1]
+    idx = np.searchsorted(-thr, -s)
+    tp_at = np.bincount(idx[y == 1], weights=w[y == 1], minlength=len(thr))
+    fp_at = np.bincount(idx[y == 0], weights=w[y == 0], minlength=len(thr))
+    tpr = np.cumsum(tp_at) / w_pos
+    fpr = np.cumsum(fp_at) / w_neg
+    # By distinct score, descending: negatives strictly below each level
+    # count in full, negatives at the level count one half.
+    neg_below = w_neg - np.cumsum(fp_at)
+    auc_val = float(np.sum(tp_at * (neg_below + 0.5 * fp_at)) / (w_pos * w_neg))
+    return ROCResult(
+        thresholds=thr,
+        tpr=tpr,
+        fpr=fpr,
+        auc=auc_val,
+        auc_se=float("nan"),
+        auc_ci=(float("nan"), float("nan")),
+        se_method=se_method,
+    )
+
+
+def auc(y_true: Any, scores: Any, weights: Any = None) -> float:
+    """Shortcut: just return the AUC (weighted when ``weights`` is given).
 
     Examples
     --------
@@ -442,7 +489,101 @@ def auc(y_true: Any, scores: Any) -> float:
     >>> sp.auc(y, s)
     1.0
     """
-    return roc_curve(y_true, scores).auc
+    return roc_curve(y_true, scores, weights=weights).auc
+
+
+def ndcg(y_true: Any, scores: Any, k: float = 0.01) -> float:
+    """Normalised discounted cumulative gain of the top-ranked cases.
+
+    For a rare outcome (accounting fraud, default) the question is not how
+    well a score ranks everyone, which is what the AUC answers, but how many
+    true cases sit at the very top of the list an examiner would work
+    through. NDCG at ``k`` looks at the ``k`` highest scores only, credits a
+    true case at rank ``i`` with ``1 / log2(i + 1)``, and divides by the
+    credit of a perfect ranking, so 1 means the top of the list is all true
+    cases (or all of them, when there are fewer than ``k``).
+
+    Parameters
+    ----------
+    y_true : array-like
+        0/1 outcome.
+    scores : array-like
+        Predicted score; higher means more likely.
+    k : float, default 0.01
+        A fraction in (0, 1): the top ``round(n * k)`` cases, 0.01 being
+        the top 1%. A number of 1 or more is the count itself.
+
+    Returns
+    -------
+    float
+        NDCG at ``k`` in [0, 1]; 0 when there is no true case at all.
+
+    Raises
+    ------
+    MethodIncompatibility
+        (a ``ValueError``.)  ``y_true`` holds a value other than 0 and 1,
+        the inputs differ in length or hold missing values, or ``k``
+        selects no case.
+
+    Notes
+    -----
+    Tied scores are ranked in the order of the data, as R's ``sort`` does.
+    With many ties at the cutoff the value depends on that order; break
+    them before reading much into it.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> import statspai as sp
+    >>> y = np.array([1, 0, 1, 0, 0, 0, 0, 0, 0, 0])
+    >>> s = np.array([.9, .8, .7, .6, .5, .4, .3, .2, .1, .0])
+    >>> round(sp.ndcg(y, s, k=3), 4)        # hits at ranks 1 and 3 of top 3
+    0.9197
+    >>> sp.ndcg(y, s, k=1)
+    1.0
+
+    References
+    ----------
+    jarvelin2002cumulated, bao2020detecting
+    """
+    y = np.asarray(y_true)
+    s = np.asarray(scores, dtype=float)
+    if y.shape != s.shape or y.ndim != 1:
+        raise MethodIncompatibility(
+            "ndcg: y_true and scores must be one-dimensional and equally long."
+        )
+    if np.isnan(s).any() or pd.isna(y).any():
+        raise MethodIncompatibility("ndcg: missing values in y_true or scores.")
+    try:
+        yf = y.astype(float)
+    except (TypeError, ValueError) as exc:
+        raise MethodIncompatibility(
+            f"ndcg: y_true must be a 0/1 outcome ({exc})."
+        ) from exc
+    other = np.unique(yf[(yf != 0) & (yf != 1)])
+    if other.size:
+        raise MethodIncompatibility(
+            "ndcg: y_true must be a 0/1 outcome; it also holds "
+            f"{other[:5].tolist()}.",
+            recovery_hint="Code the true cases as 1 and the rest as 0 "
+            "(graded relevance is not supported).",
+        )
+    rel = (yf == 1).astype(float)
+    n = len(rel)
+    if not k > 0:
+        raise MethodIncompatibility(f"ndcg: k must be positive, got {k!r}.")
+    kn = int(round(n * k)) if k < 1 else int(k)
+    kn = min(kn, n)
+    if kn < 1:
+        raise MethodIncompatibility(
+            f"ndcg: k={k!r} selects no case out of {n}.",
+            recovery_hint="Raise k, or give a count of 1 or more.",
+        )
+    order = np.argsort(-s, kind="stable")
+    discount = 1.0 / np.log2(np.arange(1, kn + 1) + 1.0)
+    dcg = float(np.sum(rel[order][:kn] * discount))
+    ideal = float(np.sum(discount[: int(min(kn, rel.sum()))]))
+    return dcg / ideal if ideal > 0 else 0.0
 
 
 # --------------------------------------------------------------------------- #

@@ -28,7 +28,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 import numpy as np
 import pandas as pd
 
-from ..exceptions import MethodIncompatibility
+from ..exceptions import ColumnNotFound, MethodIncompatibility
 
 _INTERCEPT_TOKENS = ("Intercept", "const", "_cons")
 
@@ -86,6 +86,12 @@ def _simple_part(part: str) -> bool:
     )
 
 
+_NEEDS_DATA_HINT = (
+    "A formula with factor, transformed or interaction terms is rebuilt from "
+    "the original columns: pass data=<the frame the model was fitted on>."
+)
+
+
 class _TermDesign:
     """Design from coefficient names (plain / C()-dummy / interaction terms)."""
 
@@ -129,10 +135,20 @@ class _TermDesign:
         if m is not None:
             base, level = m.group(1), m.group(2)
             if base not in frame.columns:
-                raise MethodIncompatibility(f"margins: {base!r} is not in the data.")
+                raise ColumnNotFound.from_missing(
+                    [base],
+                    list(frame.columns),
+                    message=f"margins: {base!r} is not in the data.",
+                    extra_hint=_NEEDS_DATA_HINT,
+                )
             return np.array([factor_value(level, v) for v in frame[base]], dtype=float)
         if part not in frame.columns:
-            raise MethodIncompatibility(f"margins: {part!r} is not in the data.")
+            raise ColumnNotFound.from_missing(
+                [part],
+                list(frame.columns),
+                message=f"margins: {part!r} is not in the data.",
+                extra_hint=_NEEDS_DATA_HINT,
+            )
         out: np.ndarray = frame[part].to_numpy(dtype=float)
         return out
 
@@ -174,13 +190,21 @@ class _FormulaDesign:
     def __init__(self, formula: str, frame: pd.DataFrame, names: Sequence[str]):
         import patsy
 
-        from ..core.utils import _coerce_string_extension_dtypes
+        from ..core.utils import (
+            _coerce_string_extension_dtypes,
+            formula_eval_env,
+            r_formula_idioms,
+            raise_if_formula_names_missing,
+        )
 
-        rhs = formula.split("~", 1)[1].strip()
-        frame = _coerce_string_extension_dtypes(frame)
+        rhs = r_formula_idioms(formula.split("~", 1)[1].strip())
+        frame = _coerce_string_extension_dtypes(frame, rhs)
         try:
-            di = patsy.dmatrix(rhs, frame, NA_action="drop").design_info
+            di = patsy.dmatrix(
+                rhs, frame, eval_env=formula_eval_env(), NA_action="drop"
+            ).design_info
         except Exception as exc:  # patsy raises many types
+            raise_if_formula_names_missing(rhs, frame, exc, context="margins")
             raise MethodIncompatibility(
                 f"margins: could not rebuild the design of {formula!r} on the "
                 f"supplied data ({type(exc).__name__}: {exc}).",
@@ -227,7 +251,7 @@ class _FormulaDesign:
 
         (X,) = patsy.build_design_matrices(
             [self.design_info],
-            _coerce_string_extension_dtypes(frame),
+            _coerce_string_extension_dtypes(frame, self.design_info),
             NA_action="raise",
         )
         return np.asarray(X, dtype=float)
@@ -278,6 +302,103 @@ def _base_level(di: Any, factor: Any, cats: List[Any]) -> Any:
     return cats[0]
 
 
+def _structural_formula(formula: str) -> str:
+    """An IV formula with its ``(endog ~ instruments)`` block replaced by
+    the endogenous regressors: the equation the coefficients belong to.
+
+    ``y ~ w + (np.log(x) ~ z1 + z2)`` becomes ``y ~ w + np.log(x)``; the
+    linearmodels spelling ``[x ~ z]`` is read the same way. A formula
+    without such a block is returned as it is.
+    """
+    if "~" not in formula:
+        return formula
+    head, rhs = formula.split("~", 1)
+    if "~" not in rhs:
+        return formula
+    depth, start, opener = 0, -1, ""
+    for i, ch in enumerate(rhs):
+        if ch in "([":
+            if depth == 0:
+                start, opener = i, ch
+            depth += 1
+        elif ch in ")]":
+            depth -= 1
+            if depth == 0 and start >= 0 and "~" in rhs[start:i]:
+                closes = ")" if opener == "(" else "]"
+                if ch != closes:
+                    continue
+                endog = rhs[start + 1 : i].split("~", 1)[0].strip()
+                return f"{head}~{rhs[:start]}{endog}{rhs[i + 1 :]}"
+    return formula
+
+
+def fitted_factor_levels(design_info: Any, columns: Sequence[Any]) -> Dict[str, Any]:
+    """Levels of each factor of a fitted formula, ``{column: [levels]}``.
+
+    The reference level has no dummy, so the coefficient names alone do not
+    say which values of a factor the model saw; this record (plain values,
+    picklable) does, and :func:`reject_unseen_levels` reads it at prediction
+    time.  Only factors that are one column of the data (``C(g)``, ``g``,
+    ``C(g, Treatment(...))``) are recorded.
+    """
+    out: Dict[str, Any] = {}
+    infos = getattr(design_info, "factor_infos", None) or {}
+    names = {str(c) for c in columns}
+    for factor, info in infos.items():
+        if getattr(info, "type", None) != "categorical":
+            continue
+        code = str(getattr(factor, "code", ""))
+        used = _names_in(code, names)
+        bare = len(used) == 1 and (
+            code == used[0] or re.match(rf"^C\(\s*{re.escape(used[0])}\s*[,)]", code)
+        )
+        if not bare:
+            continue
+        out[used[0]] = [c.item() if hasattr(c, "item") else c for c in info.categories]
+    return out
+
+
+def reject_unseen_levels(levels: Any, frame: pd.DataFrame) -> None:
+    """Raise when ``frame`` holds a factor level the model was not fitted on.
+
+    A dummy-coded design gives such a row zeros in every dummy of the
+    factor, which is the row of the reference level: the prediction would
+    be the reference level's, without a word.
+    """
+    if not isinstance(levels, dict):
+        return
+    for var, seen in levels.items():
+        if var not in frame.columns:
+            continue
+        known = set()
+        for level in seen:
+            known.add(str(level))
+            try:
+                known.add(float(level))
+            except (TypeError, ValueError):
+                continue
+        unseen = []
+        for value in pd.unique(frame[var].dropna()):
+            try:
+                number: Any = float(value)
+            except (TypeError, ValueError):
+                number = None
+            if str(value) not in known and number not in known:
+                unseen.append(value.item() if hasattr(value, "item") else value)
+        if unseen:
+            raise MethodIncompatibility(
+                f"predict(): {var!r} takes the value(s) {unseen} in the new "
+                f"data, which the model was not fitted on (levels at fit "
+                f"time: {list(seen)}). The model has no coefficient for "
+                f"them, so there is no prediction for these rows.",
+                recovery_hint=(
+                    "Drop these rows, recode them to a fitted level, or "
+                    "refit the model on data that includes the level."
+                ),
+                diagnostics={"variable": var, "unseen_levels": unseen},
+            )
+
+
 def design_for(result: Any, frame: pd.DataFrame) -> Any:
     """Pick the backend that can evaluate this model's design on ``frame``."""
     terms = [str(t) for t in result.params.index]
@@ -293,13 +414,15 @@ def design_for(result: Any, frame: pd.DataFrame) -> Any:
             recovery_hint="Refit with a formula-based estimator (sp.regress, "
             "sp.logit, sp.probit, sp.glm) and pass data=.",
         )
-    return _FormulaDesign(formula, frame, terms)
+    return _FormulaDesign(_structural_formula(formula), frame, terms)
 
 
 __all__ = [
     "CAT_TERM_RE",
     "design_for",
     "factor_value",
+    "fitted_factor_levels",
     "model_formula",
     "model_setting",
+    "reject_unseen_levels",
 ]

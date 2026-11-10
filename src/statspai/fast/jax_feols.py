@@ -2,12 +2,10 @@
 
 This module ships an API-compatible backend for :func:`statspai.fast.feols`
 whose **WLS solve + HC1 sandwich** computations execute on JAX/XLA
-(CPU / GPU / TPU). The FE residualisation step still goes through the
-Rust ``demean`` kernel because, on typical FE cardinalities, the
-bincount-style memory pattern beats anything XLA emits on CPU. The
-``cr1`` cluster-robust path also stays on the existing
-:func:`statspai.fast.inference.crve`, which itself dispatches to the
-Phase-2 Rust ``cluster_meat`` kernel when built. The unique value of
+(CPU / GPU / TPU). The FE residualisation step still goes through
+:func:`statspai.fast.demean` (the optional Rust kernels when installed,
+NumPy otherwise). The ``cr1`` cluster-robust path also stays on the
+existing :func:`statspai.fast.inference.crve` (NumPy). The unique value of
 this module is on **GPU** boxes: the post-demean dense linear algebra
 step runs at GPU speed without any host↔device ping-pong inside the
 solve.
@@ -33,19 +31,17 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 import pandas as pd
 
+from .._result_serialize import ResultProtocolMixin
 from ..exceptions import DataInsufficient, MethodIncompatibility, NumericalInstability
-from .feols import FeolsResult
 from ._result_protocol import distribution_summary as _distribution_summary
 from ._result_protocol import jsonable as _jsonable
 from ._result_protocol import tidy_records as _tidy_records
-from ._validation import (
-    nonempty_sample as _nonempty_sample,
-    nonnegative_finite_float as _nonnegative_finite_float,
-    open_unit_float as _open_unit_float,
-    positive_int as _positive_int,
-    positive_weight_mass as _positive_weight_mass,
-)
-from .._result_serialize import ResultProtocolMixin
+from ._validation import nonempty_sample as _nonempty_sample
+from ._validation import nonnegative_finite_float as _nonnegative_finite_float
+from ._validation import open_unit_float as _open_unit_float
+from ._validation import positive_int as _positive_int
+from ._validation import positive_weight_mass as _positive_weight_mass
+from .feols import FeolsResult, _fixest_cluster_fe_dof, _fixest_fe_dof
 
 # ---------------------------------------------------------------------------
 # JAX availability + helpers (mirrors jax_backend.py's policy)
@@ -220,6 +216,7 @@ def feols_jax(
     fe_tol: float = 1e-10,
     fe_maxiter: int = 1_000,
     dtype: str = "float64",
+    ssc: str = "fixest",
 ) -> FeolsResult:
     """JAX-backed OLS / WLS with high-dimensional fixed effects.
 
@@ -237,6 +234,11 @@ def feols_jax(
         Working precision on the JAX device. ``"float32"`` is roughly
         2x faster on CUDA and 32x on TPU but trades ~1 ulp of
         precision; only flip it if the parity drift is acceptable.
+    ssc : {"fixest", "statspai"}, default "fixest"
+        Small-sample convention, as in :func:`statspai.fast.feols`:
+        ``"fixest"`` reproduces R ``fixest`` defaults; ``"statspai"`` is
+        the count this function used through 1.36.0
+        (``fe_dof = Σ(G_k - 1)``, every absorbed level charged in CR1).
 
     Returns
     -------
@@ -271,6 +273,11 @@ def feols_jax(
     if dtype not in ("float64", "float32"):
         raise MethodIncompatibility(
             f"feols_jax: dtype={dtype!r}; supported: 'float64' or 'float32'"
+        )
+    if ssc not in ("fixest", "statspai"):
+        raise MethodIncompatibility(
+            f"feols_jax: ssc={ssc!r}; supported: 'fixest' or 'statspai'",
+            diagnostics={"ssc": ssc},
         )
     fe_maxiter = _positive_int(
         fe_maxiter,
@@ -395,8 +402,8 @@ def feols_jax(
             X_dem = stacked_dem[:, 1:]
             fe_card = list(info.n_fe)
         else:
-            from .fepois import _weighted_ap_demean
             from .demean import _detect_singletons as _ds_helper
+            from .fepois import _weighted_ap_demean
 
             fe_codes_raw: List[np.ndarray] = []
             for col in fe_terms:
@@ -498,6 +505,18 @@ def feols_jax(
     _require_full_rank("feols_jax", XtWX_inv, np_dtype)
     r_squared_within = 1.0 - rss / max(tss, 1e-30)
 
+    # Same small-sample convention as sp.fast.feols, so the two backends
+    # return the same standard errors (see ``ssc`` there). Until 1.36.0
+    # this path kept the pre-1.31 count while the result said 'fixest'.
+    if ssc == "fixest":
+        fe_dof = _fixest_fe_dof(fe_card)
+        cr1_extra_df = (
+            _fixest_cluster_fe_dof(data, fe_terms, fe_card, keep_mask, cluster)
+            if vcov == "cr1"
+            else fe_dof
+        )
+    else:
+        cr1_extra_df = fe_dof
     df_resid = n - p - fe_dof
 
     if vcov == "iid":
@@ -517,7 +536,7 @@ def feols_jax(
             weights=w,
             bread=XtWX_inv,
             type="cr1",
-            extra_df=fe_dof,
+            extra_df=cr1_extra_df,
         )
 
     return FeolsResult(
@@ -537,6 +556,7 @@ def feols_jax(
         vcov_type=vcov,
         cluster_var=cluster,
         backend="statspai-jax",
+        ssc=ssc,
     )
 
 
@@ -921,8 +941,8 @@ def _jax_prep_inputs(
             X_dem = stacked_dem[:, 1:]
             fe_card = list(info.n_fe)
         else:
-            from .fepois import _weighted_ap_demean
             from .demean import _detect_singletons as _ds_helper
+            from .fepois import _weighted_ap_demean
 
             fe_codes_raw: List[np.ndarray] = []
             for col in fe_terms:
@@ -1085,12 +1105,23 @@ def feols_jax_bootstrap(
 
     Examples
     --------
+    >>> import numpy as np
+    >>> import pandas as pd
     >>> import statspai as sp
-    >>> b = sp.fast.feols_jax_bootstrap(
+    >>> rng = np.random.default_rng(0)
+    >>> n = 500
+    >>> df = pd.DataFrame({
+    ...     "firm": rng.integers(0, 25, n),
+    ...     "year": rng.integers(2010, 2016, n),
+    ...     "x1": rng.normal(size=n),
+    ...     "x2": rng.normal(size=n),
+    ... })
+    >>> df["y"] = 1 + 0.5 * df["x1"] - 0.3 * df["x2"] + rng.normal(size=n)
+    >>> b = sp.fast.feols_jax_bootstrap(  # doctest: +SKIP
     ...     "y ~ x1 + x2 | firm + year", data=df,
     ...     n_boot=2_000, bootstrap='cluster', cluster='firm',
     ... )
-    >>> print(b.summary())
+    >>> print(b.summary())  # doctest: +SKIP
     """
     _require_dataframe(data, context="feols_jax_bootstrap")
     if not _HAS_JAX:

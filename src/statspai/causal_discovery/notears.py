@@ -25,6 +25,8 @@ import pandas as pd
 from scipy.linalg import expm
 from scipy.optimize import minimize
 
+from .._aliases import accepts_aliases
+from .._input_validation import check_columns
 from ..utils._rng import preserve_global_rng
 
 # ======================================================================
@@ -32,6 +34,7 @@ from ..utils._rng import preserve_global_rng
 # ======================================================================
 
 
+@accepts_aliases(seed="random_state")
 def notears(
     data: pd.DataFrame,
     variables: Optional[List[str]] = None,
@@ -81,6 +84,17 @@ def notears(
         'n_obs' : int
         'lambda1' : float
         'w_threshold' : float
+
+    Notes
+    -----
+    The columns are standardised before fitting, and the weights are on
+    that scale. Read the output as a skeleton with weights, not as
+    evidence of direction: with linear Gaussian data the least-squares
+    score cannot tell Markov-equivalent graphs apart except through the
+    variables' scales, and standardising removes those. On the chain
+    ``a -> b -> c`` with unit noise the two adjacencies are found in every
+    run, and the arrows come out as ``b -> a``, ``c -> b`` or ``b -> a``,
+    ``b -> c`` depending on the sample.
 
     Examples
     --------
@@ -181,9 +195,11 @@ class NOTEARS:
 
         # Prepare data
         if self.variables is not None:
-            missing = [v for v in self.variables if v not in self.data.columns]
-            if missing:
-                raise ValueError(f"Variables not found in data: {missing}")
+            check_columns(
+                self.data,
+                {"variables": list(self.variables)},
+                function="sp.notears",
+            )
             X = self.data[self.variables].dropna().values.astype(np.float64)
             var_names = list(self.variables)
         else:
@@ -193,7 +209,18 @@ class NOTEARS:
 
         n, d = X.shape
         if d < 2:
-            raise ValueError("At least 2 variables are required for DAG learning")
+            dropped = [c for c in self.data.columns if c not in var_names]
+            raise ValueError(
+                "At least 2 variables are required for DAG learning"
+                + (
+                    f"; {len(dropped)} non-numeric column(s) were left out "
+                    f"({dropped[:6]}). NOTEARS is a linear model of numeric "
+                    "columns: for categorical data use "
+                    "sp.pc_algorithm(df, ci_test='chi-square')."
+                    if dropped
+                    else "."
+                )
+            )
 
         # Standardise
         X = (X - X.mean(axis=0)) / (X.std(axis=0) + 1e-8)

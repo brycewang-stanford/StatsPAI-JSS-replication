@@ -12,13 +12,46 @@ StatsPAI now separates **API lifecycle** from **numerical validation evidence**.
 
 Use `stability` when you care about public API compatibility. Use `validation_status` when you care about audited numerical evidence.
 
-Current JSS source-snapshot audit counts: 414 `certified`, 144 `validated`, 694 `api_stable`, and 3 `experimental` registry symbols. The intentionally harsh denominator is that 601 stable auto-registered symbols still lack parity backing; treat them as API-stable, not numerically validated. The audit decomposes that denominator into class-like/function-like and category counts, so breadth remains auditable rather than becoming a hidden validation claim. Within the hand-written stable API surface, the current audit enforces zero unbacked entries: API-only helpers carry unit-contract evidence while remaining `api_stable`, not numerically validated. Unit and regression tests are API-contract evidence; they do not promote a function to `validated` without known-truth, reference-parity, external-parity, coverage, or explicit convention evidence. `Paper-JSS/replication/results/validation_evidence_audit.{json,md}` verifies that all 542 certified/validated symbols have registry-attached evidence notes, that certified symbols carry attached evidence naming an external reference implementation and the tolerance it was held to, and that validated symbols are not backed only by unit/regression tests. Package metadata in the JSS source snapshot is `1.29.0`; the source snapshot should still be synchronized with a clean tagged release before final publication. The JSS archive records this boundary in `Paper-JSS/replication/results/source_snapshot_manifest.{json,md}`, and `cd Paper-JSS && make release-audit` is the strict gate for a clean tagged final-publication snapshot.
+Current JSS source-snapshot audit counts: 494 `certified`, 487 `validated`, 643 `api_stable`, and 3 `experimental` registry symbols. The intentionally harsh denominator is that 570 stable auto-registered symbols still lack parity backing; treat them as API-stable, not numerically validated. The audit decomposes that denominator into class-like/function-like and category counts, so breadth remains auditable rather than becoming a hidden validation claim. Within the hand-written stable API surface, the current audit enforces zero unbacked entries: API-only helpers carry unit-contract evidence while remaining `api_stable`, not numerically validated. Unit and regression tests are API-contract evidence; they do not promote a function to `validated` without known-truth, reference-parity, external-parity, coverage, or explicit convention evidence. `Paper-JSS/replication/results/validation_evidence_audit.{json,md}` verifies that all 542 certified/validated symbols have registry-attached evidence notes, that certified symbols carry attached evidence naming an external reference implementation and the tolerance it was held to, and that validated symbols are not backed only by unit/regression tests. Package metadata in the JSS source snapshot is `1.29.0`; the source snapshot should still be synchronized with a clean tagged release before final publication. The JSS archive records this boundary in `Paper-JSS/replication/results/source_snapshot_manifest.{json,md}`, and `cd Paper-JSS && make release-audit` is the strict gate for a clean tagged final-publication snapshot.
 
 ## Stability
 
-- `stable`: public signature is locked under SemVer minor releases.
+- `stable`: a breaking change to the signature comes only after a release that emits a `DeprecationWarning`, with a `MIGRATION.md` entry.
 - `experimental`: method/API may shift across minor versions.
 - `deprecated`: scheduled for removal; replacement should be documented in `MIGRATION.md`.
+
+## Frozen core API
+
+The 32 everyday entry points (`sp.list_functions(core=True)`, listed first
+by `sp.help()`) carry a stronger promise: code written against them keeps
+running. Their signatures are recorded in `tests/core_api_snapshot.json`,
+and `tests/test_core_api_freeze.py` (also a pre-push hook) fails on any
+change that would break an existing call:
+
+- a parameter disappears (a rename is fine when the old spelling stays
+  accepted through `@accepts_aliases`);
+- a default changes, or an optional parameter becomes required;
+- positional parameters are reordered, or one becomes keyword-only;
+- a new parameter has no default;
+- a core function is removed.
+
+New optional parameters are not breaks. An intended break goes through a
+deprecation release first, then
+`python scripts/core_api_snapshot.py --write --ack "fn.param=<MIGRATION.md text>"`,
+which refuses unless the quoted text is in `MIGRATION.md` and keeps the
+acknowledgement in the snapshot's `history`.
+
+Every function card says which promise applies, in `api_contract`:
+
+| `api_contract` | Applies to | Promise |
+| --- | --- | --- |
+| `frozen` | the core API | snapshot-tested, as above |
+| `deprecation-cycle` | other stable functions | breaking changes announced a minor release ahead, by policy |
+| `unstable` | experimental functions | may change in any minor release |
+| `deprecated` | deprecated functions | scheduled for removal |
+
+`api_contract` is about the signature. Whether the numbers are checked
+against a reference is `validation_status`, below; the two are independent.
 
 ## Validation
 
@@ -91,7 +124,7 @@ python Paper-JSS/replication/scripts/validation_evidence_audit.py
 
 `scripts/stability_audit.py --check` fails if any hand-written stable API entry lacks attached validation or API/unit-contract evidence. Auto-registered entries are reported separately because they represent breadth imported into the registry, not the validated numerical core defended in the JSS paper.
 
-The JSS packager also extracts Python source paths from registry evidence notes. The current submission manifest includes 541 such registry evidence files, and `Paper-JSS/replication/scripts/verify_submission_package.py` fails if any referenced evidence file is absent from the archive.
+The JSS packager also extracts Python source paths from registry evidence notes. The current submission manifest includes 780 such registry evidence files, and `Paper-JSS/replication/scripts/verify_submission_package.py` fails if any referenced evidence file is absent from the archive.
 
 Programmatic evidence summaries:
 

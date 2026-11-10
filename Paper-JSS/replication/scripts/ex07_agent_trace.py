@@ -175,6 +175,12 @@ def run() -> dict:
             "audit_result": "audit_result" in tool_names,
             "honest_did_from_result": "honest_did_from_result" in tool_names,
             "bibtex": "bibtex" in tool_names,
+            # The default (curated) profile lists the hand-written tools plus
+            # these meta-tools, through which every registered function stays
+            # reachable (discover -> describe -> call).
+            "search_functions": "search_functions" in tool_names,
+            "describe_function": "describe_function" in tool_names,
+            "call_function": "call_function" in tool_names,
         },
         "schema_required": schema.get("required", []),
         "schema_control_group_enum": schema

@@ -65,6 +65,7 @@ from ..exceptions import (
     MethodIncompatibility,
     NumericalInstability,
 )
+from ..utils._attrs import attrs_array
 
 _VARIANCES = ("forest", "bjs")
 
@@ -810,7 +811,7 @@ def best_linear_projection_fe(
         f"OLS of imputation scores on covariates over {rows.size} treated "
         f"cells; {label}"
     )
-    out.attrs["vcov"] = V
+    out.attrs["vcov"] = attrs_array(V)
     return out
 
 
@@ -1103,7 +1104,7 @@ def group_effects(
             tab[f"{col}_pct"] = 100.0 * np.expm1(tab[col].to_numpy())
     tab.index.name = "group"
     tab.attrs["method"] = method
-    tab.attrs["vcov"] = V
+    tab.attrs["vcov"] = attrs_array(V)
     tab.attrs["tests"] = _group_tests(tab["estimate"].to_numpy(), V, labels, alpha)
     tab.attrs["estimand"] = "ATT (treated cells)" if fe else "ATE (all rows)"
     if fe:
@@ -1198,11 +1199,11 @@ def rate_fe(
             "imputation score carries -gamma_hat_t, estimated from the very "
             "periods the forest was trained on, so the ranking and the scores "
             "are correlated even though no unit predicts itself. Measured on "
-            "a design with no heterogeneity at all (200 replications, N = 150 "
-            "units, T = 8), AUTOC averaged -0.025 instead of 0 and a nominal "
-            "5% test rejected 17.5% of the time (QINI 13.5%); sp.rate_split(), "
+            "a design with no heterogeneity at all (400 replications, N = 150 "
+            "units, T = 8), AUTOC averaged -0.028 instead of 0 and a nominal "
+            "5% test rejected 16.0% of the time (QINI 12.2%); sp.rate_split(), "
             "which fits the ranking and the scores on disjoint units, averaged "
-            "+0.0008 and rejected 7.5% (QINI 4.0%). Report this as a "
+            "-0.0002 and rejected 0.5% (QINI 0.0%). Report this as a "
             "diagnostic and sp.rate_split() as the test.",
             AssumptionWarning,
             stacklevel=3,

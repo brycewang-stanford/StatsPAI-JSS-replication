@@ -56,10 +56,10 @@ other RD variant is one ``method=`` away.
 >>> type(res).__name__
 'CausalResult'
 >>> round(float(res.estimate), 3)
-0.844
+0.738
 >>> honest = sp.rd(df, y="y", x="x", c=0, method="honest")
 >>> round(float(honest.estimate), 3)            # Armstrong-Kolesar honest CI
-0.781
+0.745
 """
 
 import inspect as _inspect
@@ -79,6 +79,7 @@ from .bayes_hte import BayesRDHTEResult, rd_bayes_hte
 from .bias_aware import rd_bias_aware_fuzzy
 from .dashboard import rd_compare, rd_dashboard, rd_robustness_table
 from .diagnostics import rdbalance, rdbwsensitivity, rdplacebo, rdsummary
+from .diff_in_disc import rd_diff_in_disc
 from .distribution_valued import DistRDResult, rd_distribution
 from .distributional_design import DDDResult, rd_distributional_design
 from .extrapolate import rd_external_validity, rd_extrapolate, rd_multi_extrapolate
@@ -89,17 +90,42 @@ from .hte import rdbwhte, rdhte, rdhte_lincom
 from .interference import RDInterferenceResult, rd_interference
 from .locrand import rdrandinf, rdrbounds, rdsensitivity, rdwinselect
 from .multi_score import MultiScoreRDResult, rd_multi_score
+from .optimized import rd_optimized
 from .rd2d import rd2d, rd2d_bw, rd2d_plot
 from .rd_discrete import rd_discrete
 
 # v1.15 RDD polish — recent literature
 from .rd_flex import rd_flex
 from .rdit import rdit
+from .rdmcplot import rdmcplot
 from .rdml import rd_boost, rd_cate_summary, rd_forest, rd_lasso
 from .rdmulti import RDMultiResult, rdmc, rdms
 from .rdpower import RDPowerResult, RDSampSiResult, rdpower, rdsampsi
 from .rdrobust import rdplot, rdplotdensity, rdrobust
 from .rkd import rkd
+
+# ``import statspai.rd.rdrobust as m`` binds this package's attribute, which
+# the import above set to the *function*: ``m.rdplot`` then failed (top-5
+# replication list, API friction). The attribute is the module itself,
+# made callable as the function, so both ``statspai.rd.rdrobust(...)`` and
+# ``statspai.rd.rdrobust.<helper>`` work. ``sp.rdrobust`` stays the plain
+# function.
+_rdrobust_fn = rdrobust
+
+
+class _CallableRdrobustModule(_ModuleType):
+    """The ``rdrobust`` module, callable as :func:`rdrobust`."""
+
+    def __call__(self, *args: _Any, **kwargs: _Any) -> _Any:
+        return _rdrobust_fn(*args, **kwargs)
+
+
+_rdrobust_module = _sys.modules[__name__ + ".rdrobust"]
+_rdrobust_module.__class__ = _CallableRdrobustModule
+_sig = _inspect.signature(_rdrobust_fn)
+_rdrobust_module.__signature__ = _sig  # type: ignore[attr-defined]
+_rdrobust_module.__wrapped__ = _rdrobust_fn  # type: ignore[attr-defined]
+rdrobust = _rdrobust_module  # type: ignore[assignment]
 
 # ═══════════════════════════════════════════════════════════════════════
 #  Unified dispatcher — sp.rd(..., method=...)
@@ -127,6 +153,11 @@ _RD_METHOD_ALIASES: _Dict[str, str] = {
     # Honest CIs (Armstrong-Kolesar 2018, 2020)
     "honest": "honest",
     "armstrong_kolesar": "honest",
+    "optimized": "optimized",
+    "rd_optimized": "optimized",
+    "optrdd": "optimized",
+    "imbens_wager": "optimized",
+    "minimax": "optimized",
     "ak": "honest",
     # Local randomization (Cattaneo-Titiunik-VB 2016)
     "randinf": "randinf",
@@ -206,6 +237,7 @@ _RD_ALTERNATIVES = [
     "sp.rd",
     "sp.rdrobust",
     "sp.rd.rd_honest",
+    "sp.rd.rd_optimized",
     "sp.rd.rd_flex",
     "sp.rd.rd_discrete",
 ]
@@ -278,6 +310,17 @@ def _rd_dispatch(
     """
     if not isinstance(method, str):
         raise TypeError(f"method must be a string, got {type(method).__name__}.")
+    # ``cutoff=`` / ``running=`` are the spellings rdrobust's own decorator
+    # accepts, but they used to arrive here inside ``**kwargs`` and were
+    # forwarded *alongside* ``c=c`` / ``x=x`` — so ``sp.rd(..., cutoff=0)``
+    # died with "received both 'cutoff' and its canonical target 'c'".
+    # Fold them into the canonical slots before dispatch.
+    if "cutoff" in kwargs:
+        c = kwargs.pop("cutoff")
+    if "running" in kwargs:
+        if x is not None:
+            raise TypeError("sp.rd() received both 'running' and 'x'; pass only one.")
+        x = kwargs.pop("running")
     key = method.lower().strip().replace("-", "_")
     canon = _RD_METHOD_ALIASES.get(key)
     if canon is None:
@@ -292,6 +335,7 @@ def _rd_dispatch(
     _passthrough_xc: _Dict[str, _Callable[..., _Any]] = {
         "rdrobust": rdrobust,
         "honest": rd_honest,
+        "optimized": rd_optimized,
         "randinf": rdrandinf,
         "hte": rdhte,
         "forest": rd_forest,
@@ -449,11 +493,14 @@ __all__ = [
     "rdbwsensitivity",
     "rdbalance",
     "rdplacebo",
+    "rd_diff_in_disc",
     "rdsummary",
     "rkd",
     "rd_honest",
+    "rd_optimized",
     "rdit",
     "rdmc",
+    "rdmcplot",
     "rdms",
     "RDMultiResult",
     "rdpower",

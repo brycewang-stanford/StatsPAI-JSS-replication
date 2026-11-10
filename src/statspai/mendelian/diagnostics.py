@@ -27,8 +27,7 @@ randomization between complex traits and diseases." *Nature Genetics*,
 
 from __future__ import annotations
 
-import warnings
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import List, Optional, Sequence, Union
 
 import numpy as np
@@ -37,7 +36,7 @@ from scipy import stats
 
 from .._result_serialize import ResultProtocolMixin
 
-__all__ = [
+__all__ = [  # noqa: F822 -- MR-PRESSO names resolve via __getattr__
     "HeterogeneityResult",
     "PleiotropyResult",
     "LeaveOneOutResult",
@@ -54,6 +53,28 @@ __all__ = [
 
 
 SampleSizeInput = Union[int, float, Sequence[float], np.ndarray]
+
+# MR-PRESSO lives in :mod:`statspai.mendelian.presso`; these names stay
+# importable from here (old import path). Resolved lazily so that callers get
+# the same function objects as ``sp.mr_presso``.
+_PRESSO_NAMES = frozenset(
+    {
+        "MRPressoResult",
+        "mr_presso",
+        "_ivw_regression",
+        "_loo_slopes",
+        "_presso_rss",
+        "_distortion_pvalue",
+    }
+)
+
+
+def __getattr__(name: str):
+    if name in _PRESSO_NAMES:
+        from . import presso
+
+        return getattr(presso, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 # --------------------------------------------------------------------------- #
@@ -611,271 +632,6 @@ def mr_steiger(
         r2_outcome=float(r2_y),
         sample_size_exposure=int(n_x_eff),
         sample_size_outcome=int(n_y_eff),
-    )
-
-
-# --------------------------------------------------------------------------- #
-#  MR-PRESSO (outlier detection + correction)
-# --------------------------------------------------------------------------- #
-
-
-@dataclass
-class MRPressoResult(ResultProtocolMixin):
-    """Container for MR-PRESSO global test and outlier-corrected estimates.
-
-    Returned by :func:`mr_presso`.  Holds the raw IVW estimate, the
-    global-test RSS and p-value, the list of detected ``outliers``, and
-    (when outliers are present) the outlier-corrected estimate and
-    distortion-test p-value.
-
-    Examples
-    --------
-    >>> import numpy as np
-    >>> import statspai as sp
-    >>> rng = np.random.default_rng(0)
-    >>> n = 12
-    >>> bx = rng.uniform(0.2, 0.5, n)
-    >>> by = 0.3 * bx + rng.normal(0, 0.02, n)
-    >>> sx = rng.uniform(0.02, 0.05, n)
-    >>> sy = rng.uniform(0.02, 0.05, n)
-    >>> res = sp.mr_presso(bx, by, sx, sy, n_boot=500, seed=0)
-    >>> isinstance(res, sp.MRPressoResult)
-    True
-    >>> bool(0.0 <= res.global_test_pvalue <= 1.0)
-    True
-    """
-
-    _citation_keys = (
-        "bowden2016assessing",
-        "hemani2017orienting",
-        "bowden2018improving",
-        "verbanck2018detection",
-    )
-
-    raw_estimate: float
-    raw_se: float
-    raw_p: float
-    outlier_corrected_estimate: Optional[float]
-    outlier_corrected_se: Optional[float]
-    outlier_corrected_p: Optional[float]
-    outliers: List[int] = field(default_factory=list)
-    global_test_rss_obs: float = 0.0
-    global_test_pvalue: float = 1.0
-    distortion_p: Optional[float] = None
-    outlier_pvalues: Optional[List[float]] = None
-    distortion_coefficient: Optional[float] = None
-
-    def summary(self) -> str:
-        lines = [
-            "MR-PRESSO Global Test",
-            f"  Observed RSS = {self.global_test_rss_obs:.3f}",
-            f"  Global test p-value = {self.global_test_pvalue:.4g}",
-            "",
-            f"Raw IVW:            beta = {self.raw_estimate:.4f}  "
-            f"SE = {self.raw_se:.4f}  p = {self.raw_p:.4g}",
-        ]
-        if self.outlier_corrected_estimate is not None:
-            lines.append(
-                f"Outlier-corrected:  beta = {self.outlier_corrected_estimate:.4f}  "
-                f"SE = {self.outlier_corrected_se:.4f}  "
-                f"p = {self.outlier_corrected_p:.4g}"
-            )
-            if self.outliers:
-                lines.append(f"  Outlier SNP indices: {self.outliers}")
-            if self.distortion_p is not None:
-                lines.append(
-                    f"  Distortion test p = {self.distortion_p:.4g} "
-                    f"(H0: raw == corrected)"
-                )
-        else:
-            lines.append("No outliers detected.")
-        return "\n".join(lines)
-
-
-def mr_presso(
-    beta_exposure: np.ndarray,
-    beta_outcome: np.ndarray,
-    se_exposure: np.ndarray,
-    se_outcome: np.ndarray,
-    *,
-    n_boot: int = 1000,
-    sig_threshold: float = 0.05,
-    seed: Optional[int] = None,
-) -> MRPressoResult:
-    """MR-PRESSO global test + outlier detection + corrected estimate.
-
-    A port of the authors' R package ``MRPRESSO::mr_presso``:
-
-    * variants are oriented to positive exposure associations;
-    * the raw and outlier-corrected estimates are weighted least squares
-      through the origin (``lm(by ~ -1 + bx, weights = 1 / se_y^2)``), with
-      the residual-scaled standard error and t(n - p) p-values;
-    * the null simulates each exposure association from N(bx, se_x) and each
-      outcome association around its *observed* leave-one-out prediction;
-    * a variant's outlier p-value compares its observed squared residual
-      from the observed leave-one-out fit with the simulated ones, and is
-      Bonferroni-adjusted (multiplied by the number of variants, capped at
-      1); the outlier test runs only when the global test rejects;
-    * the distortion test resamples non-outlier variants.
-
-    The deterministic outputs -- raw estimate / SE / p, observed RSS, and
-    the corrected estimate for a given outlier set -- match the reference
-    to machine precision. The simulated p-values cannot (different RNG).
-    They follow the reference's ``k / B`` convention, so **a p-value of 0
-    means "below the Monte Carlo resolution"**: ``< 1 / B`` for the global
-    and distortion tests, ``< n / B`` for a Bonferroni-adjusted outlier
-    p-value. The ``(k + 1) / (B + 1)`` convention cannot be used here: with
-    Bonferroni its smallest attainable outlier p-value is ``n / (B + 1)``,
-    which exceeds 0.05 for 50 variants at B = 1000, so the test could never
-    flag anything. A warning is raised when ``n_boot`` is too small to
-    resolve ``sig_threshold`` after the Bonferroni adjustment.
-
-    .. versionchanged:: 1.28.0
-       Brought in line with the reference: the per-variant outlier p-values
-       were not Bonferroni-adjusted (seven outliers flagged on the LDL-C /
-       CHD example where MR-PRESSO flags two, moving the corrected estimate
-       2.4%), standard errors were fixed-effect rather than
-       residual-scaled (half the reference's there), p-values came from
-       ``1 - Phi(z)`` and read exactly 0.0, the outlier test ran even when
-       the global test did not reject, and the "distortion test" was a
-       z-test on the difference of two estimates rather than PRESSO's
-       resampling test.
-
-    Examples
-    --------
-    >>> import numpy as np
-    >>> import statspai as sp
-    >>> rng = np.random.default_rng(0)
-    >>> n = 12
-    >>> beta_exposure = rng.uniform(0.2, 0.5, n)
-    >>> beta_outcome = 0.3 * beta_exposure + rng.normal(0, 0.02, n)
-    >>> se_exposure = rng.uniform(0.02, 0.05, n)
-    >>> se_outcome = rng.uniform(0.02, 0.05, n)
-    >>> res = sp.mr_presso(
-    ...     beta_exposure, beta_outcome, se_exposure, se_outcome,
-    ...     n_boot=500, seed=0,
-    ... )
-    >>> bool(0.0 <= res.global_test_pvalue <= 1.0)
-    True
-    >>> isinstance(res.outliers, list)
-    True
-
-    References
-    ----------
-    [@verbanck2018detection]
-    """
-    rng = np.random.default_rng(seed)
-    bx = np.asarray(beta_exposure, dtype=float)
-    by = np.asarray(beta_outcome, dtype=float)
-    sx = np.asarray(se_exposure, dtype=float)
-    sy = np.asarray(se_outcome, dtype=float)
-    sign = np.where(bx < 0, -1.0, 1.0)
-    bx, by = bx * sign, by * sign
-    w = 1.0 / sy**2
-    n = len(bx)
-    if n <= 3:
-        raise ValueError("mr_presso: not enough instrumental variables (need > 3)")
-    if n >= n_boot:
-        raise ValueError("mr_presso: n_boot must exceed the number of variants")
-
-    def _wls(mask):
-        """lm(by ~ -1 + bx, weights = w): estimate, residual-scaled SE, p."""
-        xw, yw = bx[mask] * np.sqrt(w[mask]), by[mask] * np.sqrt(w[mask])
-        beta = float(xw @ yw / (xw @ xw))
-        df = int(mask.sum()) - 1
-        s2 = float(np.sum((yw - beta * xw) ** 2)) / df
-        se = float(np.sqrt(s2 / (xw @ xw)))
-        pval = float(2.0 * stats.t.sf(abs(beta / se), df)) if se > 0 else 1.0
-        return beta, se, pval
-
-    def _loo_betas(x, y):
-        xw, yw = x * np.sqrt(w), y * np.sqrt(w)
-        sxx, sxy = float(xw @ xw), float(xw @ yw)
-        return (sxy - xw * yw) / (sxx - xw * xw)
-
-    def _rss(x, y):
-        xw, yw = x * np.sqrt(w), y * np.sqrt(w)
-        return float(np.sum((yw - _loo_betas(x, y) * xw) ** 2))
-
-    all_mask = np.ones(n, dtype=bool)
-    raw_beta, raw_se, raw_p = _wls(all_mask)
-    beta_loo_obs = _loo_betas(bx, by)
-    rss_obs = _rss(bx, by)
-
-    # Null data sets: exposure ~ N(bx, sx); outcome_i ~ N(beta_{-i} bx_i, sy_i)
-    # around the OBSERVED leave-one-out prediction, as getRandomData builds.
-    sim_bx = rng.normal(bx, sx, size=(n_boot, n))
-    sim_by = rng.normal(beta_loo_obs * bx, sy, size=(n_boot, n))
-    rss_exp = np.array([_rss(sim_bx[b], sim_by[b]) for b in range(n_boot)])
-    p_global = float(np.sum(rss_exp > rss_obs) / n_boot)
-    if n / n_boot > sig_threshold:
-        warnings.warn(
-            f"mr_presso: n_boot={n_boot} cannot resolve sig_threshold={sig_threshold} "
-            f"after the Bonferroni adjustment for {n} variants "
-            f"(resolution {n}/{n_boot}); "
-            "only variants that no simulated draw exceeds can be flagged. "
-            f"Use n_boot >= {int(np.ceil(n / sig_threshold))}.",
-            UserWarning,
-            stacklevel=2,
-        )
-
-    base = dict(
-        raw_estimate=raw_beta,
-        raw_se=raw_se,
-        raw_p=raw_p,
-        global_test_rss_obs=rss_obs,
-        global_test_pvalue=p_global,
-    )
-    if p_global >= sig_threshold:
-        return MRPressoResult(
-            outlier_corrected_estimate=None,
-            outlier_corrected_se=None,
-            outlier_corrected_p=None,
-            outliers=[],
-            **base,
-        )
-
-    dif2 = (by - bx * beta_loo_obs) ** 2
-    exp2 = (sim_by - sim_bx * beta_loo_obs[None, :]) ** 2
-    p_snp = np.sum(exp2 > dif2[None, :], axis=0) / n_boot
-    p_snp = np.minimum(p_snp * n, 1.0)
-    outliers = [int(i) for i in range(n) if p_snp[i] <= sig_threshold]
-
-    if not outliers or len(outliers) == n:
-        return MRPressoResult(
-            outlier_corrected_estimate=None,
-            outlier_corrected_se=None,
-            outlier_corrected_p=None,
-            outliers=outliers,
-            outlier_pvalues=[float(v) for v in p_snp],
-            **base,
-        )
-
-    keep = np.ones(n, dtype=bool)
-    keep[outliers] = False
-    c_beta, c_se, c_p = _wls(keep)
-
-    # Distortion test: resample n - k indices (with replacement) from the
-    # non-outliers, refit, and compare relative biases.
-    non_out = np.flatnonzero(keep)
-    bias_obs = (raw_beta - c_beta) / abs(c_beta)
-    bias_exp = np.empty(n_boot)
-    for b in range(n_boot):
-        idx = rng.choice(non_out, size=n - len(outliers), replace=True)
-        xw, yw = bx[idx] * np.sqrt(w[idx]), by[idx] * np.sqrt(w[idx])
-        br = float(xw @ yw / (xw @ xw))
-        bias_exp[b] = (raw_beta - br) / abs(br)
-    dist_p = float(np.sum(np.abs(bias_exp) > abs(bias_obs)) / n_boot)
-
-    return MRPressoResult(
-        outlier_corrected_estimate=c_beta,
-        outlier_corrected_se=c_se,
-        outlier_corrected_p=c_p,
-        outliers=outliers,
-        distortion_p=dist_p,
-        outlier_pvalues=[float(v) for v in p_snp],
-        distortion_coefficient=float(100.0 * bias_obs),
-        **base,
     )
 
 

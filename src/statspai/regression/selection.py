@@ -25,6 +25,7 @@ from scipy import stats
 from scipy.optimize import minimize
 
 from .._aliases import accepts_aliases
+from ..core._call_record import records_call
 from ..core._vcov_spec import markout_clusters
 from ..core.results import EconometricResults
 from ._optim_helpers import robust_convergence
@@ -34,6 +35,7 @@ def _as_float_array(value: Any) -> np.ndarray:
     return np.asarray(value, dtype=float)
 
 
+@records_call("biprobit")
 @accepts_aliases(vce="robust")
 @markout_clusters
 def biprobit(
@@ -98,8 +100,6 @@ def biprobit(
     >>> bool('rho' in result.model_info)  # error correlation reported
     True
     """
-    from scipy import special
-
     from ..core._vcov import ml_vcov
     from ..core._vcov_spec import parse_se_request
     from ._optim_helpers import inverse_information, ml_newton_polish, se_from_vcov
@@ -127,44 +127,10 @@ def biprobit(
     k1 = X1.shape[1]
     k2 = X2.shape[1]
 
-    def _bvn_cdf(h: np.ndarray, k: np.ndarray, rho: Any) -> np.ndarray:
-        """Bivariate standard-normal CDF P(X<=h, Y<=k; corr=rho).
-
-        Vectorised over observations via the Drezner-Wesolowsky (1990)
-        identity
-
-            Phi2(h, k; rho) = Phi(h) Phi(k) + integral_0^rho phi2(h, k; r) dr,
-
-        with the inner integral evaluated by a 24-node Gauss-Legendre rule
-        (smooth in every argument, accurate to ~1e-10). The previous
-        implementation looped over observations calling
-        ``multivariate_normal.cdf`` per point: ~280x slower and — fatally —
-        precise only to ~1e-8, which corrupted BFGS's finite-difference
-        gradient and pinned ``rho`` at its starting value of 0 (so the model
-        always reported zero error correlation regardless of the data).
-        """
-        # Complex-step safe: no dtype casts and no clipping, so the same
-        # function yields exact per-observation scores. |rho| < 1 holds by
-        # construction (rho = tanh(athrho)).
-        h = np.asarray(h)
-        k = np.asarray(k)
-        rho = np.asarray(rho)
-        if rho.ndim == 0:
-            rho = rho * np.ones(h.shape)
-        base = special.ndtr(h) * special.ndtr(k)
-        nodes, weights = np.polynomial.legendre.leggauss(24)
-        s = 0.5 * (nodes + 1.0)  # map [-1, 1] -> [0, 1]
-        w = 0.5 * weights
-        integral = np.zeros(h.shape, dtype=np.result_type(h, k, rho, float))
-        for s_j, w_j in zip(s, w):
-            r = rho * s_j
-            denom = 1.0 - r * r
-            integral = integral + (
-                w_j
-                * np.exp(-(h * h - 2.0 * r * h * k + k * k) / (2.0 * denom))
-                / (2.0 * np.pi * np.sqrt(denom))
-            )
-        return base + rho * integral
+    # Bivariate normal CDF shared with sp.heckprobit (complex-step safe).
+    # It replaced a 24-node rule in r, accurate to ~1e-10 for |rho| < 0.9
+    # but off by 9e-7 at |rho| = 0.99 and 4e-4 at 0.999.
+    from ._bivariate_normal import binormal_cdf as _bvn_cdf
 
     # Adjust signs for different (y1, y2) combinations
     q1 = 2 * y1_data - 1  # +1 if y=1, -1 if y=0
@@ -176,7 +142,8 @@ def biprobit(
         probs = _bvn_cdf(
             q1 * (X1 @ theta[:k1]), q2 * (X2 @ theta[k1 : k1 + k2]), q1 * q2 * rho
         )
-        return np.log(probs)
+        _ret: np.ndarray = np.log(probs)
+        return _ret
 
     def neg_ll(theta: np.ndarray) -> float:
         with np.errstate(all="ignore"):
@@ -275,7 +242,7 @@ def biprobit(
 def _probit_coefficients(Z: np.ndarray, D: np.ndarray) -> np.ndarray:
     """Probit MLE coefficients for the selection equation."""
 
-    def _neg(g):
+    def _neg(g: Any) -> Any:
         zg = Z @ g
         ll = np.where(D == 1, stats.norm.logcdf(zg), stats.norm.logcdf(-zg))
         q = 2.0 * D - 1.0
@@ -286,7 +253,8 @@ def _probit_coefficients(Z: np.ndarray, D: np.ndarray) -> np.ndarray:
     res = minimize(
         _neg, start, jac=True, method="BFGS", options={"gtol": 1e-12, "maxiter": 500}
     )
-    return res.x
+    _ret: np.ndarray = res.x
+    return _ret
 
 
 def _etregress_scores(
@@ -295,7 +263,7 @@ def _etregress_scores(
     W: np.ndarray,
     Z: np.ndarray,
     D: np.ndarray,
-):
+) -> Any:
     """Log-likelihood and **per-observation** scores for Stata ``etregress``.
 
     The model is the common-slopes endogenous-treatment regression
@@ -344,7 +312,7 @@ def _etregress_scores(
     return float(np.sum(ll_i)), scores
 
 
-def _etregress_hessian(theta, yv, W, Z, D):
+def _etregress_hessian(theta: Any, yv: Any, W: Any, Z: Any, D: Any) -> Any:
     """Observed information: the analytic score differenced once.
 
     Stata reports ``vce(oim)`` here. Differencing the *score* rather than
@@ -353,7 +321,7 @@ def _etregress_hessian(theta, yv, W, Z, D):
     standard errors an order of magnitude further from Stata's.
     """
 
-    def _g(t):
+    def _g(t: Any) -> Any:
         return _etregress_scores(t, yv, W, Z, D)[1].sum(0)
 
     n_ = len(theta)
@@ -368,7 +336,9 @@ def _etregress_hessian(theta, yv, W, Z, D):
     return 0.5 * (H + H.T)
 
 
-def _etregress_fit_mle(yv, W, Z, D, maxiter: int, tol: float):
+def _etregress_fit_mle(
+    yv: Any, W: Any, Z: Any, D: Any, maxiter: int, tol: float
+) -> Any:
     """Full-information ML, matching ``etregress`` (no ``twostep`` option).
 
     Returns ``(theta, hessian, loglik)``.
@@ -392,7 +362,7 @@ def _etregress_fit_mle(yv, W, Z, D, maxiter: int, tol: float):
         ]
     )
 
-    def _neg(t):
+    def _neg(t: Any) -> Any:
         ll, s = _etregress_scores(t, yv, W, Z, D)
         return -ll, -s.sum(0)
 
@@ -428,7 +398,7 @@ def _etregress_fit_mle(yv, W, Z, D, maxiter: int, tol: float):
     return theta, _etregress_hessian(theta, yv, W, Z, D), best_ll
 
 
-def _sandwich(H, scores, cluster_vals):
+def _sandwich(H: Any, scores: Any, cluster_vals: Any) -> Any:
     """Robust / cluster covariance from the observed information and scores."""
     Hinv = np.linalg.inv(H)
     n, k = scores.shape
@@ -449,6 +419,7 @@ def _sandwich(H, scores, cluster_vals):
     return (g / (g - 1.0)) * (Hinv @ meat @ Hinv)
 
 
+@records_call("etregress")
 @accepts_aliases(treat="treatment", vce="robust")
 @markout_clusters
 def etregress(
@@ -655,7 +626,6 @@ def etregress(
     ate = float(params.iloc[k_out - 1])
     ate_se = float(std_errors.iloc[k_out - 1])
     beta = params.values
-    se = std_errors.values
 
     diagnostics = {
         "ate": ate,

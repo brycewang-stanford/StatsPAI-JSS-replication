@@ -4,157 +4,126 @@
 \pkg{NumPy} \citep{harris2020array}, \pkg{SciPy}
 \citep{virtanen2020scipy}, \pkg{pandas} \citep{mckinney2010data},
 \pkg{statsmodels} \citep{seabold2010statsmodels}, \pkg{scikit-learn}
-\citep{pedregosa2011scikit}, and \pkg{linearmodels}, with optional
-backends kept behind extras and lazy imports. The architecture has four layers:
-registry, dispatcher, result object, and output pipeline.
+\citep{pedregosa2011scikit}, and \pkg{linearmodels}
+\citep{sheppard2025linearmodels}, with optional backends kept behind
+extras and lazy imports. The architecture has four layers: registry,
+dispatcher, result object, and output pipeline.
 
-\subsection{Design principles}\label{sec:design-principles}
-
-A single flat namespace exposes routine calls through
-\code{sp.<function>}. Mature estimator paths return structured result
-objects rather than raw tuples, while auxiliary helpers (plotting and
-data inspection) remain
-registered with explicit stability and validation
-metadata. Method families use dispatchers
-(\code{sp.synth(method=...)}, \code{sp.dml(model=...)}). Reference
-parity is attempted before a validated claim is broadened. Assumption
-violations raise typed exceptions or warnings and record diagnostics.
-Changes that alter output go through the changelog and
-\code{MIGRATION.md}. Every public function is discoverable through the
-registry, which serves both the help functions and the agent schemas.
-
-\subsection{Why an integration package?}\label{sec:why-integration}
+\subsection{Why an integration package?}\label{sec:design-principles}\label{sec:why-integration}
 
 A reasonable alternative is to compose \pkg{statsmodels},
 \pkg{linearmodels}, \pkg{DoubleML}, \pkg{EconML}, \pkg{DoWhy}, and
 method-specific \proglang{R} or \proglang{Stata} bridges directly.
 For a single specialized model that is often the right choice. The
-friction appears when an applied project moves across identification
-designs, because diagnostics, citations, validation status, error
-handling, export formats, and agent schemas then stop sharing one
-contract. \statspai{} therefore does not count a wrapper as integrated
-until the method enters the common registry, result-object surface,
-typed-error envelope, and evidence ledger. Specialized packages remain the reference
-implementations. The contribution here is to make cross-family handoffs
-auditable and reproducible.
-
-The package is organized by identification layer, not by the historical
-boundaries of \proglang{R} and \proglang{Stata} packages. Each layer
-reports its own design diagnostics. These include balance and overlap,
-first-stage strength, cohort support and event-study paths, bandwidth
-and density checks, donor weights and placebos, and cross-fit
-diagnostics. What the layers share is a post-estimation contract. They
-do not share identification assumptions.
+friction appears when a project moves across identification designs,
+because diagnostics, citations, validation status, error handling, export
+formats, and agent schemas then stop sharing one contract. The package is
+therefore organized by identification design, not by the historical
+boundaries of \proglang{R} and \proglang{Stata} packages. Each design
+reports its own diagnostics: balance and overlap, first-stage strength,
+cohort support and event-study paths, bandwidth and density checks, donor
+weights and placebos, and cross-fit diagnostics. What the designs share
+is a post-estimation surface. They do not share identification
+assumptions.
 
 \subsection{Registry and discovery layer}\label{sec:registry}
 
 The central data structure is a registry of \code{FunctionSpec}
 records. Each entry carries a canonical function path, category, tags,
 stability and validation status, parameter metadata, result class,
-reference key, example call, and optional agent-card fields such as
-assumptions, preconditions, failure modes, alternatives, limitations,
-and typical sample-size guidance. The registry powers
-\code{sp.help()}, \code{sp.list\_functions()},
+reference key, example call, and optional fields such as assumptions,
+preconditions, failure modes, alternatives, and limitations. The registry
+powers \code{sp.help()}, \code{sp.list\_functions()},
 \code{sp.search\_functions()}, \code{sp.describe\_function()},
-\code{sp.function\_schema()}, \code{sp.agent\_card()}, the import-free
-\code{schemas/} bundle, and the MCP tool catalogue. Tests assert that
-exported public callables are registered and that validated/certified
-entries expose their evidence status.
+\code{sp.function\_schema()}, \code{sp.agent\_card()}, an import-free
+\code{schemas/} bundle, and the MCP tool catalogue. One suite member,
+\code{sp.fast.feols}, sits in the \code{sp.fast} namespace and is not
+registered on its own.
 
-The validation tier is therefore not a paper-only artifact. It can be
-queried from the running software for \emph{every} registered function.
-\code{sp.help()} prints a per-tier census and points the user to
-\code{sp.list\_functions(validation\_status="certified")} for the
-validated core. \code{sp.describe\_function(name)} prints a
-\code{Stability}/\code{Validation} header, with the attached evidence
-notes, before the description. A user or agent who lands on an
-\code{api\_stable} or \code{experimental} helper thus sees its trust tier
-before relying on its output.
+The validation tier is not a paper-only artifact, but it does not arrive
+unasked. A fit prints no tier and its summary carries none. A user or
+agent obtains it by a separate call. \code{sp.help(name)} shows a
+\code{Stability}/\code{Validation} header with the attached evidence
+notes, \code{sp.describe\_function(name)} returns the same fields as a
+dictionary (Listing~\ref{lst:validation-tier-output}), and
+\code{sp.validation\_scope(fit)} reads the fitted configuration.
 
-\begin{lstlisting}[caption={The validation tier is visible through the
+\begin{lstlisting}[caption={The validation tier is available through the
 same discovery surface used by users and agents; this excerpt is
-generated from \code{sp.describe\_function("callaway\_santanna")}.},%
+generated from \code{sp.describe\_function("callaway\_santanna")}. ``Bit-exact''
+is the registry's name for the tolerance tier that follows it, not a
+claim of identical bits.},%
 label={lst:validation-tier-output},captionpos=b]
 >>> spec = sp.describe_function("callaway_santanna")
 >>> spec["stability"], spec["validation_status"]
 ('stable', 'certified')
 >>> import textwrap
 >>> notes = spec["validation_notes"]
->>> print(*notes[:2], sep="\n")
+>>> print(*notes[:2], sep = "\n")
 R parity module 04_csdid
 Stata parity module 04_csdid
->>> print(textwrap.fill(notes[2], width=64))
+>>> print(textwrap.fill(notes[2], width = 64))
 Cross-language parity (bit-exact) vs did::att_gt + aggte [R
-version 4.5.2 (2025-10-31), did 2.3.0]; tolerance
+version 4.5.2 (2025-10-31), did 2.5.1]; tolerance
 rel_est<=1e-06, rel_se<=1e-09; parity module 04_csdid --
 tests/r_parity/04_csdid.py
->>> print(textwrap.fill(spec["limitations"][0], width=64))
-clustervars is not yet supported with bstrap=False; the analytic
-standard errors do not account for within-cluster dependence, so
-the multiplier bootstrap is required
+>>> print(textwrap.fill(spec["limitations"][0], width = 64))
+clustervars accepts a cluster that varies within unit only with
+panel=False (repeated cross-sections, as Stata csdid without
+ivar()); on a panel the influence functions are per unit
 \end{lstlisting}
 
 \subsection{Family dispatchers}\label{sec:dispatcher}
 
 Family dispatchers reduce method sprawl without hiding assumptions.
-\code{sp.synth} dispatches classical, SDID, augmented, generalized,
-matrix-completion, penalized, and related synthetic-control variants.
-\code{sp.decompose} covers Blinder--Oaxaca, Gelbach, Fairlie, RIF,
-DFL, Machado--Mata, Melly, counterfactual-distribution, and related
-decompositions. \code{sp.dml} dispatches partially-linear,
-partially-linear IV, interactive, and LATE-style DML variants. The
-dispatcher contract is explicit: allowed \code{method=} values are
-enumerated in the registry schema, and validated or mature variants
-return compatible result surfaces so that summary, plotting, audit,
-citation, and export calls do not change downstream.
+\code{sp.synth} dispatches classical, synthetic difference-in-differences
+(SDID), augmented, generalized, matrix-completion, penalized, and related
+synthetic-control variants. \code{sp.decompose} covers Blinder--Oaxaca,
+Gelbach, Fairlie, RIF, DFL, Machado--Mata, Melly, and related
+decompositions. \code{sp.dml} dispatches partially-linear (PLR),
+partially-linear IV, interactive (IRM), and local average treatment
+effect (LATE) variants. Allowed \code{method=} values are enumerated in
+the registry schema.
 
-The same uniformity extends to inference. Across the regression family
-(\code{regress}, \code{feols}, \code{ivreg}, \code{panel},
-\code{hdfe\_ols}), one canonical keyword, \code{vce=}, spells the full
-standard-error menu. The menu covers classical, heteroskedasticity-robust,
-one- and two-way clustering, bias-reduced CR2/CR3
-\citep{pustejovsky2018small}, the wild cluster bootstrap
-\citep{cameron2008bootstrap, roodman2019fast}, and Conley spatial HAC
-\citep{conley1999estimation}. Fixed-effects Poisson and GLM additionally
-expose CR2/CR3 and the restricted score wild bootstrap. Each option is
-pinned to an external reference implementation. On the \proglang{Stata}
-side these are \code{reghdfe}, \code{boottest}, \code{acreg}, and
-\code{ppmlhdfe} \citep{correia2020fast}, and on the \proglang{R} side
-\pkg{clubSandwich} and \pkg{sandwich} \citep{zeileis2020sandwich}. A
-coverage matrix in the package's continuous integration counts the
-natively wired, externally validated cells, and that count is only
-allowed to go up.
+Inference uses one common keyword, \code{vce=}, but the menu differs by
+entry point. \code{sp.regress} and \code{sp.ivreg} take classical,
+heteroskedasticity-robust (HC1 to HC3), one- and two-way cluster-robust
+(CR1), bias-reduced CR2/CR3 \citep{pustejovsky2018small}, the wild cluster
+bootstrap \citep{cameron2008bootstrap,roodman2019fast}, and Conley spatial
+errors \citep{conley1999estimation}. The fixed-effects entry points omit
+HC2 and HC3, and \code{sp.panel} uses \code{vce=} only for its extended
+menu (CR2/CR3, wild, jackknife, and Conley). An option a function does not
+support raises an error. A matrix in continuous integration counts the
+cells that are natively wired and pinned to a reference
+(\code{reghdfe} \citealp{correia2017linear}, \code{boottest}, \code{acreg}
+\citealp{colella2023acreg}, \code{ppmlhdfe} \citealp{correia2020fast},
+\pkg{clubSandwich} \citealp{pustejovsky2026clubsandwich}, \pkg{sandwich}
+\citealp{zeileis2020sandwich}), and that count may only go up. Not every
+cell is pinned, and Section~\ref{sec:validation-tiers} shows how to ask.
 
-\subsection{Result-object hierarchy}\label{sec:results}
+\subsection{Result objects and output}\label{sec:results}\label{sec:output}\label{sec:workflow}
 
 Most estimators return either \code{EconometricResults} or
-\code{CausalResult}. Specialized classes must implement the same public
-surface. The standard contract covers summaries, plotting, dictionary
-and JSON payloads, LaTeX/DOCX export, citations, audits, diagnostics,
-and degradation records. This is why a mixed OLS/IV/DML/forest
-table can be passed to \code{sp.regtable} (or its \proglang{R}-style
-alias \code{sp.modelsummary}). It is also why an MCP agent can keep only
-a result handle, instead of copying coefficient and covariance arrays
-between tool calls.
+\code{CausalResult}, which share summaries, plotting, dictionary and JSON
+payloads, LaTeX and DOCX export, citations, audits, diagnostics, and
+degradation records. This is why a mixed OLS/IV/DML table can be passed to
+\code{sp.regtable} (or its \proglang{R}-style alias
+\code{sp.modelsummary}), and why an MCP agent can keep only a result
+handle. Not every class has joined this surface. \code{CausalForest} has
+its own methods, renders as an empty column in \code{sp.regtable}, and
+\code{sp.audit} treats it generically. Publication output renders mixed result classes as
+LaTeX, Markdown, HTML, Word, Excel, or JSON. The layers combine into a
+workflow with the same stages for human users and agents: detect
+(\code{sp.detect\_design}, \code{sp.preflight}), fit (the dispatchers),
+inspect (\code{summary()}, \code{sp.audit()}, sensitivity functions), and
+report (\code{sp.regtable}, \code{cite()}, \code{sp.paper()}).
 
 \subsection{Performance backbone}\label{sec:perfbackbone}
 
-The performance-critical path is high-dimensional fixed-effect
-absorption for fixed-effect and panel estimators. The submitted artifact
-uses the reproducible \proglang{Python} path built on \pkg{NumPy} and
-\pkg{Numba} \citep{lam2015numba}. An experimental Rust crate and selected \pkg{JAX} and
-\pkg{PyTorch} paths exist behind extras, but the numerical and timing
-claims in this paper do not depend on a compiled native extension.
-Optional acceleration is treated as a backend choice, not as a separate
-estimator or a hidden requirement.
-
-\subsection{Output pipeline and workflow}\label{sec:output}\label{sec:workflow}
-
-Publication output is unified through \code{sp.regtable} and the
-result-level exporters, which render mixed result classes as LaTeX,
-Markdown, HTML, Word, Excel, or JSON-safe agent payloads. The layers
-combine into a four-stage workflow, with the same boundaries for human
-users and MCP agents. The stages are detect (\code{sp.detect\_design},
-\code{sp.preflight}), fit (the dispatchers), inspect (\code{summary()},
-\code{sp.audit()}, sensitivity wrappers), and report
-(\code{sp.regtable}, \code{cite()}, \code{sp.paper()}).
+The performance-critical path is high-dimensional fixed-effect (HDFE)
+absorption. Since 1.40.0 it runs in a compiled Rust kernel, published
+separately as \pkg{statspai-hdfe}, which is a required dependency where a
+wheel exists. Elsewhere the package falls back to \pkg{NumPy} and
+\pkg{Numba} \citep{lam2015numba}. The two paths solve the projection to
+the same tolerance but not bit for bit. Section~\ref{sec:compdetails}
+reports which evidence ran on which path and how far apart they are.

@@ -10,10 +10,19 @@ remedies when a check fails.
 
 Usage
 -----
+>>> import numpy as np
+>>> import pandas as pd
 >>> import statspai as sp
+>>> rng = np.random.default_rng(0)
+>>> df = pd.DataFrame({'education': rng.integers(8, 20, 300),
+...                    'experience': rng.integers(0, 30, 300)})
+>>> df['wage'] = (1 + 0.1 * df['education'] + 0.02 * df['experience']
+...               + rng.normal(size=300))
 >>> result = sp.regress("wage ~ education + experience", data=df, robust='hc1')
->>> audit = sp.assumption_audit(result)
->>> print(audit.summary())
+>>> audit = sp.assumption_audit(result, verbose=False)
+>>> type(audit).__name__, audit.method
+('AssumptionResult', 'OLS')
+>>> report = audit.summary()  # printable pass / fail table
 """
 
 from typing import Any, List, Optional
@@ -413,7 +422,10 @@ def _audit_linear(
                 statistic=reset.get("F", reset.get("statistic", None)),
                 p_value=p,
                 detail="Critical — misspecification invalidates all inference",
-                remedy="Add polynomial terms, use log transform, or nonparametric methods (sp.lpoly)",
+                remedy=(
+                    "Add polynomial terms, use log transform, or nonparametric methods "
+                    "(sp.lpoly)"
+                ),
             )
         )
     except Exception as exc:
@@ -576,7 +588,9 @@ def _audit_linear(
                     statistic=delta,
                     p_value=None,
                     detail=detail,
-                    remedy="Consider IV estimation or sensitivity analysis (sp.sensemakr)",
+                    remedy=(
+                        "Consider IV estimation or sensitivity analysis (sp.sensemakr)"
+                    ),
                 )
             )
     except Exception as exc:
@@ -620,7 +634,10 @@ def _audit_iv(
                 statistic=f_stat,
                 p_value=None,
                 detail=f"Critical — F={f_stat:.1f}. Weak if < 10 (Stock-Yogo).",
-                remedy="Use LIML (sp.liml) or weak-IV robust inference (sp.anderson_rubin_test)",
+                remedy=(
+                    "Use LIML (sp.liml) or weak-IV robust inference "
+                    "(sp.anderson_rubin_test)"
+                ),
             )
         )
 
@@ -678,8 +695,8 @@ def _audit_did(
                 statistic=None,
                 p_value=p,
                 detail="Critical — core identifying assumption of DID.",
-                remedy="Use sp.honest_did() for sensitivity to violations, "
-                "or sp.sensitivity_rr() for Rambachan-Roth analysis.",
+                remedy="Use sp.honest_did() / sp.breakdown_m() for "
+                "Rambachan-Roth (2023) sensitivity to violations.",
             )
         )
     else:
@@ -703,7 +720,9 @@ def _audit_did(
             passed=None,
             statistic=None,
             p_value=None,
-            detail="Check that pre-treatment coefficients are near zero in event study.",
+            detail=(
+                "Check that pre-treatment coefficients are near zero in event study."
+            ),
             remedy="Run sp.event_study() and inspect pre-period coefficients.",
         )
     )
@@ -844,7 +863,10 @@ def _audit_panel(
             statistic=None,
             p_value=None,
             detail="Check with Wooldridge test or use clustered SE by default.",
-            remedy='Use cluster SE: sp.panel(..., cluster=id) or sp.panel_fgls(..., corr="ar1")',
+            remedy=(
+                "Use cluster SE: sp.panel(..., cluster=id) or sp.panel_fgls(..., "
+                'corr="ar1")'
+            ),
         )
     )
 
@@ -1198,7 +1220,9 @@ def _audit_front_door(
                 statistic=None,
                 p_value=None,
                 detail="Binary uses closed-form sums; continuous uses MC Gaussian.",
-                remedy="If the mediator is categorical with >2 levels, not yet supported.",
+                remedy=(
+                    "If the mediator is categorical with >2 levels, not yet supported."
+                ),
             )
         )
 

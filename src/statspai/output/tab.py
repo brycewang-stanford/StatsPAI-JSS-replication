@@ -1,11 +1,14 @@
 """
 Cross-tabulation with statistical tests.
 
-Equivalent to Stata's ``tab var1 var2, chi2 exact``.
+Equivalent to Stata's ``tab var1 var2, chi2 exact``. The chi-squared
+statistic is Pearson's, without a continuity correction.
 Exports to text, LaTeX, Excel, Word.
 """
 
-from typing import Optional, Any, Union
+from typing import Any, Optional, Union
+
+import numpy as np
 import pandas as pd
 from scipy import stats
 
@@ -19,6 +22,7 @@ def tab(
     margins: bool = True,
     normalize: Optional[str] = None,
     title: Optional[str] = None,
+    labels: bool = True,
 ) -> Union[str, pd.DataFrame]:
     """
     Cross-tabulation with chi-squared / Fisher's exact test.
@@ -41,6 +45,12 @@ def tab(
         'row', 'col', 'all', or None. Normalize to proportions.
     title : str, optional
         Table title.
+    labels : bool, default True
+        Show value labels (``data.attrs['_value_labels']``, as attached by
+        ``sp.read_data`` on a .dta file or by ``sp.label_values``) in place
+        of the codes, as Stata's ``tabulate`` does.  The categories stay in
+        the order of the codes.  ``False`` is Stata's ``nolabel``.  Without
+        value labels the table is the same either way.
 
     Returns
     -------
@@ -64,7 +74,15 @@ def tab(
     True
     >>> _ = sp.tab(df, 'treatment')  # one-way frequency
     >>> sp.tab(df, 'treatment', 'outcome', output='crosstab.docx')  # doctest: +SKIP
+
+    Value labels are used when the data carry them:
+
+    >>> sp.label_values(df, 'treatment', {0: 'control', 1: 'treated'})
+    >>> list(sp.tab(df, 'treatment', output='dataframe').index)
+    ['control', 'treated', 'Total']
     """
+    if labels:
+        data = _with_value_labels(data, [row] if col is None else [row, col])
     if col is None:
         return _one_way_tab(data, row, output, title)
 
@@ -94,28 +112,139 @@ def tab(
     test_result = None
     if test:
         # Use raw counts (no margins)
-        ct_raw = pd.crosstab(data[row], data[col])
-        chi2, p_chi2, dof, expected = stats.chi2_contingency(ct_raw)
-        test_result = {
-            "chi2": chi2,
-            "pvalue": p_chi2,
-            "df": dof,
-        }
-        # Fisher's exact for 2x2
-        if ct_raw.shape == (2, 2):
-            _, p_fisher = stats.fisher_exact(ct_raw)
-            test_result["fisher_pvalue"] = p_fisher
+        test_result = association_tests(pd.crosstab(data[row], data[col]))
 
     if title is None:
         title = f"Tabulation: {row} × {col}"
 
+    if test_result is not None and isinstance(ct_display, pd.DataFrame):
+        ct_display.attrs["test"] = dict(test_result)
     return _format_tab(ct_display, test_result, output, title)
+
+
+def association_tests(counts: pd.DataFrame) -> dict:
+    """Tests of independence on a two-way table of counts (no margins).
+
+    ``chi2`` is Pearson's statistic without a continuity correction, as
+    Stata's ``tabulate, chi2`` and R's ``chisq.test(correct = FALSE)``
+    report it; ``chi2_lr`` the likelihood-ratio statistic; ``cramers_v``
+    Cramer's V (signed for a 2 x 2 table, as in Stata). A 2 x 2 table also
+    gets Fisher's exact p-value.
+    """
+    obs = np.asarray(counts, dtype=float)
+    chi2, p_chi2, dof, expected = stats.chi2_contingency(obs, correction=False)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        terms = np.where(obs > 0, obs * np.log(obs / expected), 0.0)
+    chi2_lr = float(2.0 * terms.sum())
+    n = float(obs.sum())
+    k = min(obs.shape) - 1
+    v = float(np.sqrt(chi2 / (n * k))) if n > 0 and k > 0 else float("nan")
+    out = {
+        "chi2": float(chi2),
+        "pvalue": float(p_chi2),
+        "df": int(dof),
+        "chi2_lr": chi2_lr,
+        "pvalue_lr": float(stats.chi2.sf(chi2_lr, dof)) if dof > 0 else float("nan"),
+        "cramers_v": v,
+        "n": n,
+    }
+    out.update(_ordinal_association(obs))
+    if obs.shape == (2, 2):
+        if obs[0, 0] * obs[1, 1] < obs[0, 1] * obs[1, 0]:
+            out["cramers_v"] = -v
+        out["fisher_pvalue"] = float(stats.fisher_exact(obs)[1])
+        out["fisher_pvalue_1sided"] = float(
+            min(
+                stats.fisher_exact(obs, alternative="less")[1],
+                stats.fisher_exact(obs, alternative="greater")[1],
+            )
+        )
+    return out
+
+
+def _ordinal_association(obs: np.ndarray) -> dict:
+    """Goodman and Kruskal's gamma and Kendall's tau-b for a table whose
+    rows and columns are ordered, each with its asymptotic standard error
+    (the ones Stata's ``tabulate, gamma taub`` prints; they do not assume
+    independence).
+
+    With ``A[i, j]`` the count in cells concordant with cell ``(i, j)`` and
+    ``D[i, j]`` the count in discordant ones, ``P = sum(n A)`` and
+    ``Q = sum(n D)`` are twice the numbers of concordant and discordant
+    pairs; gamma is ``(P - Q) / (P + Q)`` and tau-b divides ``P - Q`` by
+    ``sqrt(Dr Dc)``, where ``Dr = n^2 - sum(row totals^2)`` and ``Dc``
+    likewise for columns.
+    """
+    n = float(obs.sum())
+    below = np.cumsum(np.cumsum(obs, axis=0), axis=1)
+    above = np.cumsum(np.cumsum(obs[::-1, ::-1], axis=0), axis=1)[::-1, ::-1]
+    left_up = np.cumsum(np.cumsum(obs[:, ::-1], axis=0), axis=1)[:, ::-1]
+    right_down = np.cumsum(np.cumsum(obs[::-1, :], axis=0), axis=1)[::-1, :]
+
+    def shifted(a: np.ndarray, di: int, dj: int) -> np.ndarray:
+        out = np.zeros_like(a)
+        rows = slice(1, None) if di > 0 else slice(None, -1)
+        cols = slice(1, None) if dj > 0 else slice(None, -1)
+        src_rows = slice(None, -1) if di > 0 else slice(1, None)
+        src_cols = slice(None, -1) if dj > 0 else slice(1, None)
+        out[rows, cols] = a[src_rows, src_cols]
+        return out
+
+    conc = shifted(below, 1, 1) + shifted(above, -1, -1)
+    disc = shifted(left_up, 1, -1) + shifted(right_down, -1, 1)
+    p, q = float((obs * conc).sum()), float((obs * disc).sum())
+    nan = float("nan")
+    if p + q <= 0:
+        return {"gamma": nan, "gamma_ase": nan, "taub": nan, "taub_ase": nan}
+    gamma = (p - q) / (p + q)
+    gamma_ase = 4.0 / (p + q) ** 2 * np.sqrt((obs * (q * conc - p * disc) ** 2).sum())
+    row, col = obs.sum(axis=1), obs.sum(axis=0)
+    d_r, d_c = n**2 - (row**2).sum(), n**2 - (col**2).sum()
+    w = np.sqrt(d_r * d_c)
+    if w <= 0:
+        return {"gamma": gamma, "gamma_ase": float(gamma_ase), "taub": nan,
+                "taub_ase": nan}  # fmt: skip
+    taub = (p - q) / w
+    v = row[:, None] * d_c + col[None, :] * d_r
+    inner = (obs * (2 * w * (conc - disc) + taub * v) ** 2).sum()
+    inner -= n**3 * taub**2 * (d_r + d_c) ** 2
+    taub_ase = np.sqrt(max(inner, 0.0)) / w**2
+    return {
+        "gamma": float(gamma),
+        "gamma_ase": float(gamma_ase),
+        "taub": float(taub),
+        "taub_ase": float(taub_ase),
+    }
+
+
+def _with_value_labels(data: pd.DataFrame, columns: list) -> pd.DataFrame:
+    """``data`` with the value-labelled ``columns`` decoded, else ``data``."""
+    from ..utils.labels import _decode_series
+
+    value_labels = getattr(data, "attrs", {}).get("_value_labels") or {}
+    todo = [
+        c
+        for c in dict.fromkeys(columns)
+        if value_labels.get(c) and pd.api.types.is_numeric_dtype(data[c])
+    ]
+    if not todo:
+        return data
+    out = data[list(dict.fromkeys(columns))].copy()
+    for c in todo:
+        decoded = _decode_series(data[c], value_labels[c])
+        # only the categories that occur, as a table of the codes would show
+        out[c] = decoded.cat.remove_unused_categories()
+    return out
 
 
 def _one_way_tab(data: Any, var: str, output: str, title: Optional[str]) -> Any:
     """One-way frequency table."""
     counts = data[var].value_counts().sort_index()
     pcts = data[var].value_counts(normalize=True).sort_index()
+    if isinstance(counts.index, pd.CategoricalIndex):
+        # plain labels, so that the Total row can be appended
+        counts.index = counts.index.astype(object)
+        pcts.index = pcts.index.astype(object)
 
     df = pd.DataFrame(
         {
@@ -241,17 +370,17 @@ def _tab_to_excel(
 def _tab_to_word(df: Any, test_result: Any, filename: str, title: Optional[str]) -> Any:
     try:
         from docx import Document
-        from docx.shared import Pt
-        from docx.enum.text import WD_ALIGN_PARAGRAPH
         from docx.enum.table import WD_TABLE_ALIGNMENT
+        from docx.enum.text import WD_ALIGN_PARAGRAPH
+        from docx.shared import Pt
     except ImportError:
         raise ImportError("python-docx required. Install: pip install python-docx")
 
     from ._aer_style import (
-        apply_word_document_defaults,
-        apply_word_booktab_rules,
-        style_word_table_typography,
         add_word_notes_paragraph,
+        apply_word_booktab_rules,
+        apply_word_document_defaults,
+        style_word_table_typography,
     )
 
     doc = Document()

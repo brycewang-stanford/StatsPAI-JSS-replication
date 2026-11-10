@@ -9,13 +9,23 @@ Aggregates four help layers:
 Usage
 -----
 >>> import statspai as sp
->>> sp.help()                       # top-level overview
->>> sp.help('did')                  # function detail
->>> sp.help('causal')               # category listing
->>> sp.help('causal.did')           # scoped detail
->>> sp.help(sp.regress)             # docstring fallback
->>> sp.help(search='treatment')     # keyword search
->>> sp.help('did', format='dict')   # programmatic access
+>>> overview = sp.help()                          # top-level overview
+>>> "QUICK START" in overview.text
+True
+>>> print(sp.help('did').text.splitlines()[0])    # function detail
+sp.did  —  [causal]
+>>> print(sp.help('causal').text.splitlines()[0]) # category listing
+Category: causal
+>>> print(sp.help('causal.did').text.splitlines()[0])  # scoped detail
+sp.did  —  [causal]
+>>> print(sp.help(sp.regress).text.splitlines()[0])    # docstring fallback
+sp.regress  —  [regression]
+>>> hits = sp.help(search='treatment')            # keyword search
+>>> hits.text.startswith("Search: 'treatment'")
+True
+>>> info = sp.help('did', format='dict')          # programmatic access
+>>> info['name'], info['category']
+('did', 'causal')
 """
 
 from __future__ import annotations
@@ -72,7 +82,10 @@ CATEGORY_DESCRIPTIONS: Dict[str, str] = {
         "Recommender, compare_estimators, assumption_audit, pub_ready, " "workflow"
     ),
     "power": "Power analysis for RCT/DID/RD/IV/cluster-RCT and MDE",
-    "experimental": "Randomization, balance checks, attrition, optimal design",
+    "experimental": (
+        "Randomization, balance checks, attrition, optimal design; factorial, "
+        "space-filling and model-based designs, sensitivity analysis"
+    ),
     "missing": "MICE, multiple imputation, mi_estimate",
     "bayes": ("bayes_did / bayes_rd / bayes_iv / bayes_mte / BCF / " "policy weights"),
     "postestimation": "margins, contrast, pwcompare, test, lincom",
@@ -143,8 +156,10 @@ _MODULE_CATEGORY_PREFIXES: List[tuple[str, str]] = [
     ("statspai.workflow", "smart"),
     ("statspai.power", "power"),
     ("statspai.experimental", "experimental"),
+    ("statspai.doe", "experimental"),
     ("statspai.imputation", "missing"),
     ("statspai.bayes", "bayes"),
+    ("statspai.mcmc", "bayes"),
     ("statspai.postestimation", "postestimation"),
     ("statspai.agent", "agent"),
     ("statspai.utils", "utils"),
@@ -300,6 +315,19 @@ def _top_overview() -> str:
     lines.append("  >>> cf = sp.causal_forest('y ~ treat | x1 + x2', data=df)")
     lines.append("")
 
+    # The frozen core first: ~30 names a newcomer (or an agent with a small
+    # context) can start from, each with a signature that will not break.
+    from .registry import CORE_FUNCTION_GROUPS  # noqa: WPS433
+
+    lines.append(
+        "CORE API  (frozen signatures; start here; sp.list_functions(core=True))"
+    )
+    lines.append("--------")
+    gwidth = max(len(g) for g, _ in CORE_FUNCTION_GROUPS)
+    for group, names in CORE_FUNCTION_GROUPS:
+        lines.append(f"  {group:<{gwidth}}  {', '.join(names)}")
+    lines.append("")
+
     lines.append("CATEGORIES  (use sp.help('<category>') for details)")
     lines.append("----------")
     from .registry import _ensure_full_registry  # noqa: WPS433
@@ -370,7 +398,9 @@ def _top_overview() -> str:
     lines.append("-----------------")
     lines.append("  sp.list_functions(category=None)   Machine-readable function index")
     lines.append("  sp.describe_function(name)         Full metadata for one function")
-    lines.append("  sp.search_functions(query)         Keyword search (AND logic)")
+    lines.append(
+        "  sp.search_functions(query)         Keyword / research-question search"
+    )
     lines.append("  sp.function_schema(name)           OpenAI/Anthropic tool schema")
     lines.append(
         "  sp.all_schemas()                   " "Bulk schema export for LLM agents"
@@ -410,7 +440,10 @@ def _categories_with_counts() -> Dict[str, int]:
 # looks in text.  No emoji, by CLAUDE.md house rule.
 
 _STABILITY_BLURBS: Dict[str, str] = {
-    "stable": "public signature locked under SemVer minor releases",
+    "stable": (
+        "breaking changes only after a DeprecationWarning release; "
+        "the CORE API is snapshot-tested"
+    ),
     "experimental": "method/API may shift across minor versions",
     "deprecated": ("scheduled for removal — see MIGRATION.md for the replacement"),
 }
@@ -533,6 +566,14 @@ def _function_detail(name: str, verbose: bool = False) -> Optional[str]:
     # the trust bar before reading the first sentence.
     blurb = _STABILITY_BLURBS.get(spec.stability, "")
     lines.append(f"Stability : {spec.stability}  ({blurb})")
+    from .registry import api_contract  # noqa: WPS433
+
+    contract = api_contract(spec.name, spec.stability)
+    if contract == "frozen":
+        lines.append(
+            "API       : frozen (core API; signature snapshot-tested, "
+            "tests/core_api_snapshot.json)"
+        )
     vstatus = getattr(spec, "validation_status", "api_stable")
     vblurb = _VALIDATION_BLURBS.get(vstatus, "")
     lines.append(f"Validation: {vstatus}  ({vblurb})")
@@ -594,16 +635,15 @@ def _function_detail(name: str, verbose: bool = False) -> Optional[str]:
 
 def _search_results(query: str) -> str:
     """Render keyword-search hits."""
-    from .registry import (  # noqa: WPS433
-        _ensure_full_registry,
-        search_functions,
-    )
+    from .registry import _ensure_full_registry, search_functions  # noqa: WPS433
 
     _ensure_full_registry()
 
-    hits = search_functions(query)
+    hits = search_functions(query, limit=None)
     lines: List[str] = []
     header = f"Search: {query!r}  →  {len(hits)} match(es)"
+    if hits and all(h.get("match") == "partial" for h in hits):
+        header += " (partial: no function matched most of the query)"
     lines.append(header)
     lines.append("=" * len(header))
     if not hits:
@@ -617,6 +657,8 @@ def _search_results(query: str) -> str:
         short = h["description"].split(".")[0][:80]
         v = h.get("validation_status", "")
         suffix = f" [{v}]" if v in {"certified", "validated", "experimental"} else ""
+        if h.get("alias_of"):
+            suffix += f" (alias of {h['alias_of']})"
         lines.append(f"  {h['name']:<{width}}  [{h['category']}]  " f"{short}{suffix}")
     if len(hits) > 50:
         lines.append(
@@ -699,7 +741,7 @@ def help(  # noqa: A001 (shadow builtin by design; sp.help is our public API)
         if format == "dict":
             from .registry import search_functions
 
-            return {"query": search, "results": search_functions(search)}
+            return {"query": search, "results": search_functions(search, limit=None)}
         return HelpResult(text, data={"kind": "search", "query": search})
 
     # No topic → top-level overview
@@ -781,7 +823,8 @@ def help(  # noqa: A001 (shadow builtin by design; sp.help is our public API)
 
         # Unknown — suggest nearest matches
         from difflib import get_close_matches
-        from .registry import list_functions, _ensure_full_registry
+
+        from .registry import _ensure_full_registry, list_functions
 
         _ensure_full_registry()
         all_names = list_functions()

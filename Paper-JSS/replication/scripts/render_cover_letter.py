@@ -53,7 +53,7 @@ PACKAGER = PAPER_ROOT / "replication" / "scripts" / "jss_submission_package.py"
 #: checks them against the final zip, so --sync keeps them current too.
 SIZE_DISCLOSURE_DOCS = (
     PAPER_ROOT / "README.md",
-    PAPER_ROOT / "REVIEWER-HARDENING-AUDIT.md",
+    PAPER_ROOT / "RELEASE-CHECKLIST.md",
 )
 #: Generated reports inside the archive that record its size or file count.
 SIZE_DEPENDENT_REPORTS = (

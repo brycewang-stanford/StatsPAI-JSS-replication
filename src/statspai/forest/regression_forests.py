@@ -21,13 +21,16 @@ References
 
 from __future__ import annotations
 
+import inspect
+import re
+import textwrap
 from typing import Any, Optional, Sequence
 
 import numpy as np
 import pandas as pd
 
 from .._aliases import accepts_aliases
-from ..exceptions import DataInsufficient, MethodIncompatibility
+from ..exceptions import ColumnNotFound, DataInsufficient, MethodIncompatibility
 from . import _grf_engine as engine
 from ._grf_family import (
     ForestOptions,
@@ -99,6 +102,8 @@ class PredictionForest(GRFFamilyForest):
         if newdata is None:
             pred, var = self.predictions, self.variance
         else:
+            if estimate_variance:
+                self._require_little_bags()
             pred, var = self._engine.predict(
                 self._new_X(newdata), estimate_variance=bool(estimate_variance)
             )
@@ -214,7 +219,25 @@ _COMMON_DOC = """
 """
 
 
-@accepts_aliases(_strict=True, n_trees="n_estimators")
+_SHARED_OPTIONS_PLACEHOLDER = re.compile(
+    r"^[ \t]*\(see below for the shared forest options[^)]*\)\n", re.M
+)
+
+
+def _with_shared_options(doc: Optional[str]) -> str:
+    """Splice the shared forest options into a forest's docstring.
+
+    The docstring is cleaned first. Python 3.13 strips a docstring's
+    indentation at compile time and earlier versions do not, so matching the
+    placeholder with its indentation found it on 3.12 and missed it on 3.13,
+    where the four forests then documented ``y`` and nothing else.
+    """
+    cleaned = inspect.cleandoc(doc or "")
+    shared = textwrap.dedent(_COMMON_DOC).lstrip("\n")
+    return _SHARED_OPTIONS_PLACEHOLDER.sub(lambda _: shared, cleaned, count=1)
+
+
+@accepts_aliases(_strict=True, n_trees="n_estimators", seed="random_state")
 def regression_forest(
     data: Optional[pd.DataFrame] = None,
     y: Any = None,
@@ -244,7 +267,7 @@ def regression_forest(
     ----------
     y : str or array-like
         Outcome.
-    (see below for the shared forest options)
+        (see below for the shared forest options)
 
     Returns
     -------
@@ -311,9 +334,7 @@ def regression_forest(
     return _finish(res, forest, X, names, n_input, opts, cl)
 
 
-regression_forest.__doc__ = (regression_forest.__doc__ or "").replace(
-    "    (see below for the shared forest options)\n", _COMMON_DOC
-)
+regression_forest.__doc__ = _with_shared_options(regression_forest.__doc__)
 
 
 def _multi_reg(ctx, X, Ymat, opts, common):  # type: ignore[no-untyped-def]
@@ -332,7 +353,7 @@ def _multi_reg(ctx, X, Ymat, opts, common):  # type: ignore[no-untyped-def]
     )
 
 
-@accepts_aliases(_strict=True, n_trees="n_estimators")
+@accepts_aliases(_strict=True, n_trees="n_estimators", seed="random_state")
 def multi_regression_forest(
     data: Optional[pd.DataFrame] = None,
     y: Any = None,
@@ -366,8 +387,8 @@ def multi_regression_forest(
     ----------
     y : list of str or 2-D array
         Outcomes.
-    (see below for the shared forest options; ``ci_group_size`` defaults
-    to 1 as grf does not report variances here)
+        (see below for the shared forest options; ``ci_group_size`` defaults
+        to 1 as grf does not report variances here)
 
     Returns
     -------
@@ -418,14 +439,10 @@ def multi_regression_forest(
     return _finish(res, forest, X, names, n_input, opts, cl)
 
 
-multi_regression_forest.__doc__ = (multi_regression_forest.__doc__ or "").replace(
-    "    (see below for the shared forest options; ``ci_group_size`` defaults\n"
-    "    to 1 as grf does not report variances here)\n",
-    _COMMON_DOC,
-)
+multi_regression_forest.__doc__ = _with_shared_options(multi_regression_forest.__doc__)
 
 
-@accepts_aliases(_strict=True, n_trees="n_estimators")
+@accepts_aliases(_strict=True, n_trees="n_estimators", seed="random_state")
 def probability_forest(
     data: Optional[pd.DataFrame] = None,
     y: Any = None,
@@ -460,7 +477,7 @@ def probability_forest(
     ----------
     y : str or array-like
         Class labels (any hashable values; classes are sorted).
-    (see below for the shared forest options)
+        (see below for the shared forest options)
 
     Returns
     -------
@@ -501,9 +518,10 @@ def probability_forest(
     labels = y
     if data is not None and isinstance(y, str):
         if y not in data.columns:
-            raise MethodIncompatibility(
-                f"{ctx}: Missing columns: {[y]}",
-                recovery_hint="Pass column names present in the input DataFrame.",
+            raise ColumnNotFound.from_missing(
+                {"y": y},
+                data.columns,
+                message=f"{ctx}: Missing columns: {[y]}",
             )
         labels = data[y].to_numpy()
     labels = np.asarray(labels).ravel()
@@ -532,9 +550,7 @@ def probability_forest(
     return _finish(res, forest, X, names, n_input, opts, cl)
 
 
-probability_forest.__doc__ = (probability_forest.__doc__ or "").replace(
-    "    (see below for the shared forest options)\n", _COMMON_DOC
-)
+probability_forest.__doc__ = _with_shared_options(probability_forest.__doc__)
 
 
 def _encode_classes(labels: np.ndarray, ctx: str):  # type: ignore[no-untyped-def]
@@ -550,7 +566,7 @@ def _encode_classes(labels: np.ndarray, ctx: str):  # type: ignore[no-untyped-de
     return codes, classes
 
 
-@accepts_aliases(_strict=True, n_trees="n_estimators")
+@accepts_aliases(_strict=True, n_trees="n_estimators", seed="random_state")
 def quantile_forest(
     data: Optional[pd.DataFrame] = None,
     y: Any = None,
@@ -594,7 +610,7 @@ def quantile_forest(
         Use ordinary regression splits instead (grf
         ``regression.splitting``; the quantile regression forest of
         Meinshausen 2006).
-    (see below for the shared forest options)
+        (see below for the shared forest options)
 
     Returns
     -------
@@ -671,9 +687,7 @@ def quantile_forest(
     return _finish(res, forest, X, names, n_input, opts, cl)
 
 
-quantile_forest.__doc__ = (quantile_forest.__doc__ or "").replace(
-    "    (see below for the shared forest options)\n", _COMMON_DOC
-)
+quantile_forest.__doc__ = _with_shared_options(quantile_forest.__doc__)
 
 __all__ = [
     "PredictionForest",

@@ -1,0 +1,617 @@
+"""Unit-root tests for a single time series: augmented Dickey-Fuller, DF-GLS,
+Phillips-Perron and KPSS.
+
+ADF and DF-GLS test ``H0: the series has a unit root`` against stationarity (around a
+constant or a linear trend) with the t statistic on ``y[t-1]`` in
+
+    dy[t] = rho * y[t-1] + sum_j b_j * dy[t-j] + deterministics + e[t]
+
+* **ADF** runs that regression on the series itself. P-values follow
+  MacKinnon (1994) and critical values MacKinnon's (2010) response surface,
+  the tables already used by :func:`statspai.engle_granger` and
+  :func:`statspai.panel_unitroot`.
+* **DF-GLS** (Elliott, Rothenberg and Stock 1996) first removes the constant
+  or trend by GLS under a local alternative, then runs the regression with
+  no deterministic terms. It has more power than ADF when the root is close
+  to one. Its critical values come from a response surface in the sample
+  size and the lag order, fitted to simulated null distributions
+  (``scripts/simulate_dfgls_critical_values.py``): the asymptotic values
+  are too lenient in the samples macro data come in (with a constant the 5%
+  point is -1.95 asymptotically and about -2.27 at 50 observations).
+
+* **Phillips-Perron** and **KPSS** handle serial correlation with a
+  Newey-West long-run variance instead of lagged differences
+  (:mod:`._unit_root_pp_kpss`). KPSS reverses the hypotheses: its null is
+  stationarity.
+
+The panel counterparts are in :mod:`statspai.panel.unit_root`.
+"""
+
+from __future__ import annotations
+
+import warnings
+from typing import Any, ClassVar, Dict, Optional, Tuple, Union
+
+import numpy as np
+import pandas as pd
+
+from .._input_validation import check_columns
+from .._result_serialize import ResultProtocolMixin
+from ..exceptions import AssumptionWarning, DataInsufficient, MethodIncompatibility
+from ..panel.unit_root import _adf_unit, mackinnon1994_pvalue
+from ._critvals import DFGLS_MIN_T, dfgls_cv, mackinnon_cv
+from ._forecast_common import require_time_order
+from ._unit_root_pp_kpss import KPSS_CV, kpss_statistic, pp_statistics
+
+__all__ = ["unitroot", "UnitRootResult"]
+
+_LEVELS = (1, 5, 10)
+_CBAR = {"c": -7.0, "ct": -13.5}
+_TREND_LABEL = {"n": "none", "c": "constant", "ct": "constant and trend"}
+
+
+class UnitRootResult(ResultProtocolMixin):
+    """Outcome of :func:`unitroot`.
+
+    Attributes
+    ----------
+    test : str
+        ``"ADF"``, ``"DF-GLS"``, ``"Phillips-Perron"`` or ``"KPSS"``.
+    statistic : float
+        The t statistic on the lagged level (ADF, DF-GLS), the adjusted
+        ``Z(t)`` (Phillips-Perron), or the KPSS statistic.
+    pvalue : float or None
+        MacKinnon (1994) approximate p-value for ADF and Phillips-Perron.
+        ``None`` for DF-GLS and KPSS, whose null distributions are only
+        tabulated at a few points.
+    null : str
+        ``"unit root"``, or ``"stationarity"`` for KPSS -- there ``reject``
+        is evidence *of* a unit root.
+    z_rho : float or None
+        Phillips-Perron only: the adjusted ``n (rho - 1)`` statistic.
+    critical_values : dict
+        ``{"1%": ..., "5%": ..., "10%": ...}`` for this sample size (and,
+        for DF-GLS, this lag order).
+    reject : bool
+        Whether the null is rejected at ``alpha``.
+    lags : int
+        Lagged differences in the test regression; for Phillips-Perron and
+        KPSS, the Newey-West truncation lag.
+    lag_selection : str
+        ``"fixed"`` or the rule that chose ``lags``.
+    n_obs : int
+        Observations in the test regression.
+    rho, se : float
+        Coefficient on the lagged level and its standard error. The
+        regression differs by test: for ADF and DF-GLS the dependent
+        variable is the *difference*, ``dy[t] = rho * y[t-1] + ...``, so
+        ``rho`` is near 0 under a unit root; for Phillips-Perron it is the
+        *level*, ``y[t] = rho * y[t-1] + ...``, so ``rho`` is near 1 (the
+        number Stata's ``pperron`` prints). The two are one apart and
+        share the standard error; ``rho_level`` and ``rho_diff`` name
+        them without ambiguity. ``nan`` for KPSS.
+    rho_level, rho_diff : float
+        The coefficient on ``y[t-1]`` when the dependent variable is
+        ``y[t]`` (``rho_level``, 1 under a unit root) and when it is
+        ``dy[t]`` (``rho_diff = rho_level - 1``, 0 under a unit root),
+        whichever regression the test ran. ``nan`` for KPSS.
+    trend : str
+        ``"n"``, ``"c"`` or ``"ct"``.
+
+    Examples
+    --------
+    >>> import numpy as np, pandas as pd
+    >>> import statspai as sp
+    >>> rng = np.random.default_rng(0)
+    >>> walk = pd.DataFrame({"y": np.cumsum(rng.normal(size=200))})
+    >>> res = sp.unitroot(walk, "y", lags=1)
+    >>> type(res).__name__
+    'UnitRootResult'
+    >>> sorted(res.critical_values)
+    ['1%', '10%', '5%']
+    >>> res.lags
+    1
+    """
+
+    _citation_keys: ClassVar[Tuple[str, ...]] = (
+        "dickey1979distribution",
+        "elliott1996efficient",
+    )
+
+    def __init__(
+        self,
+        *,
+        test: str,
+        statistic: float,
+        pvalue: Optional[float],
+        critical_values: Dict[str, float],
+        reject: bool,
+        alpha: float,
+        lags: int,
+        lag_selection: str,
+        n_obs: int,
+        rho: float,
+        se: float,
+        trend: str,
+        ic_table: Optional[pd.DataFrame] = None,
+        null: str = "unit root",
+        z_rho: Optional[float] = None,
+    ) -> None:
+        self.test = test
+        self.method = f"{test} unit-root test"
+        self.statistic = statistic
+        self.pvalue = pvalue
+        self.critical_values = critical_values
+        self.reject = reject
+        self.alpha = alpha
+        self.lags = lags
+        self.lag_selection = lag_selection
+        self.n_obs = n_obs
+        self.rho = rho
+        # Phillips-Perron regresses the level on its lag, the Dickey-Fuller
+        # tests the difference: the same coefficient, one apart
+        if test == "Phillips-Perron":
+            self.rho_level, self.rho_diff = float(rho), float(rho) - 1.0
+        else:
+            self.rho_level, self.rho_diff = float(rho) + 1.0, float(rho)
+        self.se = se
+        self.trend = trend
+        self.ic_table = ic_table
+        self.null = null
+        self.z_rho = z_rho
+
+    def summary(self) -> str:
+        long_run = self.test in ("Phillips-Perron", "KPSS")
+        head = f"{self.test} test for " + (
+            "stationarity" if self.null == "stationarity" else "a unit root"
+        )
+        cv = "   ".join(f"{k}: {v:.3f}" for k, v in self.critical_values.items())
+        lines = [
+            head,
+            "=" * len(head),
+            (
+                "H0: the series is stationary"
+                if self.null == "stationarity"
+                else "H0: the series has a unit root"
+            ),
+            f"Deterministic terms : {_TREND_LABEL[self.trend]}",
+            (
+                f"Newey-West lags     : {self.lags} ({self.lag_selection})"
+                if long_run
+                else f"Lagged differences  : {self.lags} ({self.lag_selection})"
+            ),
+            f"Observations        : {self.n_obs}",
+            "",
+            f"Test statistic      : {self.statistic:.4f}",
+            f"Critical values     : {cv}",
+        ]
+        if self.z_rho is not None:
+            lines.insert(-1, f"Z(rho)              : {self.z_rho:.4f}")
+        if np.isfinite(self.rho_level):
+            lines.append(
+                f"Coefficient on y[t-1]: {self.rho_level:.4f} in levels, "
+                f"{self.rho_diff:.4f} in differences (rho reports the "
+                + ("former" if self.test == "Phillips-Perron" else "latter")
+                + ")"
+            )
+        if self.pvalue is not None:
+            lines.append(f"MacKinnon p-value   : {self.pvalue:.4f}")
+        verdict = "rejected" if self.reject else "not rejected"
+        what = "Stationarity" if self.null == "stationarity" else "Unit root"
+        lines.append(f"{what} {verdict} at the {100 * self.alpha:g}% level.")
+        return "\n".join(lines)
+
+    def __repr__(self) -> str:
+        return (
+            f"UnitRootResult({self.test}: statistic={self.statistic:.4f}, "
+            f"lags={self.lags}, reject={self.reject})"
+        )
+
+
+def _series(
+    data: Union[pd.DataFrame, pd.Series, np.ndarray], y: Optional[str], time: Any
+) -> np.ndarray:
+    if isinstance(data, pd.DataFrame):
+        if y is None:
+            raise MethodIncompatibility(
+                "unitroot: pass y=<column> when data is a DataFrame.",
+                recovery_hint="sp.unitroot(df, 'gdp')",
+            )
+        shown = {"columns": [str(c) for c in data.columns][:20]}
+        check_columns(
+            data,
+            {"y": y},
+            message=f"unitroot: column {y!r} is not in data.",
+            extra_diagnostics=shown,
+        )
+        check_columns(
+            data,
+            {"time": time},
+            message=f"unitroot: time column {time!r} is not in data.",
+            extra_diagnostics=shown,
+        )
+        frame = data
+        if time is not None:
+            if data[time].isna().any():
+                raise MethodIncompatibility(
+                    f"unitroot: {int(data[time].isna().sum())} rows have a "
+                    f"missing value in the time column {time!r}; their place "
+                    "in the series is not known.",
+                    recovery_hint="Fill the dates or drop those rows first.",
+                )
+            from .var import _refuse_repeated_dates
+
+            _refuse_repeated_dates(data[time], time, "unitroot")
+            frame = data.sort_values(time, kind="stable")
+        else:
+            require_time_order(data.index, fn="unitroot")
+        values = frame[y].to_numpy(dtype=float)
+    else:
+        if isinstance(data, pd.Series):
+            require_time_order(data.index, fn="unitroot")
+        values = np.asarray(data, dtype=float).ravel()
+    keep = np.flatnonzero(~np.isnan(values))
+    if keep.size == 0:
+        raise DataInsufficient(
+            "unitroot: the series has no non-missing values.",
+            recovery_hint="Check the column.",
+        )
+    values = values[keep[0] : keep[-1] + 1]
+    if np.isnan(values).any():
+        raise MethodIncompatibility(
+            "unitroot: the series has missing values between its first and "
+            "last observation; lags are not defined across a gap.",
+            recovery_hint="Fill or drop the gap deliberately, or test the "
+            "longest complete stretch.",
+            diagnostics={"n_missing": int(np.isnan(values).sum())},
+        )
+    if not np.isfinite(values).all():
+        raise MethodIncompatibility(
+            "unitroot: the series has infinite values.",
+            recovery_hint="Remove or correct them (a logarithm of zero?).",
+            diagnostics={"n_infinite": int(np.isinf(values).sum())},
+        )
+    # constant to rounding, relative to the size of the values
+    if np.ptp(values) <= 1e-12 * np.max(np.abs(values)):
+        raise DataInsufficient(
+            "unitroot: the series is constant; the test regression is "
+            "singular and no statistic is defined.",
+            recovery_hint="Check the column: a constant has no dynamics to test.",
+            diagnostics={"n_obs": int(values.size)},
+        )
+    return np.asarray(values, dtype=float)
+
+
+def _gls_detrend(y: np.ndarray, trend: str) -> np.ndarray:
+    """Remove the constant / trend by GLS under the local alternative."""
+    T = y.size
+    a = 1.0 + _CBAR[trend] / T
+    z: np.ndarray = np.ones((T, 1))
+    if trend == "ct":
+        z = np.column_stack([np.ones(T), np.arange(1.0, T + 1.0)])
+    yq = np.concatenate([y[:1], y[1:] - a * y[:-1]])
+    zq = np.vstack([z[:1], z[1:] - a * z[:-1]])
+    delta = np.linalg.lstsq(zq, yq, rcond=None)[0]
+    return np.asarray(y - z @ delta)
+
+
+def _fit(series: np.ndarray, lags: int, trend: str) -> Dict[str, Any]:
+    try:
+        return _adf_unit(series, lags, trend, dfcor=True)
+    except np.linalg.LinAlgError as exc:
+        raise DataInsufficient(
+            f"unitroot: {series.size} observations are too few for a test "
+            f"regression with {lags} lagged differences ({exc}).",
+            recovery_hint="Use fewer lags or a longer series.",
+            diagnostics={"n_obs": int(series.size), "lags": int(lags)},
+        ) from exc
+
+
+def _select_lags(
+    series: np.ndarray, trend: str, max_lags: int, criterion: str
+) -> Tuple[int, pd.DataFrame]:
+    """Pick the lag order by AIC / BIC on the common sample of ``max_lags``."""
+    rows = []
+    for p in range(max_lags + 1):
+        # drop the first (max_lags - p) points so every p uses the same rows
+        fit = _fit(series[max_lags - p :], p, trend)
+        n, k = fit["n"], fit["K"]
+        base = np.log(fit["rss"] / n)
+        rows.append(
+            {
+                "lags": p,
+                "aic": base + 2.0 * k / n,
+                "bic": base + np.log(n) * k / n,
+                "n_obs": n,
+            }
+        )
+    table = pd.DataFrame(rows).set_index("lags")
+    return int(table[criterion].idxmin()), table
+
+
+def unitroot(
+    data: Union[pd.DataFrame, pd.Series, np.ndarray],
+    y: Optional[str] = None,
+    *,
+    test: str = "adf",
+    trend: str = "c",
+    lags: Union[int, str] = "aic",
+    max_lags: Optional[int] = None,
+    time: Optional[str] = None,
+    alpha: float = 0.05,
+) -> UnitRootResult:
+    """Unit-root test for one series: ADF, DF-GLS, Phillips-Perron or KPSS.
+
+    Equivalent to Stata's ``dfuller`` / ``dfgls`` / ``pperron`` / ``kpss``,
+    R's ``urca::ur.df`` / ``urca::ur.ers`` / ``urca::ur.pp`` /
+    ``urca::ur.kpss`` and ``statsmodels.tsa.stattools.adfuller`` / ``kpss``.
+
+    Parameters
+    ----------
+    data : pandas.DataFrame, pandas.Series or array
+        The series, in time order (or pass ``time=``). Leading and trailing
+        missing values are trimmed; a gap inside the series is an error.
+    y : str, optional
+        Column to test when ``data`` is a DataFrame.
+    test : {"adf", "dfgls", "pp", "kpss"}, default "adf"
+        ``"dfgls"`` is the Elliott-Rothenberg-Stock test, more powerful when
+        the largest root is near one. ``"pp"`` is the Phillips-Perron test:
+        the Dickey-Fuller regression without lagged differences, corrected
+        for serial correlation by a Newey-West long-run variance.
+        ``"kpss"`` is the Kwiatkowski-Phillips-Schmidt-Shin test, whose
+        **null is stationarity** (around a constant with ``trend="c"``,
+        around a linear trend with ``"ct"``): there ``reject=True`` is
+        evidence of a unit root.
+    trend : {"c", "ct", "n"}, default "c"
+        Deterministic terms under the alternative: a constant, a constant
+        and a linear trend, or nothing (``"n"``, ADF only). Use ``"ct"``
+        for a series that visibly trends.
+    lags : int or {"aic", "bic"}, default "aic"
+        Lagged differences in the test regression. An information criterion
+        searches ``0 .. max_lags`` on the common sample those regressions
+        share, then the test is run on every observation the chosen order
+        allows. Stata's ``dfuller`` default is ``lags=0``. For ``"pp"``
+        and ``"kpss"`` this is the Newey-West truncation lag instead:
+        an integer, or the default (``"aic"`` as left unset, or
+        ``"auto"``) for the rule ``floor(4 (T/100)^(2/9))`` for
+        Phillips-Perron (Stata's ``pperron``), ``floor(4 (T/100)^(1/4))``
+        for KPSS (the ``l4`` rule of the original paper and of R's
+        ``tseries::kpss.test``).
+    max_lags : int, optional
+        Upper end of the search. Default: Schwert's (1989) rule
+        ``floor(12 * (T / 100) ** 0.25)``.
+    time : str, optional
+        Column to sort a DataFrame by first.
+    alpha : float, default 0.05
+        Level for ``result.reject``. DF-GLS supports 0.01, 0.05 and 0.10;
+        KPSS also 0.025.
+
+    Returns
+    -------
+    UnitRootResult
+
+    Raises
+    ------
+    MethodIncompatibility
+        Unknown ``test`` / ``trend`` / lag rule, ``trend="n"`` with DF-GLS,
+        a gap or an infinite value in the series, a missing value in
+        ``time``, or a DF-GLS level other than 1%, 5%, 10%.
+    DataInsufficient
+        Too few observations for the requested lag order, a constant
+        series, or a series the test regression fits exactly.
+
+    Notes
+    -----
+    Rejecting means the data are unlikely under a unit root. Not rejecting
+    is not evidence of a unit root: these tests have little power against a
+    root of, say, 0.95 in a few decades of quarterly data.
+
+    The ADF critical values are MacKinnon's response surface, not the
+    interpolated Fuller table Stata prints, so they differ in the second
+    decimal; the statistic is identical.
+
+    Examples
+    --------
+    >>> import numpy as np, pandas as pd
+    >>> import statspai as sp
+    >>> rng = np.random.default_rng(0)
+    >>> e = rng.normal(size=300)
+    >>> df = pd.DataFrame({"walk": np.cumsum(e)})
+    >>> df["ar"] = 0.0
+    >>> for t in range(1, 300):
+    ...     df.loc[t, "ar"] = 0.5 * df.loc[t - 1, "ar"] + e[t]
+    >>> bool(sp.unitroot(df, "walk").reject)
+    False
+    >>> bool(sp.unitroot(df, "ar").reject)
+    True
+    >>> gls = sp.unitroot(df, "ar", test="dfgls", lags=1)
+    >>> gls.test
+    'DF-GLS'
+
+    References
+    ----------
+    [@dickey1979distribution],
+    [@said1984testing],
+    [@elliott1996efficient],
+    [@mackinnon1994approximate],
+    [@schwert1989tests],
+    [@phillips1988testing],
+    [@kwiatkowski1992testing]
+    """
+    test_key = str(test).lower().replace("-", "").replace("_", "")
+    test_key = {"pperron": "pp", "phillipsperron": "pp"}.get(test_key, test_key)
+    if test_key not in ("adf", "dfgls", "pp", "kpss"):
+        raise MethodIncompatibility(
+            f"unitroot: unknown test {test!r}.",
+            recovery_hint="Use test='adf', 'dfgls', 'pp' or 'kpss'.",
+        )
+    if trend not in ("n", "c", "ct"):
+        raise MethodIncompatibility(
+            f"unitroot: unknown trend {trend!r}.",
+            recovery_hint="Use 'c' (constant), 'ct' (constant and trend) or "
+            "'n' (none).",
+        )
+    if test_key == "dfgls" and trend == "n":
+        raise MethodIncompatibility(
+            "unitroot: DF-GLS removes a constant or a trend by GLS; there is "
+            "no trend='n' version.",
+            recovery_hint="Use test='adf', trend='n', or trend='c'.",
+        )
+    if not 0 < alpha < 1:
+        raise MethodIncompatibility(
+            f"unitroot: alpha must be in (0, 1), got {alpha!r}.",
+            recovery_hint="Use 0.01, 0.05 or 0.10.",
+        )
+    level = int(round(100 * alpha))
+    tabulated = abs(100 * alpha - level) < 1e-9 and level in _LEVELS
+    if test_key == "dfgls" and not tabulated:
+        raise MethodIncompatibility(
+            "unitroot: DF-GLS critical values are tabulated at the 1%, 5% "
+            f"and 10% levels only, not alpha={alpha!r}.",
+            recovery_hint="Use alpha=0.01, 0.05 or 0.10.",
+        )
+
+    series = _series(data, y, time)
+    T = series.size
+    if test_key in ("pp", "kpss"):
+        return _long_run_test(test_key, series, trend, lags, alpha, tabulated, level)
+    if test_key == "dfgls":
+        series = _gls_detrend(series, trend)
+        reg_trend = "n"
+    else:
+        reg_trend = trend
+
+    if isinstance(lags, str):
+        criterion = lags.lower()
+        if criterion not in ("aic", "bic"):
+            raise MethodIncompatibility(
+                f"unitroot: unknown lag rule {lags!r}.",
+                recovery_hint="Pass an integer, 'aic' or 'bic'.",
+            )
+        if max_lags is None:
+            max_lags = int(np.floor(12.0 * (T / 100.0) ** 0.25))
+        # keep the widest regression estimable
+        max_lags = max(0, min(int(max_lags), (T - 6) // 3))
+        chosen, ic_table = _select_lags(series, reg_trend, max_lags, criterion)
+        selection: str = criterion.upper()
+    else:
+        chosen, ic_table, selection = int(lags), None, "fixed"
+        if chosen < 0:
+            raise MethodIncompatibility(
+                f"unitroot: lags must be non-negative, got {lags!r}.",
+                recovery_hint="Pass lags=0 for the plain Dickey-Fuller test.",
+            )
+
+    fit = _fit(series, chosen, reg_trend)
+    stat, n = float(fit["t"]), int(fit["n"])
+    if test_key == "adf":
+        case = {"n": "nc", "c": "c", "ct": "ct"}[trend]
+        cvs = {f"{lv}%": float(mackinnon_cv(case, 1, lv, n)) for lv in _LEVELS}
+        adf_p = float(mackinnon1994_pvalue(stat, trend))
+        pvalue: Optional[float] = adf_p
+        reject = bool(stat < cvs[f"{level}%"]) if tabulated else bool(adf_p < alpha)
+        name = "ADF"
+    else:
+        if T < DFGLS_MIN_T or chosen > 12:
+            warnings.warn(
+                f"unitroot: DF-GLS critical values were fitted for series of "
+                f"at least {DFGLS_MIN_T} observations and at most 12 lags; "
+                f"at T={T}, lags={chosen} they are extrapolated.",
+                AssumptionWarning,
+                stacklevel=2,
+            )
+        cvs = {f"{lv}%": float(dfgls_cv(trend, lv, T, chosen)) for lv in _LEVELS}
+        pvalue = None
+        reject = bool(stat < cvs[f"{level}%"])
+        name = "DF-GLS"
+
+    return UnitRootResult(
+        test=name,
+        statistic=stat,
+        pvalue=pvalue,
+        critical_values=cvs,
+        reject=reject,
+        alpha=float(alpha),
+        lags=chosen,
+        lag_selection=selection,
+        n_obs=n,
+        rho=float(fit["rho"]),
+        se=float(fit["se"]),
+        trend=trend,
+        ic_table=ic_table,
+    )
+
+
+def _long_run_test(
+    test_key: str,
+    series: np.ndarray,
+    trend: str,
+    lags: Union[int, str],
+    alpha: float,
+    tabulated: bool,
+    level: int,
+) -> UnitRootResult:
+    """Phillips-Perron and KPSS: the two tests built on a long-run variance."""
+    T = series.size
+    name = "Phillips-Perron" if test_key == "pp" else "KPSS"
+    if test_key == "kpss" and trend == "n":
+        raise MethodIncompatibility(
+            "unitroot: KPSS tests stationarity around a constant or a trend; "
+            "there is no trend='n' version.",
+            recovery_hint="Use trend='c' or trend='ct'.",
+        )
+    if isinstance(lags, str):
+        # "aic" is the default of sp.unitroot (it names the ADF rule): here
+        # it means "not set". An information criterion does not choose a
+        # Newey-West truncation lag, so other names are refused.
+        if lags.lower() not in ("aic", "auto"):
+            rule = (
+                "floor(4 (T/100)^(2/9))"
+                if test_key == "pp"
+                else "floor(4 (T/100)^(1/4))"
+            )
+            raise MethodIncompatibility(
+                f"unitroot: unknown lag rule {lags!r} for the {name} test.",
+                recovery_hint="Pass an integer number of Newey-West lags, or "
+                f"leave lags unset (or lags='auto') for the rule {rule}.",
+            )
+        power = 2.0 / 9.0 if test_key == "pp" else 0.25
+        chosen = int(np.floor(4.0 * (T / 100.0) ** power))
+        selection = "Newey-West rule" if test_key == "pp" else "l4 rule"
+    else:
+        chosen, selection = int(lags), "fixed"
+    if chosen < 0 or chosen >= T - 3:
+        raise DataInsufficient(
+            f"unitroot: {name} with {chosen} Newey-West lags is not defined "
+            f"on {T} observations.",
+            recovery_hint="Use fewer lags or a longer series.",
+            diagnostics={"n_obs": int(T), "lags": int(chosen)},
+        )
+    if test_key == "pp":
+        fit = pp_statistics(series, chosen, trend)
+        stat, n = fit["z_t"], fit["n"]
+        case = {"n": "nc", "c": "c", "ct": "ct"}[trend]
+        cvs = {f"{lv}%": float(mackinnon_cv(case, 1, lv, n)) for lv in _LEVELS}
+        pp_p = float(mackinnon1994_pvalue(stat, trend))
+        reject = bool(stat < cvs[f"{level}%"]) if tabulated else bool(pp_p < alpha)
+        return UnitRootResult(
+            test=name, statistic=stat, pvalue=pp_p, critical_values=cvs,
+            reject=reject, alpha=float(alpha), lags=chosen,
+            lag_selection=selection, n_obs=n, rho=fit["rho"], se=fit["se"],
+            trend=trend, z_rho=fit["z_rho"],
+        )  # fmt: skip
+    cvs = dict(KPSS_CV[trend])
+    key = f"{100 * alpha:g}%"
+    if key not in cvs:
+        raise MethodIncompatibility(
+            "unitroot: KPSS critical values are tabulated at the 1%, 2.5%, "
+            f"5% and 10% levels only, not alpha={alpha!r}.",
+            recovery_hint="Use alpha=0.01, 0.025, 0.05 or 0.10.",
+        )
+    out = kpss_statistic(series, chosen, trend)
+    return UnitRootResult(
+        test=name, statistic=out["stat"], pvalue=None, critical_values=cvs,
+        reject=bool(out["stat"] > cvs[key]), alpha=float(alpha), lags=chosen,
+        lag_selection=selection, n_obs=out["n"], rho=float("nan"),
+        se=float("nan"), trend=trend, null="stationarity",
+    )  # fmt: skip

@@ -19,6 +19,8 @@ import statspai as sp
 | `feols(y ~ x \| firm + year, data = df)`  | `sp.feols("y ~ x \| firm + year", data=df)`                       | Two-way fixed effects                                        |
 | `fepois(y ~ x \| firm, data = df)`        | `sp.fepois("y ~ x \| firm", data=df)`                             | HDFE Poisson / PPML for gravity models                       |
 | `feglm(..., family = "binomial")`         | `sp.feglm(..., family="binomial")`                                | HDFE GLM                                                     |
+| `fenegbin(y ~ x \| firm, data = df)`      | `sp.feglm("y ~ x \| firm", data=df, family="negbin")`             | HDFE negative binomial; `theta` in `model_info["theta"]`     |
+| `alpaca::biasCorr(feglm(y ~ x \| i + t))` | `sp.feglm("y ~ x \| i + t", data=df, family="logit", bias_correction=True)` | Analytical incidental-parameter correction (`L = 0`) |
 | `etable(m1, m2, m3)`                      | `sp.regtable(m1, m2, m3)`                                         | Publication-quality regression tables (LaTeX / MD / HTML / Word / Excel) |
 | `vcov(m, cluster = ~firm)`                | `vcov={"CRV1": "firm"}` in `sp.feols`                             | Cluster-robust SE                                            |
 | `fixef(m)`                                | `m.fixef()` (on pyfixest result)                                  | Extract fixed-effect estimates                               |
@@ -106,7 +108,8 @@ report = sp.cs_report(data, y="y", t="t", g="g", i="id",
 
 | R                                              | StatsPAI                                              |
 | ---------------------------------------------- | ----------------------------------------------------- |
-| `AER::ivreg(y ~ x \| z, data = df)`            | `sp.ivreg("y ~ x", instruments=["z"], data=df)`       |
+| `AER::ivreg(y ~ x + d \| x + z, data = df)`    | `sp.ivreg("y ~ x + d \| x + z", data=df)` (the same two-part formula), or `sp.ivreg("y ~ x + (d ~ z)", data=df)` |
+| `summary(iv, diagnostics = TRUE)`              | printed by `.summary()`: first-stage F, Wu-Hausman, Sargan |
 | `ivmodel::LIML(...)`                           | `sp.liml(...)`                                        |
 | `ivmodel::JIVE(...)`                           | `sp.jive(...)`                                        |
 | `hdm::rlassoIV(...)`                           | `sp.lasso_iv(...)`                                    |
@@ -129,6 +132,7 @@ report = sp.cs_report(data, y="y", t="t", g="g", i="id",
 | `grf::causal_forest(X, Y, W, clusters = g)`  | `sp.causal_forest(Y=Y, T=W, X=X, clusters=g)`       |
 | `predict(cf, X.new)` / `predict(cf)`         | `forest.effect(X_new)` / `forest.predict()` (OOB)   |
 | `grf::test_calibration(cf)`                  | `sp.calibration_test(forest)`                       |
+| `cf$predictions = tau.cv; cf$clusters = g; test_calibration(cf)` | `sp.grf_calibration(Y=Y, W=W, Y_hat=Y_hat, W_hat=W_hat, tau_hat=tau_cv, clusters=g)` |
 | `grf::instrumental_forest(X, Y, W, Z)`       | `sp.iv_forest(y=Y, treat=W, instrument=Z, covariates=X)`|
 | `grf::multi_arm_causal_forest(X, Y, W)`      | `sp.multi_arm_forest(y=Y, treat=W, covariates=X)`   |
 | `grf::lm_forest(X, Y, W)`                    | `sp.lm_forest(y=Y, regressors=W, covariates=X)`     |
@@ -167,10 +171,38 @@ from statspai import SLearner, TLearner, XLearner, RLearner, DRLearner
 | `bounds::bounds(...)` (manual)         | `sp.manski_bounds(...)`, `sp.lee_bounds(...)`       |
 | `EValue::evalues.OR(...)`              | `sp.evalue(...)`                                    |
 | `pcalg::pc(suffStat, ...)`             | `sp.pc_algorithm(data)`                             |
-| `pcalg::fci(...)`                      | `sp.causal_discovery(data, method="fci")`           |
+| `pcalg::fci(...)`                      | `sp.fci(data)` (the same PAG); `possible_dsep=False` for `rfci`'s skeleton |
+| `bnlearn::hc(data)`                    | `sp.hill_climb(df)`; `data_type="discrete"` for factors |
+| `bnlearn::boot.strength(data, R = 200, algorithm = "hc")` | `sp.bootstrap_edges(df, "hill_climb", n_boot=200)` |
+| `bnlearn::mmpc(data)`, `si.hiton.pc(data)` | `sp.mmpc(df)`, `sp.mmpc(df, method="hiton")` |
+| `bnlearn::mmhc(data)`, `rsmax2(data, restrict = "si.hiton.pc")` | `sp.mmhc(df)`, `sp.mmhc(df, restrict="hiton")` |
+| `mediation::mediate(med, out_logit, ...)` | `sp.mediate(df, y=, treat=, mediator=, inference="robust", outcome_model="logit")` |
+| `grf::causal_forest(tune.parameters = "all")` | `sp.tune_causal_forest(Y=, T=, X=)` (same criterion, different search) |
 | — (NOTEARS: Python only historically)  | `sp.notears(data)`                                  |
 | `policytree::policy_tree(...)`         | `sp.policy_tree(...)`                               |
 | —                                      | `sp.conformal_cate(...)` — conformal CATE           |
+
+---
+
+## Tests, Effect Sizes, Power (`stats`, `effsize`, `pwr`, `survival`, `AER`)
+
+| R                                              | StatsPAI                                              |
+| ---------------------------------------------- | ----------------------------------------------------- |
+| `t.test(y ~ g, data = df)` (Welch)             | `sp.ttest(df, "y", by="g", unequal=True)`. `welch=True` is Stata's Welch formula, a different approximation |
+| `t.test(x, y, paired = TRUE)`                  | `sp.ttest(df, "x", other="y", paired=True)`           |
+| `var.test(y ~ g)`, `shapiro.test(y)`           | `sp.sdtest(df, "y", by="g")`, `sp.swilk(df, ["y"])`   |
+| `cor.test(x, y)`, `ggm::pcor.test(...)`        | `sp.cor_test(df, "x", "y")`, `sp.cor_test(df, "x", "y", covariates=["z"])` |
+| `p.adjust(p, "hommel")`                        | `sp.adjust_pvalues(p, method="hommel")`; also `holm`, `hochberg`, `bonferroni`, `bh`, `by` |
+| `effsize::cohen.d(y ~ g)`                      | `sp.esize(df, "y", by="g")`: d, Hedges's g, Glass's Delta, noncentral-t intervals |
+| `pwr::pwr.t.test(d = 0.5, power = 0.8)`        | `sp.power_ttest(delta=0.5, power=0.8)`. `n` is the total over both groups; `params["n_exact"] / 2` is pwr's per-group figure |
+| `survival::cox.zph(fit)`                       | `sp.cox(...).ph_test()`; `transform=` as in `cox.zph` |
+| `AER::dispersiontest(fit, trafo = 2)`          | `sp.poisson(...).diagnostics["Overdispersion test (C-T)"]` |
+| `lavaan::sem(model, data)`, `cfa()` | `sp.path_analysis(model, df)` with the same model string, latent variables (`=~`) included; `se="robust"` for `estimator = "MLM"`, `std_lv=True` for `std.lv`, `meanstructure=True` likewise. `fit.effect("indirect")` reads a `:=` row, `fit.factor_scores` is `lavPredict`. With two or more terminal outcomes pass `auto_cov_y=True`: `sem()` lets their disturbances covary without being asked, StatsPAI fits the model as written |
+| `lavaan::growth(model, data)` | `sp.path_analysis(model, df, growth=True)` |
+| `sem(..., missing = "ML")` | `sp.path_analysis(model, df, missing="fiml")`. The default drops incomplete rows and counts them in `n_dropped` |
+| `sem(..., group = )`, `ordered = ` | Not available |
+| `rbounds::psens(x, y, Gamma = 2)`              | `sp.rosenbaum_bounds(x, y, gamma_grid=[1, 1.5, 2])`   |
+| `MatchIt::matchit(method = "subclass")`        | `sp.match(df, y=, treat=, covariates=, method="stratify", n_strata=6)` |
 
 ---
 

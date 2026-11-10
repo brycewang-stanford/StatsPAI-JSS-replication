@@ -42,12 +42,12 @@ Literature* 59(2), 391-425. [@abadie2021synthetic]
 from __future__ import annotations
 
 import warnings
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 from scipy import optimize
 
-from ..exceptions import ConvergenceFailure, MethodIncompatibility
+from ..exceptions import ConvergenceFailure, DataInsufficient, MethodIncompatibility
 
 # ---------------------------------------------------------------------------
 # Basic simplex solver (inner W problem, reused across module)
@@ -137,6 +137,206 @@ def _eq_bounded_lsq(C: np.ndarray, t: np.ndarray, lb: float, ub: float) -> np.nd
     raise ConvergenceFailure("bounded least squares (active set) did not converge")
 
 
+def _simplex_lsq_optimum(
+    y: np.ndarray, X: np.ndarray
+) -> Optional[Tuple[np.ndarray, bool]]:
+    """A minimiser of ``||y - X w||^2`` on the simplex for ``X`` with fewer
+    rows than columns, and whether it is the only one.
+
+    Active-set method that builds the support up from the single best donor
+    (Lawson-Hanson with the adding-up constraint): add the donor with the
+    most negative reduced gradient, solve the equality-constrained least
+    squares on the support through its KKT system, step back to the
+    boundary and drop donors when the solution leaves the simplex. The
+    support never exceeds ``rows + 1`` donors, so each step is a small
+    linear solve.
+
+    Returns ``(w, unique)``. ``w`` satisfies the optimality conditions (no
+    donor has a negative reduced gradient). ``unique`` is True when the
+    donors whose reduced gradient is zero are affinely independent, so that
+    the optimal face is a single point. ``None`` when the iteration does not
+    finish or the optimality conditions cannot be verified.
+    """
+    n, J = X.shape
+    scale = max(1.0, 2.0 * float(np.abs(X.T @ y).max()))
+    tol = 1e-10 * scale
+    support = [int(np.argmin(((X - y[:, None]) ** 2).sum(axis=0)))]
+    w = np.zeros(J)
+    w[support[0]] = 1.0
+
+    def solve_on(cols: list[int]) -> Optional[np.ndarray]:
+        k = len(cols)
+        if k == 1:
+            return np.array([1.0])
+        Xp = X[:, cols]
+        kkt = np.zeros((k + 1, k + 1))
+        kkt[:k, :k] = 2.0 * Xp.T @ Xp
+        kkt[:k, k] = 1.0
+        kkt[k, :k] = 1.0
+        try:
+            sol = np.linalg.solve(kkt, np.append(2.0 * Xp.T @ y, 1.0))
+        except np.linalg.LinAlgError:
+            return None
+        return np.asarray(sol[:k])
+
+    for _ in range(20 * (n + 2)):
+        grad = -2.0 * X.T @ (y - X @ w)
+        reduced = grad - float(grad[support] @ w[support])
+        reduced[support] = 0.0
+        entering = int(np.argmin(reduced))
+        if reduced[entering] >= -tol:
+            break
+        support.append(entering)
+        while True:
+            if len(support) > n + 1:
+                return None
+            target = solve_on(support)
+            if target is None:
+                return None
+            if (target > 1e-14).all():
+                w[:] = 0.0
+                w[support] = target
+                break
+            current = w[support]
+            leaving = target <= 1e-14
+            step = float(
+                np.min(current[leaving] / (current[leaving] - target[leaving]))
+            )
+            moved = current + step * (target - current)
+            keep = moved > 1e-13
+            w[:] = 0.0
+            support = [c for c, k in zip(support, keep) if k]
+            if not support:
+                return None
+            w[support] = moved[keep]
+    else:
+        return None
+
+    w = np.clip(w, 0.0, None)
+    w = w / w.sum()
+    grad = -2.0 * X.T @ (y - X @ w)
+    reduced = grad - float(grad[support] @ w[support])
+    if (reduced < -1e-9 * scale).any():
+        return None
+    tight = np.flatnonzero(reduced <= 1e-7 * scale)
+    unique = tight.size <= n + 1
+    if unique:
+        face = np.vstack([X[:, tight], np.ones((1, tight.size))])
+        unique = bool(np.linalg.matrix_rank(face) == tight.size)
+    return w, unique
+
+
+def _unique_simplex_lsq(y: np.ndarray, X: np.ndarray) -> Optional[np.ndarray]:
+    """The minimiser of ``||y - X w||^2`` on the simplex if it is certified
+    unique, else ``None`` (see :func:`_simplex_lsq_optimum`)."""
+    found = _simplex_lsq_optimum(y, X)
+    if found is None or not found[1]:
+        return None
+    return found[0]
+
+
+def _least_norm_weights(
+    A: np.ndarray, b: np.ndarray, w0: np.ndarray
+) -> Optional[np.ndarray]:
+    """``min ||w||^2`` subject to ``A w = b``, ``w >= 0``, from a feasible ``w0``.
+
+    Primal active-set method. On the free set the least-norm solution of
+    ``A_F w_F = b`` is what ``lstsq`` returns; a step that would make a
+    weight negative stops at the boundary and fixes that weight at zero, and
+    at a stationary point the fixed weight with the largest positive
+    multiplier is released. ``||w||`` falls at every step, so the method
+    ends at the unique minimiser. ``None`` if ``w0`` is not feasible or the
+    iteration cap is reached.
+    """
+    J = A.shape[1]
+    w = np.clip(np.asarray(w0, dtype=np.float64), 0.0, None).copy()
+    free = w > 1e-14
+    if not free.any():
+        return None
+    b_scale = max(1.0, float(np.abs(b).max()))
+    a_scale = max(1.0, float(np.abs(A).max()))
+    last_released = -1
+    visited = set()
+    for _ in range(20 * J + 50):
+        F = np.flatnonzero(free)
+        # A degenerate vertex (the feasible set is a single point, or
+        # several weights sit exactly at zero) can send the method round a
+        # loop of free sets without lowering the norm. The point it is
+        # circling is feasible and no step from it is possible.
+        pattern = free.tobytes()
+        if pattern in visited:
+            return w
+        visited.add(pattern)
+        AF = A[:, F]
+        target = np.linalg.lstsq(AF, b, rcond=None)[0]
+        if np.abs(AF @ target - b).max() > 1e-8 * b_scale:
+            return None
+        current = w[F]
+        negative = target < -1e-14
+        if negative.any():
+            ratios = current[negative] / (current[negative] - target[negative])
+            k = int(np.flatnonzero(negative)[int(np.argmin(ratios))])
+            step = float(ratios.min())
+            if F[k] == last_released and step <= 0.0:
+                return w
+            w[F] = current + step * (target - current)
+            w[F[k]] = 0.0
+            free[F[k]] = False
+            last_released = -1
+            continue
+        w[:] = 0.0
+        w[F] = np.clip(target, 0.0, None)
+        multipliers = np.linalg.lstsq(AF.T, w[F], rcond=None)[0]
+        cost = A.T @ multipliers
+        cost[free] = -np.inf
+        release = int(np.argmax(cost))
+        if cost[release] <= 1e-11 * a_scale:
+            return w
+        free[release] = True
+        last_released = release
+    return None
+
+
+def _exact_simplex_lsq(y: np.ndarray, X: np.ndarray) -> Optional[np.ndarray]:
+    """Exact simplex least squares for ``X`` with fewer rows than columns.
+
+    If the minimiser is unique, that point. If it is not (a treated unit
+    inside the donors' hull, or a predictor the outer search has weighted to
+    zero), every minimiser has the same fitted values ``X w``, and the one
+    returned is the minimum-norm one, the most evenly spread weights that
+    reproduce the optimal fit:
+
+        min ||w||^2  s.t.  X w = X w*,  sum(w) = 1,  w >= 0.
+
+    That is a property of the problem, not of the path an optimiser took,
+    so it does not depend on the starting point, the solver or the
+    platform. ``None`` when either stage cannot be completed; the caller
+    then falls back to SLSQP.
+    """
+    found = _simplex_lsq_optimum(y, X)
+    if found is None:
+        return None
+    w_opt, unique = found
+    if unique:
+        return w_opt
+    J = X.shape[1]
+    A = np.vstack([X, np.ones((1, J))])
+    b = np.append(X @ w_opt, 1.0)
+    w = _least_norm_weights(A, b, w_opt)
+    if w is None:
+        return None
+    total = float(w.sum())
+    if total <= 0:
+        return None
+    w = w / total
+    resid_opt = y - X @ w_opt
+    resid = y - X @ w
+    tolerance = 1e-12 * max(1.0, float(y @ y))
+    if float(resid @ resid) > float(resid_opt @ resid_opt) + tolerance:
+        return None
+    return np.asarray(w)
+
+
 def solve_simplex_weights(
     y: np.ndarray,
     X: np.ndarray,
@@ -191,9 +391,10 @@ def solve_simplex_weights(
     # ridge penalty): the minimiser is unique, so solve it exactly with the
     # primal active-set method instead of stopping at SLSQP's tolerance
     # (which left weights ~1e-7 and gaps ~1e-6 away from the optimum).
-    # Rank-deficient problems (fewer pre-periods than donors, the usual
-    # Prop. 99 shape) have a set of minimisers; there SLSQP's choice is
-    # kept so that the selected point does not change.
+    # Rank-deficient problems (fewer rows than donors, the usual Prop. 99
+    # shape) can have a set of minimisers. A unique minimiser is returned
+    # exactly; among several the minimum-norm one is. SLSQP is the fallback
+    # if the exact method does not finish.
     y_arr = np.asarray(y, dtype=np.float64).ravel()
     X_arr = np.asarray(X, dtype=np.float64)
     if penalization > 0:
@@ -211,6 +412,14 @@ def solve_simplex_weights(
                     RuntimeWarning,
                     stacklevel=2,
                 )
+
+        elif penalization == 0:
+            # Rank deficient. Outside the donors' hull the projection has
+            # one representation and it is returned exactly; otherwise the
+            # minimum-norm minimiser is.
+            w_exact = _exact_simplex_lsq(y_arr, X_arr)
+            if w_exact is not None:
+                return w_exact
 
     if w0 is None:
         w0 = np.ones(J) / J
@@ -245,6 +454,42 @@ def solve_simplex_weights(
     if total > 0.0:
         w = w / total
     return w
+
+
+def polish_simplex_weights(y: np.ndarray, X: np.ndarray, w: np.ndarray) -> np.ndarray:
+    """Refine an approximate simplex least-squares solution to the exact one.
+
+    With fewer rows than donors the problem ``min ||y - X w||^2`` on the
+    simplex is solved by SLSQP, which stops about 1e-7 from the optimum.
+    This re-solves it exactly on the donors that carry weight and accepts
+    the result only if it satisfies the optimality conditions of the full
+    problem (no excluded donor would lower the loss); otherwise ``w`` is
+    returned unchanged.
+    """
+    w = np.asarray(w, dtype=np.float64)
+    y = np.asarray(y, dtype=np.float64).ravel()
+    X = np.asarray(X, dtype=np.float64)
+    support = np.flatnonzero(w > 1e-8)
+    if support.size < 2 or support.size > X.shape[0]:
+        return w
+    Xs = X[:, support]
+    if np.linalg.matrix_rank(Xs) < support.size:
+        return w
+    try:
+        ws = _eq_bounded_lsq(Xs, y, 0.0, 1.0)
+    except RuntimeError:  # pragma: no cover - keep the approximate solution
+        return w
+    out = np.zeros_like(w)
+    out[support] = ws
+    grad = -2.0 * X.T @ (y - X @ out)
+    inside = support[ws > 1e-12]
+    if inside.size == 0:  # pragma: no cover - defensive
+        return w
+    lam = float(np.mean(grad[inside]))
+    scale = max(1.0, float(np.abs(grad).max()))
+    if np.any(grad - lam < -1e-8 * scale):
+        return w
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -288,6 +533,117 @@ def placebo_rank_pvalue(treated_stat: float, placebo_stats: Any) -> float:
         return float("nan")
     n_at_least = int(np.sum(stats_arr >= treated_stat))
     return float((1 + n_at_least) / (stats_arr.size + 1))
+
+
+def placebo_inversion_ci(
+    gap_treated: np.ndarray,
+    placebo_gaps: np.ndarray,
+    weight_on_treated: np.ndarray,
+    pre_mask: np.ndarray,
+    post_mask: np.ndarray,
+    alpha: float = 0.05,
+) -> Tuple[float, float]:
+    """
+    Confidence interval for a constant effect, by inverting the placebo test
+    (Firpo & Possebom 2018 [@firpo2018synthetic]).
+
+    Under ``H0: effect_t = C`` in every post period, subtracting ``C`` from
+    the treated unit's post-treatment outcomes gives data in which no unit
+    is treated. Synthetic-control weights use pre-treatment data only, so
+    they do not move; the treated gap becomes ``gap_1t - C`` and the gap of
+    placebo ``j``, whose donor pool contains the treated unit with weight
+    ``w_j1``, becomes ``gap_jt + w_j1 * C``. The post/pre RMSPE-ratio rank
+    test of :func:`placebo_rank_pvalue` applied to those gaps has p-value
+    ``p(C)``, and the interval is the convex hull of ``{C : p(C) >= alpha}``.
+    ``p(0)`` is the reported placebo p-value, so the interval excludes zero
+    exactly when that p-value is below ``alpha`` (up to the hull).
+
+    Each comparison "placebo ``j`` at least as extreme as the treated unit"
+    is a quadratic inequality in ``C``; the end points are found exactly
+    from the roots, with no grid.
+
+    Parameters
+    ----------
+    gap_treated : (T,) array
+        Treated minus synthetic, all periods.
+    placebo_gaps : (T, J) array
+        The same for each placebo unit.
+    weight_on_treated : (J,) array
+        Weight of the real treated unit in each placebo's synthetic control
+        (zeros when the treated unit is not in the placebo donor pools).
+    pre_mask, post_mask : (T,) bool arrays
+    alpha : float
+
+    Returns
+    -------
+    (float, float)
+        Lower and upper end. Infinite when no ``C`` in that direction is
+        rejected -- always the case when ``J + 1 < 1 / alpha``, since the
+        smallest attainable p-value is ``1 / (J + 1)``. ``(nan, nan)`` when
+        every ``C`` is rejected (the post-treatment gap is not a constant
+        shift, so no constant effect fits), when the treated pre-period fit
+        is perfect, or when no placebo is usable.
+    """
+    g1 = np.asarray(gap_treated, dtype=np.float64)
+    G = np.asarray(placebo_gaps, dtype=np.float64)
+    if G.ndim == 1:
+        G = G.reshape(-1, 1)
+    w = np.asarray(weight_on_treated, dtype=np.float64).ravel()
+    pre1 = float(np.mean(g1[pre_mask] ** 2))
+    pre_j = np.mean(G[pre_mask] ** 2, axis=0)
+    usable = np.isfinite(pre_j) & (pre_j > 1e-10) & np.isfinite(G).all(axis=0)
+    if not np.isfinite(pre1) or pre1 <= 1e-10 or not usable.any():
+        return (float("nan"), float("nan"))
+    G, w, pre_j = G[:, usable], w[usable], pre_j[usable]
+    n_units = G.shape[1] + 1
+    # p(C) = (1 + count(C)) / n_units >= alpha
+    need = int(np.ceil(alpha * n_units - 1e-9)) - 1
+    if need <= 0:
+        return (-np.inf, np.inf)
+
+    g1_post = g1[post_mask]
+    G_post = G[post_mask]
+    # ratio_j(C)^2 - ratio_1(C)^2 = a C^2 + b C + c
+    a = w**2 / pre_j - 1.0 / pre1
+    b = 2.0 * (w * G_post.mean(axis=0) / pre_j + g1_post.mean() / pre1)
+    c = (G_post**2).mean(axis=0) / pre_j - float(np.mean(g1_post**2)) / pre1
+
+    def count(val: float) -> int:
+        return int(np.sum(a * val * val + b * val + c >= 0.0))
+
+    roots: List[float] = []
+    for aj, bj, cj in zip(a, b, c):
+        if abs(aj) > 1e-14:
+            disc = bj * bj - 4.0 * aj * cj
+            if disc >= 0.0:
+                sq = float(np.sqrt(disc))
+                roots += [(-bj - sq) / (2.0 * aj), (-bj + sq) / (2.0 * aj)]
+        elif abs(bj) > 1e-14:
+            roots.append(-cj / bj)
+    if not roots:
+        return (-np.inf, np.inf) if count(0.0) >= need else (float("nan"),) * 2
+    pts = np.unique(np.asarray(roots, dtype=np.float64))
+    span = max(1.0, float(pts[-1] - pts[0]))
+    lo: float = float("nan")
+    hi: float = float("nan")
+    if count(float(pts[0]) - span) >= need:
+        lo = -np.inf
+    if count(float(pts[-1]) + span) >= need:
+        hi = np.inf
+    # Between consecutive roots the count is constant; closed inequalities
+    # make a root belong to the accepted set of the segment on either side.
+    mids = 0.5 * (pts[:-1] + pts[1:])
+    ok_mid = np.array([count(float(m)) >= need for m in mids], dtype=bool)
+    ok_pt = np.array([count(float(v)) >= need for v in pts], dtype=bool)
+    accepted_lo = np.r_[pts[:-1][ok_mid], pts[ok_pt]]
+    accepted_hi = np.r_[pts[1:][ok_mid], pts[ok_pt]]
+    if np.isnan(lo):
+        if not np.isinf(hi) and accepted_lo.size == 0:
+            return (float("nan"), float("nan"))
+        lo = float(accepted_lo.min()) if accepted_lo.size else float(pts[-1])
+    if np.isnan(hi):
+        hi = float(accepted_hi.max()) if accepted_hi.size else float(pts[0])
+    return (lo, hi)
 
 
 # ---------------------------------------------------------------------------
@@ -417,6 +773,87 @@ def _regression_v_init(
         return np.ones(K)
 
 
+def _swept_columns(A: np.ndarray, tol: float = 1e-10) -> list[int]:
+    """Columns a pivoted sweep of the cross-product matrix ``A`` keeps.
+
+    At each step the unswept column with the largest current diagonal
+    element is swept; the sweep stops when that element is no larger than
+    ``tol`` times its original value. The columns never swept are linearly
+    dependent on the ones that were (Mata's ``invsym``).
+    """
+    A = np.array(A, dtype=np.float64)
+    original = np.diag(A).copy()
+    rest = list(range(A.shape[0]))
+    kept: list[int] = []
+    while rest:
+        k = max(rest, key=lambda i: A[i, i])
+        if A[k, k] <= tol * original[k]:
+            break
+        rest.remove(k)
+        pivot = A[k, k]
+        column, row = A[:, k].copy(), A[k, :].copy()
+        A -= np.outer(column, row) / pivot
+        A[k, :] = row / pivot
+        A[:, k] = -column / pivot
+        A[k, k] = 1.0 / pivot
+        kept.append(k)
+    return sorted(kept)
+
+
+def regression_based_v(
+    X1: np.ndarray,
+    X0: np.ndarray,
+    Z1: np.ndarray,
+    Z0: np.ndarray,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Regression-based predictor weights, the default of Stata ``synth``.
+
+    Every pre-treatment outcome period is regressed, across units (treated
+    and donors together, with a constant), on the predictors scaled to unit
+    standard deviation. With ``B`` the ``K x T0`` matrix of slopes, the
+    weight of predictor ``k`` is the ``k``-th diagonal element of ``B B'``:
+    how much the predictor moves the outcome path. No search is involved,
+    so the result is deterministic and takes a least-squares fit.
+
+    Returns ``(V, scale)`` with ``V`` normalised to ``tr(V) = K`` (Stata
+    reports ``V / K``, which sums to one) and ``scale`` the standard
+    deviations the predictors were divided by. Checked against
+    ``e(V_matrix)`` of Stata ``synth`` on the Proposition 99 data: all
+    eight printed digits.
+
+    With no more units than coefficients the regression is not identified.
+    Stata's ``synth`` then inverts the cross-product matrix by sweeping the
+    column with the largest remaining diagonal element first and gives a
+    zero coefficient to the columns that cannot be swept; a predictor left
+    out that way gets weight zero. The same rule is applied here
+    (``_swept_columns``) and reproduces ``e(V_matrix)`` in that case too.
+    """
+    K, J = X0.shape
+    X_all = np.column_stack([X1[:, None], X0])  # (K, J + 1)
+    scale = X_all.std(axis=1, ddof=1)
+    scale = np.where(scale > 0, scale, 1.0)
+    design = np.column_stack([np.ones(J + 1), (X_all / scale[:, None]).T])
+    outcomes = np.column_stack([Z1[:, None], Z0]).T  # (J + 1, T0)
+    if J + 1 > K + 1:
+        coef = np.linalg.lstsq(design, outcomes, rcond=None)[0][1:]  # (K, T0)
+    else:
+        # constant last, as synth orders the columns
+        ordered = np.column_stack([design[:, 1:], design[:, 0]])
+        keep = _swept_columns(ordered.T @ ordered)
+        full = np.zeros((K + 1, outcomes.shape[1]))
+        full[keep] = np.linalg.lstsq(ordered[:, keep], outcomes, rcond=None)[0]
+        coef = full[:K]
+    v = np.einsum("kt,kt->k", coef, coef)
+    if not np.all(np.isfinite(v)) or v.sum() <= 0:
+        raise DataInsufficient(
+            "synth(v_method='regression'): no predictor explains the "
+            "pre-treatment outcomes, so regression-based V is undefined.",
+            recovery_hint="Use v_method='nested' or 'equal'.",
+            diagnostics={"n_predictors": int(K)},
+        )
+    return np.asarray(K * v / v.sum()), scale
+
+
 def _hull_feasibility(
     X1_s: np.ndarray,
     X0_s: np.ndarray,
@@ -427,7 +864,7 @@ def _hull_feasibility(
     Solves the linear feasibility problem ``{w >= 0, 1'w = 1, X0 w = X1}``.
     Inside the hull every V with full support attains a zero predictor
     discrepancy and the inner problem has a whole polytope of solutions, so
-    the nested V-W weights depend on the optimiser's path.
+    the inner problem needs a selection rule (the minimum-norm weights).
 
     Returns ``(True, feasible_w)``, ``(False, None)``, or ``(None, None)``
     with a ``RuntimeWarning`` when the LP does not finish.
@@ -597,8 +1034,9 @@ def solve_synth_weights_adh(
         Seed for random Dirichlet starts.
     perfect_fit : {'legacy', 'exact_balance'}, default 'legacy'
         Rule when ``X1`` lies in the convex hull of the columns of ``X0``.
-        ``'legacy'`` runs the V search regardless (the ADH estimator; its
-        weights are then path-dependent). ``'exact_balance'`` skips the V
+        ``'legacy'`` runs the V search regardless (the ADH estimator; for
+        each V the inner weights are the minimum-norm minimiser, see
+        ``_exact_simplex_lsq``). ``'exact_balance'`` skips the V
         search and returns the weights that balance every predictor exactly
         with the smallest outer loss (see ``_exact_balance_weights``) — a
         different estimator, not a tie-break. Only applies when
@@ -700,12 +1138,13 @@ def solve_synth_weights_adh(
             "exact_balance_gap": pf["fw_gap"],
         }
 
-    # The inner solve deliberately starts from the uniform simplex point on
-    # every evaluation. Warm-starting from the previous evaluation's W is
-    # ~2x faster, but when W(V) is non-unique (K predictors < J donors) it
-    # selects a history-dependent point on the optimal face, so the outer
-    # loss stops being a function of V and Nelder-Mead drifts into worse
-    # basins (observed on the Basque special-predictor specification).
+    # W(V) must be a function of V alone. When the inner minimiser is not
+    # unique (K predictors < J donors and the treated unit inside the hull,
+    # or a V entry at zero) ``solve_simplex_weights`` returns the
+    # minimum-norm one. A history-dependent choice, such as warm-starting
+    # from the previous evaluation's W, makes the outer loss stop being a
+    # function of V, and Nelder-Mead then drifts into worse basins (observed
+    # on the Basque special-predictor specification).
     def outer_loss(v_params: np.ndarray) -> float:
         V = _v_from_params(v_params, K)
         w = _inner_w_given_v(V, X1_s, X0_s, penalization=penalization)

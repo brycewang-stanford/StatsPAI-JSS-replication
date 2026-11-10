@@ -18,6 +18,7 @@ Heckman, J.J. (1979).
 *Econometrica*, 47(1), 153-161. [@heckman1979sample]
 """
 
+import warnings
 from typing import List, Optional, Tuple
 
 import numpy as np
@@ -25,18 +26,21 @@ import pandas as pd
 from scipy import stats
 
 from .._aliases import accepts_aliases
+from .._input_validation import check_columns
+from ..core._call_record import records_call
 from ..core.results import CausalResult
-from ..exceptions import MethodIncompatibility
+from ..exceptions import AssumptionWarning, MethodIncompatibility
 from ._limited_dep_result import LimitedDepResult
 
 
+@records_call("heckman")
 @accepts_aliases(robust="vce")
 def heckman(
     data: pd.DataFrame,
     y: str,
     x: List[str],
-    select: str,
-    z: List[str],
+    select: Optional[str] = None,
+    z: Optional[List[str]] = None,
     alpha: float = 0.05,
     method: str = "twostep",
     vce: Optional[str] = None,
@@ -55,8 +59,10 @@ def heckman(
         Outcome variable (observed only when ``select=1``).
     x : list of str
         Regressors in the outcome equation.
-    select : str
-        Binary selection indicator (1 = observed, 0 = not observed).
+    select : str, optional
+        Binary selection indicator (1 = observed, 0 = not observed). When
+        omitted, an observation is selected when ``y`` is not missing, as
+        in Stata's ``heckman y x, select(z1 z2)``.
     z : list of str
         Variables in the selection equation (should include exclusion
         restrictions — variables in z but not in x).
@@ -64,7 +70,9 @@ def heckman(
     method : {'twostep', 'ml'}, default 'twostep'
         ``'twostep'`` is Heckman's (1979) probit + OLS-with-IMR estimator
         with the Heckman / Greene analytical variance (Stata
-        ``heckman ..., twostep``). ``'ml'`` is full-information maximum
+        ``heckman ..., twostep``); the first-step probit enters it through
+        the inverse of its observed information, as in Stata. ``'mle'`` is
+        accepted for ``'ml'``. ``'ml'`` is full-information maximum
         likelihood -- Stata's default ``heckman`` -- parameterised as
         ``(beta, gamma, atanh rho, ln sigma)``; the result's ``detail`` also
         carries the selection equation and ``rho`` / ``sigma`` / ``lambda``.
@@ -123,6 +131,8 @@ def heckman(
 
     See Heckman (1979, *Econometrica*), Section 2.
     """
+    if method == "mle":  # the spelling sp.etregress / sp.tobit use
+        method = "ml"
     if method not in ("twostep", "ml"):
         raise MethodIncompatibility(
             f"heckman: method must be 'twostep' or 'ml', got {method!r}."
@@ -145,11 +155,30 @@ def heckman(
     if weights is not None and se_kind == "nonrobust":
         se_kind = "robust"  # Stata: pweights imply vce(robust)
 
+    if not z:
+        raise MethodIncompatibility(
+            "heckman: z= lists the variables of the selection equation.",
+            recovery_hint="Pass z=[...]; include at least one variable that "
+            "is not in x (an exclusion restriction).",
+        )
+    check_columns(
+        data,
+        {
+            "y": y,
+            "select": select,
+            "x": x,
+            "z": z,
+            "cluster": cluster,
+            "weights": weights,
+        },
+        function="heckman",
+    )
+    if select is None:
+        select = "_selected"
+        while select in data.columns:
+            select = "_" + select
+        data = data.assign(**{select: data[y].notna().astype(float)})
     df = data.copy()
-
-    for col in [y, select] + x + z + [c for c in (cluster, weights) if c]:
-        if col not in df.columns:
-            raise ValueError(f"Column '{col}' not found")
 
     D = df[select].values.astype(float)
     n_total = len(df)
@@ -223,6 +252,27 @@ def heckman(
     rss = float(np.sum(resid**2))
     sigma2 = rss / n_eff + beta_lambda**2 * float(np.mean(delta_v))
     rho2 = beta_lambda**2 / sigma2 if sigma2 > 0 else 0.0
+    # The two-step estimate of rho is not confined to [-1, 1]. Beyond it
+    # the weights 1 - rho^2 delta_i below can turn negative and the formula
+    # is no longer a variance. Stata sets rho to +/-1 and sigma to |lambda|
+    # (so that lambda = rho * sigma still holds) and says so; the same is
+    # done here.
+    rho_two_step = float(np.sign(beta_lambda) * np.sqrt(rho2))
+    rho_truncated = rho2 > 1.0
+    if rho_truncated:
+        warnings.warn(
+            f"heckman: the two-step estimate of rho is {rho_two_step:.4f}, "
+            "outside [-1, 1]; it is set to "
+            f"{np.sign(beta_lambda):+.0f} and sigma to |lambda| for the "
+            "standard errors, as Stata does. An estimate this far out "
+            "usually means the selection equation has no variable that is "
+            "excluded from the outcome equation, or the model does not fit. "
+            "method='ml' keeps rho inside the interval.",
+            AssumptionWarning,
+            stacklevel=2,
+        )
+        rho2 = 1.0
+        sigma2 = beta_lambda**2
 
     XtX_inv = np.linalg.pinv(X_v.T @ X_v)
     # Heteroskedastic contribution  X*'(I − ρ̂² D_δ) X*
@@ -299,9 +349,32 @@ def heckman(
         ),
         "sigma": float(np.sqrt(sigma2)),
         "rho": float(lambda_coef / np.sqrt(sigma2)) if sigma2 > 0 else np.nan,
+        "rho_two_step": rho_two_step,
+        "rho_truncated": bool(rho_truncated),
     }
+    # the first step, which Stata prints as the `select` equation
+    se_gamma = np.sqrt(np.maximum(np.diag(V_gamma), 0.0))
+    with np.errstate(divide="ignore", invalid="ignore"):
+        z_gamma = gamma / se_gamma
+    model_info["selection_equation"] = pd.DataFrame(
+        {
+            "variable": ["const"] + list(z),
+            "coefficient": gamma,
+            "se": se_gamma,
+            "z": z_gamma,
+            "pvalue": 2 * stats.norm.sf(np.abs(z_gamma)),
+        }
+    )
+    # Wald test that the slopes of the outcome equation are jointly zero
+    if x:
+        slopes = slice(1, 1 + len(x))
+        b_x, V_x = beta[slopes], vcov[slopes, slopes]
+        wald = float(b_x @ np.linalg.pinv(V_x) @ b_x)
+        model_info["wald_chi2"] = wald
+        model_info["wald_df"] = len(x)
+        model_info["wald_pvalue"] = float(stats.chi2.sf(wald, len(x)))
 
-    return LimitedDepResult(
+    res = LimitedDepResult(
         method="Heckman (1979) Selection Model",
         estimand=f"beta_{x[0]}",
         estimate=main_coef,
@@ -314,6 +387,15 @@ def heckman(
         model_info=model_info,
         _citation_key="heckman",
     )
+    res._ml_state = {
+        "model": "heckman_twostep",
+        "theta": np.asarray(beta, dtype=float),
+        "vcov": np.asarray(vcov, dtype=float),
+        "out_terms": ["const"] + list(x),
+        "y": y,
+        "nobs": int(n_total),
+    }
+    return res
 
 
 def _heckman_ml_result(
@@ -376,7 +458,7 @@ def _heckman_ml_result(
         "n_clusters": fit["n_clusters"],
         "weights": weights,
     }
-    return LimitedDepResult(
+    res = LimitedDepResult(
         method="Heckman (1979) Selection Model (ML)",
         estimand=f"beta_{x[0]}",
         estimate=main_coef,
@@ -389,6 +471,19 @@ def _heckman_ml_result(
         model_info=model_info,
         _citation_key="heckman",
     )
+    # What sp.margins needs: (beta, gamma, athrho, lnsigma) and their
+    # covariance (Stata's e(b) / e(V) after heckman).
+    res._ml_state = {
+        "model": "heckman",
+        "theta": np.asarray(fit["theta"], dtype=float),
+        "vcov": np.asarray(fit["vcov"], dtype=float),
+        "out_terms": ["const"] + list(x),
+        "sel_terms": ["const"] + list(z),
+        "select": select if select in data.columns else None,
+        "y": y,
+        "nobs": int(fit["n_total"]),
+    }
+    return res
 
 
 def _probit_fit(
@@ -403,10 +498,9 @@ def _probit_fit(
     gamma : (q,) ndarray
         Maximum-likelihood estimate of the probit coefficient vector.
     V_gamma : (q, q) ndarray
-        Asymptotic variance-covariance matrix of γ̂, computed as
-        ``(Z' diag(w) Z)^{-1}`` with expected-information weights
-        ``w_i = φ(Z_iγ̂)² / [Φ(Z_iγ̂)(1 − Φ(Z_iγ̂))]``. Required by
-        the Heckman (1979) two-step SE correction.
+        Asymptotic variance-covariance matrix of γ̂: the inverse of the
+        observed information (negative Hessian) at γ̂. Required by the
+        Heckman (1979) two-step SE correction.
     """
     n, k = Z.shape
     gamma = np.zeros(k)
@@ -433,11 +527,19 @@ def _probit_fit(
         if np.max(np.abs(delta)) < 1e-8:
             break
 
-    # V(γ̂) = (Z' diag(w) Z)^{-1} = (−H)^{-1} at convergence.
+    # V(γ̂) is the inverse of the observed information, as Stata's
+    # ``probit`` (and so ``heckman, twostep``) reports it. With
+    # q_i = 2 D_i − 1 and λ_i = q_i φ(q_i Z_iγ̂) / Φ(q_i Z_iγ̂) the Hessian
+    # weight is λ_i (λ_i + Z_iγ̂); the Fisher-scoring weight ``w`` used in
+    # the iterations is its expectation.
+    Zg = Z @ gamma
+    q = 2.0 * D - 1.0
+    lam = q * np.exp(stats.norm.logpdf(q * Zg) - stats.norm.logcdf(q * Zg))
+    w_obs = lam * (lam + Zg)
     try:
-        V_gamma = np.linalg.inv(Z.T @ (w[:, None] * Z))
+        V_gamma = np.linalg.inv(Z.T @ (w_obs[:, None] * Z))
     except np.linalg.LinAlgError:
-        V_gamma = np.linalg.pinv(Z.T @ (w[:, None] * Z))
+        V_gamma = np.linalg.pinv(Z.T @ (w_obs[:, None] * Z))
     return gamma, V_gamma
 
 

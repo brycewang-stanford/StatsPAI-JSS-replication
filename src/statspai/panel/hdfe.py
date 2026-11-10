@@ -71,6 +71,7 @@ from typing import Any, List, NamedTuple, Optional, Sequence, Tuple, Union
 import numpy as np
 import pandas as pd
 
+from .._rust_backend import rust as _rust
 from ..exceptions import MethodIncompatibility
 
 _VALID_SOLVERS = ("map", "lsmr", "lsqr")
@@ -497,6 +498,9 @@ class Absorber:
         "solver",
         "_converged",
         "_iters",
+        "_seen",
+        "fe_kernel",
+        "fe_solver",
     )
 
     def __init__(
@@ -654,6 +658,18 @@ class Absorber:
         self.solver = solver
         self._converged = False
         self._iters = 0
+        self._seen = False
+        #: Kernel of the last multi-FE sweep: ``"rust"`` (the optional
+        #: ``statspai_hdfe`` extension) or ``"native"`` (Numba / NumPy).
+        self.fe_kernel = "native"
+        #: ``"sparse direct"`` once a column was finished by the direct
+        #: solve because the iterations stopped short of the tolerance.
+        self.fe_solver = "iterative"
+
+    def _note_converged(self, converged: bool) -> None:
+        """``_converged`` is True only if every column so far converged."""
+        self._converged = bool(converged) and (self._converged or not self._seen)
+        self._seen = True
 
     # ------------------------------------------------------------------
     # Demean
@@ -722,8 +738,8 @@ class Absorber:
                     col = np.ascontiguousarray(x[:, j])
                     _slope_sweep(col, slope_ops[0], weights)
                     x[:, j] = col
-            self._converged = True
-            self._iters = 1
+            self._note_converged(True)
+            self._iters = max(self._iters, 1)
             return x.ravel() if squeeze else x
 
         # K>=2: alternating projections with optional Irons-Tuck acceleration
@@ -734,6 +750,7 @@ class Absorber:
         # Krylov solvers (LSMR / LSQR) bypass the AP loop entirely: build the
         # sparse FE design matrix once and delegate the within-projection to
         # scipy. See ``_solve_krylov`` for the √w weight handling.
+        flags: List[bool] = []
         if self.solver != "map":
             for j in range(x.shape[1]):
                 col = x[:, j]
@@ -748,7 +765,47 @@ class Absorber:
                 )
                 x[:, j] = r
                 self._iters = max(self._iters, iters)
-                self._converged = self._converged or converged
+                flags.append(bool(converged))
+            self._finish_unconverged(x, flags)
+            return x.ravel() if squeeze else x
+
+        # Plain FEs with the optional Rust kernels: the same weighted
+        # projection solved in the space of the FE coefficients, in parallel
+        # over columns (``statspai._rust_backend``). The stopping rule is the
+        # one below with ``max|dx| <= tol * max|x0|``.
+        if _rust is not None and not slope_ops:
+            xf = np.array(x, dtype=np.float64, order="F", copy=True)
+            codes = [np.ascontiguousarray(c, dtype=np.int64) for c in fe_codes]
+            groups = [np.ascontiguousarray(c, dtype=np.float64) for c in counts_list]
+            if weights is None:
+                infos = _rust.demean_2d(
+                    xf,
+                    codes,
+                    groups,
+                    int(maxiter),
+                    0.0,
+                    float(tol),
+                    bool(accelerate),
+                    5,
+                )
+            else:
+                infos = _rust.demean_2d_weighted(
+                    xf,
+                    codes,
+                    groups,
+                    np.ascontiguousarray(weights, dtype=np.float64),
+                    int(maxiter),
+                    0.0,
+                    float(tol),
+                    bool(accelerate),
+                    5,
+                )
+            for info in infos:
+                self._iters = max(self._iters, int(info["iters"]))
+                flags.append(bool(info["converged"]))
+            self.fe_kernel = "rust"
+            x[:, :] = xf
+            self._finish_unconverged(x, flags)
             return x.ravel() if squeeze else x
 
         # Per-column AP loop
@@ -782,12 +839,45 @@ class Absorber:
                         if np.max(np.abs(col_acc)) < 10 * base_scale:
                             col = col_acc
                         col_hist = []
-            self._converged = self._converged or converged
+            flags.append(converged)
+            self.fe_kernel = "native"
             if not converged:
                 self._iters = maxiter
             x[:, j] = col
 
+        self._finish_unconverged(x, flags)
         return x.ravel() if squeeze else x
+
+    def _finish_unconverged(self, x: np.ndarray, flags: List[bool]) -> None:
+        """Residualise exactly the columns the iterations left unconverged.
+
+        Projections (and LSMR / LSQR) crawl on poorly connected fixed-effect
+        graphs; the columns they stop short on are finished by a sparse
+        direct solve of the normal equations (``fast/_fe_direct.py``). A
+        column counts as converged only if one of the two got there.
+        """
+        bad = [j for j, ok in enumerate(flags) if not ok]
+        if bad:
+            from ..fast._fe_direct import residualise
+
+            n = x.shape[0]
+            first = int(self.fe_codes[0].max()) + 1 if self.fe_codes else 0
+            try:
+                _, ok = residualise(
+                    x,
+                    _build_fe_design(self.fe_codes, n, self.slope_ops),
+                    self.weights,
+                    columns=bad,
+                    n_diag=first if self.fe_codes else 0,
+                )
+            except MemoryError:  # pragma: no cover - machine dependent
+                ok = False
+            if ok:
+                for j in bad:
+                    flags[j] = True
+                self.fe_solver = "sparse direct"
+        for ok in flags:
+            self._note_converged(ok)
 
     # ------------------------------------------------------------------
     # Residualize (alias + sanity)
@@ -962,8 +1052,10 @@ def demean(
     ...                    "year": rng.integers(0, 5, n)})
     >>> x = rng.normal(size=n) + 2.0 * fe["firm"].to_numpy()
     >>> xw, keep = sp.demean(x, fe)
-    >>> print(xw.shape, int(keep.sum()))  # (200,) 200 — no singletons dropped
-    >>> print(abs(xw.mean()) < 1e-8)      # True — FE means swept out
+    >>> print(xw.shape, int(keep.sum()))  # no singletons dropped
+    (200,) 200
+    >>> print(abs(xw.mean()) < 1e-8)      # FE means swept out
+    True
     """
     ab = Absorber(
         fe,
@@ -997,6 +1089,8 @@ def absorb_ols(
     solver: str = "map",
     slopes: Optional[Sequence[SlopeSpec]] = None,
     cluster_df: str = "per_term",
+    collinear_tol: Optional[float] = None,
+    absorb_dof: str = "reghdfe",
 ) -> dict:
     """OLS with absorbed high-dimensional fixed effects (reghdfe-style).
 
@@ -1024,6 +1118,17 @@ def absorb_ols(
         If True, also return the ``Absorber`` object for reuse.
     solver : {"map", "lsmr", "lsqr"}, default "map"
         Within-transformation backend. See :class:`Absorber`.
+    collinear_tol : float, optional
+        The ``tol`` that reghdfe's collinearity screen is derived from
+        (``min(1e-6, collinear_tol / 10)``); defaults to ``tol``. Lets a
+        caller tighten the sweep without moving the collinearity threshold.
+    absorb_dof : {"reghdfe", "areg"}, default "reghdfe"
+        Degrees of freedom the absorbed effects cost a clustered variance.
+        ``"reghdfe"`` does not charge an effect nested in the cluster
+        variable (firm effects under firm clustering); ``"areg"`` charges
+        every absorbed level, which is the dummy-variable regression and
+        Stata's ``areg``. The two agree without clustering and whenever no
+        effect is nested in a cluster.
     cluster_df : {"per_term", "min"}, default "per_term"
         Small-sample factor of the multi-way (inclusion-exclusion) cluster
         variance.  ``"per_term"`` scales each term by its own
@@ -1038,6 +1143,7 @@ def absorb_ols(
     dict with keys:
         ``coef`` (p,), ``se`` (p,), ``vcov`` (p,p), ``resid`` (n_kept,),
         ``n`` (n_kept), ``df_resid``, ``dof_fe``, ``r2_within``,
+        ``rss`` / ``tss_within`` (weighted when ``weights`` is given),
         ``n_singletons_dropped``, ``converged``, ``iters``,
         ``absorber`` (if requested)
 
@@ -1057,9 +1163,16 @@ def absorb_ols(
     ...      + rng.normal(size=10)[year] + rng.normal(0, 0.5, n))
     >>> fe = pd.DataFrame({"firm": firm, "year": year})
     >>> out = sp.absorb_ols(y, X, fe, cluster=firm)
-    >>> print(np.round(out["coef"], 2))   # [ 1.53 -0.71] — truth [1.5, -0.7]
-    >>> print(out["n"], out["converged"])  # 500 True
+    >>> print(np.round(out["coef"], 2))   # truth [1.5, -0.7]
+    [ 1.53 -0.71]
+    >>> print(out["n"], out["converged"])
+    500 True
     """
+    if absorb_dof not in ("reghdfe", "areg"):
+        raise MethodIncompatibility(
+            f"absorb_ols: absorb_dof={absorb_dof!r} is not 'reghdfe' or 'areg'.",
+            recovery_hint="Use absorb_dof='reghdfe' (the default) or 'areg'.",
+        )
     y = np.asarray(y, dtype=np.float64).ravel()
     X = np.asarray(X, dtype=np.float64)
     if X.ndim == 1:
@@ -1086,6 +1199,25 @@ def absorb_ols(
     Xw = ab.demean(X)
     w = ab.weights
 
+    # Regressors collinear with the FEs or with each other are omitted, as
+    # reghdfe does; solving with them in made exact collinearity raise and
+    # near collinearity (float noise) blow up the coefficient and move the
+    # others.
+    p_full = p
+    kept_cols = _reghdfe_kept_columns(
+        X[ab.keep_mask], Xw, w, tol if collinear_tol is None else collinear_tol
+    )
+    omitted_cols = [j for j in range(p_full) if j not in set(kept_cols)]
+    if omitted_cols:
+        if not kept_cols:
+            raise MethodIncompatibility(
+                "Every regressor is collinear with the absorbed fixed effects.",
+                recovery_hint="Drop regressors that do not vary within the FEs.",
+                diagnostics={"omitted": omitted_cols},
+            )
+        Xw = Xw[:, kept_cols]
+        p = len(kept_cols)
+
     # Weighted OLS on residuals
     if w is None:
         XtX = Xw.T @ Xw
@@ -1104,7 +1236,7 @@ def absorb_ols(
     # DOF: n - p - absorbed. Intercept-bearing FE dimensions share one
     # constant between them (hence the K-1 credit); varying-slope terms are
     # charged in full. See _absorbed_total_dof.
-    dof_fe = _absorbed_total_dof(ab.n_fe, ab.slope_ops)
+    dof_fe = _absorbed_total_dof(ab.n_fe, ab.slope_ops, fe_codes=ab.fe_codes)
     df_resid = ab.n_kept - p - dof_fe
     if df_resid <= 0:
         raise ValueError(  # pragma: no cover
@@ -1137,12 +1269,16 @@ def absorb_ols(
             cluster_sub = [np.asarray(c)[keep] for c in cluster]
         else:
             cluster_sub = np.asarray(cluster)[keep]
-        dof_fe_cluster, nested_fe_in_cluster = _cluster_effective_fe_dof(
-            ab.fe_codes,
-            ab.n_fe,
-            cluster_sub,
-            ab.slope_ops,
-        )
+        if absorb_dof == "areg":
+            dof_fe_cluster = dof_fe
+            nested_fe_in_cluster = [False] * len(ab.n_fe)
+        else:
+            dof_fe_cluster, nested_fe_in_cluster = _cluster_effective_fe_dof(
+                ab.fe_codes,
+                ab.n_fe,
+                cluster_sub,
+                ab.slope_ops,
+            )
         vcov = _cluster_sandwich(
             Xw,
             resid,
@@ -1158,22 +1294,29 @@ def absorb_ols(
         dof_fe_cluster = dof_fe
         nested_fe_in_cluster = [False] * len(ab.n_fe)
     se = np.sqrt(np.maximum(np.diag(vcov), 0.0))
+    fitted_within = Xw @ coef
+    if omitted_cols:
+        coef, se, vcov = _expand_omitted(coef, se, vcov, kept_cols, p_full)
 
     out = {
         "coef": coef,
         "se": se,
         "vcov": vcov,
+        "omitted": omitted_cols,
         "resid": resid,
-        "fitted_within": Xw @ coef,  # within-prediction (excludes FE)
+        "fitted_within": fitted_within,  # within-prediction (excludes FE)
         "n": ab.n_kept,
         "df_resid": df_resid,
         "dof_fe": dof_fe,
         "dof_fe_cluster": dof_fe_cluster,
         "nested_fe_in_cluster": nested_fe_in_cluster,
         "r2_within": r2_within,
+        "rss": ss_res,
+        "tss_within": ss_tot,
         "n_singletons_dropped": ab.n_dropped,
         "converged": ab._converged,
         "iters": ab._iters,
+        "fe_kernel": ab.fe_kernel,
         "n_fe": ab.n_fe,
         "n_slope_levels": ab.n_slope_levels,
         "slope_names": [op.name for op in ab.slope_ops],
@@ -1214,9 +1357,118 @@ def _slope_dof(slope_ops: Sequence[_SlopeOp]) -> int:
     return int(sum(op.n_levels - op.n_degenerate for op in slope_ops))
 
 
+def _reghdfe_kept_columns(
+    X_raw: np.ndarray, X_within: np.ndarray, w: Optional[np.ndarray], tol: float
+) -> List[int]:
+    """Columns kept after reghdfe's two collinearity screens.
+
+    1. Collinear with the FEs: the within sum of squares is at most
+       ``min(1e-6, tol / 10)`` of the column's centred sum of squares
+       (``reghdfe``'s ``collinear_tol``).
+    2. Collinear with earlier regressors after partialling out the FEs
+       (``_rmcoll`` / ``invsym``): dropped in formula order.
+    """
+    ww = np.ones(X_raw.shape[0]) if w is None else np.asarray(w, dtype=float)
+    mean = (ww[:, None] * X_raw).sum(0) / ww.sum()
+    norm2 = (ww[:, None] * (X_raw - mean) ** 2).sum(0)
+    # A constant column (sp.feols adds one when only slopes are absorbed)
+    # has no centred variation; measure it against its raw sum of squares,
+    # so it is dropped only when the FEs really absorb the constant.
+    raw2 = (ww[:, None] * X_raw**2).sum(0)
+    norm2 = np.where(norm2 > 1e-12 * raw2, norm2, raw2)
+    within = (ww[:, None] * X_within**2).sum(0)
+    ctol = min(1e-6, tol / 10)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        ratio = np.where(norm2 > 0, within / norm2, 0.0)
+    cand = [j for j in range(X_raw.shape[1]) if ratio[j] > ctol]
+    if not cand:
+        return []
+    Xc = X_within[:, cand] * np.sqrt(ww)[:, None]
+    A = Xc.T @ Xc
+    kept: List[int] = []
+    for j in range(len(cand)):
+        ajj = A[j, j]
+        if kept:
+            Akk = A[np.ix_(kept, kept)]
+            akj = A[kept, j]
+            try:
+                resid = ajj - akj @ np.linalg.solve(Akk, akj)
+            except np.linalg.LinAlgError:  # pragma: no cover
+                resid = ajj - akj @ np.linalg.lstsq(Akk, akj, rcond=None)[0]
+        else:
+            resid = ajj
+        if ajj > 0 and resid > 1e-12 * ajj:
+            kept.append(j)
+    return [cand[j] for j in kept]
+
+
+def _expand_omitted(
+    coef: np.ndarray,
+    se: np.ndarray,
+    vcov: np.ndarray,
+    kept: Sequence[int],
+    p_full: int,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Place kept-column results in the full layout; omitted columns are NaN."""
+    c = np.full(p_full, np.nan)
+    e = np.full(p_full, np.nan)
+    V = np.full((p_full, p_full), np.nan)
+    idx = np.asarray(kept)
+    c[idx] = coef
+    e[idx] = se
+    V[np.ix_(idx, idx)] = vcov
+    return c, e, V
+
+
+def _mobility_groups(a: np.ndarray, b: np.ndarray, na: int, nb: int) -> int:
+    """Connected components of the bipartite graph linking two FE's levels."""
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import connected_components
+
+    a = np.asarray(a, dtype=np.int64)
+    b = np.asarray(b, dtype=np.int64)
+    n = int(na) + int(nb)
+    graph = coo_matrix((np.ones(len(a)), (a, b + int(na))), shape=(n, n))
+    _, labels = connected_components(graph, directed=False)
+    present = np.zeros(n, dtype=bool)
+    present[a] = True
+    present[b + int(na)] = True
+    return int(len(np.unique(labels[present])))
+
+
+def _reghdfe_intercept_dof(
+    codes: Sequence[np.ndarray], counts: Sequence[int], any_nested: bool
+) -> int:
+    """Parameters absorbed by the intercept-bearing FEs, as ``reghdfe``.
+
+    ``reghdfe``'s default ``dofadjustments(pairwise clusters continuous)``:
+    every intercept after the first has one redundant level (the first as
+    well once some FE was dropped as nested in a cluster), and for each pair
+    ``(i, j)`` of intercepts the later one has at least as many redundant
+    levels as the pair has mobility groups (connected components). Without
+    the pairwise step a FE nested in another (``year`` inside
+    ``region x year``) was charged in full and the SEs came out too large.
+    """
+    n = len(counts)
+    if n == 0:
+        return 0
+    M = [0] * n
+    if n > 1 or any_nested:
+        for i in range(n):
+            if i == 0 and not any_nested:
+                continue
+            M[i] = 1
+    for i in range(n):
+        for j in range(i + 1, n):
+            m = _mobility_groups(codes[i], codes[j], counts[i], counts[j])
+            M[j] = max(M[j], m)
+    return int(sum(int(c) for c in counts) - sum(M))
+
+
 def _absorbed_total_dof(
     fe_counts: List[int],
     slope_ops: Sequence[_SlopeOp],
+    fe_codes: Optional[Sequence[np.ndarray]] = None,
 ) -> int:
     """Absorbed parameter count including varying-slope terms (``e(df_a)``).
 
@@ -1233,7 +1485,11 @@ def _absorbed_total_dof(
     reports ``e(df_a) = 36 = 30 + 6``, not ``35``.
     """
     intercept_counts = list(fe_counts) + _slope_intercept_counts(slope_ops)
-    dof = _absorbed_fe_dof(intercept_counts) if intercept_counts else 0
+    if fe_codes is not None:
+        codes = list(fe_codes) + [op.codes for op in slope_ops if op.with_intercept]
+        dof = _reghdfe_intercept_dof(codes, intercept_counts, any_nested=False)
+    else:
+        dof = _absorbed_fe_dof(intercept_counts) if intercept_counts else 0
     dof += _slope_dof(slope_ops)
     return int(dof)
 
@@ -1286,18 +1542,19 @@ def _cluster_effective_fe_dof(
     slope_dof = _slope_dof(slope_ops)
 
     if not any(nested):
-        return _absorbed_total_dof(fe_counts, slope_ops), nested
+        return _absorbed_total_dof(fe_counts, slope_ops, fe_codes=fe_codes), nested
+    effective_codes = [c for c, is_nested in zip(fe_codes, nested) if not is_nested]
+    effective_codes += [op.codes for op in slope_ops if op.with_intercept]
     effective_counts = [
         int(n_fe) for n_fe, is_nested in zip(fe_counts, nested) if not is_nested
     ]
     effective_counts += _slope_intercept_counts(slope_ops)
-    if not effective_counts:
-        # Every intercept-bearing dimension is nested in a cluster and so
-        # drops out of the CRV1 parameter count — but the constant itself
-        # is not nested away and is still an estimated parameter, so it is
-        # charged its single degree of freedom on top of the slopes.
-        return slope_dof + 1, nested
-    return _absorbed_fe_dof(effective_counts) + slope_dof, nested
+    # Every remaining intercept loses a level (reghdfe), and the constant
+    # itself -- not nested away -- is charged its single degree of freedom
+    # (reghdfe's nested_adj). With every intercept nested this leaves the
+    # slopes plus one.
+    dof = _reghdfe_intercept_dof(effective_codes, effective_counts, any_nested=True)
+    return dof + slope_dof + 1, nested
 
 
 def _cluster_sandwich(

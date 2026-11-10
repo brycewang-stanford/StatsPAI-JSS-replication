@@ -241,8 +241,42 @@ def test_headline_estimate_is_not_inflated(rjson, senate):
     assert float(res.estimate) == pytest.approx(ref["coef_robust"], rel=1e-3)
 
 
+#: Every output of every grid cell. Measured 2026-10-03: the worst of the
+#: 36 x 8 comparisons is 8.2e-12 (the bias bandwidth under ``msesum``,
+#: p = 2). The data-driven bandwidth is the result of a chain of pilot
+#: regressions, so 1e-9 leaves room for platform BLAS differences without
+#: admitting a difference of method.
+RTOL_GRID = 1e-9
+
+
+def _pair(value):
+    if isinstance(value, (tuple, list, np.ndarray)):
+        return float(value[0]), float(value[1])
+    return float(value), float(value)
+
+
+def _all_outputs(res):
+    h_l, h_r = _pair(res.model_info["bandwidth_h"])
+    b_l, b_r = _pair(res.model_info["bandwidth_b"])
+    return {
+        "coef_conventional": float(res.detail["estimate"][0]),
+        "coef_robust": float(res.detail["estimate"][1]),
+        "se_conventional": float(res.detail["se"][0]),
+        "se_robust": float(res.detail["se"][1]),
+        "h_left": h_l,
+        "h_right": h_r,
+        "b_left": b_l,
+        "b_right": b_r,
+    }
+
+
 def test_full_grid_agrees_with_r(rjson, senate):
-    """All 36 cells at once, so a partial fix cannot look complete."""
+    """All 36 cells and all eight outputs, so a partial fix cannot look complete.
+
+    Six bandwidth selectors x p in {1, 2} x three kernels, against R
+    ``rdrobust``: conventional and bias-corrected estimates, conventional
+    and robust standard errors, and both bandwidths on each side.
+    """
     failures = []
     for key in _specs(rjson):
         ref = rjson[key]
@@ -259,18 +293,56 @@ def test_full_grid_agrees_with_r(rjson, senate):
         except Exception as exc:  # noqa: BLE001 - reported, not swallowed
             failures.append(f"{key}: raised {type(exc).__name__}: {exc}")
             continue
-        h = _scalar(res.model_info["bandwidth_h"])
-        conv = float(res.detail["estimate"][0])
-        if h != pytest.approx(ref["h_left"], rel=RTOL):
-            failures.append(f"{key}: h {h:.4f} vs R {ref['h_left']:.4f}")
-        if conv != pytest.approx(ref["coef_conventional"], rel=RTOL):
-            failures.append(
-                f"{key}: conv {conv:.4f} vs R {ref['coef_conventional']:.4f}"
-            )
+        got = _all_outputs(res)
+        for name, value in got.items():
+            if value != pytest.approx(ref[name], rel=RTOL_GRID):
+                failures.append(
+                    f"{key}: {name} {value:.12g} vs R {ref[name]:.12g} "
+                    f"(rel {abs(value / ref[name] - 1):.1e})"
+                )
     assert not failures, (
         f"{len(failures)} mismatches across {len(_specs(rjson))} specs:\n  "
         + "\n  ".join(failures[:12])
     )
+
+
+#: Orders 0, 3 and 4. The agreement degrades with the order because the
+#: pilot regressions run to degree p + 3 and their Gram matrices lose
+#: about two digits per order: measured 2026-10-04, the worst of the
+#: 18 x 8 comparisons is 1.2e-13 at p = 0, 9.4e-11 at p = 3 and 1.4e-8 at
+#: p = 4. Each bound is ten times the measured worst case at most, and
+#: all sit inside the 1e-6 gate for same-bytes agreement.
+RTOL_BY_ORDER = {0: 1e-11, 3: 1e-9, 4: 1e-7}
+
+
+def test_other_polynomial_orders_agree_with_r(senate):
+    """p in {0, 3, 4}: 54 cells and eight outputs each against R rdrobust."""
+    path = _FIX / "rdrobust_porder_R.json"
+    if not path.exists():
+        pytest.skip("run _generate_rdrobust_porder_R.R to build the fixture")
+    ref_all = json.loads(path.read_text(encoding="utf-8"))
+    specs = _specs(ref_all)
+    assert len(specs) == 54
+    assert {ref_all[k]["p"] for k in specs} == set(RTOL_BY_ORDER)
+    failures = []
+    for key in specs:
+        ref = ref_all[key]
+        res = sp.rdrobust(
+            senate,
+            y="vote",
+            x="margin",
+            c=0,
+            p=ref["p"],
+            kernel=ref["kernel"],
+            bwselect=ref["bwselect"],
+        )
+        for name, value in _all_outputs(res).items():
+            if value != pytest.approx(ref[name], rel=RTOL_BY_ORDER[ref["p"]]):
+                failures.append(
+                    f"{key}: {name} {value:.12g} vs R {ref[name]:.12g} "
+                    f"(rel {abs(value / ref[name] - 1):.1e})"
+                )
+    assert not failures, f"{len(failures)} mismatches:\n  " + "\n  ".join(failures[:12])
 
 
 # ── D. API compatibility with R ────────────────────────────────────── #

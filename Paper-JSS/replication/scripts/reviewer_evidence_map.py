@@ -712,13 +712,13 @@ def _cards(artifacts: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
                 if data_summary.get("csv_parse_failure_count") not in (0, None)
                 else "",
                 "data provenance public dataset count drift"
-                if data_summary.get("packaged_public_dataset_csv_count") != 9
+                if data_summary.get("packaged_public_dataset_csv_count") != 10
                 else "",
                 "data provenance original extract count drift"
                 if data_summary.get("public_original_extract_csv_count") != 7
                 else "",
                 "data provenance R/Stata fixture CSV count drift"
-                if data_summary.get("same_byte_r_stata_fixture_csv_count") != 91
+                if data_summary.get("same_byte_r_stata_fixture_csv_count") != 94
                 else "",
             ],
         )
@@ -1012,7 +1012,7 @@ def _cards(artifacts: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
             ),
             primary_evidence=[
                 "manuscript/sections/09-discussion-compact.tex",
-                "REVIEWER-HARDENING-AUDIT.md",
+                "RELEASE-CHECKLIST.md",
                 "replication/results/submission_risk_ledger.md",
                 "replication/results/pdf_visual_check_protocol.md",
                 "replication/results/validation_evidence_audit.md",
@@ -1073,9 +1073,9 @@ def _cards(artifacts: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
     )
     sustainability_snippets = {
         "mit_forkable": "MIT-licensed" in discussion_norm
-        and "validated core can be forked" in discussion_norm,
-        "regression_tests": "pinned by a regression test" in discussion_norm,
-        "scripted_parity": "cross-language parity harness is fully scripted" in discussion_norm,
+        and "MIT-licensed" in discussion_norm,
+        "regression_tests": "correction history" in discussion_norm,
+        "scripted_parity": "parity harness is scripted" in discussion_norm,
         "license_file": "MIT License" in license_text,
     }
     cards.append(

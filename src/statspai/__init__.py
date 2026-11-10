@@ -3,26 +3,54 @@ StatsPAI: Validation-tiered statistics and econometrics workflows for Python
 
 Unified API for causal inference and econometrics:
 
+>>> import os
+>>> import tempfile
+>>> import numpy as np
+>>> import pandas as pd
 >>> import statspai as sp
->>>
->>> # OLS regression
->>> result = sp.regress("y ~ x1 + x2", data=df)
->>>
->>> # Difference-in-Differences
->>> result = sp.did(df, y='wage', treat='treated', time='post')
->>>
->>> # Staggered DID (Callaway & Sant'Anna)
->>> result = sp.did(df, y='wage', treat='first_treat',
-...                time='year', id='worker_id')
->>>
->>> # Causal Forest
->>> cf = sp.causal_forest("y ~ treatment | x1 + x2", data=df)
->>>
->>> # Publication-quality export
->>> sp.outreg2(result, filename="results.xlsx")
+>>> rng = np.random.default_rng(0)
+>>> n = 400
+>>> df = pd.DataFrame({"x1": rng.normal(size=n), "x2": rng.normal(size=n),
+...                    "treated": rng.binomial(1, 0.5, n),
+...                    "post": rng.binomial(1, 0.5, n)})
+>>> df["y"] = 1 + df["x1"] + 0.5 * df["treated"] * df["post"] + rng.normal(size=n)
+
+OLS regression
+
+>>> ols = sp.regress("y ~ x1 + x2", data=df)
+>>> type(ols).__name__
+'EconometricResults'
+
+Difference-in-Differences
+
+>>> result = sp.did(df, y="y", treat="treated", time="post")
+>>> type(result).__name__
+'CausalResult'
+
+Staggered DID (Callaway & Sant'Anna)
+
+>>> panel = sp.dgp_did(n_units=50, n_periods=6, staggered=True, seed=0)
+>>> result = sp.did(panel, y="y", treat="first_treat",
+...                 time="time", id="unit")
+>>> result.method
+"Callaway and Sant'Anna (2021)"
+
+Causal Forest
+
+>>> cf = sp.causal_forest("y ~ treated | x1 + x2", data=df,
+...                       n_estimators=50, random_state=0)
+>>> type(cf).__name__
+'CausalForest'
+
+Publication-quality export
+
+>>> with tempfile.TemporaryDirectory() as tmp:
+...     table = sp.regtable(ols, filename=os.path.join(tmp, "results.xlsx"))
+...     os.listdir(tmp)
+['results.xlsx']
 """
 
-__version__ = "1.32.0"
+__version__ = "1.40.2"
 __author__ = "Biaoyue Wang and Scott Rozelle"
 __email__ = "brycew6m@stanford.edu"
 
@@ -37,6 +65,7 @@ import importlib as _importlib
 
 # Agent-native exception taxonomy (load early for registered estimators)
 from . import exceptions as exceptions  # noqa: F401
+from ._build_info import version_info
 
 # Eager: ``bartik`` collides (function + subpackage of same name).
 from .bartik import (
@@ -44,6 +73,7 @@ from .bartik import (
     ShiftSharePoliticalPanelResult,
     ShiftSharePoliticalResult,
     bartik,
+    rotemberg_summary,
     shift_share_political,
     shift_share_political_panel,
     shift_share_se,
@@ -54,17 +84,29 @@ from .bartik import (
 from .causal_impact import CausalImpactEstimator, causal_impact, impactplot
 from .core.effect_summary import EffectSummary, effect_summary  # noqa: E402
 from .core.results import CausalResult, EconometricResults, ScalarEffect
+from .core.ssc_presets import ssc  # noqa: E402
 
 # Eager: ``deepiv`` is both a function (sp.deepiv(...)) and a subpackage.
 # Lazy-loading collides with the subpackage attachment — see the
 # "PEP 562 collision" note at the bottom of this file.
 from .deepiv import DeepIV, deepiv
 from .diagnostics import (
+    EvidenceFactorsResult,
     KitagawaResult,
     RosenbaumResult,
+    SensitivityTestResult,
     WeakRobustResult,
+    WeightedRankPowerResult,
+    WeightedRankResult,
+    amplify,
     anderson_rubin_test,
     bias_factor,
+    binned_residuals,
+    binned_residuals_plot,
+    causal_gap,
+    cmtest,
+    confounder_adjust,
+    confounder_tip,
     diagnose,
     diagnose_result,
     effective_f_test,
@@ -72,19 +114,30 @@ from .diagnostics import (
     evalue,
     evalue_from_result,
     evalue_rd,
+    evidence_factors,
+    hausman,
     hausman_test,
     het_test,
+    influence_measures,
     kitagawa_test,
+    logit_gof,
+    logit_influence,
     mccrary_test,
+    noether_test,
     oster_bounds,
     rddensity,
     reset_test,
     rosenbaum_bounds,
     rosenbaum_gamma,
+    rosenbaum_stratified,
     sensemakr,
     tF_critical_value,
+    truncated_product,
     vif,
+    vuong,
     weakrobust,
+    weighted_rank,
+    weighted_rank_power,
 )
 
 # (lazy) forest: see _LAZY_SUBMODULES / _LAZY_ATTRS below.  Eagerly
@@ -109,6 +162,7 @@ from .did import (
     borusyak_jaravel_spiess,
     breakdown_m,
     callaway_santanna,
+    cdlz_bunching,
     cgs_continuous_did,
     check_absorbing,
     cic,
@@ -139,6 +193,7 @@ from .did import (
     did_summary_plot,
     did_summary_to_latex,
     did_summary_to_markdown,
+    didregress,
     distributional_did,
     dl_propensity_score,
     drdid,
@@ -154,8 +209,12 @@ from .did import (
     group_time_plot,
     harvest_did,
     honest_did,
+    honest_did_from_moments,
+    honest_did_from_result,
     influence_functions,
+    jwdid,
     overlap_weighted_did,
+    panel_match,
     panel_view,
     parallel_trends_plot,
     parallel_trends_robustness,
@@ -176,6 +235,8 @@ from .did import (
     twfe_decomposition,
     uniform_bands,
     wooldridge_did,
+    xtevent,
+    xtevent_smpath,
 )
 from .dml import (  # v1.7 long-panel DML; v1.13 DML-OVB sensitivity + diagnostics
     DMLAveragingResult,
@@ -192,6 +253,7 @@ from .dml import (  # v1.7 long-panel DML; v1.13 DML-OVB sensitivity + diagnosti
     OOFPredictions,
     dml,
     dml_diagnostics,
+    dml_did,
     dml_model_averaging,
     dml_panel,
     dml_sensitivity,
@@ -211,48 +273,92 @@ from .exceptions import (
     StatsPAIWarning,
 )
 from .inference import (
+    BiTestResult,
     BootstrapResult,
+    ClassicTestResult,
     FisherResult,
     MetaAnalysisResult,
     PATEEstimator,
+    SDTestResult,
+    SuestResult,
+    TTestResult,
     aipw,
+    bitest,
     bootstrap,
+    ci,
     cluster_robust_se,
     conley,
+    cor_test,
     cr2_se,
     cr3_jackknife_vcov,
+    difference_in_means,
+    esize,
     fisher_exact,
     front_door,
     g_computation,
     ipw,
+    iv_wild_bootstrap,
     jackknife_se,
+    ksmirnov,
+    ktau,
+    kwallis,
+    lm_lin,
+    loneway,
+    median_test,
     meta_analysis,
     multiway_cluster_vcov,
+    oneway,
     pate,
     ppi_mean,
     ppi_ols,
+    prtest,
+    ranksum,
     ri_test,
+    robvar,
+    sdtest,
+    signrank,
+    sktest,
+    spearman,
     subcluster_wild_bootstrap,
+    suest,
+    swilk,
+    ttest,
     twoway_cluster,
+    vcov,
+    vcov_compare,
     wild_cluster_boot,
     wild_cluster_bootstrap,
     wild_cluster_ci_inv,
+    ztest,
 )
 from .matching import (
     BalanceDiagnosticsResult,
+    BalanceRandomizationResult,
+    BalTabResult,
     CardinalityMatchResult,
+    FullMatchResult,
     GenMatchResult,
     MatchEstimator,
     OptimalMatchResult,
     PSBalanceResult,
+    PScoreResult,
     PSMatch2Result,
     SBWResult,
+    TwoCriteriaMatchResult,
+    WeightItResult,
+    bal_tab,
     balance_diagnostics,
+    balance_vs_randomization,
     balanceplot,
     cardinality_match,
     cbps,
     ebalance,
+    energy_distance,
+    ess,
+    full_match,
     genmatch,
+    implied_weights,
+    l1_imbalance,
     love_plot,
     match,
     optimal_match,
@@ -260,10 +366,16 @@ from .matching import (
     overlap_weights,
     propensity_score,
     ps_balance,
+    ps_weights,
+    pscore,
     psmatch2,
     psplot,
+    residual_balance,
     sbw,
+    tighten_blocks,
     trimming,
+    two_criteria_match,
+    weightit,
 )
 from .mediation import (
     FourWayResult,
@@ -271,6 +383,7 @@ from .mediation import (
     four_way_decomposition,
     mediate,
     mediate_interventional,
+    mediate_paths,
     mediate_sensitivity,
 )
 
@@ -330,17 +443,25 @@ from .panel import (
     panel_compare,
 )
 from .postestimation import (
+    avg_comparisons,
+    avg_predictions,
+    avg_slopes,
+    comparisons,
     contrast,
     event_study_table,
+    hypotheses,
     lincom,
     margins,
     margins_at,
     margins_at_plot,
     margins_table,
     marginsplot,
+    nlcom,
     postestimation_contract,
     postestimation_report,
+    predictions,
     pwcompare,
+    slopes,
     test,
 )
 
@@ -379,6 +500,7 @@ from .rd import (  # v1.15 polish
     rd_cate_summary,
     rd_compare,
     rd_dashboard,
+    rd_diff_in_disc,
     rd_discrete,
     rd_distribution,
     rd_distributional_design,
@@ -391,6 +513,7 @@ from .rd import (  # v1.15 polish
     rd_lasso,
     rd_multi_extrapolate,
     rd_multi_score,
+    rd_optimized,
     rd_robustness_table,
     rdbalance,
     rdbwhte,
@@ -405,13 +528,15 @@ from .rd import (  # v1.15 polish
     rdpower,
     rdrandinf,
     rdrbounds,
-    rdrobust,
     rdsampsi,
     rdsensitivity,
     rdsummary,
     rdwinselect,
     rkd,
 )
+
+# The function itself: ``statspai.rd.rdrobust`` is the (callable) module.
+from .rd.rdrobust import rdrobust  # noqa: E402
 
 # NB: ``iv`` is intentionally NOT imported here.  ``sp.iv`` resolves to the
 # callable :mod:`statspai.iv` subpackage (loaded via ``from .iv.* import``
@@ -421,12 +546,12 @@ from .rd import (  # v1.15 polish
 from .regression.interflex import interflex, interflex_plot
 from .regression.iv import IVRegression, ivreg
 from .regression.ols import regress
+from .regression.prais import prais
+from .regression.rolling import rolling
+from .regression.scaling import invlogit, standardize
+from .synth import SynthComparison, SyntheticControl, augsynth
+from .synth import california_prop99 as _synth_california_prop99
 from .synth import (
-    SynthComparison,
-    SyntheticControl,
-    augsynth,
-    basque_terrorism,
-    california_prop99,
     california_tobacco,
     conformal_synth,
     demeaned_synth,
@@ -435,7 +560,6 @@ from .synth import (
     discos_plot,
     discos_test,
     fect,
-    german_reunification,
     gsynth,
     mc_synth,
     multi_outcome_synth,
@@ -465,6 +589,7 @@ from .synth import (
     synth_to_excel,
     synth_to_latex,
     synth_to_markdown,
+    synth_ttest,
     synthdid_estimate,
     synthdid_placebo,
     synthdid_plot,
@@ -506,6 +631,7 @@ from ._article_aliases import (  # noqa: E402,F811
 
 # === Auto-race estimators (CS/SA/BJS DiD + 2SLS/LIML/JIVE IV) ===
 from ._auto_estimators import AutoDIDResult, AutoIVResult, auto_did, auto_iv
+from ._routing import decision_guide, route
 
 # ``OPEResult`` is intentionally *not* eagerly imported from
 # ``.policy_learning`` here: the canonical class lives in
@@ -550,16 +676,22 @@ from .causal_discovery import (
     FCIResult,
     GESResult,
     ICPResult,
+    IDAResult,
     LiNGAMResult,
     LPCMCIResult,
     PCAlgorithm,
     PCMCIResult,
+    bootstrap_edges,
     dynotears,
     fci,
     ges,
+    hill_climb,
     icp,
+    ida,
     lingam,
     lpcmci,
+    mmhc,
+    mmpc,
     nonlinear_icp,
     notears,
     partial_corr_pvalue,
@@ -589,6 +721,8 @@ from .crossval import CrossValidationResult, cross_validate
 from .dag import (
     DAG,
     SCM,
+    BayesNet,
+    CounterfactualIdentification,
     IdentificationResult,
     LLMCausalAssessResult,
     LLMDAGResult,
@@ -598,12 +732,14 @@ from .dag import (
 )
 from .dag import apply_rules as do_calculus_apply
 from .dag import (
+    bayes_net,
     dag,
     dag_example,
     dag_example_positions,
     dag_examples,
     dag_simulate,
     identify,
+    identify_counterfactual,
     llm_causal_assess,
     llm_dag,
     pairwise_causal_benchmark,
@@ -616,6 +752,7 @@ from .dag import swig
 
 # Data-source ingestion normalisers, also surfaced at top level so an agent can
 # reshape a World Bank / FRED / OECD-SDMX payload with one call before fitting.
+from .datasets import list_datasets, load_dataset
 from .datasets.ingest import from_fred, from_sdmx, from_worldbank
 from .decomposition import (  # Tier C additions
     GelbachResult,
@@ -659,6 +796,7 @@ from .did.did_had import did_had, quasi_untreated_test, yatchew_linearity_test
 from .did.did_multiplegt_dyn import did_multiplegt_dyn
 from .did.lp_did import lp_did
 from .did.timevarying_covariates import did_timevarying_covariates
+from .did.twowayfeweights import twowayfeweights
 
 # Eager: ``dose_response`` collides (function + subpackage of same name).
 from .dose_response import DoseResponse, VCNetResult, dose_response, scigan, vcnet
@@ -700,6 +838,7 @@ from .help import HelpResult, help
 from .interference import (
     CrossClusterRCTResult,
     DNCGNNDiDResult,
+    InterferenceTestResult,
     InwardOutwardResult,
     MatchedPairResult,
     NetworkExposureResult,
@@ -713,11 +852,13 @@ from .interference import (
     dnc_gnn_did,
     interference,
     interference_available_designs,
+    interference_test,
     inward_outward_spillover,
     network_exposure,
     network_hte,
     peer_effects,
     spillover,
+    two_stage_interference,
 )
 from .iv.continuous_late import ContinuousLATEResult, continuous_iv_late
 
@@ -730,9 +871,62 @@ from .iv.kernel_iv import KernelIVResult, kernel_iv
 # Zero-first-stage exclusion test (van Kippersluis-Rietveld 2018).
 from .iv.zero_first_stage import ZeroFirstStageResult, zero_first_stage
 from .matrix_completion import MCPanel, mc_panel
+
+# Bayesian econometrics by MCMC (NumPy samplers; no PyMC)
+from .mcmc import (
+    BARTResult,
+    BayesCausalResult,
+    BayesFactorResult,
+    BayesMixedResult,
+    BayesR2Result,
+    BayesRegressResult,
+    BMAResult,
+    GPResult,
+    LOOResult,
+    MCMCDiagnostic,
+    PPCResult,
+    PSISResult,
+    abc,
+    bart,
+    bart_causal,
+    bayes_arima,
+    bayes_bootstrap,
+    bayes_factor,
+    bayes_ivreg,
+    bayes_mixed,
+    bayes_mixture,
+    bayes_mnprobit,
+    bayes_mvprobit,
+    bayes_r2,
+    bayes_regress,
+    bayes_shrink,
+    bayes_sur,
+    bma,
+    gelman_rubin,
+    geweke_diag,
+    gp_regress,
+    heidel_diag,
+    hpd_interval,
+    kfold,
+    kfold_split,
+    loo,
+    loo_compare,
+    loo_predict,
+    loo_r2,
+    mad_sd,
+    mcmc_ess,
+    mcmc_summary,
+    ppc,
+    psis,
+    raftery_diag,
+    savage_dickey,
+    stochvol,
+    waic,
+)
 from .metalearners import (
     AutoCATEResult,
     CATEEvalResult,
+    CATEGainCurveResult,
     ClusterCATEResult,
     DRLearner,
     FunctionalCATEResult,
@@ -745,6 +939,7 @@ from .metalearners import (
     blp_test,
     cate_by_group,
     cate_eval,
+    cate_gain_curve,
     cate_group_plot,
     cate_plot,
     cate_summary,
@@ -797,6 +992,7 @@ from .network import (
     reciprocity,
     transitivity,
 )
+from .panel.fama_macbeth import fama_macbeth
 
 # === NEW v0.6 Round 2 ===
 # Interactive Fixed Effects
@@ -810,6 +1006,7 @@ from .panel.panel_fgls import panel_fgls
 
 # Panel Unit Root Tests
 from .panel.unit_root import PanelUnitRootResult, panel_unitroot
+from .panel.xt_tools import xtoverid, xtserial, xtsum
 from .parity import ParityStatus, parity_matrix, parity_status, parity_summary
 from .plots import (  # noqa: E402
     binscatter,
@@ -832,6 +1029,7 @@ from .policy_learning import (
 )
 from .power import (
     PowerResult,
+    RetrodesignResult,
     mde,
     power,
     power_case_control,
@@ -842,7 +1040,9 @@ from .power import (
     power_ols,
     power_rct,
     power_rd,
+    power_ttest,
     power_two_proportions,
+    retrodesign,
 )
 
 # Distributional Treatment Effects
@@ -883,6 +1083,7 @@ from .rd import (
     rd2d_bw,
     rd2d_plot,
     rdmc,
+    rdmcplot,
     rdms,
 )
 
@@ -904,24 +1105,36 @@ from .registry import (
 
 # Advanced IV
 from .regression.advanced_iv import jive, lasso_iv, liml
+from .regression.boxcox import BoxCoxResult, boxcox
 from .regression.count import nbreg, poisson, ppmlhdfe, xtnbreg
+from .regression.et_count import etpoisson
 
 # Fractional Response & Beta Regression
 from .regression.fracreg import betareg, fracreg
+from .regression.gam import GAMResult, gam
+from .regression.gee import gee
 from .regression.glm import GLMEstimator, GLMRegression, glm
+from .regression.gologit import gologit
 
 # bayes — lazy-loaded (PyMC pulls heavy deps); see _LAZY_ATTRS below.
 from .regression.heckman import heckman
+from .regression.heckprobit import heckprobit
+from .regression.intreg import intreg
+from .regression.iv_count import ivpoisson
+from .regression.iv_limited import ivprobit, ivtobit
 from .regression.iv_quantile import ivqreg
 from .regression.logit_probit import cloglog, logit, probit
 from .regression.mixed_logit import mixlogit
+from .regression.multinomial import clogit, mlogit, ologit, oprobit
 
 # === NEW MODULES (v0.6) ===
 # GLM & Discrete Choice — ``glm``/``logit``/``probit``/``cloglog``/
 # ``poisson``/``nbreg``/``xtnbreg``/``ppmlhdfe`` are already imported above in the
 # core regression block; we only add what's new here.
-from .regression.multinomial import clogit, mlogit, ologit, oprobit
+from .regression.nested_logit import nlogit
 from .regression.quantile import qreg, sqreg
+from .regression.ridge import RidgeResult, ridge
+from .regression.robreg import robreg
 
 # Sample Selection Models
 from .regression.selection import biprobit, etregress
@@ -951,7 +1164,17 @@ from .rlasso import (  # noqa: E402
     rlassologit_effect,
     rlassologit_effects,
 )
-from .selection import SelectionResult, lasso_select, stepwise
+from .robustness.itcv import itcv
+from .selection import (
+    GlmnetResult,
+    SelectionResult,
+    ShrinkageResult,
+    best_subset,
+    glmnet,
+    lasso_select,
+    shrinkage,
+    stepwise,
+)
 
 # === Smart Workflow Engine ===
 from .smart import (
@@ -991,43 +1214,111 @@ from .smart import (
 # (lazy) nonparametric: see _LAZY_SUBMODULES / _LAZY_ATTRS
 # Time Series (for causal inference)
 from .timeseries import (
+    ARDLResult,
     ARIMAResult,
+    BaggedForecastResult,
+    BeveridgeNelsonResult,
     BVARResult,
     CointegrationResult,
+    CrossCorrelogram,
+    CumulativePeriodogramResult,
+    DecompositionResult,
+    FilterResult,
     GARCHResult,
+    Hierarchy,
     ITSResult,
+    JohansenLRTest,
+    KalmanResult,
     LocalProjectionsResult,
+    LongRunVariance,
+    MarkovSwitchingLRTest,
+    MarkovSwitchingResult,
+    ReconcileResult,
+    SimpleForecastResult,
+    SpectrumResult,
+    StateSpaceResult,
     StructuralBreakResult,
+    SVARResult,
+    TSCVResult,
+    TVPVARResult,
+    UnitRootResult,
     VARResult,
+    VECResult,
+    ZivotAndrewsResult,
+    ardl,
     arima,
+    bagged_forecast,
+    bds,
+    beveridge_nelson,
+    bootstrap_series,
+    boxcox_lambda,
     bvar,
+    chow_test,
+    classical_decompose,
+    corrgram,
+    cumulative_periodogram_test,
     cusum_test,
     engle_granger,
+    forecast_accuracy,
+    fourier_terms,
     garch,
     granger_causality,
+    hierarchy,
     irf,
     its,
     johansen,
+    johansen_lrtest,
+    kalman_filter,
+    ljungbox,
     local_projections,
+    lrvar,
+    mswitch,
+    mswitch_lrtest,
+    ndiffs,
+    nsdiffs,
+    periodogram,
+    reconcile,
+    seasonal_dummies,
+    simple_forecast,
+    statespace,
+    stl,
     structural_break,
+    svar,
+    ts_features,
+    tscv,
+    tsfilter,
+    tvp_var,
+    unitroot,
     var,
+    varsoc,
+    vec,
+    xcorr,
+    zivot_andrews,
 )
+from .timeseries.abnormal_returns import AbnormalReturnsResult, abnormal_returns
+from .timeseries.dlm import DLMResult, dlm
 
 # Eager: ``tmle`` collides (function + subpackage of same name).
 from .tmle import (
     TMLE,
     HALClassifier,
     HALRegressor,
+    LTMLEMSMResult,
     LTMLEResult,
     LTMLESurvivalResult,
     SuperLearner,
+    ctmle,
     hal_tmle,
+    lmtp,
     ltmle,
+    ltmle_msm,
     ltmle_survival,
     super_learner,
     tmle,
 )
 from .utils import (
+    collapse,
+    decode,
     describe,
     dgp_bartik,
     dgp_bunching,
@@ -1044,14 +1335,20 @@ from .utils import (
     dgp_rd_multi,
     dgp_rdit,
     dgp_synth,
+    diff,
+    egen,
     get_label,
     get_labels,
+    label_values,
     label_var,
     label_vars,
+    lag,
+    lead,
     outlier_indicator,
     pwcorr,
     rank,
     read_data,
+    reshape,
     rowcount,
     rowmax,
     rowmean,
@@ -1060,6 +1357,8 @@ from .utils import (
     rowtotal,
     scalar_iv_projection,
     winsor,
+    write_data,
+    xtset,
 )
 from .validation import (
     ReproductionResult,
@@ -1130,6 +1429,21 @@ from .workflow import (  # noqa: F401 — ``causal`` kept for the shadowing danc
 # in recommend().
 
 
+# The synth module's top-level dataset helpers carry the provenance flag and
+# the simulated-replica warning too. ``sp.california_prop99`` is the
+# simulated synthdid-layout panel, not ``sp.datasets.california_prop99`` (the
+# real ADH data): same name, different data, so the warning names the other.
+basque_terrorism = datasets.basque_terrorism
+german_reunification = datasets.german_reunification
+california_prop99 = datasets._flagged(
+    "california_prop99",
+    _synth_california_prop99,
+    call="sp.california_prop99",
+    real_alternative=(
+        "sp.load_dataset('california_prop99'), the Abadie-Diamond-Hainmueller panel"
+    ),
+)
+
 __all__ = [
     # Core
     "EconometricResults",
@@ -1164,7 +1478,10 @@ __all__ = [
     "callaway_santanna",
     "sun_abraham",
     "bacon_decomposition",
+    "didregress",
     "honest_did",
+    "honest_did_from_moments",
+    "honest_did_from_result",
     "breakdown_m",
     "compare_event_study_conventions",
     "did_cluster_diagnostics",
@@ -1178,6 +1495,10 @@ __all__ = [
     "bjs",
     "borusyak_jaravel_spiess",
     "stacked_did",
+    "xtevent",
+    "xtevent_smpath",
+    "panel_match",
+    "cdlz_bunching",
     "gardner_did",
     "did_2stage",
     "cic",
@@ -1212,6 +1533,7 @@ __all__ = [
     "wooldridge_did",
     "etwfe",
     "etwfe_emfx",
+    "jwdid",
     "did_summary",
     "did_summary_to_markdown",
     "did_summary_to_latex",
@@ -1219,6 +1541,7 @@ __all__ = [
     "drdid",
     "twfe_decomposition",
     # RD
+    "rd",
     "rdrobust",
     "rdplot",
     "rdplotdensity",
@@ -1226,9 +1549,12 @@ __all__ = [
     "rdbwsensitivity",
     "rdbalance",
     "rdplacebo",
+    "rd_diff_in_disc",
+    "ssc",
     "rdsummary",
     "rkd",
     "rd_honest",
+    "rd_optimized",
     "rdit",
     "rdrandinf",
     "rdwinselect",
@@ -1253,6 +1579,7 @@ __all__ = [
     "fect",
     "staggered_synth",
     "conformal_synth",
+    "synth_ttest",
     "sdid",
     "synthdid_estimate",
     "sc_estimate",
@@ -1298,6 +1625,7 @@ __all__ = [
     "DMLDiagnostics",
     # v1.7 long-panel DML
     "dml_panel",
+    "dml_did",
     "DMLPanelResult",
     # dynamic (sequential) treatment DML
     "dynamic_dml",
@@ -1321,6 +1649,7 @@ __all__ = [
     "calibrate_cate",
     "calibration_test",
     "test_calibration",  # GRF-compatible alias of calibration_test
+    "grf_calibration",
     "rate",
     "rate_split",
     "forest_policy_tree",
@@ -1330,6 +1659,7 @@ __all__ = [
     "honest_variance",
     "average_treatment_effect",
     "forest_diagnostics",
+    "tune_causal_forest",
     # HDFE primitives
     "Absorber",
     "SlopeSpec",
@@ -1339,13 +1669,25 @@ __all__ = [
     "FEOLSResult",
     # Matching extensions
     "overlap_weights",
+    "ps_weights",
+    "weightit",
+    "WeightItResult",
+    "bal_tab",
+    "l1_imbalance",
+    "BalTabResult",
+    "ess",
+    "energy_distance",
+    "implied_weights",
     "cbps",
     "sbw",
     "SBWResult",
+    "residual_balance",
     "genmatch",
     "GenMatchResult",
     "psmatch2",
     "PSMatch2Result",
+    "pscore",
+    "PScoreResult",
     # Inference primitives
     "subcluster_wild_bootstrap",
     "wild_cluster_ci_inv",
@@ -1383,6 +1725,8 @@ __all__ = [
     "Provenance",
     "attach_provenance",
     "get_provenance",
+    "version_info",
+    "doctor",
     "compute_data_hash",
     "format_provenance",
     "lineage_summary",
@@ -1414,6 +1758,7 @@ __all__ = [
     "use_chinese",
     "interactive",
     "get_code",
+    "refresh_legend",
     # Stata / R migration on-ramps
     "from_stata",
     "stata",
@@ -1422,11 +1767,20 @@ __all__ = [
     # Utils
     "label_var",
     "label_vars",
+    "label_values",
+    "decode",
     "get_label",
     "get_labels",
     "describe",
     "pwcorr",
     "winsor",
+    "xtset",
+    "lag",
+    "lead",
+    "diff",
+    "reshape",
+    "collapse",
+    "egen",
     "rowmean",
     "rowtotal",
     "rowmax",
@@ -1436,15 +1790,24 @@ __all__ = [
     "rank",
     "outlier_indicator",
     "read_data",
+    "write_data",
     "scalar_iv_projection",
     # Dynamic Panel GMM
     "xtabond",
     "xtdpdsys",
     "xtlsdvc",
     "heckman",
+    "heckprobit",
+    "gologit",
+    "intreg",
     "qreg",
     "sqreg",
     "tobit",
+    "ivprobit",
+    "ivtobit",
+    "ivpoisson",
+    "etpoisson",
+    "nlogit",
     "logit",
     "probit",
     "cloglog",
@@ -1466,6 +1829,14 @@ __all__ = [
     "pwcompare",
     "test",
     "lincom",
+    "nlcom",
+    "predictions",
+    "avg_predictions",
+    "comparisons",
+    "avg_comparisons",
+    "slopes",
+    "avg_slopes",
+    "hypotheses",
     "postestimation_contract",
     "postestimation_report",
     # Mediation
@@ -1476,6 +1847,7 @@ __all__ = [
     "bartik",
     "BartikIV",
     "ssaggregate",
+    "rotemberg_summary",
     "shift_share_se",
     # Diagnostics
     "oster_bounds",
@@ -1483,10 +1855,19 @@ __all__ = [
     "diagnose",
     "het_test",
     "reset_test",
+    "cmtest",
+    "vuong",
     "vif",
     "sensemakr",
     "rddensity",
+    "hausman",
+    "influence_measures",
+    "logit_gof",
+    "logit_influence",
     "hausman_test",
+    "xtsum",
+    "xtserial",
+    "xtoverid",
     "anderson_rubin_test",
     "effective_f_test",
     "tF_critical_value",
@@ -1496,15 +1877,47 @@ __all__ = [
     "evalue_from_result",
     "evalue_rd",
     "bias_factor",
+    "causal_gap",
+    "confounder_adjust",
+    "confounder_tip",
     "diagnose_result",
     "estat",
     "kitagawa_test",
     "KitagawaResult",
     # Inference
     "wild_cluster_bootstrap",
+    "suest",
+    "SuestResult",
+    "ttest",
+    "TTestResult",
+    "sdtest",
+    "SDTestResult",
+    "ztest",
+    "prtest",
+    "ranksum",
+    "signrank",
+    "kwallis",
+    "spearman",
+    "cor_test",
+    "esize",
+    "ktau",
+    "ksmirnov",
+    "median_test",
+    "robvar",
+    "oneway",
+    "loneway",
+    "ClassicTestResult",
+    "sktest",
+    "swilk",
+    "ci",
+    "bitest",
+    "BiTestResult",
+    "difference_in_means",
+    "lm_lin",
     "aipw",
     "ri_test",
     "ipw",
+    "iv_wild_bootstrap",
     "bootstrap",
     "BootstrapResult",
     "twoway_cluster",
@@ -1515,6 +1928,8 @@ __all__ = [
     "FisherResult",
     "jackknife_se",
     "cr2_se",
+    "vcov",
+    "vcov_compare",
     "wild_cluster_boot",
     # G-methods family (g-computation / front-door)
     "g_computation",
@@ -1602,11 +2017,16 @@ __all__ = [
     "NOTEARS",
     "pc_algorithm",
     "PCAlgorithm",
+    "hill_climb",
+    "mmpc",
+    "mmhc",
+    "bootstrap_edges",
     # TMLE
     "tmle",
     "TMLE",
     "super_learner",
     "SuperLearner",
+    "ctmle",
     "hal_tmle",
     "HALRegressor",
     "HALClassifier",
@@ -1644,6 +2064,7 @@ __all__ = [
     "breakdown_frontier",
     # Interference
     "spillover",
+    "two_stage_interference",
     "SpilloverEstimator",
     # Dynamic Treatment Regimes
     "g_estimation",
@@ -1658,9 +2079,14 @@ __all__ = [
     "RobustnessResult",
     "subgroup_analysis",
     "SubgroupResult",
+    "refute",
+    "RefutationResult",
     # Survey Design
     "svydesign",
     "SurveyDesign",
+    "svrepdesign",
+    "as_svrepdesign",
+    "ReplicateDesign",
     "svymean",
     "svytotal",
     "svyglm",
@@ -1671,6 +2097,10 @@ __all__ = [
     "dag_examples",
     "dag_example_positions",
     "dag_simulate",
+    "bayes_net",
+    "BayesNet",
+    "identify_counterfactual",
+    "CounterfactualIdentification",
     # Power Analysis
     "power",
     "PowerResult",
@@ -1682,6 +2112,7 @@ __all__ = [
     "power_ols",
     "mde",
     "power_two_proportions",
+    "power_ttest",
     "power_logrank",
     "power_case_control",
     # Decomposition
@@ -1692,6 +2123,80 @@ __all__ = [
     # Variable Selection
     "stepwise",
     "lasso_select",
+    "best_subset",
+    "gam",
+    "GAMResult",
+    "gee",
+    "ridge",
+    "robreg",
+    "abnormal_returns",
+    "AbnormalReturnsResult",
+    "fama_macbeth",
+    "itcv",
+    "RidgeResult",
+    # Bayesian econometrics by MCMC
+    "bayes_regress",
+    "BayesRegressResult",
+    "bayes_mixed",
+    "BayesMixedResult",
+    "bayes_ivreg",
+    "bayes_shrink",
+    "bayes_sur",
+    "BARTResult",
+    "BayesCausalResult",
+    "bart_causal",
+    "GPResult",
+    "bart",
+    "abc",
+    "gp_regress",
+    "bayes_mixture",
+    "bayes_mnprobit",
+    "bayes_mvprobit",
+    "bayes_arima",
+    "stochvol",
+    "bma",
+    "BMAResult",
+    "bayes_factor",
+    "BayesFactorResult",
+    "savage_dickey",
+    "bayes_bootstrap",
+    "loo",
+    "LOOResult",
+    "waic",
+    "kfold",
+    "kfold_split",
+    "loo_compare",
+    "loo_predict",
+    "psis",
+    "PSISResult",
+    "ppc",
+    "PPCResult",
+    "bayes_r2",
+    "loo_r2",
+    "BayesR2Result",
+    "mad_sd",
+    "binned_residuals",
+    "binned_residuals_plot",
+    "standardize",
+    "invlogit",
+    "retrodesign",
+    "RetrodesignResult",
+    "poststratify",
+    "PoststratResult",
+    "mcmc_summary",
+    "mcmc_ess",
+    "hpd_interval",
+    "geweke_diag",
+    "raftery_diag",
+    "heidel_diag",
+    "gelman_rubin",
+    "MCMCDiagnostic",
+    "boxcox",
+    "BoxCoxResult",
+    "shrinkage",
+    "ShrinkageResult",
+    "glmnet",
+    "GlmnetResult",
     "SelectionResult",
     # Quantile Treatment Effects
     "qdid",
@@ -1699,6 +2204,7 @@ __all__ = [
     "QTEResult",
     # Multiple Hypothesis Testing
     "romano_wolf",
+    "westfall_young",
     "RomanoWolfResult",
     "adjust_pvalues",
     "bonferroni",
@@ -1707,9 +2213,11 @@ __all__ = [
     # AI / Agent Registry
     "list_functions",
     "support_tier",
+    "decision_guide",
     "describe_function",
     "function_schema",
     "agent_schema",
+    "route",
     "search_functions",
     "all_schemas",
     "agent_card",
@@ -1789,22 +2297,36 @@ __all__ = [
     "finegray",
     "CumIncResult",
     "FineGrayResult",
+    "rmst",
+    "RMSTResult",
+    "stteffects",
     # Nonparametric
     "lpoly",
     "LPolyResult",
+    "ctree",
+    "CTreeResult",
     "kdensity",
     "KDensityResult",
     "lprobust_at_point",
     "LProbustPoint",
     "lpbwselect_mse_dpi",
+    "lpbwselect_mse_rot",
+    "lpbwselect_imse_dpi",
+    "lpbwselect_imse_rot",
+    "lpbwselect_ce_rot",
     # Time Series
     "var",
     "VARResult",
+    "svar",
+    "SVARResult",
     "granger_causality",
     "irf",
     "structural_break",
     "StructuralBreakResult",
     "cusum_test",
+    "chow_test",
+    "bds",
+    "rolling",
     # Experimental Design
     "randomize",
     "RandomizationResult",
@@ -1815,6 +2337,45 @@ __all__ = [
     "AttritionResult",
     "optimal_design",
     "OptimalDesignResult",
+    "switchback",
+    "switchback_design",
+    "bandit_allocate",
+    "bandit_experiment",
+    "contextual_bandit",
+    "adaptive_inference",
+    "BanditExperimentResult",
+    "AdaptiveInferenceResult",
+    "group_sequential",
+    "GroupSequentialResult",
+    "msprt",
+    "msprt_lambda",
+    "MSPRTResult",
+    "cuped",
+    # Design of experiments (factorial, optimal, space-filling, sensitivity)
+    "space_filling",
+    "design_augment",
+    "design_criteria",
+    "DesignResult",
+    "factorial_design",
+    "design_aberration",
+    "FactorialDesignResult",
+    "factorial_effects",
+    "FactorialEffectsResult",
+    "factor_importance",
+    "FactorImportanceResult",
+    "mixture_design",
+    "doe_optimal",
+    "ModelDesignResult",
+    "sobol_indices",
+    "SobolResult",
+    "morris_screening",
+    "MorrisResult",
+    "support_points",
+    "SupportPointsResult",
+    "split_data",
+    "DataSplitResult",
+    "sequential_design",
+    "SequentialDesignResult",
     # Missing Data
     "mice",
     "MICEResult",
@@ -1828,6 +2389,7 @@ __all__ = [
     "mr_median",
     # Multi-Cutoff / Geographic RD
     "rdmc",
+    "rdmcplot",
     "rdms",
     "RDMultiResult",
     "multi_cutoff_rd",
@@ -1844,6 +2406,7 @@ __all__ = [
     "did_timevarying_covariates",
     # dCDH (2024) intertemporal event-study DiD (MVP — see RFC)
     "did_had",
+    "twowayfeweights",
     "quasi_untreated_test",
     "yatchew_linearity_test",
     "did_multiplegt_dyn",
@@ -1851,6 +2414,60 @@ __all__ = [
     "interactive_fe",
     "panel_unitroot",
     "PanelUnitRootResult",
+    "unitroot",
+    "UnitRootResult",
+    "ardl",
+    "ARDLResult",
+    "corrgram",
+    "prais",
+    "cnsreg",
+    "nls",
+    "threshold",
+    "mprobit",
+    "series",
+    "xthtaylor",
+    "xtivreg",
+    "xtpcse",
+    "xtintreg",
+    "xtregar",
+    "mmqreg",
+    "xttobit",
+    "model_average",
+    "ModelAverageResult",
+    "jackknife",
+    "JackknifeResult",
+    "pca",
+    "PCAResult",
+    "factor",
+    "FactorResult",
+    "varsoc",
+    "vec",
+    "VECResult",
+    # forecasting toolkit
+    "ets",
+    "ETSResult",
+    "simple_forecast",
+    "SimpleForecastResult",
+    "forecast_accuracy",
+    "tscv",
+    "TSCVResult",
+    "stl",
+    "classical_decompose",
+    "DecompositionResult",
+    "ljungbox",
+    "ndiffs",
+    "nsdiffs",
+    "boxcox_lambda",
+    "fourier_terms",
+    "hierarchy",
+    "Hierarchy",
+    "reconcile",
+    "ReconcileResult",
+    "ts_features",
+    "bootstrap_series",
+    "bagged_forecast",
+    "BaggedForecastResult",
+    "seasonal_dummies",
     "engle_granger",
     "johansen",
     "CointegrationResult",
@@ -1862,7 +2479,10 @@ __all__ = [
     "DTEResult",
     # Structural Estimation
     "blp",
+    "blp_instruments",
     "BLPResult",
+    "path_analysis",
+    "PathAnalysisResult",
     # Production functions (proxy-variable estimators)
     "prod_fn",
     "olley_pakes",
@@ -1890,6 +2510,8 @@ __all__ = [
     "from_worldbank",
     "from_fred",
     "from_sdmx",
+    "list_datasets",
+    "load_dataset",
     "assumption_audit",
     "AssumptionResult",
     "audit",
@@ -1901,6 +2523,7 @@ __all__ = [
     "examples",
     "preflight",
     "session",
+    "reset_spec_counter",
     "sensitivity_dashboard",
     "SensitivityDashboard",
     "pub_ready",
@@ -2007,6 +2630,8 @@ __all__ = [
     "mgwr",
     "gwr_bandwidth",
     "sac",
+    "sdem",
+    "gns",
     "slx",
     "sar_gmm",
     "sarar_gmm",
@@ -2068,6 +2693,8 @@ __all__ = [
     "CardinalityMatchResult",
     "optimal_match",
     "OptimalMatchResult",
+    "full_match",
+    "FullMatchResult",
     "linear_calibration",
     "rake",
     "aft",
@@ -2083,6 +2710,36 @@ __all__ = [
     "arima",
     "ARIMAResult",
     "bvar",
+    "dlm",
+    "DLMResult",
+    "beveridge_nelson",
+    "BeveridgeNelsonResult",
+    "johansen_lrtest",
+    "JohansenLRTest",
+    "lrvar",
+    "LongRunVariance",
+    "periodogram",
+    "SpectrumResult",
+    "cumulative_periodogram_test",
+    "CumulativePeriodogramResult",
+    "tsfilter",
+    "FilterResult",
+    "xcorr",
+    "CrossCorrelogram",
+    "zivot_andrews",
+    "ZivotAndrewsResult",
+    "kalman_filter",
+    "KalmanResult",
+    "statespace",
+    "StateSpaceResult",
+    "tvp_var",
+    "TVPVARResult",
+    "mswitch",
+    "MarkovSwitchingResult",
+    "tvp_var_sv",
+    "TVPVARSVResult",
+    "mswitch_lrtest",
+    "MarkovSwitchingLRTest",
     "BVARResult",
     "garch",
     "GARCHResult",
@@ -2130,6 +2787,8 @@ __all__ = [
     "icp",
     "nonlinear_icp",
     "ICPResult",
+    "ida",
+    "IDAResult",
     "identify",
     "IdentificationResult",
     "do_rule1",
@@ -2181,6 +2840,7 @@ __all__ = [
     "sensitivity_specificity",
     "roc_curve",
     "auc",
+    "ndcg",
     "cohen_kappa",
     "DiagnosticTestResult",
     "ROCResult",
@@ -2349,6 +3009,8 @@ __all__ = [
     # v1.13 backbone-agnostic CATE evaluation (RATE / AUTOC / Qini)
     "cate_eval",
     "CATEEvalResult",
+    "cate_gain_curve",
+    "CATEGainCurveResult",
     # Bunching frontier
     "general_bunching",
     "GeneralBunchingResult",
@@ -2409,9 +3071,12 @@ __all__ = [
     # single-family functions (now reachable via sp.describe_function too)
     "network_exposure",
     "NetworkExposureResult",
+    "interference_test",
+    "InterferenceTestResult",
     "peer_effects",
     "PeerEffectsResult",
     "weighted_conformal_prediction",
+    "conformal_regression",
     "conformal_counterfactual",
     "ConformalCounterfactualResult",
     "conformal_ite_interval",
@@ -2486,6 +3151,10 @@ __all__ = [
     "q_learning",
     "rwd_rct_concordance",
     "sharp_ope_unobserved",
+    "mdp_policy_value",
+    "MDPPolicyValueResult",
+    "marginal_policy_effect",
+    "MarginalPolicyEffectResult",
     "snmm",
     # GRF family: these were reachable as sp.<name> through _register_lazy
     # but absent from __all__, so sp.list_functions() never saw them.
@@ -2529,6 +3198,7 @@ __all__ = [
     "ips",
     "snips",
     # Mediation
+    "mediate_paths",
     "four_way_decomposition",
     "FourWayResult",
     # Interrupted time series
@@ -2536,7 +3206,10 @@ __all__ = [
     "ITSResult",
     # Longitudinal TMLE
     "ltmle",
+    "ltmle_msm",
+    "lmtp",
     "LTMLEResult",
+    "LTMLEMSMResult",
     # DiD-family extras
     "harvest_did",
     "overlap_weighted_did",
@@ -2576,6 +3249,24 @@ __all__ = [
     "rosenbaum_bounds",
     "rosenbaum_gamma",
     "RosenbaumResult",
+    # Sensitivity analysis for block designs and strata; design of matched
+    # samples (Rosenbaum, Introduction to the Theory of Observational Studies)
+    "weighted_rank",
+    "weighted_rank_power",
+    "WeightedRankResult",
+    "WeightedRankPowerResult",
+    "rosenbaum_stratified",
+    "noether_test",
+    "evidence_factors",
+    "truncated_product",
+    "amplify",
+    "SensitivityTestResult",
+    "EvidenceFactorsResult",
+    "two_criteria_match",
+    "tighten_blocks",
+    "TwoCriteriaMatchResult",
+    "balance_vs_randomization",
+    "BalanceRandomizationResult",
 ]
 
 
@@ -2684,6 +3375,7 @@ _LAZY_SUBMODULES: dict = {
     "transport": "transport",
     "mendelian": "mendelian",
     "experimental": "experimental",
+    "doe": "doe",
     "imputation": "imputation",
     "survey": "survey",
     "survival": "survival",
@@ -2719,15 +3411,41 @@ _LAZY_ATTRS: dict = {}
 # mirroring the MCP translator tools. Bound to the leaf modules (not the
 # ``agent._translation`` package facade) so resolution is robust to changes in
 # the package ``__init__`` re-exports.
+# ``sp.ets`` compiles its recursions with numba; bound to the leaf module so
+# that ``import statspai`` does not import numba.
+_register_lazy("timeseries._ets", "ets", "ETSResult")
+_register_lazy("timeseries.tvp_var_sv", "tvp_var_sv", "TVPVARSVResult")
 _register_lazy("agent._translation._stata", "from_stata")
 _register_lazy("agent._translation._stata_run", "stata")
 _register_lazy("agent._translation._r", "from_r")
 _register_lazy("agent._translation._coverage", "translation_coverage")
+# ``sp.doctor()``: which StatsPAI / Python / backends (stdlib only, but kept
+# off the cold-import path because it is a diagnostic).
+_register_lazy("_doctor", "doctor")
+_register_lazy("regression.cnsreg", "cnsreg")
+_register_lazy("regression.nls", "nls")
+_register_lazy("regression.threshold", "threshold")
+_register_lazy("regression.mprobit", "mprobit")
+_register_lazy("nonparametric.series", "series")
+_register_lazy("panel.hausman_taylor", "xthtaylor")
+_register_lazy("panel.xtivreg", "xtivreg")
+_register_lazy("panel.xtpcse", "xtpcse")
+_register_lazy("panel.xtintreg", "xtintreg")
+_register_lazy("panel.xtregar", "xtregar")
+_register_lazy("panel.mmqreg", "mmqreg")
+_register_lazy("panel.xtintreg", "xttobit")
+_register_lazy("regression.model_average", "model_average", "ModelAverageResult")
+_register_lazy("inference._jackknife_general", "jackknife", "JackknifeResult")
+_register_lazy("multivariate.pca", "pca", "PCAResult")
+_register_lazy("multivariate.factor", "factor", "FactorResult")
 _register_lazy(
     "plots.interactive",
     "interactive",
     "get_code",
 )
+_register_lazy("plots._legend_sync", "refresh_legend")
+# Session spec-search counter (core/_spec_counter.py): public reset.
+_register_lazy("core._spec_counter", "reset_spec_counter")
 _register_lazy(
     "geolift",
     "geolift",
@@ -2879,6 +3597,8 @@ _register_lazy(
     "sdm",
     "slx",
     "sac",
+    "sdem",
+    "gns",
     "SpatialModel",
     "sar_gmm",
     "sem_gmm",
@@ -2918,6 +3638,7 @@ _register_lazy(
     "CausalForest",
     "causal_forest",
 )
+_register_lazy("forest.tuning", "tune_causal_forest")
 _register_lazy(
     "forest.forest_heterogeneity",
     "forest_group_effects",
@@ -2931,6 +3652,7 @@ _register_lazy(
     "calibrate_cate",
     "calibration_test",
     ("test_calibration", "calibration_test"),
+    "grf_calibration",
     "rate",
     "honest_variance",
     "average_treatment_effect",
@@ -2976,6 +3698,7 @@ _register_lazy(
     "conformal_cate",
     "ConformalCATE",
     "weighted_conformal_prediction",
+    "conformal_regression",
     "conformal_counterfactual",
     "ConformalCounterfactualResult",
     "conformal_ite_interval",
@@ -2998,6 +3721,10 @@ _register_lazy(
 _register_lazy(
     "ope",
     "OPEResult",
+    "mdp_policy_value",
+    "MDPPolicyValueResult",
+    "marginal_policy_effect",
+    "MarginalPolicyEffectResult",
     "sharp_ope_unobserved",
     "causal_policy_forest",
     "SharpOPEResult",
@@ -3026,6 +3753,7 @@ _register_lazy(
     "sensitivity_specificity",
     "roc_curve",
     "auc",
+    "ndcg",
     "cohen_kappa",
     "DiagnosticTestResult",
     "ROCResult",
@@ -3130,6 +3858,47 @@ _register_lazy(
     "AttritionResult",
     "optimal_design",
     "OptimalDesignResult",
+    "switchback",
+    "switchback_design",
+    "bandit_allocate",
+    "bandit_experiment",
+    "contextual_bandit",
+    "adaptive_inference",
+    "BanditExperimentResult",
+    "AdaptiveInferenceResult",
+    "group_sequential",
+    "GroupSequentialResult",
+    "msprt",
+    "msprt_lambda",
+    "MSPRTResult",
+    "cuped",
+)
+_register_lazy(
+    "doe",
+    "space_filling",
+    "design_augment",
+    "design_criteria",
+    "DesignResult",
+    "factorial_design",
+    "design_aberration",
+    "FactorialDesignResult",
+    "factorial_effects",
+    "FactorialEffectsResult",
+    "factor_importance",
+    "FactorImportanceResult",
+    "mixture_design",
+    "doe_optimal",
+    "ModelDesignResult",
+    "sobol_indices",
+    "SobolResult",
+    "morris_screening",
+    "MorrisResult",
+    "support_points",
+    "SupportPointsResult",
+    "split_data",
+    "DataSplitResult",
+    "sequential_design",
+    "SequentialDesignResult",
 )
 _register_lazy(
     "imputation",
@@ -3142,11 +3911,16 @@ _register_lazy(
     "survey",
     "svydesign",
     "SurveyDesign",
+    "svrepdesign",
+    "as_svrepdesign",
+    "ReplicateDesign",
     "svymean",
     "svytotal",
     "svyglm",
     "rake",
     "linear_calibration",
+    "poststratify",
+    "PoststratResult",
 )
 _register_lazy(
     "survival",
@@ -3165,6 +3939,9 @@ _register_lazy(
     "finegray",
     "CumIncResult",
     "FineGrayResult",
+    "rmst",
+    "RMSTResult",
+    "stteffects",
 )
 _register_lazy(
     "nonparametric",
@@ -3175,6 +3952,12 @@ _register_lazy(
     "lprobust_at_point",
     "LProbustPoint",
     "lpbwselect_mse_dpi",
+    "lpbwselect_mse_rot",
+    "lpbwselect_imse_dpi",
+    "lpbwselect_imse_rot",
+    "lpbwselect_ce_rot",
+    "ctree",
+    "CTreeResult",
 )
 _register_lazy(
     "multilevel",
@@ -3193,7 +3976,10 @@ _register_lazy(
 _register_lazy(
     "structural",
     "blp",
+    "blp_instruments",
     "BLPResult",
+    "path_analysis",
+    "PathAnalysisResult",
     "prod_fn",
     "olley_pakes",
     "opreg",
@@ -3223,6 +4009,7 @@ _register_lazy(
 _register_lazy(
     "mht",
     "romano_wolf",
+    "westfall_young",
     "RomanoWolfResult",
     "adjust_pvalues",
     "bonferroni",
@@ -3237,6 +4024,8 @@ _register_lazy(
     "RobustnessResult",
     "subgroup_analysis",
     "SubgroupResult",
+    "refute",
+    "RefutationResult",
     "copula_sensitivity",
     "survival_sensitivity",
     "calibrate_confounding_strength",
@@ -3244,6 +4033,14 @@ _register_lazy(
     "unified_sensitivity",
     "SensitivityDashboard",
 )
+
+
+# Every public function accepts polars / Arrow / interchange-protocol frames:
+# they are converted to pandas before the call; pandas arguments pass through
+# by identity (see _frame_input).
+from . import _frame_input  # noqa: E402
+
+_frame_input.install(globals(), __all__)
 
 
 def __getattr__(name):
@@ -3266,16 +4063,21 @@ def __getattr__(name):
     if name in {"verify", "verify_recommendation"}:
         from .smart.verify import verify_recommendation as _vr
 
+        _vr = _frame_input.wrap_public("verify_recommendation", _vr)
         globals()["verify"] = _vr
         globals()["verify_recommendation"] = _vr
         return _vr
     if name == "verify_benchmark":
         from .smart.benchmark import verify_benchmark as _vb
 
+        _vb = _frame_input.wrap_public("verify_benchmark", _vb)
+
         globals()["verify_benchmark"] = _vb
         return _vb
     if name == "recommend_benchmark":
         from .smart.recommend_benchmark import recommend_benchmark as _rb
+
+        _rb = _frame_input.wrap_public("recommend_benchmark", _rb)
 
         globals()["recommend_benchmark"] = _rb
         return _rb
@@ -3294,7 +4096,7 @@ def __getattr__(name):
 
         _modpath, _attr = _LAZY_ATTRS[name]
         _mod = importlib.import_module(f".{_modpath}", package=__name__)
-        _obj = getattr(_mod, _attr)
+        _obj = _frame_input.wrap_public(name, getattr(_mod, _attr))
         globals()[name] = _obj
         return _obj
     if name in _LAZY_SUBMODULES:
@@ -3304,4 +4106,71 @@ def __getattr__(name):
         _mod = importlib.import_module(f".{_modpath}", package=__name__)
         globals()[name] = _mod
         return _mod
-    raise AttributeError(f"module 'statspai' has no attribute {name!r}")
+    raise AttributeError(_missing_name_message(name))
+
+
+#: Names other libraries use for something that is here under another name.
+#: Read by ``__getattr__`` to point at it; nothing is aliased.
+_ELSEWHERE_NAMES = {
+    "vecm": "sp.vec",
+    "VECM": "sp.vec",
+    "VAR": "sp.var",
+    "ARIMA": "sp.arima",
+    "SARIMAX": "sp.arima",
+    "arch_model": "sp.garch",
+    "adfuller": "sp.unitroot",
+    "kpss": "sp.unitroot",
+    "coint": "sp.engle_granger",
+    "coint_johansen": "sp.johansen",
+    "acorr_ljungbox": "sp.corrgram",
+    "ljungbox": "sp.corrgram",
+    "pacf": "sp.corrgram",
+    "plot_acf": "sp.corrgram",
+    "ols": "sp.regress",
+    "OLS": "sp.regress",
+    "lm": "sp.regress",
+    "WLS": "sp.regress(..., weights=)",
+    "IV2SLS": "sp.ivreg",
+    "ivregress": "sp.ivreg",
+    "PanelOLS": "sp.panel(..., method='fe')",
+    "RandomEffects": "sp.panel(..., method='re')",
+    "PooledOLS": "sp.panel(..., method='pooled')",
+    "xtreg": "sp.panel",
+    "newey": "sp.regress(..., robust='hac', hac_lags=)",
+    "lasso": "sp.glmnet (or sp.shrinkage(..., method='lasso'), sp.rlasso)",
+    "cv_glmnet": "sp.glmnet (cross-validates by default)",
+    "elastic_net": "sp.glmnet(..., alpha=0.5)",
+    "ElasticNet": "sp.glmnet(..., alpha=)",
+    "ElasticNetCV": "sp.glmnet(..., alpha=)",
+    "LassoCV": "sp.glmnet(..., alpha=1)",
+    "pcr": "sp.shrinkage(..., method='pcr')",
+    "pca": "sp.shrinkage(..., method='pcr')",
+    "summary_col": "sp.regtable",
+    "stargazer": "sp.regtable",
+    "Stargazer": "sp.regtable",
+    "f_test": "sp.test",
+    "wald_test": "sp.test",
+    "get_margeff": "sp.margins",
+}
+
+
+def _missing_name_message(name):
+    message = f"module 'statspai' has no attribute {name!r}"
+    if name.startswith("_"):
+        return message
+    elsewhere = _ELSEWHERE_NAMES.get(name)
+    if elsewhere is not None:
+        return f"{message}; it is {elsewhere} here"
+    # Stata / R command names (``csdid``, ``att_gt``, ``reghdfe``), read from
+    # the sp.from_stata / sp.from_r translator tables.
+    from ._discovery_commands import describe as _describe_command
+
+    command = _describe_command(name, set(__all__))
+    if command is not None:
+        return f"{message}; the {command} here"
+    import difflib
+
+    close = difflib.get_close_matches(name, __all__, n=3, cutoff=0.8)
+    if close:
+        return f"{message}; did you mean {', '.join('sp.' + c for c in close)}?"
+    return f"{message}; sp.search_functions({name!r}) lists what is close"

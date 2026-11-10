@@ -9,9 +9,10 @@ What this is
 ------------
 - ``y ~ x1 + x2 | fe1 + fe2`` minimal formula DSL (same as ``fepois``).
 - Closed-form WLS solve on FE-residualised regressors / outcome.
-- Full DOF accounting: ``fe_dof = sum(G_k - 1)`` (matches ``fepois``,
-  matches ``fixest::ssc(fixef.K='full')`` to a uniform 1-DOF off-by-true-
-  rank for K≥2 — same convention as the rest of fast/*).
+- DOF accounting follows ``ssc``: the default reproduces R ``fixest``
+  (pinned in ``tests/reference_parity/
+  test_fast_feols_weights_fixest_parity.py``); ``ssc='statspai'`` keeps
+  the pre-1.31 ``fe_dof = sum(G_k - 1)``.
 - vcov: ``iid`` (homoscedastic), ``hc1`` (heteroscedasticity-robust),
   ``cr1`` (one-way cluster-robust, FE-rank-aware via ``extra_df``).
 - Optional observation weights → WLS.
@@ -34,19 +35,20 @@ Correia, S. (2017). Linear models with high-dimensional fixed effects.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, List, Optional, cast
+from typing import Any, Dict, List, Optional, Tuple, cast
 
 import numpy as np
 import pandas as pd
 
 from .._result_serialize import ResultProtocolMixin
-from ..exceptions import MethodIncompatibility, NumericalInstability
+from ..exceptions import DataInsufficient, MethodIncompatibility, NumericalInstability
 from ._result_protocol import jsonable as _jsonable
 from ._result_protocol import tidy_records as _tidy_records
 from ._validation import nonempty_sample as _nonempty_sample
 from ._validation import nonnegative_finite_float as _nonnegative_finite_float
 from ._validation import positive_int as _positive_int
 from ._validation import positive_weight_mass as _positive_weight_mass
+from ._validation import require_identified_regressors as _require_identified_regressors
 
 # ---------------------------------------------------------------------------
 # Result type
@@ -78,6 +80,11 @@ class FeolsResult(ResultProtocolMixin):
     ssc: str = "fixest"
     cluster_var: Optional[str] = None
     backend: str = "statspai-native"
+    #: Kish effective sizes of a weighted fit (``None`` without weights)
+    weight_info: Optional[Dict[str, Any]] = None
+    #: Kernel that residualised on the fixed effects: ``"rust"``,
+    #: ``"numpy"`` or ``"none"`` (no fixed effects)
+    fe_kernel: str = "none"
 
     def coef(self) -> pd.Series:
         return pd.Series(self.coef_vec, index=self.coef_names, name="Estimate")
@@ -155,6 +162,7 @@ class FeolsResult(ResultProtocolMixin):
             "ssc": self.ssc,
             "cluster_var": self.cluster_var,
             "backend": self.backend,
+            "fe_kernel": self.fe_kernel,
             "fixed_effects": [
                 {"name": name, "cardinality": cardinality}
                 for name, cardinality in zip(
@@ -198,6 +206,7 @@ class FeolsResult(ResultProtocolMixin):
             "n_terms": n_terms,
             "truncated_terms": max(n_terms - limit, 0),
             "backend": self.backend,
+            "fe_kernel": self.fe_kernel,
         }
         return cast(dict[str, Any], _jsonable(payload))
 
@@ -221,6 +230,7 @@ def feols(
     drop_singletons: bool = True,
     fe_tol: float = 1e-10,
     fe_maxiter: int = 1_000,
+    weights_as: Optional[str] = None,
 ) -> FeolsResult:
     """OLS / WLS with high-dimensional fixed effects.
 
@@ -251,16 +261,25 @@ def feols(
         ``vcov="cr1"``; rejected otherwise. NaN cluster values raise.
     weights : str, optional
         Column name of observation weights. Each obs's contribution to
-        the objective is scaled by ``w_i`` (frequency / survey weights).
+        the objective is scaled by ``w_i``. With ``vcov='iid'`` they are
+        analytic weights (Stata ``[aw=]``, R ``fixest`` ``weights=``).
+    weights_as : {'analytic', 'sampling'}, optional
+        What the weights are. ``'analytic'`` is what ``weights=`` alone
+        already means. ``'sampling'`` (Stata ``[pw=]``) gives the same
+        coefficients with ``vcov='hc1'``, unless ``vcov=`` or
+        ``cluster=`` asks for another. Saying which also silences the
+        warning about dispersed weights under the classical variance.
+        ``'frequency'`` is refused.
     ssc : {"fixest", "statspai"}, default "fixest"
         Small-sample correction convention for residual degrees of
         freedom and CR1 scaling.
 
         - ``"fixest"`` (default since 1.31.0) mirrors R ``fixest`` /
           Stata ``reghdfe`` defaults, the setting the parity harness
-          pins: the IID/HC1 residual rank is ``ΣG_k - 1`` for multiple FE
-          dimensions, and one-way clustered CR1 excludes FE dimensions
-          nested in the cluster variable.
+          pins: the absorbed effects cost ``ΣG_k - (K - 1)`` degrees of
+          freedom for ``K`` dimensions (``G`` for one), and one-way
+          clustered CR1 excludes FE dimensions nested in the cluster
+          variable, keeping the intercept they span.
         - ``"statspai"`` is the pre-1.31 default, kept to reproduce old
           numbers: ``fe_dof = Σ(G_k - 1)`` (one degree of freedom too few
           for two-way FE) and every absorbed FE charged in CR1, which
@@ -278,11 +297,59 @@ def feols(
 
     Examples
     --------
+    >>> import numpy as np
+    >>> import pandas as pd
     >>> import statspai as sp
+    >>> rng = np.random.default_rng(0)
+    >>> n = 500
+    >>> df = pd.DataFrame({
+    ...     "firm": rng.integers(0, 25, n),
+    ...     "year": rng.integers(2010, 2016, n),
+    ...     "x1": rng.normal(size=n),
+    ...     "x2": rng.normal(size=n),
+    ... })
+    >>> df["y"] = 1 + 0.5 * df["x1"] - 0.3 * df["x2"] + rng.normal(size=n)
     >>> fit = sp.fast.feols("y ~ x1 + x2 | firm + year", data=df)
-    >>> fit.summary()
-    >>> fit.coef()                                # pd.Series
-    >>> fit.se()                                  # pd.Series
+    >>> text = fit.summary()                      # str
+    >>> list(fit.coef().index)                    # pd.Series
+    ['x1', 'x2']
+    >>> type(fit.se()).__name__
+    'Series'
+    """
+    return _feols_fit(
+        formula,
+        data,
+        vcov=vcov,
+        cluster=cluster,
+        weights=weights,
+        ssc=ssc,
+        drop_singletons=drop_singletons,
+        fe_tol=fe_tol,
+        fe_maxiter=fe_maxiter,
+        weights_as=weights_as,
+    )[0]
+
+
+def _feols_fit(
+    formula: str,
+    data: pd.DataFrame,
+    *,
+    vcov: str = "iid",
+    cluster: Optional[str] = None,
+    weights: Optional[str] = None,
+    ssc: str = "fixest",
+    drop_singletons: bool = True,
+    fe_tol: float = 1e-10,
+    fe_maxiter: int = 1_000,
+    weights_as: Optional[str] = None,
+    note_weights: bool = True,
+) -> Tuple[FeolsResult, Dict[str, Any]]:
+    """Body of :func:`feols`.
+
+    Also returns the arrays ``sp.feols`` reports on its native path: the
+    estimation-sample mask, the residualised outcome and design, the
+    residuals, the weights and the parameter count behind each small-sample
+    factor.
     """
     if vcov not in ("iid", "hc1", "cr1"):
         raise MethodIncompatibility(
@@ -292,6 +359,18 @@ def feols(
         raise MethodIncompatibility(
             f"feols: ssc={ssc!r}; supported: 'statspai' or 'fixest'"
         )
+    # weights_as=: what the weights are; sampling weights take hc1 unless
+    # another variance was asked for.
+    from ..core._agent_summary import resolve_weights_as
+
+    weights_as = resolve_weights_as(
+        weights_as,
+        has_weights=weights is not None,
+        native="analytic",
+        entry="sp.fast.feols",
+    )
+    if weights_as == "sampling" and cluster is None and vcov == "iid":
+        vcov = "hc1"
     if vcov == "cr1" and cluster is None:
         raise MethodIncompatibility("feols: vcov='cr1' requires cluster=<column name>")
     if cluster is not None and vcov in ("iid", "hc1"):
@@ -303,9 +382,8 @@ def feols(
     fe_tol = _nonnegative_finite_float(fe_tol, name="fe_tol", context="feols")
 
     # Lazy imports to keep top-level `sp.fast` cheap.
-    from .demean import demean as _demean
     from .fepois import _parse_fepois_formula
-    from .inference import crve as _crve
+    from .inference import _cr1_from_codes
 
     lhs, rhs_terms, fe_terms = _parse_fepois_formula(formula)
 
@@ -316,36 +394,42 @@ def feols(
     needed_cols = [lhs] + rhs_terms + fe_terms
     if weights is not None:
         needed_cols = needed_cols + [weights]
+    # ``cluster`` may name several columns (multiway clustering, internal).
+    cl_cols: List[str] = (
+        []
+        if cluster is None
+        else [cluster] if isinstance(cluster, str) else list(cluster)
+    )
     if cluster is not None:
-        needed_cols = needed_cols + [cluster]
+        needed_cols = needed_cols + cl_cols
     missing = [c for c in needed_cols if c not in data.columns]
     if missing:
         raise MethodIncompatibility(f"feols: columns missing from data: {missing}")
 
     n_obs = len(data)
     _nonempty_sample(n_obs, context="feols")
-    y = data[lhs].to_numpy(dtype=np.float64).copy()
+    # One column-major block [y | X]: the demean kernel works on columns,
+    # and filling it column by column copies each input once.
+    n_x = len(rhs_terms) + int(add_intercept)
+    A = np.empty((n_obs, 1 + n_x), dtype=np.float64, order="F")
+    A[:, 0] = data[lhs].to_numpy(dtype=np.float64)
+    if add_intercept:
+        A[:, 1] = 1.0
+    for j, term in enumerate(rhs_terms):
+        A[:, 1 + int(add_intercept) + j] = data[term].to_numpy(dtype=np.float64)
+    y = A[:, 0]
+    X = A[:, 1:]
     if not np.isfinite(y).all():
         raise MethodIncompatibility(
             f"feols: outcome column {lhs!r} has non-finite values"
         )
-    X_user = (
-        data[rhs_terms].to_numpy(dtype=np.float64).copy()
-        if rhs_terms
-        else np.empty((n_obs, 0), dtype=np.float64)
-    )
-    if X_user.ndim == 1:
-        X_user = X_user.reshape(-1, 1)
-    if not np.isfinite(X_user).all():
+    if not np.isfinite(X).all():
         raise MethodIncompatibility(
             "feols: regressor columns contain non-finite values"
         )
-    if add_intercept:
-        X = np.column_stack([np.ones(n_obs, dtype=np.float64), X_user])
-        coef_names_full: List[str] = ["(Intercept)"] + list(rhs_terms)
-    else:
-        X = X_user
-        coef_names_full = list(rhs_terms)
+    coef_names_full: List[str] = (["(Intercept)"] if add_intercept else []) + list(
+        rhs_terms
+    )
     if X.shape[1] == 0:
         raise ValueError(
             "No regressors after parsing — formula must include at least "
@@ -370,46 +454,78 @@ def feols(
     else:
         w_full = None
 
-    # Cluster column
-    if cluster is not None:
-        cluster_arr_full = data[cluster].to_numpy()
-        cluster_codes_check, _ = pd.factorize(
-            cluster_arr_full,
-            sort=False,
-            use_na_sentinel=True,
+    # Cluster column(s)
+    cl_codes_full: List[np.ndarray] = []
+    for col in cl_cols:
+        codes_c, _ = pd.factorize(
+            data[col].to_numpy(), sort=False, use_na_sentinel=True
         )
-        if (cluster_codes_check < 0).any():
+        if (codes_c < 0).any():
             raise MethodIncompatibility(
-                f"feols: cluster column {cluster!r} contains NaN; "
+                f"feols: cluster column {col!r} contains NaN; "
                 "drop or impute upstream"
             )
+        cl_codes_full.append(codes_c)
+    if cl_cols:
+        cluster_arr_full = data[cl_cols[0]].to_numpy()
     else:
         cluster_arr_full = None
 
     # ---------- FE residualisation path ----------
     if fe_terms:
-        fe_df = data[fe_terms]
         if w_full is None:
-            # Unweighted: use the Rust-backed demean kernel (Phase 1).
-            stacked = np.column_stack([y, X])
-            stacked_dem, info = _demean(
-                stacked,
-                fe_df,
-                drop_singletons=drop_singletons,
-                tol=1e-12,
-                max_iter=fe_maxiter,
-                tol_abs=fe_tol,
+            # Unweighted: the demean kernel (Rust when installed), run in
+            # place on an owned column-major copy of the kept rows of
+            # [y | X]; the block itself stays raw for the checks below.
+            from .demean import (
+                _demean_core,
+                _densify_kept,
+                _detect_singletons,
+                _factorize_columns,
             )
-            keep_mask = info.keep_mask
-            n_kept = info.n_kept
-            n_dropped_singletons = info.n_dropped
-            y_dem = stacked_dem[:, 0]
-            X_dem = stacked_dem[:, 1:]
-            fe_card = list(info.n_fe)
+
+            codes_raw, n_fe_raw = _factorize_columns(
+                [data[c].to_numpy() for c in fe_terms]
+            )
+            keep_mask = (
+                _detect_singletons(codes_raw, n_obs)
+                if drop_singletons
+                else np.ones(n_obs, dtype=bool)
+            )
+            n_kept = int(keep_mask.sum())
+            n_dropped_singletons = n_obs - n_kept
+            if n_kept < 1:
+                raise DataInsufficient(
+                    "fast.demean: no rows remain after singleton pruning"
+                )
+            fe_codes_list, counts_fe, fe_card = _densify_kept(
+                codes_raw, n_fe_raw, keep_mask, n_dropped_singletons
+            )
+            if n_dropped_singletons:
+                A = np.asfortranarray(A[keep_mask])
+                y, X = A[:, 0], A[:, 1:]
+            work, _, fe_conv, _, fe_kernel = _demean_core(
+                A.copy(order="F"),
+                fe_codes_list,
+                counts_fe,
+                max_iter=fe_maxiter,
+                tol=1e-12,
+                tol_abs=fe_tol,
+                accelerate=True,
+                accel_period=5,
+                backend="auto",
+            )
+            fe_solver = _finish_unconverged(
+                work, fe_codes_list, None, fe_conv, fe_maxiter
+            )
+            y_dem = work[:, 0]
+            X_dem = work[:, 1:]
+            y_raw_kept, X_raw_kept = y, X
         else:
             # Weighted: the FE projection is W-weighted, so the
             # arithmetic-mean Rust kernel is wrong here. Route through
             # the same weighted-AP loop ``fepois`` uses internally.
+            from .._rust_backend import HAS_RUST as _has_rust
             from .demean import _detect_singletons as _ds_helper
             from .fepois import _weighted_ap_demean
 
@@ -433,6 +549,15 @@ def feols(
             )
             n_kept = int(keep_mask.sum())
             n_dropped_singletons = n_obs - n_kept
+            if n_kept == 0:
+                raise DataInsufficient(
+                    "feols: every row was dropped as a singleton of the fixed "
+                    "effects, so nothing is left to estimate on",
+                    recovery_hint=(
+                        "Use coarser fixed effects, or pass drop_singletons=False "
+                        "to keep the singleton rows."
+                    ),
+                )
             # Re-densify codes on kept rows
             fe_codes_kept: List[np.ndarray] = []
             counts_list: List[np.ndarray] = []
@@ -449,7 +574,7 @@ def feols(
             X_kept = X[keep_mask]
             w_kept = w_full[keep_mask]
             stacked = np.column_stack([y_kept, X_kept])
-            stacked_dem, _, _ = _weighted_ap_demean(
+            stacked_dem, _, w_conv = _weighted_ap_demean(
                 stacked,
                 fe_codes_kept,
                 counts_list,
@@ -457,9 +582,19 @@ def feols(
                 max_iter=fe_maxiter,
                 tol=fe_tol,
             )
+            fe_solver = _finish_unconverged(
+                stacked_dem,
+                fe_codes_kept,
+                w_kept,
+                [bool(w_conv)] * stacked_dem.shape[1],
+                fe_maxiter,
+            )
             y_dem = stacked_dem[:, 0]
             X_dem = stacked_dem[:, 1:]
+            y_raw_kept, X_raw_kept = y_kept, X_kept
             fe_card = weighted_fe_card
+            fe_codes_list = fe_codes_kept
+            fe_kernel = "rust" if _has_rust and len(fe_terms) >= 2 else "numpy"
         fe_dof_statspai = _statspai_fe_dof(fe_card)
     else:
         keep_mask = np.ones(n_obs, dtype=bool)
@@ -467,8 +602,12 @@ def feols(
         n_dropped_singletons = 0
         y_dem = y.copy()
         X_dem = X.copy()
+        y_raw_kept, X_raw_kept = y, X
         fe_card = []
+        fe_codes_list = []
         fe_dof_statspai = 0
+        fe_kernel = "none"
+        fe_solver = "none"
 
     # Apply mask to weights / cluster (demean already returned masked X̃, ỹ)
     if w_full is not None:
@@ -479,8 +618,32 @@ def feols(
         )
     else:
         w = np.ones(n_kept, dtype=np.float64)
+    cl_dims: List[Tuple[np.ndarray, int]] = []
     if cluster_arr_full is not None:
-        cluster_arr_kept = cluster_arr_full[keep_mask]
+        cluster_arr_kept = cluster_arr_full[keep_mask] if len(cl_cols) == 1 else None
+        # Dense codes in first-appearance order on the kept rows, as
+        # factorising the kept labels would give.
+        for codes_c in cl_codes_full:
+            if n_kept < n_obs:
+                dense_c, levels_c = pd.factorize(codes_c[keep_mask], sort=False)
+                cl_dims.append((dense_c, len(levels_c)))
+            else:
+                cl_dims.append((codes_c, int(codes_c.max()) + 1 if codes_c.size else 0))
+        cl_codes, n_clusters = cl_dims[0]
+        if len(cl_dims) > 1:
+            # Cameron-Gelbach-Miller: one term per non-empty subset of the
+            # dimensions; two-way adds their intersection with sign -1.
+            if len(cl_dims) != 2:
+                raise MethodIncompatibility(
+                    "feols: clustering on more than two dimensions is not "
+                    "supported natively"
+                )
+            (ca, ga), (cb, gb) = cl_dims
+            inter, levels_ab = pd.factorize(ca.astype(np.int64) * gb + cb, sort=False)
+            cl_dims.append((inter, len(levels_ab)))
+            n_clusters = min(ga, gb)
+        if n_clusters < 2:
+            raise DataInsufficient(f"crve: need at least 2 clusters, got {n_clusters}")
     else:
         cluster_arr_kept = None
 
@@ -488,12 +651,8 @@ def feols(
     if ssc == "fixest":
         fe_dof = _fixest_fe_dof(fe_card)
         if vcov == "cr1":
-            cr1_extra_df = _fixest_cluster_fe_dof(
-                data,
-                fe_terms,
-                fe_card,
-                keep_mask,
-                cluster,
+            cr1_extra_df = _fixest_cluster_fe_dof_codes(
+                fe_codes_list, fe_card, [c for c, _ in cl_dims]
             )
         else:
             cr1_extra_df = fe_dof
@@ -501,9 +660,29 @@ def feols(
         fe_dof = fe_dof_statspai
         cr1_extra_df = fe_dof_statspai
 
+    # ---------- identification ----------
+    # Inverting the normal equations only fails on an exactly singular
+    # matrix; an absorbed regressor comes back from the residualisation as
+    # rounding noise, so check explicitly against the demean's threshold.
+    if not fe_terms:
+        tol_abs_id, tol_rel_id = 0.0, 0.0
+    elif w_full is None:
+        tol_abs_id, tol_rel_id = fe_tol, 1e-12
+    else:
+        tol_abs_id, tol_rel_id = 0.0, fe_tol
+    _require_identified_regressors(
+        X_raw_kept,
+        X_dem,
+        coef_names_full,
+        context="feols",
+        weights=w if w_full is not None else None,
+        tol_abs=tol_abs_id,
+        tol_rel=tol_rel_id,
+    )
+
     # ---------- WLS solve ----------
-    Xw = X_dem * w[:, None]  # diag(w) X̃
-    XtWX = X_dem.T @ Xw  # X̃' diag(w) X̃
+    # X̃' diag(w) X̃ (no weighted copy of X̃ when there are no weights)
+    XtWX = X_dem.T @ (X_dem * w[:, None] if w_full is not None else X_dem)
     try:
         XtWX_inv = np.linalg.inv(XtWX)
     except np.linalg.LinAlgError as exc:
@@ -511,7 +690,7 @@ def feols(
             f"Normal equations are singular: {exc}. Likely cause: "
             "perfect collinearity in regressors after FE residualisation."
         ) from exc
-    XtWy = X_dem.T @ (w * y_dem)
+    XtWy = X_dem.T @ (w * y_dem if w_full is not None else y_dem)
     beta = XtWX_inv @ XtWy
     resid = y_dem - X_dem @ beta
 
@@ -544,18 +723,46 @@ def feols(
         vcov_mat = XtWX_inv @ meat @ XtWX_inv
         if df_resid > 0:
             vcov_mat = vcov_mat * (n / df_resid)
-    else:  # cr1
-        vcov_mat = _crve(
+    elif len(cl_dims) == 1:  # cr1, one-way
+        vcov_mat = _cr1_from_codes(
             X_dem,
             resid,
-            cluster_arr_kept,
+            cl_codes,
+            n_clusters,
             weights=w,
             bread=XtWX_inv,
-            type="cr1",
             extra_df=cr1_extra_df,
         )
+    else:  # cr1, two-way: V_a + V_b - V_ab, each with the smallest G
+        from .inference import _cr1_meat
 
-    return FeolsResult(
+        uw = resid * w
+        meat = np.zeros((p, p))
+        for (codes_c, g_c), sign in zip(cl_dims, (1.0, 1.0, -1.0)):
+            meat += sign * _cr1_meat(X_dem, uw, codes_c, g_c)
+        c = (n_clusters / (n_clusters - 1.0)) * (
+            (n - 1.0) / max(n - p - cr1_extra_df, 1)
+        )
+        vcov_mat = (XtWX_inv @ meat @ XtWX_inv) * c
+
+    weight_info: Optional[Dict[str, Any]] = None
+    if weights is not None and note_weights:
+        from ..core._agent_summary import note_weight_diagnostics
+
+        weight_info = {}
+        note_weight_diagnostics(
+            weight_info,
+            w,
+            {"iid": "classical", "hc1": "hc1", "cr1": "cluster"}[vcov],
+            entry="sp.fast.feols",
+            robust_option="vcov='hc1' or vcov='cr1' with cluster=",
+            classical_reading="analytic weights (Stata [aw=])",
+            cluster_keys=cluster_arr_kept if vcov == "cr1" else None,
+            cluster=cluster,
+            weights_as=weights_as,
+        )
+
+    result = FeolsResult(
         formula=formula,
         coef_names=coef_names_full,
         coef_vec=beta,
@@ -572,7 +779,67 @@ def feols(
         vcov_type=vcov,
         ssc=ssc,
         cluster_var=cluster,
+        weight_info=weight_info,
+        fe_kernel=fe_kernel,
     )
+    arrays = {
+        "keep_mask": keep_mask,
+        "y": y_raw_kept,
+        "y_dem": y_dem,
+        "X_dem": X_dem,
+        "resid": resid,
+        "w": w,
+        "cluster": cluster_arr_kept,
+        "n_clusters": n_clusters if cluster_arr_full is not None else 0,
+        "cl_dims": cl_dims,
+        "fe_codes": fe_codes_list,
+        "fe_card": fe_card,
+        "df_k": int(n - df_resid),
+        "df_k_cluster": int(p + cr1_extra_df),
+        "fe_solver": fe_solver,
+    }
+    return result, arrays
+
+
+def _finish_unconverged(
+    block: np.ndarray,
+    codes: List[np.ndarray],
+    weights: Optional[np.ndarray],
+    converged: List[bool],
+    maxiter: int,
+) -> str:
+    """Residualise exactly the columns the projections left unconverged.
+
+    Alternating projections crawl on poorly connected fixed-effect graphs
+    (chains of firms linked by few movers, panels dominated by singleton
+    groups); stopping at ``maxiter`` there leaves the slopes visibly off.
+    Those columns are finished by a sparse direct solve of the normal
+    equations (``_fe_direct``), which is cheap on exactly such graphs.
+    Returns the solver label recorded on the fit; raises when the direct
+    solve does not reach the tolerance either.
+    """
+    bad = [j for j, ok in enumerate(converged) if not ok]
+    if not bad:
+        return "alternating projections"
+    from ._fe_direct import residualise_codes
+
+    try:
+        _, ok = residualise_codes(block, codes, weights, columns=bad)
+    except MemoryError:  # pragma: no cover - depends on the machine
+        ok = False
+    if not ok:
+        raise NumericalInstability(
+            f"feols: the fixed-effect residualisation did not converge in "
+            f"{maxiter} sweeps, and the sparse direct solve that finishes it "
+            "did not reach the tolerance either; the estimates would be "
+            "inaccurate.",
+            recovery_hint=(
+                "Drop singleton groups (fixef_rm='singleton'), use coarser "
+                "fixed effects, or raise fe_maxiter."
+            ),
+            diagnostics={"fe_maxiter": maxiter, "unconverged_columns": bad},
+        )
+    return f"sparse direct (projections stopped at {maxiter} sweeps)"
 
 
 def _statspai_fe_dof(fe_card: List[int]) -> int:
@@ -580,11 +847,18 @@ def _statspai_fe_dof(fe_card: List[int]) -> int:
 
 
 def _fixest_fe_dof(fe_card: List[int]) -> int:
+    """Parameters the absorbed effects use up, as fixest counts them.
+
+    The effects span the intercept, so one dimension of ``G`` levels costs
+    ``G`` and each further dimension one less than its levels: the rank of
+    the dummy design is ``sum(G_k) - (K - 1)``. Until 1.36.0 the
+    one-dimension case returned ``G - 1``, one too few, which made the
+    IID / HC1 standard errors ``sqrt((n - p - G) / (n - p - G + 1))`` of
+    fixest's. Two or more dimensions were exact.
+    """
     if not fe_card:
         return 0
-    if len(fe_card) == 1:
-        return int(fe_card[0]) - 1
-    return int(sum(int(g) for g in fe_card) - 1)
+    return int(sum(int(g) for g in fe_card) - (len(fe_card) - 1))
 
 
 def _fixest_cluster_fe_dof(
@@ -604,19 +878,55 @@ def _fixest_cluster_fe_dof(
         if _is_nested_in_cluster(fe_values, cluster_values):
             continue
         effective_cards.append(int(card))
-    return int(sum(effective_cards))
+    if not effective_cards:
+        # Every absorbed dimension is nested in the clusters: fixest (and
+        # reghdfe) drop them from K but keep the intercept they span.
+        return 1
+    return int(sum(effective_cards) - (len(effective_cards) - 1))
+
+
+def _fixest_cluster_fe_dof_codes(
+    fe_codes: List[np.ndarray],
+    fe_card: List[int],
+    cluster_codes: Any,
+) -> int:
+    """:func:`_fixest_cluster_fe_dof` on dense codes of the kept rows.
+
+    ``cluster_codes`` is one code array or a list of them (multiway: every
+    clustering dimension and their intersection); an effect nested in any
+    of them is left out of ``K``, as fixest and pyfixest do.
+    """
+    if not fe_codes:
+        return _fixest_fe_dof(fe_card)
+    dims = cluster_codes if isinstance(cluster_codes, list) else [cluster_codes]
+    free = [
+        int(card)
+        for codes, card in zip(fe_codes, fe_card)
+        if not any(_codes_nested(codes, int(card), c) for c in dims)
+    ]
+    if not free:
+        return 1  # every effect nested in the clusters: keep the intercept
+    return int(sum(free) - (len(free) - 1))
+
+
+def _codes_nested(codes: np.ndarray, n_levels: int, cluster_codes: np.ndarray) -> bool:
+    """Every level of dense ``codes`` lies in a single cluster."""
+    owner = np.empty(n_levels, dtype=np.int64)
+    owner[codes] = cluster_codes
+    return bool((owner[codes] == cluster_codes).all())
 
 
 def _is_nested_in_cluster(
     fe_values: np.ndarray,
     cluster_values: np.ndarray,
 ) -> bool:
-    mapping: dict[object, object] = {}
-    for fe_value, cluster_value in zip(fe_values, cluster_values):
-        previous = mapping.setdefault(fe_value, cluster_value)
-        if previous != cluster_value:
-            return False
-    return True
+    # Nested when every level of the effect sits in a single cluster:
+    # record one cluster per level, then check every row agrees with it.
+    f_codes, f_levels = pd.factorize(fe_values, sort=False)
+    c_codes, _ = pd.factorize(cluster_values, sort=False)
+    owner = np.empty(len(f_levels), dtype=np.int64)
+    owner[f_codes] = c_codes
+    return bool((owner[f_codes] == c_codes).all())
 
 
 __all__ = ["feols", "FeolsResult"]

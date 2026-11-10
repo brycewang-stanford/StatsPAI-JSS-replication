@@ -46,6 +46,9 @@ import numpy as np
 import pandas as pd
 
 from .._aliases import accepts_aliases
+from .._result_serialize import attach_result_protocol
+from ..core._call_record import records_call
+from ..core._vcov_spec import accepts_vce
 from ..exceptions import MethodIncompatibility
 
 __all__ = [
@@ -247,6 +250,7 @@ def event_study_convention(
 # --------------------------------------------------------------------- #
 # Empirical comparison
 # --------------------------------------------------------------------- #
+@attach_result_protocol
 @dataclass
 class EventStudyConventionResult:
     """Paths and convention diagnostics for one panel.
@@ -366,6 +370,9 @@ def _default_runners(
             unit=unit,
             window=window,
             cluster=cluster or unit,
+            # Pin today's critical values: no FutureWarning users cannot act on.
+            # Switch with the crit_dist default (planned 1.41).
+            crit_dist="normal",
         )
         return _normalise_path(res.model_info["event_study"])
 
@@ -395,6 +402,11 @@ def _default_runners(
             i=unit,
             event_window=window,
             cluster=cluster,
+            # only the event-time path is read; the headline is irrelevant
+            aggregation="event_time",
+            # Pin today's critical values: no FutureWarning users cannot act on.
+            # Switch with the crit_dist default (planned 1.41).
+            crit_dist="normal",
         )
         return _normalise_path(res.model_info["event_study"])
 
@@ -436,7 +448,9 @@ def _default_runners(
     }
 
 
-@accepts_aliases(id="unit")
+@records_call("compare_event_study_conventions")
+@accepts_aliases(id="unit", cohort="first_treat", g="first_treat")
+@accepts_vce(default="cluster")
 def compare_event_study_conventions(
     data: pd.DataFrame,
     y: str,

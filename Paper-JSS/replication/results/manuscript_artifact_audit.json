@@ -8,10 +8,11 @@
     "tab:basque-specs",
     "tab:correctness-history",
     "tab:decathlon",
+    "tab:dml-designs",
     "tab:ex08-three-way",
     "tab:forest-seed-mc",
+    "tab:handoff",
     "tab:headline-parity",
-    "tab:internal-parity",
     "tab:related-software",
     "tab:reproduction",
     "tab:schema-coverage",
@@ -35,7 +36,7 @@
     "sections/09-discussion-compact.tex",
     "sections/appendix.tex"
   ],
-  "artifact_count": 12,
+  "artifact_count": 15,
   "compact_section_coverage": {
     "expected_sections": [
       "sections/01-introduction-compact.tex",
@@ -54,9 +55,9 @@
     "rows": [
       {
         "anchors": {
-          "boundary": "not a claim that \\statspai{} supersedes specialized packages",
-          "contribution": "The contribution is a design that makes these failure modes checkable",
-          "evidence": "The validated claim is limited to the"
+          "boundary": "supersede the specialized packages",
+          "contribution": "The contribution is a design that makes these failures checkable",
+          "evidence": "The reach of these checks narrows"
         },
         "missing_anchors": [],
         "ok": true,
@@ -65,11 +66,11 @@
       },
       {
         "anchors": {
-          "backend_boundary": "do not depend on a compiled native extension",
-          "boundary": "Specialized packages remain the reference implementations",
+          "backend_boundary": "which is a required dependency where a",
+          "boundary": "For a single specialized model that is often",
           "contribution": "The architecture has four layers",
-          "evidence": "The validation tier is therefore not a paper-only artifact",
-          "integration": "make cross-family handoffs auditable and reproducible"
+          "evidence": "The validation tier is not a paper-only artifact",
+          "integration": "What the designs share"
         },
         "missing_anchors": [],
         "ok": true,
@@ -78,9 +79,9 @@
       },
       {
         "anchors": {
-          "boundary": "reports the mechanical evidence for it and what it does not show",
+          "boundary": "evidence for it and what that evidence does not show",
           "contribution": "typed schemas and an MCP server",
-          "evidence": "Every public-facing citation emitted by the package"
+          "evidence": "Every citation the package emits"
         },
         "missing_anchors": [],
         "ok": true,
@@ -89,9 +90,9 @@
       },
       {
         "anchors": {
-          "boundary": "central boundary: original-data rows are claimed only",
-          "contribution": "seven worked examples as an end-to-end smoke test",
-          "evidence": "Table~\\ref{tab:worked-example-map} maps those examples"
+          "boundary": "never quotes one against the other",
+          "contribution": "seven worked examples",
+          "evidence": "Table~\\ref{tab:worked-example-map}"
         },
         "missing_anchors": [],
         "ok": true,
@@ -100,9 +101,9 @@
       },
       {
         "anchors": {
-          "boundary": "only a T2 row is a parity claim",
-          "contribution": "twelve-estimator suite with four evidence tracks",
-          "evidence": "are earned in exactly two ways"
+          "boundary": "Numerical agreement does not establish identification",
+          "contribution": "a suite of twelve estimators",
+          "evidence": "named external reference"
         },
         "missing_anchors": [],
         "ok": true,
@@ -123,9 +124,8 @@
       {
         "anchors": {
           "boundary": "does not answer whether an LLM agent",
-          "contribution": "reports only the \\emph{mechanical} and \\emph{contractual} evidence",
-          "evidence": "deterministic end-to-end trace",
-          "infrastructure": "regenerated from the same validation ledger"
+          "contribution": "only \\emph{mechanical} and \\emph{contractual} evidence",
+          "evidence": "deterministic trace"
         },
         "missing_anchors": [],
         "ok": true,
@@ -134,10 +134,10 @@
       },
       {
         "anchors": {
-          "boundary": "not require a compiled Rust extension, GPU, or commercial software",
+          "boundary": "The compiled kernel matters in two ways",
           "contribution": "The evidence is rebuilt by one standalone script",
           "evidence": "Tier~1 was verified from a clean start",
-          "quick_zip_boundary": "from frozen experiment artifacts: the",
+          "quick_zip_boundary": "from stored experiment results",
           "reviewer_commands": "replication/reproduce.py"
         },
         "missing_anchors": [],
@@ -149,7 +149,7 @@
         "anchors": {
           "boundary": "The unification itself has costs",
           "contribution": "The article's claim is about what a validation label",
-          "evidence": "main limitations are as follows"
+          "evidence": "The main limitations follow"
         },
         "missing_anchors": [],
         "ok": true,
@@ -158,8 +158,8 @@
       },
       {
         "anchors": {
-          "boundary": "Per-row detail is in the generated ledger",
-          "contribution": "The slice is a reading aid, not the evidence",
+          "boundary": "The per-row results",
+          "contribution": "prints every one of the",
           "evidence": "tables/appendix_b_parity.tex"
         },
         "missing_anchors": [],
@@ -203,7 +203,7 @@
       "hash_equal_to": "tests/perf/figures/track_c_loglog.pdf",
       "missing_sources": [],
       "path": "Paper-JSS/manuscript/figures/track_c_loglog.pdf",
-      "sha256": "628438bf2b8adfc5a1cf1e91b5d28d93472a9577eb1a43ee486905e9de67674b",
+      "sha256": "44f993880bf304352749927f341e8002abad20a6c9f60c0f1b645eda3a92522b",
       "sources": [
         "tests/perf/results/perf_table.tex",
         "tests/perf/figures/track_c_loglog.pdf"
@@ -227,10 +227,11 @@
     "tab:basque-specs",
     "tab:correctness-history",
     "tab:decathlon",
+    "tab:dml-designs",
     "tab:ex08-three-way",
     "tab:forest-seed-mc",
+    "tab:handoff",
     "tab:headline-parity",
-    "tab:internal-parity",
     "tab:related-software",
     "tab:reproduction",
     "tab:schema-coverage",
@@ -246,11 +247,14 @@
   "table_inputs": [
     "Paper-JSS/manuscript/generated_claims.tex",
     "Paper-JSS/manuscript/tables/appendix_b_parity.tex",
+    "Paper-JSS/manuscript/tables/dml_plr_designs.tex",
     "Paper-JSS/manuscript/tables/forest_seed_mc.tex",
     "Paper-JSS/manuscript/tables/headline_parity.tex",
+    "Paper-JSS/manuscript/tables/related_software.tex",
     "Paper-JSS/manuscript/tables/track_a_cross_language_snapshot.tex",
     "Paper-JSS/manuscript/tables/track_b_monte_carlo.tex",
     "Paper-JSS/manuscript/tables/track_c_perf.tex",
+    "Paper-JSS/replication/tables/ex03_handoff.tex",
     "Paper-JSS/replication/tables/ex07_agent_trace.tex",
     "Paper-JSS/replication/tables/ex08_three_way.tex"
   ],
@@ -274,6 +278,16 @@
       "path": "Paper-JSS/manuscript/tables/appendix_b_parity.tex",
       "sources": [
         "tests/r_parity/results/parity_table_3way.tex"
+      ]
+    },
+    {
+      "exists": true,
+      "generator": "Paper-JSS/replication/scripts/generate_dml_designs_table.py",
+      "missing_snippets": [],
+      "missing_sources": [],
+      "path": "Paper-JSS/manuscript/tables/dml_plr_designs.tex",
+      "sources": [
+        "Paper-JSS/replication/results/dml_plr_designs.json"
       ]
     },
     {
@@ -308,6 +322,14 @@
     },
     {
       "exists": true,
+      "generator": "hand-written; checked against each package's latest release",
+      "missing_snippets": [],
+      "missing_sources": [],
+      "path": "Paper-JSS/manuscript/tables/related_software.tex",
+      "sources": []
+    },
+    {
+      "exists": true,
       "generator": "tests/r_parity/compare.py",
       "missing_snippets": [],
       "missing_sources": [],
@@ -337,9 +359,19 @@
       "missing_snippets": [],
       "missing_sources": [],
       "path": "Paper-JSS/manuscript/tables/track_c_perf.tex",
-      "sha256": "26038a20a7d40a59083318af976edf6c9f86f57ad1d50a23a8bce3787d0d90ef",
+      "sha256": "26e21da3f143abe67df1d80513e5d588c0442ebc380042d49d60e6ddfb41ea8e",
       "sources": [
         "tests/perf/results/perf_table.tex"
+      ]
+    },
+    {
+      "exists": true,
+      "generator": "Paper-JSS/replication/scripts/ex03_csdid.py",
+      "missing_snippets": [],
+      "missing_sources": [],
+      "path": "Paper-JSS/replication/tables/ex03_handoff.tex",
+      "sources": [
+        "Paper-JSS/replication/results/ex03_csdid.json"
       ]
     },
     {

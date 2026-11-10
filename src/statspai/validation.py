@@ -23,6 +23,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Union
 
+from ._result_serialize import attach_result_protocol
+
 _REPO_ENV = "STATSPAI_REPO_ROOT"
 
 
@@ -91,8 +93,10 @@ class ValidationReport:
             f"| Hand-written specs | {reg.get('handwritten_specs', 0)} |",
             f"| Auto specs | {reg.get('auto_specs', 0)} |",
             f"| Agent cards | {reg.get('agent_cards', 0)} |",
-            f"| Certified functions | {reg.get('per_validation_status', {}).get('certified', 0)} |",
-            f"| Validated functions | {reg.get('per_validation_status', {}).get('validated', 0)} |",
+            "| Certified functions | "
+            f"{reg.get('per_validation_status', {}).get('certified', 0)} |",
+            "| Validated functions | "
+            f"{reg.get('per_validation_status', {}).get('validated', 0)} |",
             "",
             "## Validation Evidence",
             "",
@@ -112,11 +116,13 @@ class ValidationReport:
             ),
             (
                 "| Reference parity tests | "
-                f"{ev.get('pytest_inventory', {}).get('reference_parity_files', 0)} files |"
+                f"{ev.get('pytest_inventory', {}).get('reference_parity_files', 0)} "
+                "files |"
             ),
             (
                 "| External parity tests | "
-                f"{ev.get('pytest_inventory', {}).get('external_parity_files', 0)} files |"
+                f"{ev.get('pytest_inventory', {}).get('external_parity_files', 0)} "
+                "files |"
             ),
             (
                 "| Agent benchmark | "
@@ -171,6 +177,7 @@ class ReproductionStep:
         return asdict(self)
 
 
+@attach_result_protocol
 @dataclass
 class ReproductionResult:
     """Structured result returned by :func:`reproduce_jss_tables`.

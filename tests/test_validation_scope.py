@@ -122,14 +122,32 @@ def card():
     return sp.datasets.card_1995()
 
 
-@pytest.mark.parametrize("robust", ["hc2", "hc3", "hc0"])
-def test_untested_iv_covariance_does_not_borrow_the_card_row(card, robust):
-    scope = sp.validation_scope(_quiet(sp.iv, CARD_IV, data=card, robust=robust))
+_MENU = "test_vce_menu_parity.py"
+
+
+@pytest.mark.parametrize(
+    "method,robust", [("liml", "hc2"), ("liml", "hc3"), ("fuller", "hc3")]
+)
+def test_untested_iv_covariance_does_not_borrow_the_card_row(card, method, robust):
+    """LIML / Fuller with HC2 / HC3 run, but neither R's ivreg (no k-class)
+    nor Stata (no HC2 / HC3 after ivregress or ivreg2) defines them."""
+    scope = sp.validation_scope(
+        _quiet(sp.iv, CARD_IV, data=card, method=method, robust=robust)
+    )
     assert scope["configuration"]["vce"] == robust
     assert scope["status"] == "estimate_only"
     assert scope["outputs"]["estimate"]["status"] == "reference"
     assert scope["outputs"]["se"]["status"] == "not_covered"
     assert not scope["outputs"]["se"]["evidence"]
+
+
+@pytest.mark.parametrize("robust", ["hc2", "hc3", "hc0"])
+def test_2sls_hc_covariances_are_covered_by_the_vce_menu_row(card, robust):
+    scope = sp.validation_scope(_quiet(sp.iv, CARD_IV, data=card, robust=robust))
+    assert scope["configuration"]["vce"] == robust
+    assert scope["status"] == "covered"
+    se_rows = [e["artifact"] for e in scope["outputs"]["se"]["evidence"]]
+    assert se_rows and all(a.endswith(_MENU) for a in se_rows)
 
 
 @pytest.mark.parametrize("robust,expected", [(None, "covered"), ("hc1", "covered")])
@@ -149,7 +167,10 @@ def test_iv_small_sample_cluster_vce_is_not_the_cr1_row(card):
         _quiet(sp.iv, CARD_IV, data=df, vce="cr2", cluster="cl")
     )
     assert scope["configuration"]["vce"] == "cr2"
-    assert scope["outputs"]["se"]["status"] == "not_covered"
+    se_rows = [e["artifact"] for e in scope["outputs"]["se"]["evidence"]]
+    # covered by the clubSandwich CR2 row, not by any CR1 artifact
+    assert se_rows and all(a.endswith(_MENU) for a in se_rows)
+    assert all("CR2" in e["compares"] for e in scope["outputs"]["se"]["evidence"])
 
 
 def test_values_outside_a_domain_are_refused():
@@ -175,13 +196,41 @@ def test_regress_hc1_is_covered_and_names_its_coverage_row(card):
     assert scope["outputs"]["coverage"]["status"] == "coverage_simulation"
 
 
-def test_regress_cr2_is_estimate_only(card):
+def test_regress_cr2_has_a_stata_reference_and_hc0_an_r_one(card):
     df = card.assign(cl=np.arange(len(card)) % 40)
     scope = sp.validation_scope(
         sp.regress("lwage ~ educ", data=df, vce="cr2", cluster="cl")
     )
     assert scope["configuration"]["vce"] == "cr2"
-    assert scope["status"] == "estimate_only"
+    assert scope["status"] == "covered"
+    # Stata has no HC0; its reference is sandwich::vcovHC(type = "HC0").
+    scope = sp.validation_scope(sp.regress("lwage ~ educ", data=df, vce="hc0"))
+    assert scope["configuration"]["vce"] == "hc0"
+    assert scope["status"] == "covered"
+    se_rows = [e["artifact"] for e in scope["outputs"]["se"]["evidence"]]
+    assert se_rows and all(a.endswith(_MENU) for a in se_rows)
+
+
+def test_a_weighted_regress_is_its_own_cell(card):
+    df = card.assign(w=1.0 + (np.arange(len(card)) % 5))
+    scope = sp.validation_scope(sp.regress("lwage ~ educ", data=df, weights="w"))
+    assert scope["configuration"]["weights"] == "set"
+    assert scope["status"] == "covered"
+    # weighted CR2 is a disclosure next to its Stata reference: the
+    # clubSandwich number is a different, equally unbiased adjustment
+    df = df.assign(cl=np.arange(len(card)) % 40)
+    cr2 = sp.validation_scope(
+        _quiet(
+            sp.regress, "lwage ~ educ", data=df, weights="w", vce="cr2", cluster="cl"
+        )
+    )
+    kinds = {e["kind"] for e in cr2["outputs"]["se"]["evidence"]}
+    assert cr2["configuration"]["weights"] == "set" and kinds == {"T2", "T4"}
+    # the weighted wild cell (sp.regress refuses it) is not the unweighted one's
+    unweighted = sp.validation_scope(function="regress", vce="wild", weights="none")
+    weighted = sp.validation_scope(function="regress", vce="wild", weights="set")
+    assert unweighted["status"] == "covered"
+    assert weighted["outputs"]["se"]["status"] == "not_covered"
 
 
 def test_default_learner_dml_is_stochastic_only_and_the_linear_row_is_a_near_miss(card):
@@ -227,11 +276,37 @@ def test_linear_learner_dml_on_other_folds_is_not_covered(card):
         model="plr",
         model_y=LinearRegression(),
         model_d=LinearRegression(),
-        n_folds=3,
+        n_folds=7,
     )
     scope = sp.validation_scope(fit)
-    assert scope["configuration"]["n_folds"] == "3"
+    assert scope["configuration"]["n_folds"] == "7"
     assert scope["status"] == "not_covered"
+    # 2, 3 and 10 folds were run against DoubleML; 7 was not
+    three = sp.validation_scope(
+        function="dml",
+        model="plr",
+        score="partialling out",
+        learners="linear",
+        n_folds="3",
+        n_rep="1",
+        ipw="n/a",
+    )
+    assert three["status"] == "covered"
+
+
+def test_repeated_dml_se_is_a_disclosure_and_its_estimate_is_covered():
+    scope = sp.validation_scope(
+        function="dml",
+        model="plr",
+        score="partialling out",
+        learners="linear",
+        n_folds="5",
+        n_rep=">1",
+        ipw="n/a",
+    )
+    assert scope["status"] == "estimate_only"
+    assert scope["outputs"]["estimate"]["status"] == "reference"
+    assert scope["outputs"]["se"]["status"] == "disclosure"
 
 
 def test_callaway_santanna_default_dr_is_covered_by_the_grid_not_module_04():
@@ -242,8 +317,15 @@ def test_callaway_santanna_default_dr_is_covered_by_the_grid_not_module_04():
     scope = sp.validation_scope(fit)
     assert scope["configuration"]["estimator"] == "dr"
     assert scope["status"] == "covered"
+    assert scope["configuration"]["sample"] == "panel"
+    # The headline simple ATT does not depend on the base period, so the
+    # varying-base mpdta row joins the universal-base rows; module 04 (reg)
+    # does not.
     assert {e["artifact"] for e in scope["outputs"]["se"]["evidence"]} == {
-        "tests/reference_parity/test_cs_weighted_parity.py"
+        "tests/reference_parity/test_cs_weighted_parity.py",
+        "tests/reference_parity/test_cs_balance_full_did_parity.py",
+        "tests/reference_parity/test_cs_gaps_parity.py",
+        "tests/reference_parity/test_aggte_mpdta_parity.py",
     }
 
 
@@ -266,7 +348,7 @@ def test_callaway_santanna_bootstrap_se_is_a_stochastic_screen():
     assert scope["status"] == "estimate_only"
 
 
-def test_callaway_santanna_anticipation_is_not_covered():
+def test_callaway_santanna_anticipation_is_covered_by_the_did_rows():
     m = sp.datasets.mpdta()
     fit = _quiet(
         sp.callaway_santanna,
@@ -277,7 +359,116 @@ def test_callaway_santanna_anticipation_is_not_covered():
         i="countyreal",
         anticipation=1,
     )
-    assert sp.validation_scope(fit)["status"] == "not_covered"
+    scope = sp.validation_scope(fit)
+    assert scope["configuration"]["anticipation"] == ">0"
+    assert scope["status"] == "covered"
+    assert "tests/reference_parity/test_cs_gaps_parity.py" in {
+        e["artifact"] for e in scope["outputs"]["se"]["evidence"]
+    }
+
+
+@pytest.mark.parametrize(
+    "kw, sample, estimator",
+    [
+        ({"panel": False}, "rcs", "dr"),
+        ({"panel": False, "estimator": "stdipw"}, "rcs", "ipw"),
+        ({"estimator": "ipw_abadie"}, "panel", "ipw_abadie"),
+    ],
+)
+def test_callaway_santanna_reads_the_sample_and_estimator(kw, sample, estimator):
+    """Repeated cross-section fits record their engine in the estimator label
+    ("DR (RCS, Sant'Anna-Zhao)"), which used to fall outside the map's domain,
+    so no repeated cross-section fit could match a row; 'stdipw' is 'ipw'."""
+    m = pd.read_csv(ROOT / "tests" / "orig_parity" / "data" / "02_mpdta_original.csv")
+    fit = _quiet(
+        sp.callaway_santanna,
+        m,
+        y="lemp",
+        g="first_treat",
+        t="year",
+        i="countyreal",
+        x=["lpop"],
+        **kw,
+    )
+    scope = sp.validation_scope(fit)
+    assert scope["configuration"]["sample"] == sample
+    assert scope["configuration"]["estimator"] == estimator
+    if (sample, estimator) == ("rcs", "dr"):
+        # DR with covariates on repeated cross-sections: the references (R
+        # did, DRDID, csdid) run the 'reference' variance sign, so the default
+        # 'delta' fit has T2 evidence for its ATT only.
+        assert scope["configuration"]["variance_convention"] == "delta"
+        assert scope["status"] == "estimate_only"
+        ref = sp.validation_scope(
+            _quiet(
+                sp.callaway_santanna,
+                m,
+                y="lemp",
+                g="first_treat",
+                t="year",
+                i="countyreal",
+                x=["lpop"],
+                variance_convention="reference",
+                **kw,
+            )
+        )
+        assert ref["status"] == "covered"
+    else:
+        assert scope["status"] == "covered"
+
+
+@pytest.mark.parametrize(
+    "kw",
+    [
+        {},
+        {"panel": False},
+        {"control_group": "notyettreated", "anticipation": 1},
+        {"panel": False, "control_group": "notyettreated", "estimator": "reg"},
+        {"allow_unbalanced_panel": True, "estimator": "ipw"},
+    ],
+)
+def test_callaway_santanna_headline_does_not_depend_on_the_base_period(kw):
+    """Backs the map's base_period invariant for the estimate and its SE."""
+    m = pd.read_csv(ROOT / "tests" / "orig_parity" / "data" / "02_mpdta_original.csv")
+    m = m.drop(index=m.index[::41]) if kw.get("allow_unbalanced_panel") else m
+    fits = [
+        _quiet(
+            sp.callaway_santanna,
+            m,
+            y="lemp",
+            g="first_treat",
+            t="year",
+            i="countyreal",
+            x=["lpop"],
+            base_period=base,
+            **kw,
+        )
+        for base in ("universal", "varying")
+    ]
+    assert fits[0].estimate == fits[1].estimate
+    assert fits[0].se == fits[1].se
+    assert not fits[0].detail[["group", "time"]].equals(
+        fits[1].detail[["group", "time"]]
+    ) or not np.allclose(fits[0].detail["att"], fits[1].detail["att"])
+
+
+def test_callaway_santanna_pairwise_unbalanced_panel_is_its_own_sample():
+    m = sp.datasets.mpdta()
+    m = m.drop(index=m.index[::37])
+    fit = _quiet(
+        sp.callaway_santanna, m, y="lemp", g="first_treat", t="year", i="countyreal"
+    )
+    assert sp.validation_scope(fit)["configuration"]["sample"] == "unbalanced_pair"
+    full = _quiet(
+        sp.callaway_santanna,
+        m,
+        y="lemp",
+        g="first_treat",
+        t="year",
+        i="countyreal",
+        balance="full",
+    )
+    assert sp.validation_scope(full)["configuration"]["sample"] == "panel"
 
 
 def test_forest_rows_are_specific_to_the_tree_counts_that_ran():
@@ -342,6 +533,26 @@ def test_scm_disclosure_is_not_stochastic_evidence():
         function="synth", v_method="equal", weights="unique", code_path="native"
     )
     assert ok["status"] == "covered"
+    assert ok["outputs"]["se"]["status"] == "reference"
+
+
+def test_scm_regression_v_is_in_the_domain_and_graded_by_identification():
+    reg = sp.validation_scope(
+        function="synth", v_method="regression", weights="unique", code_path="native"
+    )
+    assert reg["status"] == "covered"
+    assert reg["outputs"]["se"]["status"] == "not_covered"
+    bad = sp.validation_scope(
+        function="synth",
+        v_method="regression",
+        weights="nonunique",
+        code_path="native",
+    )
+    assert bad["status"] == "not_covered"
+    bridge = sp.validation_scope(
+        function="synth", v_method="equal", weights="unique", code_path="synth"
+    )
+    assert bridge["status"] == "not_covered"
 
 
 def test_sdid_placebo_se_is_not_part_of_the_parity_row():
@@ -357,12 +568,19 @@ def test_sdid_placebo_se_is_not_part_of_the_parity_row():
     assert jk["outputs"]["coverage"]["status"] == "not_covered"
 
 
-def test_psm_default_se_has_no_reference_row():
+def test_psm_default_se_is_pinned_to_psmatch2_and_no_replacement_is_not():
     df = sp.datasets.nsw_dw()
     X = ["age", "education", "black", "hispanic", "married", "re74", "re75"]
     fit = _quiet(sp.psm, df, y="re78", d="treat", X=X, method="nn")
     scope = sp.validation_scope(fit)
-    assert scope["status"] == "estimate_only"
+    # the default Abadie-Imbens (2006) SE is psmatch2 ai(1)
+    assert scope["status"] == "covered"
+    assert any("psmatch2" in e["compares"] for e in scope["outputs"]["se"]["evidence"])
+    # without replacement psmatch2's SE follows its own rule: disclosure only
+    norep = _quiet(sp.psm, df, y="re78", d="treat", X=X, method="nn", replace=False)
+    out = sp.validation_scope(norep)["outputs"]
+    assert out["estimate"]["status"] == "reference"
+    assert out["se"]["status"] == "disclosure"
     fit16 = _quiet(
         sp.psm,
         df,
@@ -453,9 +671,13 @@ def test_joint_outputs_are_graded_separately_from_se():
 
     cr1 = sp.validation_scope(function="regress", vce="cr1", weights="none")
     assert cr1["outputs"]["joint_test"]["status"] == "reference"
+    # hc3 gained a joint-test row in 2026-10 (test_joint_wald_stata_parity);
+    # Newey-West has an SE row and still no joint-test row.
     hc3 = sp.validation_scope(function="regress", vce="hc3", weights="none")
-    assert hc3["outputs"]["joint_test"]["status"] == "not_covered"
-    assert hc3["outputs"]["se"]["status"] == "reference"
+    assert hc3["outputs"]["joint_test"]["status"] == "reference"
+    hac = sp.validation_scope(function="regress", vce="hac", weights="none")
+    assert hac["outputs"]["joint_test"]["status"] == "not_covered"
+    assert hac["outputs"]["se"]["status"] == "reference"
 
 
 def test_panel_scope_separates_the_default_and_the_reference_conventions():
@@ -472,3 +694,728 @@ def test_panel_scope_separates_the_default_and_the_reference_conventions():
     # linearmodels' own clustered scaling has no reference row.
     assert default["status"] == "estimate_only"
     assert default["outputs"]["se"]["status"] == "not_covered"
+
+
+def test_sdid_treat_path_has_its_own_rows():
+    # A fitted staggered result reports interface / design / covariates itself.
+    staggered = sp.validation_scope(
+        function="sdid",
+        method="sdid",
+        se_method="jackknife",
+        code_path="native",
+        interface="treat",
+        design="staggered",
+        covariates="projected",
+    )
+    assert staggered["status"] == "covered"
+    # A by-name query that predates those dimensions means the treated_unit=
+    # block design without covariates, and keeps its old answer.
+    legacy = sp.validation_scope(
+        function="sdid", method="sdid", se_method="placebo", code_path="native"
+    )
+    assert legacy["configuration"]["interface"] == "treated_unit"
+    assert legacy["status"] == "estimate_only"
+    # Bootstrap on the treat= path is screened, not a reference row.
+    boot = sp.validation_scope(
+        function="sdid",
+        method="sdid",
+        se_method="bootstrap",
+        code_path="native",
+        interface="treat",
+        design="staggered",
+        covariates="none",
+    )
+    assert boot["outputs"]["se"]["status"] == "stochastic_screen"
+    assert boot["status"] == "estimate_only"
+    # the placebo SE of the treated_unit= call is screened against synthdid
+    assert legacy["outputs"]["se"]["status"] == "stochastic_screen"
+    # the treated_unit= jackknife SE is a reference row (synthdid, 1e-9)
+    jk = sp.validation_scope(
+        function="sdid", method="sc", se_method="jackknife", code_path="native"
+    )
+    assert jk["status"] == "covered"
+    # delegating to R synthdid has no row by design
+    r = sp.validation_scope(
+        function="sdid", method="sdid", se_method="placebo", code_path="synthdid"
+    )
+    assert r["status"] == "not_covered"
+
+
+def test_sun_abraham_joint_covariance_has_a_reference_only_with_fixed_shares():
+    """The vcov row ran ``share_variance=False``; the default must not borrow it.
+
+    fixest holds cohort shares fixed, so its ``A V A'`` pins the full
+    event-study matrix of that setting only. Under the default (the
+    Sun-Abraham Prop. 3 share term) the diagonal is pinned against
+    ``eventstudyinteract`` by module 05, the off-diagonal blocks by nothing.
+    """
+    mp = pd.read_csv(ROOT / "tests/orig_parity/data/02_mpdta_original.csv")
+    keys = dict(y="lemp", g="first_treat", t="year", i="countyreal")
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        default = sp.validation_scope(sp.sun_abraham(mp, **keys))
+        fixed = sp.validation_scope(sp.sun_abraham(mp, **keys, share_variance=False))
+    assert default["configuration"]["share_variance"] == "estimated"
+    assert default["outputs"]["vcov"]["status"] == "not_covered"
+    assert default["outputs"]["se"]["status"] == "reference"
+    assert fixed["outputs"]["vcov"]["status"] == "reference"
+    assert fixed["outputs"]["vcov"]["evidence"][0]["artifact"].endswith(
+        "test_event_study_vcov_R_parity.py"
+    )
+    # The coverage simulation ran the default only.
+    assert default["outputs"]["coverage"]["status"] == "coverage_simulation"
+    assert fixed["outputs"]["coverage"]["status"] == "not_covered"
+    # A by-name query that omits the new dimension means the default.
+    by_name = sp.validation_scope(
+        function="sun_abraham", control_group="nevertreated", aggregation="event_time"
+    )
+    assert by_name["configuration"]["share_variance"] == "estimated"
+
+
+def test_sun_abraham_control_and_window_rule_are_read_from_the_fit():
+    """An explicit control_cohort= is its own value, not the default it
+    leaves in control_group; lastcohort and the reference rule have rows."""
+    mp = pd.read_csv(ROOT / "tests/orig_parity/data/02_mpdta_original.csv")
+    keys = dict(y="lemp", g="first_treat", t="year", i="countyreal")
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        last = sp.validation_scope(
+            sp.sun_abraham(mp, **keys, control_group="lastcohort")
+        )
+        named = sp.validation_scope(sp.sun_abraham(mp, **keys, control_cohort=2007))
+        ref = sp.validation_scope(
+            sp.sun_abraham(mp, **keys, event_window=(-3, 2), window_rule="reference")
+        )
+        # the bin rule with lastcohort: a combination no artifact ran
+        last_bin = sp.validation_scope(
+            sp.sun_abraham(
+                mp,
+                **keys,
+                control_group="lastcohort",
+                event_window=(-3, 2),
+                window_rule="bin",
+            )
+        )
+    assert last["configuration"]["control_group"] == "lastcohort"
+    assert last["status"] == "covered"
+    assert named["configuration"]["control_group"] == "control_cohort"
+    assert named["status"] == "covered"
+    assert ref["configuration"]["window_rule"] == "reference"
+    assert ref["status"] == "covered"
+    assert last_bin["status"] == "not_covered"
+
+
+@pytest.fixture(scope="module")
+def mpdta():
+    return pd.read_csv(ROOT / "tests/orig_parity/data/02_mpdta_original.csv")
+
+
+_BJS = dict(y="lemp", group="countyreal", time="year", first_treat="first_treat")
+
+
+def _scope_of(fit):
+    scope = sp.validation_scope(fit)
+    return scope, {k: v["status"] for k, v in scope["outputs"].items()}
+
+
+def test_did_imputation_scope_follows_the_y0_specification(mpdta):
+    """Each Y(0)-model option has its own evidence; none borrows the default's."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        default = sp.did_imputation(mpdta, **_BJS)
+        time_only = sp.did_imputation(mpdta, **_BJS, fe=["year"])
+        regions = mpdta.assign(region=(mpdta["countyreal"] // 1000) % 5 + 1)
+        custom = sp.did_imputation(regions, **_BJS, fe=["countyreal", "region#year"])
+        # A custom fixed effect next to timecontrols(): no artifact ran it.
+        custom_tc = sp.did_imputation(
+            regions, **_BJS, fe=["countyreal", "region#year"], time_covariates=["lpop"]
+        )
+        horizons = sp.did_imputation(mpdta, **_BJS, horizon=[0, 1, 2, 3])
+    scope, out = _scope_of(default)
+    assert scope["function"] == "did_imputation" and scope["unchecked"] == []
+    assert scope["configuration"] == {
+        "fe": "unit_time",
+        "covariates": "none",
+        "vce": "analytic",
+        "weights": "none",
+        "horizon": "overall",
+    }
+    assert (out["estimate"], out["se"], out["vcov"]) == (
+        "reference",
+        "reference",
+        "not_covered",
+    )
+    assert _scope_of(time_only)[0]["status"] == "covered"
+    assert _scope_of(custom)[0]["configuration"]["fe"] == "custom"
+    assert _scope_of(custom)[0]["status"] == "covered"
+    assert _scope_of(custom_tc)[0]["status"] == "not_covered"
+    # The joint covariance is pinned only where horizons were requested.
+    assert _scope_of(horizons)[1]["vcov"] == "reference"
+
+
+def test_did_imputation_unit_slopes_are_a_disclosure_not_a_match(mpdta):
+    """Stata's unitcontrols() ATT is not stable to 1e-6; say so, not 'aligned'."""
+    untreated = (mpdta["first_treat"] == 0) | (mpdta["year"] < mpdta["first_treat"])
+    keep = untreated.groupby(mpdta["countyreal"]).transform("sum") >= 2
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        fit = sp.did_imputation(mpdta[keep].copy(), **_BJS, unit_covariates=["year"])
+    scope, out = _scope_of(fit)
+    assert out["estimate"] == "disclosure"
+    assert out["se"] == "reference"
+    assert scope["status"] != "covered"
+
+
+def test_gardner_scope_separates_the_corrected_and_the_legacy_variance(mpdta):
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        default = sp.gardner_did(mpdta, **_BJS)
+        stage2 = sp.gardner_did(mpdta, **_BJS, vce="stage2")
+        stage2_dynamic = sp.gardner_did(mpdta, **_BJS, vce="stage2", event_study=True)
+        dynamic = sp.gardner_did(mpdta, **_BJS, event_study=True)
+        controls = sp.gardner_did(mpdta, **_BJS, controls=["lpop"])
+    scope, out = _scope_of(default)
+    assert scope["function"] == "gardner_did" and scope["status"] == "covered"
+    assert out["vcov"] == "not_covered"
+    # The legacy SE has its own row (the hand-run second stage), static only:
+    # its event-study headline treats the horizons as independent.
+    scope, out = _scope_of(stage2)
+    assert scope["status"] == "covered"
+    assert out["se"] == "reference"
+    assert scope["outputs"]["se"]["evidence"][0]["artifact"].endswith(
+        "test_gardner_stage2_R_parity.py"
+    )
+    scope, out = _scope_of(stage2_dynamic)
+    assert scope["status"] == "estimate_only" and out["se"] == "not_covered"
+    assert _scope_of(dynamic)[1]["vcov"] == "reference"
+    assert _scope_of(controls)[0]["status"] == "not_covered"
+
+
+def test_twfe_event_study_is_covered_only_where_a_reference_ran(mpdta):
+    """Staggered panels and other windows now have fixest rows; a
+    combination no artifact ran is still not covered."""
+    twfe = pd.read_csv(ROOT / "tests/r_parity/data/85_twfe_event_study.csv")
+    twfe["g_nan"] = twfe["g"].where(twfe["g"] > 0)
+    keys = dict(y="y", treat_time="g_nan", time="time", unit="unit")
+    staggered = mpdta.assign(g=mpdta["first_treat"].where(mpdta["first_treat"] > 0))
+    stag_keys = dict(y="lemp", treat_time="g", time="year", unit="countyreal")
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        ran = sp.event_study(twfe, **keys, window=(-4, 4), cluster="unit")
+        narrow = sp.event_study(twfe, **keys, window=(-3, 3))
+        stag = sp.event_study(staggered, **stag_keys)
+        # bins with a covariate on a staggered panel: no artifact ran it
+        stag_bins_cov = sp.event_study(
+            staggered.assign(x=staggered["lpop"] * staggered["year"]),
+            **stag_keys,
+            window=(-4, 3),
+            bin_width=2,
+            ref_period=[-2, -1],
+            covariates=["x"],
+        )
+    scope, out = _scope_of(ran)
+    assert scope["function"] == "event_study" and scope["unchecked"] == []
+    assert (out["estimate"], out["se"], out["vcov"]) == ("reference",) * 3
+    scope, out = _scope_of(narrow)
+    assert scope["configuration"]["window"] == "other"
+    assert scope["status"] == "covered" and out["vcov"] == "not_covered"
+    scope, _ = _scope_of(stag)
+    assert scope["configuration"]["adoption"] == "staggered"
+    assert scope["status"] == "covered"
+    scope, _ = _scope_of(stag_bins_cov)
+    assert scope["configuration"]["bins"] == "set"
+    assert scope["status"] == "not_covered"
+
+
+def test_etwfe_se_is_referenced_and_the_default_call_is_attached():
+    data = pd.read_csv(ROOT / "tests/r_parity/data/17_etwfe.csv")
+    keys = dict(y="lemp", group="countyreal", time="year", first_treat="first_treat")
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        rcs = sp.etwfe(data, panel=False, cluster="countyreal", **keys)
+        default = sp.etwfe(data, **keys)
+        never = sp.etwfe(data, cgroup="nevertreated", **keys)
+        unit_w = sp.etwfe(data, agg_weights="unit", **keys)
+        logit = sp.etwfe(
+            data.assign(yb=(data["lemp"] > data["lemp"].median()).astype(int)),
+            y="yb",
+            group="countyreal",
+            time="year",
+            first_treat="first_treat",
+            family="logit",
+        )
+    for fit in (rcs, default, never):
+        scope, out = _scope_of(fit)
+        assert scope["function"] == "etwfe"
+        assert out["estimate"] == "reference" and out["vcov"] == "reference"
+        # Module 17's headline SE stays a disclosure row (R's forward-
+        # difference Jacobian, jwdid's K); the option panel pins the SE
+        # same-byte against R with a Richardson Jacobian.
+        assert out["se"] == "reference"
+        se_rows = scope["outputs"]["se"]["evidence"]
+        assert {e["artifact"] for e in se_rows} >= {
+            "tests/reference_parity/test_etwfe_options_parity.py"
+        }
+        assert scope["status"] == "covered"
+    attached = _scope_of(default)[0]["outputs"]["estimate"]["evidence"]
+    assert "tests/reference_parity/test_validation_entry_points.py" in [
+        e["artifact"] for e in attached
+    ]
+    assert _scope_of(unit_w)[0]["status"] == "covered"
+    # A GLM family is routed to its own map rather than failing this one.
+    scope, _ = _scope_of(logit)
+    assert scope["function"] == "etwfe_glm" and scope["status"] == "covered"
+
+
+def test_wooldridge_did_does_not_borrow_the_etwfe_map():
+    """Different aggregation (see MIGRATION): it must not read as etwfe."""
+    data = pd.read_csv(ROOT / "tests/r_parity/data/17_etwfe.csv")
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        fit = sp.wooldridge_did(
+            data=data,
+            y="lemp",
+            group="countyreal",
+            time="year",
+            first_treat="first_treat",
+        )
+    with pytest.raises(MethodIncompatibility):
+        sp.validation_scope(fit)
+
+
+def test_nonlinear_etwfe_has_its_own_map():
+    """family='poisson' is routed to the GLM map, whose option axes differ."""
+    panel = pd.read_csv(
+        ROOT / "tests/reference_parity/_fixtures/etwfe_poisson_panel.csv"
+    )
+    keys = dict(y="y", group="id", time="year", first_treat="g")
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        poisson = sp.etwfe(panel, **keys, family="poisson")
+        unit_fe = sp.etwfe(panel, **keys, family="poisson", fe="unit")
+        linear = sp.etwfe(panel, **keys)
+    scope, out = _scope_of(poisson)
+    assert scope["function"] == "etwfe_glm" and scope["unchecked"] == []
+    assert out["estimate"] == "reference"
+    # Same-byte against etwfe::emfx once the reference is converged and
+    # differentiated by Richardson extrapolation (test_etwfe_options_parity).
+    assert out["se"] == "reference"
+    # Unit effects: Stata jwdid is the reference. The response-scale SE
+    # under the default response_se='profile' is not compared with it; on
+    # the link scale both the estimate and the SE are.
+    assert _scope_of(unit_fe)[0]["status"] == "estimate_only"
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        link = sp.etwfe(panel, **keys, family="poisson", fe="unit", scale="link")
+        never = sp.etwfe(panel, **keys, fe="unit", cgroup="nevertreated")
+    assert _scope_of(link)[0]["status"] == "covered"
+    # The linear fe='unit' path records Stata's 'never'; the map reads it.
+    never_scope = _scope_of(never)[0]
+    assert never_scope["configuration"]["cgroup"] == "nevertreated"
+    assert never_scope["configuration"]["family"] == "gaussian"
+    assert never_scope["status"] == "covered"
+    assert _scope_of(linear)[0]["function"] == "etwfe"
+    # The result card goes through the same routing.
+    assert sp.result_card(poisson)["evidence"]["outputs"]["se"] == "reference"
+
+
+def test_panel_clustered_joint_test_depends_on_the_small_sample_convention():
+    """Same fit, same hypothesis: a match under ssc='stata', a disclosure by default."""
+    panel = pd.read_csv(ROOT / "tests/stata_translation_holdout/holdout_panel.csv")
+    keys = dict(entity="id", time="t", method="fe", cluster="id")
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        default = sp.validation_scope(sp.panel(panel, "y ~ x", **keys))
+        stata = sp.validation_scope(sp.panel(panel, "y ~ x", ssc="stata", **keys))
+    assert default["outputs"]["joint_test"]["status"] == "disclosure"
+    assert stata["outputs"]["joint_test"]["status"] == "reference"
+    assert "ssc='stata'" in default["outputs"]["joint_test"]["evidence"][0]["compares"]
+
+
+def test_iv_joint_test_is_covered_where_the_variance_is():
+    cross = pd.read_csv(ROOT / "tests/stata_translation_holdout/holdout_cross.csv")
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        hc1 = sp.validation_scope(
+            sp.ivreg("y ~ x1 + (x2 ~ z + z2)", data=cross, robust="hc1")
+        )
+        hc3 = sp.validation_scope(
+            sp.ivreg("y ~ x1 + (x2 ~ z + z2)", data=cross, robust="hc3")
+        )
+    assert hc1["outputs"]["joint_test"]["status"] == "reference"
+    assert hc3["outputs"]["joint_test"]["status"] == "not_covered"
+
+
+def test_nnmatch_has_its_own_map_and_matchit_rows_reach_psm():
+    """``sp.match`` is a dispatcher: two estimators, two maps.
+
+    ``method='nnmatch'`` (Abadie-Imbens covariate matching) used to be
+    routed to the propensity-score map, where none of its options exist,
+    so every fit read as "no evidence" although nine Stata commands pin it.
+    ``method='nearest'`` is the same fit as ``sp.psm``, which is why the
+    MatchIt comparisons made through ``sp.match`` count for that map.
+    """
+    df = sp.datasets.nsw_dw()
+    covs = ["age", "education", "black", "hispanic", "married", "nodegree"]
+    keys = dict(y="re78", treat="treat", covariates=covs)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        nn = sp.match(df, method="nnmatch", **keys)
+        nn5 = sp.match(df, method="nnmatch", n_matches=5, metric="euclidean", **keys)
+        via_match = sp.match(df, method="nearest", **keys)
+        via_psm = sp.psm(df, **keys)
+        no_replace = sp.match(df, method="nearest", replace=False, **keys)
+    scope = sp.validation_scope(nn)
+    assert scope["function"] == "nnmatch" and scope["status"] == "covered"
+    assert scope["configuration"]["estimand"] == "att"
+    assert sp.validation_scope(nn5)["status"] == "not_covered"
+    # the dispatcher and the direct entry point are one fit
+    assert via_match.estimate == via_psm.estimate and via_match.se == via_psm.se
+    assert sp.validation_scope(via_match)["function"] == "psm"
+    out = sp.validation_scope(no_replace)["outputs"]
+    assert out["estimate"]["status"] == "reference"
+    assert any("MatchIt" in e["compares"] for e in out["estimate"]["evidence"])
+
+
+# --------------------------------------------------------------------------- #
+#  sp.honest_did: the map reads the sensitivity table's attrs
+# --------------------------------------------------------------------------- #
+
+
+@pytest.fixture(scope="module")
+def mpdta_cs():
+    m = pd.read_csv(ROOT / "tests" / "orig_parity" / "data" / "02_mpdta_original.csv")
+    return _quiet(
+        sp.callaway_santanna, m, y="lemp", g="first_treat", t="year", i="countyreal"
+    )
+
+
+def test_honest_did_relative_magnitudes_conditional_is_covered(mpdta_cs):
+    out = _quiet(
+        sp.honest_did,
+        mpdta_cs,
+        e=0,
+        method="relative_magnitude",
+        honestdid_method="Conditional",
+        m_grid=[0.0, 0.5, 1.0],
+    )
+    scope = sp.validation_scope(out)
+    assert scope["function"] == "honest_did"
+    assert scope["configuration"] == {
+        "restriction": "relative_magnitude",
+        "shape": "none",
+        "interval": "arp_conditional",
+        "code_path": "native",
+        "target": "single",
+        "window": "full",
+        "alpha": "0.05",
+        "m_grid": "zero",
+        "rm_grid": "honestdid",
+        "source": "callaway_santanna",
+    }
+    assert scope["status"] == "covered"
+
+
+def test_honest_did_defaults_read_as_what_their_evidence_is(mpdta_cs):
+    """The default smoothness call is the FLCI, whose centre is pinned only
+    to the flat optimum (a disclosure); the default relative-magnitudes call
+    is the C-LF hybrid, a stochastic screen; a user grid with weights on a
+    CS fit has no row."""
+    flci = sp.validation_scope(_quiet(sp.honest_did, mpdta_cs, e=0))
+    assert flci["configuration"]["interval"] == "flci"
+    assert flci["status"] == "disclosure_only"
+    clf = sp.validation_scope(
+        _quiet(
+            sp.honest_did,
+            mpdta_cs,
+            e=0,
+            method="relative_magnitude",
+            m_grid=[0.0, 0.5],
+        )
+    )
+    assert clf["configuration"]["interval"] == "arp_c_lf"
+    assert clf["status"] == "stochastic_only"
+    user = sp.validation_scope(
+        _quiet(
+            sp.honest_did,
+            mpdta_cs,
+            l_vec=[0.4, 0.3, 0.2, 0.1],
+            method="relative_magnitude",
+            honestdid_method="Conditional",
+            m_grid=[0.5],
+            grid_lb=-0.5,
+            grid_ub=0.5,
+        )
+    )
+    assert user["configuration"]["target"] == "weights"
+    assert user["configuration"]["rm_grid"] == "user"
+    assert user["status"] == "not_covered"
+
+
+def test_honest_did_from_moments_and_the_fallback_are_read():
+    b = np.array([0.01, -0.02, 0.0, 0.5, 0.4])
+    v = np.diag([0.05, 0.05, 0.05, 0.1, 0.1]) ** 2
+    out = sp.honest_did_from_moments(
+        b, v, event_times=[-4, -3, -2, 0, 1], l_vec="average", m_grid=[0.1]
+    )
+    cfg = sp.validation_scope(out)["configuration"]
+    assert (cfg["source"], cfg["target"], cfg["m_grid"]) == (
+        "moments",
+        "average",
+        "positive",
+    )
+    es = pd.DataFrame(
+        {"relative_time": [-2, -1, 0], "att": [0.01, 0.0, 0.3], "se": [0.05] * 3}
+    )
+    res = sp.CausalResult(
+        method="x",
+        estimand="ATT",
+        estimate=0.3,
+        se=0.05,
+        pvalue=0.0,
+        ci=(0.2, 0.4),
+        alpha=0.05,
+        n_obs=100,
+        model_info={"event_study": es},
+    )
+    fallback = sp.validation_scope(_quiet(sp.honest_did, res, e=0, alpha=0.1))
+    assert fallback["configuration"]["interval"] == "worst_case_bias"
+    assert fallback["configuration"]["alpha"] == "other"
+    assert fallback["configuration"]["source"] == "other"
+    assert fallback["status"] == "not_covered"
+
+
+def test_honest_did_source_names_are_the_maps_function_names(mpdta_cs):
+    """honest_did keeps its own copy of the method tokens (validation_scope is
+    not on its Track A path); the two must name the same estimators."""
+    from statspai.did.honest_did import _vcov_source
+    from statspai.validation_scope import _HONEST_SOURCES, _function_of
+
+    m = pd.read_csv(ROOT / "tests" / "orig_parity" / "data" / "02_mpdta_original.csv")
+    keys = dict(y="lemp", group="countyreal", time="year", first_treat="first_treat")
+    fits = [
+        mpdta_cs,
+        sp.aggte(mpdta_cs, type="dynamic"),
+        _quiet(sp.sun_abraham, m, y="lemp", g="first_treat", t="year", i="countyreal"),
+        _quiet(sp.etwfe, m, **keys),
+        _quiet(sp.gardner_did, m, event_study=True, **keys),
+        _quiet(sp.did_imputation, m, horizon=[0, 1], **keys),
+    ]
+    for fit in fits:
+        name = _vcov_source(fit)
+        assert name in _HONEST_SOURCES
+        assert name == _function_of(fit), fit.method
+
+
+def test_did_multiplegt_dyn_scope_is_read_from_the_fit():
+    """Option values are read off the fit; each is graded by what ran on it."""
+    df = pd.read_csv(ROOT / "tests/stata_parity/option_parity/data_97_dcdh_options.csv")
+    keys = dict(group="g", time="t", dynamic=2, placebo=1)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        cont = sp.did_multiplegt_dyn(
+            df, "yc", treatment="dc", continuous=1, se_method="analytic", **keys
+        )
+        default = sp.did_multiplegt_dyn(
+            df, "y", treatment="d", n_boot=20, seed=0, **keys
+        )
+        boot = sp.did_multiplegt_dyn(
+            df, "y", treatment="d", aggregation="switchers", n_boot=20, seed=0, **keys
+        )
+        untested = sp.did_multiplegt_dyn(
+            df,
+            "y",
+            treatment="d",
+            se_method="analytic",
+            same_switchers=True,
+            weights="w",
+            **keys,
+        )
+    scope = sp.validation_scope(cont)
+    assert scope["function"] == "did_multiplegt_dyn"
+    assert scope["configuration"]["treatment"] == "continuous"
+    assert scope["status"] == "covered"
+    assert scope["outputs"]["vcov"]["status"] == "reference"
+    # the default call: the bootstrap SE of the equal-weight mean has no row
+    d = sp.validation_scope(default)
+    assert d["configuration"]["aggregation"] == "simple"
+    assert d["outputs"]["estimate"]["status"] == "reference"
+    assert d["status"] == "estimate_only"
+    # the switcher-weighted bootstrap SE is screened, never a reference
+    assert sp.validation_scope(boot)["outputs"]["se"]["status"] == "stochastic_screen"
+    # a combination no artifact ran is not covered, although each value was
+    u = sp.validation_scope(untested)
+    assert u["status"] == "not_covered"
+    assert {n["differs_in"] for n in u["near_misses"]} >= {"weights", "same_switchers"}
+
+
+# --------------------------------------------------------------------------- #
+#  parity= / crit_dist= (2026-10-22)
+# --------------------------------------------------------------------------- #
+
+_PAR_FIX = ROOT / "tests/reference_parity/_fixtures"
+_CS_PAR_RU = "tests/reference_parity/test_cs_parity_rc_unbal.py"
+_CS_PAR = "tests/reference_parity/test_cs_parity_switch.py"
+_ES_CRIT = "tests/reference_parity/test_es_crit_parity.py"
+
+
+def _cs_par(design, parity, **kw):
+    if design == "rcs":
+        d = pd.read_csv(_PAR_FIX / "cs_parity_rcs.csv")
+        args = dict(i="rid", panel=False)
+    else:
+        d = pd.read_csv(_PAR_FIX / f"cs_parity_{design}.csv")
+        args = dict(i="countyreal")
+    return _quiet(
+        sp.callaway_santanna,
+        d,
+        y="lemp",
+        g="first_treat",
+        t="year",
+        parity=parity,
+        **args,
+        **kw,
+    )
+
+
+@pytest.mark.parametrize(
+    "design, parity, kw, sample",
+    [
+        ("rcs", "stata", {"weights": "w"}, "rcs"),
+        ("rcs", "r", {"x": ["lpop"], "clustervars": "state"}, "rcs"),
+        ("unbal", "stata", {"control_group": "notyettreated"}, "unbalanced_pair"),
+        ("unbal", "r", {"allow_unbalanced_panel": True}, "unbalanced_panel"),
+        ("unbal", "r", {"weights": "w"}, "panel"),
+    ],
+)
+def test_callaway_santanna_parity_fit_is_covered_by_the_parity_rows(
+    design, parity, kw, sample
+):
+    scope = sp.validation_scope(_cs_par(design, parity, **kw))
+    assert scope["configuration"]["parity"] == parity
+    assert scope["configuration"]["sample"] == sample
+    assert scope["status"] == "covered"
+    for out in ("estimate", "se", "joint_test"):
+        assert _CS_PAR_RU in {
+            e["artifact"] for e in scope["outputs"][out]["evidence"]
+        }, out
+
+
+def test_callaway_santanna_parity_is_its_own_cell():
+    """The rows run without parity= do not vouch for a parity fit, and the
+    parity rows do not vouch for a default fit."""
+    m = pd.read_csv(_PAR_FIX / "cs_parity_mpdta.csv")
+    kw = dict(y="lemp", g="first_treat", t="year", i="countyreal")
+    default = sp.validation_scope(_quiet(sp.callaway_santanna, m, **kw))
+    stata = sp.validation_scope(_quiet(sp.callaway_santanna, m, parity="stata", **kw))
+    assert default["configuration"]["parity"] == "none"
+    arts = {e["artifact"] for e in default["outputs"]["se"]["evidence"]}
+    assert not arts & {_CS_PAR, _CS_PAR_RU}
+    assert stata["status"] == "covered"
+    assert {e["artifact"] for e in stata["outputs"]["se"]["evidence"]} == {_CS_PAR}
+    # a by-name query without parity reads as a default fit
+    q = sp.validation_scope(function="callaway_santanna", estimator="dr")
+    assert q["configuration"]["parity"] == "none"
+
+
+@pytest.fixture(scope="module")
+def castle_crit():
+    d = sp.datasets.castle_doctrine()
+    return d.assign(gvar=d.effyear.fillna(0).astype(int))
+
+
+def _crit_fits(castle_crit, parity):
+    d = castle_crit
+    es = _quiet(
+        sp.event_study,
+        d,
+        y="l_homicide",
+        treat_time="effyear",
+        time="year",
+        unit="sid",
+        window=(-5, 4),
+        ref_period=-1,
+        weights="popwt",
+        cluster="sid",
+        parity=parity,
+    )
+    sa = _quiet(
+        sp.sun_abraham,
+        d,
+        y="l_homicide",
+        g="gvar",
+        t="year",
+        i=None,
+        weights="popwt",
+        control_group="nevertreated",
+        aggregation="event_time",
+        parity=parity,
+    )
+    d2 = d[(d.effyear == 2006) | d.effyear.isna()].copy()
+    d2["tr"] = d2.effyear.notna().astype(int)
+    d2["po"] = (d2.year >= 2006).astype(int)
+    dd = _quiet(
+        sp.did_2x2,
+        d2,
+        y="l_homicide",
+        treat="tr",
+        time="po",
+        cluster="sid",
+        parity=parity,
+    )
+    return {"event_study": es, "sun_abraham": sa, "did_2x2": dd}
+
+
+def test_crit_dist_is_read_and_grades_only_the_interval(castle_crit):
+    legacy = _crit_fits(castle_crit, None)
+    stata = _crit_fits(castle_crit, "stata")
+    want = {
+        "event_study": ("normal", "t_cluster"),
+        "sun_abraham": ("normal", "t_resid"),
+        "did_2x2": ("t_resid", "t_cluster"),
+    }
+    for name, (old, new) in want.items():
+        a = sp.validation_scope(legacy[name])
+        b = sp.validation_scope(stata[name])
+        assert a["function"] == b["function"] == name
+        assert (a["configuration"]["crit_dist"], b["configuration"]["crit_dist"]) == (
+            old,
+            new,
+        )
+        # the critical value does not touch the estimate or the SE
+        for out in ("estimate", "se"):
+            assert a["outputs"][out] == b["outputs"][out], (name, out)
+        # the reference intervals are t's: the legacy default has none
+        assert a["outputs"]["interval"]["status"] == "not_covered", name
+        assert b["outputs"]["interval"]["status"] == "reference", name
+        assert {e["artifact"] for e in b["outputs"]["interval"]["evidence"]} == {
+            _ES_CRIT
+        }
+
+
+def test_did_2x2_map_reads_the_variance_and_the_design():
+    p = pd.read_csv(_PAR_FIX / "survey_did_data.csv")
+    sub = p[p.t.isin([2, 3]) & p.g.isin([0, 3])].copy()
+    sub["treat"] = (sub.g == 3).astype(int)
+    sub["post"] = (sub.t == 3).astype(int)
+    des = sp.svydesign(sub, weights="w", strata="stratum", cluster="psu", nest=True)
+    svy = sp.validation_scope(
+        sp.did_2x2(sub, y="y", treat="treat", time="post", design=des)
+    )
+    assert svy["configuration"] == {
+        "vce": "survey",
+        "weights": "none",
+        "covariates": "none",
+        "crit_dist": "t_design",
+    }
+    assert svy["status"] == "covered"
+    plain = sp.validation_scope(
+        sp.did_2x2(sub, y="y", treat="treat", time="post", robust=False)
+    )
+    assert plain["configuration"]["vce"] == "classical"
+    assert plain["status"] == "not_covered"
+    cov = sp.validation_scope(
+        sp.did_2x2(sub, y="y", treat="treat", time="post", covariates=["x"])
+    )
+    assert cov["configuration"]["covariates"] == "set"
+    assert cov["status"] == "not_covered"

@@ -1,0 +1,534 @@
+"""
+Shared primitives for the MCMC samplers in :mod:`statspai.mcmc`.
+
+Random draws that every sampler needs (truncated normal, multivariate
+normal from a precision matrix, inverse gamma, inverse Wishart), prior
+parsing, and the random-walk Metropolis kernel. Kept in one place so the
+samplers do not each carry their own copy.
+"""
+
+from __future__ import annotations
+
+import re
+import warnings
+from typing import Any, Callable, List, Optional, Sequence, Tuple, Union
+
+import numpy as np
+import pandas as pd
+from scipy import linalg, special
+
+from ..exceptions import MethodIncompatibility, StatsPAIWarning
+
+ArrayLike = Union[float, Sequence[float], np.ndarray]
+
+
+# --------------------------------------------------------------------------
+# Random draws
+# --------------------------------------------------------------------------
+
+
+def rtruncnorm(
+    rng: np.random.Generator,
+    mean: np.ndarray,
+    sd: Union[float, np.ndarray],
+    lower: Union[float, np.ndarray] = -np.inf,
+    upper: Union[float, np.ndarray] = np.inf,
+) -> np.ndarray:
+    """Draw from N(mean, sd^2) truncated to (lower, upper), vectorised.
+
+    Inverse-CDF sampling carried out on the log scale and always in the
+    lower tail (an interval that lies above the mean is reflected), so it
+    stays accurate when the interval is many standard deviations away.
+    """
+    mean = np.asarray(mean, dtype=float)
+    sd_arr = np.broadcast_to(np.asarray(sd, dtype=float), mean.shape)
+    a = (np.broadcast_to(np.asarray(lower, dtype=float), mean.shape) - mean) / sd_arr
+    b = (np.broadcast_to(np.asarray(upper, dtype=float), mean.shape) - mean) / sd_arr
+    # reflect intervals in the upper half so that both ends are <= 0 or the
+    # interval straddles zero with the bulk in reach
+    flip = a > 0
+    lo = np.where(flip, -b, a)
+    hi = np.where(flip, -a, b)
+    log_plo = special.log_ndtr(lo)
+    log_phi = special.log_ndtr(hi)
+    u = rng.random(mean.shape)
+    # log( Phi(lo) + u (Phi(hi) - Phi(lo)) )
+    with np.errstate(divide="ignore", invalid="ignore"):
+        log_width = log_phi + np.log1p(-np.exp(np.minimum(log_plo - log_phi, 0.0)))
+        log_p = np.logaddexp(log_plo, np.log(u) + log_width)
+    z = special.ndtri_exp(log_p)
+    # numerical guard: stay inside the interval
+    z = np.minimum(np.maximum(z, lo), hi)
+    z = np.where(flip, -z, z)
+    return np.asarray(mean + sd_arr * z)
+
+
+def rmvnorm_prec(
+    rng: np.random.Generator, rhs: np.ndarray, prec: np.ndarray
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Draw from N(P^{-1} rhs, P^{-1}) given the precision matrix P.
+
+    Returns the draw and the mean ``P^{-1} rhs``.
+    """
+    chol = linalg.cholesky(prec, lower=True, check_finite=False)
+    mean = linalg.cho_solve((chol, True), rhs, check_finite=False)
+    z = rng.standard_normal(rhs.shape[0])
+    draw = mean + linalg.solve_triangular(chol.T, z, lower=False, check_finite=False)
+    return draw, mean
+
+
+def rinvgamma(rng: np.random.Generator, shape: float, rate: float) -> float:
+    """One draw from the inverse gamma with density
+    ``rate^shape / G(shape) x^{-shape-1} exp(-rate / x)``."""
+    return float(rate / rng.gamma(shape))
+
+
+def rwishart(rng: np.random.Generator, df: float, scale: np.ndarray) -> np.ndarray:
+    """One draw from the Wishart W(df, scale), mean ``df * scale``.
+
+    Bartlett decomposition; ``df`` may be any real number above
+    ``dim - 1``.
+    """
+    p = scale.shape[0]
+    chol = linalg.cholesky(scale, lower=True, check_finite=False)
+    a = np.zeros((p, p))
+    for i in range(p):
+        a[i, i] = np.sqrt(rng.chisquare(df - i))
+        if i:
+            a[i, :i] = rng.standard_normal(i)
+    la = chol @ a
+    return np.asarray(la @ la.T)
+
+
+def rinvwishart(rng: np.random.Generator, df: float, scale: np.ndarray) -> np.ndarray:
+    """One draw from the inverse Wishart IW(df, scale), with density
+    proportional to ``|S|^{-(df + p + 1)/2} exp(-tr(scale S^{-1}) / 2)``
+    and mean ``scale / (df - p - 1)``."""
+    inv_scale = linalg.inv(scale, check_finite=False)
+    inv_scale = 0.5 * (inv_scale + inv_scale.T)
+    w = rwishart(rng, df, inv_scale)
+    out = linalg.inv(w, check_finite=False)
+    return np.asarray(0.5 * (out + out.T))
+
+
+# --------------------------------------------------------------------------
+# Priors
+# --------------------------------------------------------------------------
+
+
+def normal_prior(
+    k: int, mean: ArrayLike, var: ArrayLike, names: Optional[Sequence[str]] = None
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Parse a N(mean, var) prior for a ``k``-vector.
+
+    ``mean`` is a scalar or a ``k``-vector; ``var`` is a scalar, a
+    ``k``-vector of variances or a ``k x k`` covariance matrix. Returns
+    the mean, the covariance and the precision.
+    """
+    m = np.asarray(mean, dtype=float)
+    if m.ndim == 0:
+        m = np.full(k, float(m))
+    if m.shape != (k,):
+        raise MethodIncompatibility(
+            f"prior_mean must be a scalar or have one entry per coefficient "
+            f"({k}); got shape {m.shape}."
+            + (f" Coefficients: {list(names)}." if names is not None else "")
+        )
+    v = np.asarray(var, dtype=float)
+    if v.ndim == 0:
+        cov = np.eye(k) * float(v)
+    elif v.ndim == 1:
+        if v.shape != (k,):
+            raise MethodIncompatibility(
+                f"prior_var as a vector must have one variance per "
+                f"coefficient ({k}); got {v.shape[0]}."
+            )
+        cov = np.diag(v)
+    elif v.shape == (k, k):
+        cov = 0.5 * (v + v.T)
+    else:
+        raise MethodIncompatibility(
+            f"prior_var must be a scalar, a length-{k} vector or a {k} x {k} "
+            f"matrix; got shape {v.shape}."
+        )
+    try:
+        chol = linalg.cholesky(cov, lower=True)
+    except linalg.LinAlgError as exc:
+        raise MethodIncompatibility(
+            "prior_var must be positive definite (a proper prior)."
+        ) from exc
+    prec = linalg.cho_solve((chol, True), np.eye(k))
+    prec = 0.5 * (prec + prec.T)
+    return m, cov, prec
+
+
+#: advice of the default-prior note for the samplers that take ``prior_var``
+PRIOR_VAR_ADVICE = (
+    "Set prior_var= (and prior_mean=) to match the scale of these "
+    "regressors, or rescale them."
+)
+
+
+def is_default(value: Any, default: Any) -> bool:
+    """Whether a prior argument still holds the default of the signature.
+
+    Compared by value, so a call that spells out the default is treated as
+    the default: the prior is the same one either way.
+    """
+    try:
+        return bool(np.array_equal(np.asarray(value, dtype=float), default))
+    except (TypeError, ValueError):
+        return False
+
+
+def note_default_prior(
+    notes: List[str],
+    names: Sequence[Any],
+    post_mean: np.ndarray,
+    post_sd: np.ndarray,
+    prior_mean: Any,
+    prior_sd: Any,
+    advice: str = PRIOR_VAR_ADVICE,
+    stacklevel: int = 3,
+) -> None:
+    """Flag a default prior that is not vague at the scale of the data.
+
+    The one post-fit check of every sampler whose default prior is a fixed
+    normal: a coefficient whose posterior mean is more than one prior
+    standard deviation from the prior mean, or whose posterior standard
+    deviation is more than 0.3 of the prior's, is being shaped by the
+    prior. The text is appended to ``notes`` (the ``warnings`` list of the
+    result's ``diagnostics_info``) and raised as a ``StatsPAIWarning``.
+    Uses only the summaries, so it draws no random numbers.
+    """
+    mean = np.asarray(post_mean, dtype=float).reshape(-1)
+    sd = np.asarray(post_sd, dtype=float).reshape(-1)
+    p_sd = np.broadcast_to(np.asarray(prior_sd, dtype=float), mean.shape)
+    p_mean = np.broadcast_to(np.asarray(prior_mean, dtype=float), mean.shape)
+    far = np.abs(mean - p_mean) / p_sd > 1.0
+    tight = sd / p_sd > 0.3
+    bad = [n for n, f, t in zip(names, far, tight) if f or t]
+    if not bad:
+        return
+    text = (
+        "The default prior is not vague for " + ", ".join(map(str, bad)) + ": "
+        "its standard deviation is of the same order as the "
+        "coefficient or its posterior uncertainty, so it pulls the "
+        "estimate toward zero. " + advice
+    )
+    notes.append(text)
+    warnings.warn(text, StatsPAIWarning, stacklevel=stacklevel)
+
+
+def rows_by_position(data: Any) -> Any:
+    """``data`` with a fresh ``RangeIndex`` when its row labels repeat.
+
+    The entry points line the design matrices up with the rows they came
+    from by label. Repeated labels make every such lookup return each row
+    several times, so a frame with them is re-indexed by position on the
+    way in; a frame with unique labels is returned as it is.
+    """
+    if isinstance(data, pd.DataFrame) and not data.index.is_unique:
+        return data.reset_index(drop=True)
+    return data
+
+
+def drops_intercept(rhs: str) -> bool:
+    """Whether the right-hand side of a formula removes the intercept.
+
+    Looks for a top-level ``- 1`` or ``+ 0`` term. Whatever sits inside
+    parentheses, brackets or quotes belongs to a term (``I(x - 1)``,
+    ``Q("a-1")``) and is ignored.
+    """
+    top: List[str] = []
+    depth = 0
+    quote = ""
+    for ch in rhs:
+        if quote:
+            quote = "" if ch == quote else quote
+        elif ch in "\"'`":
+            quote = ch
+        elif ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth = max(depth - 1, 0)
+        elif depth == 0 and not ch.isspace():
+            top.append(ch)
+    terms = re.findall(r"([+-]?)([^+-]+)", "".join(top))
+    return any(
+        (sign == "-" and term == "1") or (sign != "-" and term == "0")
+        for sign, term in terms
+    )
+
+
+def log_mvnorm(x: np.ndarray, mean: np.ndarray, cov: np.ndarray) -> float:
+    """Log density of N(mean, cov) at ``x``."""
+    k = mean.shape[0]
+    chol = linalg.cholesky(cov, lower=True, check_finite=False)
+    z = linalg.solve_triangular(chol, x - mean, lower=True, check_finite=False)
+    return float(
+        -0.5 * k * np.log(2.0 * np.pi) - np.log(np.diag(chol)).sum() - 0.5 * z @ z
+    )
+
+
+def log_invgamma(x: float, shape: float, rate: float) -> float:
+    """Log density of the inverse gamma (shape, rate) at ``x``."""
+    return float(
+        shape * np.log(rate)
+        - special.gammaln(shape)
+        - (shape + 1.0) * np.log(x)
+        - rate / x
+    )
+
+
+def log_gamma(x: float, shape: float, rate: float) -> float:
+    """Log density of the gamma (shape, rate) at ``x``."""
+    return float(
+        shape * np.log(rate)
+        - special.gammaln(shape)
+        + (shape - 1.0) * np.log(x)
+        - rate * x
+    )
+
+
+# --------------------------------------------------------------------------
+# Mode finding and random-walk Metropolis
+# --------------------------------------------------------------------------
+
+
+def numerical_hessian(
+    f: Callable[[np.ndarray], float], x: np.ndarray, rel_step: float = 1e-4
+) -> np.ndarray:
+    """Central-difference Hessian of a scalar function."""
+    k = x.size
+    h = rel_step * np.maximum(np.abs(x), 1.0)
+    hess = np.empty((k, k))
+    f0 = f(x)
+    for i in range(k):
+        ei = np.zeros(k)
+        ei[i] = h[i]
+        hess[i, i] = (f(x + ei) - 2.0 * f0 + f(x - ei)) / h[i] ** 2
+        for j in range(i):
+            ej = np.zeros(k)
+            ej[j] = h[j]
+            val = (
+                f(x + ei + ej) - f(x + ei - ej) - f(x - ei + ej) + f(x - ei - ej)
+            ) / (4.0 * h[i] * h[j])
+            hess[i, j] = hess[j, i] = val
+    return hess
+
+
+def find_mode(
+    neg_log_post: Callable[[np.ndarray], float],
+    start: np.ndarray,
+    what: str = "posterior",
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Maximise a log density and return the mode and the inverse of the
+    negative Hessian there (the Laplace covariance)."""
+    from scipy import optimize
+
+    best = optimize.minimize(neg_log_post, start, method="BFGS")
+    # polish: BFGS can stop early on flat ridges
+    polished = optimize.minimize(
+        neg_log_post,
+        best.x,
+        method="Nelder-Mead",
+        options={"xatol": 1e-8, "fatol": 1e-10, "maxiter": 400 * start.size},
+    )
+    if polished.fun < best.fun:
+        best = optimize.minimize(neg_log_post, polished.x, method="BFGS")
+        if polished.fun < best.fun:
+            best = polished
+    mode = np.asarray(best.x, dtype=float)
+    if not np.isfinite(best.fun):
+        raise MethodIncompatibility(
+            f"Could not find the mode of the {what}: the log density is not "
+            "finite at the optimiser's solution. Check the data for "
+            "separation, collinearity or outcome values outside the "
+            "model's support."
+        )
+    hess = numerical_hessian(neg_log_post, mode)
+    hess = 0.5 * (hess + hess.T)
+    try:
+        chol = linalg.cholesky(hess, lower=True)
+        cov = linalg.cho_solve((chol, True), np.eye(mode.size))
+    except linalg.LinAlgError as exc:
+        raise MethodIncompatibility(
+            f"The {what} is not locally concave at its mode (the Hessian is "
+            "not positive definite). The usual causes are perfectly "
+            "collinear regressors or, in binary and ordered models, "
+            "separation. A tighter prior (smaller prior_var) restores a "
+            "proper posterior."
+        ) from exc
+    return mode, 0.5 * (cov + cov.T)
+
+
+def random_walk_metropolis(
+    rng: np.random.Generator,
+    log_post: Callable[[np.ndarray], float],
+    start: np.ndarray,
+    prop_cov: np.ndarray,
+    n_iter: int,
+) -> Tuple[np.ndarray, float]:
+    """Random-walk Metropolis with a fixed Gaussian proposal.
+
+    Returns all ``n_iter`` states and the acceptance rate.
+    """
+    k = start.size
+    chol = linalg.cholesky(prop_cov, lower=True)
+    out = np.empty((n_iter, k))
+    cur = np.array(start, dtype=float)
+    lp = log_post(cur)
+    accepted = 0
+    steps = rng.standard_normal((n_iter, k)) @ chol.T
+    log_u = np.log(rng.random(n_iter))
+    for it in range(n_iter):
+        cand = cur + steps[it]
+        lp_c = log_post(cand)
+        if log_u[it] < lp_c - lp:
+            cur, lp = cand, lp_c
+            accepted += 1
+        out[it] = cur
+    return out, accepted / n_iter
+
+
+def metropolis_mixture(
+    rng: np.random.Generator,
+    log_post: Callable[[np.ndarray], float],
+    start: np.ndarray,
+    mode: np.ndarray,
+    cov: np.ndarray,
+    tune: float,
+    n_iter: int,
+    p_independence: float = 0.8,
+    dof: float = 5.0,
+    inflate: float = 1.15,
+) -> Tuple[np.ndarray, float, float]:
+    """Metropolis with two proposals drawn at random each iteration.
+
+    * a random walk, ``N(current, tune^2 cov)``;
+    * an independence proposal, multivariate Student-t with ``dof``
+      degrees of freedom centred at the posterior mode with scale
+      ``inflate^2 cov``.
+
+    Each kernel leaves the posterior invariant, so their mixture does.
+    When the posterior is close to its Laplace approximation, as for a
+    generalized linear model with a few dozen observations or more, the
+    independence proposal is accepted most of the time and successive
+    draws are nearly independent; the random walk keeps the chain moving
+    where the approximation is poor (heavy tails, skewness). The t
+    proposal has heavier tails than the target, which an independence
+    sampler needs.
+
+    Returns the states, the acceptance rate of the random-walk moves and
+    that of the independence moves.
+    """
+    k = start.size
+    chol = linalg.cholesky(0.5 * (cov + cov.T), lower=True)
+    out = np.empty((n_iter, k))
+    cur = np.array(start, dtype=float)
+    lp = log_post(cur)
+
+    def log_q(u: np.ndarray) -> float:
+        z = linalg.solve_triangular(chol, u - mode, lower=True, check_finite=False)
+        return float(-0.5 * (dof + k) * np.log1p(z @ z / (dof * inflate**2)))
+
+    lq = log_q(cur)
+    normals = rng.standard_normal((n_iter, k))
+    chi = rng.chisquare(dof, n_iter)
+    use_ind = rng.random(n_iter) < p_independence
+    log_u = np.log(rng.random(n_iter))
+    acc = [0, 0]
+    tried = [0, 0]
+    for it in range(n_iter):
+        ind = bool(use_ind[it])
+        tried[ind] += 1
+        if ind:
+            cand = mode + inflate * (chol @ normals[it]) / np.sqrt(chi[it] / dof)
+            lq_c = log_q(cand)
+            lp_c = log_post(cand)
+            ratio = lp_c - lp + lq - lq_c
+        else:
+            cand = cur + tune * (chol @ normals[it])
+            lp_c = log_post(cand)
+            ratio = lp_c - lp
+            lq_c = None
+        if log_u[it] < ratio:
+            cur, lp = cand, lp_c
+            lq = log_q(cur) if lq_c is None else lq_c
+            acc[ind] += 1
+        out[it] = cur
+    rw = acc[0] / tried[0] if tried[0] else float("nan")
+    indep = acc[1] / tried[1] if tried[1] else float("nan")
+    return out, rw, indep
+
+
+def check_mcmc_args(draws: int, burnin: int, thin: int, chains: int = 1) -> None:
+    for nm, val, lo in (
+        ("draws", draws, 1),
+        ("burnin", burnin, 0),
+        ("thin", thin, 1),
+        ("chains", chains, 1),
+    ):
+        if not isinstance(val, (int, np.integer)) or val < lo:
+            raise MethodIncompatibility(
+                f"{nm} must be an integer >= {lo}; got {val!r}."
+            )
+
+
+def spawn_rngs(seed: Any, n: int) -> list:
+    """Independent generators, one per chain, from one seed."""
+    if isinstance(seed, np.random.Generator):
+        seq: Any = seed.bit_generator.seed_seq
+        return [np.random.default_rng(s) for s in seq.spawn(n)]
+    ss = np.random.SeedSequence(seed)
+    return [np.random.default_rng(s) for s in ss.spawn(n)]
+
+
+def design_for(design_info: Any, names: Sequence[str], data: Any) -> np.ndarray:
+    """Rebuild a design matrix for new data.
+
+    Uses the patsy design when the formula needed one; a formula of plain
+    numeric columns is parsed without patsy, and its design is the named
+    columns with an optional leading intercept.
+    """
+    if design_info is not None:
+        from patsy import build_design_matrices
+
+        from ..core._formula_dtypes import float_generated_term_columns
+
+        data = float_generated_term_columns(data, design_info)
+        return np.asarray(build_design_matrices([design_info], data)[0], dtype=float)
+    cols = [c for c in names if c != "Intercept"]
+    missing = [c for c in cols if c not in data.columns]
+    if missing:
+        raise MethodIncompatibility(f"The new data lack the regressors {missing}.")
+    pieces = {c: data[c].to_numpy(dtype=float) for c in cols}
+    n = len(data)
+    out = [np.ones(n) if c == "Intercept" else pieces[c] for c in names]
+    return np.column_stack(out) if out else np.zeros((n, 0))
+
+
+def prediction_design(design_info: Any, names: Sequence[str], data: Any) -> np.ndarray:
+    """:func:`design_for`, refusing new data with missing regressors.
+
+    For the predictors that cannot carry a missing value through (trees,
+    kernels): a row with one would otherwise be dropped by the formula
+    parser or scored as if the value were there.
+    """
+    X = design_for(design_info, names, data)
+    if X.shape[0] != len(data):
+        bad = [
+            str(c)
+            for c in data.columns
+            if data[c].isna().any() and any(str(c) in str(nm) for nm in names)
+        ]
+    else:
+        bad = [str(nm) for nm, ok in zip(names, np.isfinite(X).all(axis=0)) if not ok]
+        if not bad:
+            return X
+    raise MethodIncompatibility(
+        "The new data have missing or infinite values in "
+        + (", ".join(bad) if bad else "a regressor")
+        + "; a prediction needs every regressor. Drop or fill those rows."
+    )

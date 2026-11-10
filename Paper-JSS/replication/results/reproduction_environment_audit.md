@@ -10,7 +10,7 @@ paper-reproduction scripts.
 Docker base image: python:3.10.20-slim-bookworm
 Python requirement packages: 23
 Requirements source version comment: True
-Makefile targets: 68
+Makefile targets: 70
 Reviewer README commands checked: 26
 Manuscript README commands checked: 7
 Optional Pandoc Markdown export: True
@@ -30,8 +30,8 @@ Stata environment note present: True
 Stata reproducibility report present: True
 Stata reproduced modules: 85/85
 Stata non-reproduced rows: 0
-Stochastic reproduction files checked: 15
-Seeded stochastic reproduction files: 15
+Stochastic reproduction files checked: 16
+Seeded stochastic reproduction files: 16
 Unseeded stochastic reproduction files: 0
 
 Failures: none

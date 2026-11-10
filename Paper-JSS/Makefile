@@ -1,4 +1,7 @@
 PYTHON ?= python3
+# Recipes that `cd` first need an absolute interpreter; a bare `python3` stays
+# on PATH, and a relative one such as ../.venv/bin/python is resolved here.
+PYABS = $(if $(findstring /,$(PYTHON)),$(abspath $(PYTHON)),$(PYTHON))
 LATEXMK ?= latexmk
 PANDOC ?= pandoc
 # manuscript/jss-bib.bib is DERIVED from the StatsPAI master paper.bib (StatsPAI
@@ -20,7 +23,7 @@ PYTHONPATH := $(if $(wildcard $(STATSPAI_SRC)/statspai),$(STATSPAI_SRC):$(PYTHON
 export PYTHONPATH
 export SOURCE_DATE_EPOCH FORCE_SOURCE_DATE
 
-.PHONY: orig-parity-data headline-numbers-check appendices-check all reproduce-jss reproduce-jss-fast reproduce-jss-full reproduce-tier1 reproduce-tier1-transcript reproduce-tier2 reproduce-tier3 notebooks notebooks-execute replication figures appendices inventory performance-artifacts manuscript manuscript-claims manuscript-claims-check cover-letter cover-letter-check cover-letter-sync track-b-tables track-b-tables-check forest-seed-table forest-seed-table-check markdown pdf bib-split bib-split-check verify listings-execute-audit jss-style bibliography-metadata-audit jss-house-style-audit snapshot release-audit release-boundary-audit reproduction-environment-audit manuscript-artifact-audit data-provenance-audit pdf-render-audit pdf-visual-check-protocol jss-formal-compliance-audit validation-evidence gap-ledger stata-bridge-audit stata-rerun-protocol agent-interface-audit agent-benchmark-protocol experiment-triage submission-risk-ledger reviewer-evidence-map editor-screening-checklist audit submission-package verify-submission-package submission-ready arxiv clean
+.PHONY: orig-parity-data headline-numbers-check appendices-check all reproduce-jss reproduce-jss-fast reproduce-jss-full reproduce-tier1 reproduce-tier1-transcript reproduce-tier2 reproduce-tier3 notebooks notebooks-execute replication figures appendices inventory performance-artifacts manuscript manuscript-claims manuscript-claims-check cover-letter cover-letter-check cover-letter-sync track-b-tables track-b-tables-check forest-seed-table forest-seed-table-check dml-designs-table dml-designs-table-check markdown pdf bib-split bib-split-check verify listings-execute-audit jss-style bibliography-metadata-audit jss-house-style-audit snapshot release-audit release-boundary-audit reproduction-environment-audit manuscript-artifact-audit data-provenance-audit pdf-render-audit pdf-visual-check-protocol jss-formal-compliance-audit validation-evidence gap-ledger stata-bridge-audit stata-rerun-protocol agent-interface-audit agent-benchmark-protocol experiment-triage submission-risk-ledger reviewer-evidence-map editor-screening-checklist audit submission-package verify-submission-package submission-ready arxiv clean
 
 all: replication figures appendices inventory performance-artifacts manuscript verify snapshot
 
@@ -59,7 +62,7 @@ notebooks:
 	$(PYTHON) ../scripts/build_replication_notebooks.py
 
 notebooks-execute:
-	cd .. && $(PYTHON) -m pytest tests/test_replication_notebooks.py -q --no-cov
+	cd .. && $(PYABS) -m pytest tests/test_replication_notebooks.py -q --no-cov
 
 replication:
 	@set -e; \
@@ -126,6 +129,12 @@ forest-seed-table:
 forest-seed-table-check:
 	$(PYTHON) replication/scripts/generate_forest_seed_table.py --check
 
+dml-designs-table:
+	$(PYTHON) replication/scripts/generate_dml_designs_table.py
+
+dml-designs-table-check:
+	$(PYTHON) replication/scripts/generate_dml_designs_table.py --check
+
 headline-parity-table-check:
 	$(PYTHON) replication/scripts/generate_headline_parity_table.py --check
 
@@ -169,17 +178,17 @@ bib-split-check:
 # survives `make pdf` untouched and carries the local build clock into
 # the submission. tests/test_jss_release_manifest.py then fails with an
 # opaque byte assertion; check it here instead, where the fix is obvious.
-pdf: bib-split manuscript-claims track-b-tables headline-parity-table forest-seed-table
+pdf: bib-split manuscript-claims track-b-tables headline-parity-table forest-seed-table dml-designs-table
 	cd manuscript && $(LATEXMK) -pdf -interaction=nonstopmode main.tex
 	@$(PYTHON) -c "import re,sys;d=open('manuscript/main.pdf','rb').read();m=re.search(rb'/CreationDate \(([^)]*)\)',d);ok=m and m.group(1)==b'D:20260531000000Z';sys.exit(0) if ok else sys.exit('FAIL -- main.pdf carries a local build clock (%s); run: rm manuscript/main.pdf && make pdf' % (m.group(1).decode() if m else 'none'))"
 
 # arXiv preprint: a derivative of main.tex (nojss masthead, preprint
 # footnote, flat tree + .bbl), rebuilt from the same sources as `pdf`.
 # Output lands in build/arxiv/; see replication/scripts/build_arxiv.py.
-arxiv: bib-split manuscript-claims track-b-tables headline-parity-table forest-seed-table
+arxiv: bib-split manuscript-claims track-b-tables headline-parity-table forest-seed-table dml-designs-table
 	$(PYTHON) replication/scripts/build_arxiv.py
 
-verify: jss-style headline-numbers-check manuscript-claims-check track-b-tables-check headline-parity-table-check forest-seed-table-check appendices-check bib-split-check bibliography-metadata-audit listings-execute-audit
+verify: jss-style headline-numbers-check manuscript-claims-check track-b-tables-check headline-parity-table-check forest-seed-table-check dml-designs-table-check appendices-check bib-split-check bibliography-metadata-audit listings-execute-audit
 
 headline-numbers-check:
 	$(PYTHON) replication/scripts/check_headline_numbers.py
@@ -217,7 +226,7 @@ manuscript-artifact-audit:
 # clone does not have it until the Python side of the module runs. The
 # provenance audit requires it, so regenerate it first (~5 s, byte-stable).
 orig-parity-data:
-	cd $(STATSPAI_ROOT) && $(PYTHON) tests/orig_parity/06_nhefs_ch12_ipw.py >/dev/null
+	cd $(STATSPAI_ROOT) && $(PYABS) tests/orig_parity/06_nhefs_ch12_ipw.py >/dev/null
 
 data-provenance-audit: orig-parity-data
 	$(PYTHON) replication/scripts/data_provenance_audit.py

@@ -36,9 +36,18 @@ import pandas as pd
 from scipy import stats
 
 from .._aliases import accepts_aliases
+from .._input_validation import check_columns
 from ..core.results import CausalResult
 from ..exceptions import DataInsufficient, MethodIncompatibility
 from ._core import _kernel_fn
+
+#: What ``estimate`` / ``se`` / ``ci`` report in ``rd_forest`` and ``rd_boost``.
+_HEADLINE_NOTE = (
+    "Local-linear RD (rdrobust, robust bias-corrected) on the outcome "
+    "residualised on the covariates with this learner, 5-fold cross-fitted. "
+    "`detail` holds the fitted CATE by covariate profile; its mean is "
+    "`mean_cate`."
+)
 
 # ======================================================================
 # Citations
@@ -161,7 +170,10 @@ def _restrict_to_bandwidth(
         raise DataInsufficient(  # pragma: no cover
             f"Only {len(sub)} observations within bandwidth h={h:.4f}. "
             "Increase h or check data.",
-            recovery_hint="Increase `h`, use a denser window near the cutoff, or check the running variable.",
+            recovery_hint=(
+                "Increase `h`, use a denser window near the cutoff, or check the "
+                "running variable."
+            ),
             diagnostics={
                 "n_bandwidth": int(len(sub)),
                 "h": float(h),
@@ -169,6 +181,76 @@ def _restrict_to_bandwidth(
             },
         )
     return sub, h
+
+
+def _detrend_running_variable(
+    Y: np.ndarray,
+    x_c: np.ndarray,
+    treated: np.ndarray,
+    Z: np.ndarray,
+    h: float,
+) -> Tuple[np.ndarray, Dict[str, float]]:
+    """Remove the side-specific linear trend in the running variable.
+
+    The learners below see covariates only. Fed the raw outcome, they
+    estimate ``E[Y | Z, c <= X <= c + h] - E[Y | Z, c - h <= X < c]``, which
+    differs from the effect at the cutoff by the slope of the regression
+    function times the distance from it. This fits, on each side, a
+    triangular-kernel weighted regression of ``Y`` on ``X - c`` and the
+    covariates, and subtracts ``slope * (X - c)``, so what the learners
+    model is the outcome carried to the cutoff.
+    """
+    out = Y.astype(float).copy()
+    slopes: Dict[str, float] = {}
+    w = np.clip(1.0 - np.abs(x_c) / h, 0.0, None)
+    for label, mask in (("right", treated), ("left", ~treated)):
+        if mask.sum() < Z.shape[1] + 3:
+            slopes[label] = 0.0
+            continue
+        design = np.column_stack([np.ones(mask.sum()), x_c[mask], Z[mask]])
+        sw = np.sqrt(w[mask])
+        coef = np.linalg.lstsq(design * sw[:, None], Y[mask] * sw, rcond=None)[0]
+        slopes[label] = float(coef[1])
+        out[mask] = Y[mask] - coef[1] * x_c[mask]
+    return out, slopes
+
+
+def _rdml_headline(
+    data: pd.DataFrame,
+    y: str,
+    x: str,
+    c: float,
+    covs: List[str],
+    estimator: Any,
+    h: Optional[float],
+    alpha: float,
+    seed: int,
+) -> CausalResult:
+    """Average effect at the cutoff with valid inference.
+
+    Local-linear RD (``rdrobust``, bias-corrected robust interval) on the
+    outcome residualised on the covariates with ``estimator``, 5-fold
+    cross-fitted: the covariate-adjusted RD estimator of ``sp.rd_flex``
+    with this function's learner. Averaging fitted CATEs has no valid
+    standard error of its own, and a forest's or a boosted model's fitted
+    means carry regularisation bias that the cross-fitted residual does
+    not pass on to the RD contrast.
+    """
+    from .rd_flex import _crossfit_residualise
+    from .rdrobust import rdrobust
+
+    df = data.dropna(subset=[y, x] + list(covs)).copy()
+    resid, _ = _crossfit_residualise(
+        df[covs].to_numpy(dtype=float),
+        df[y].to_numpy(dtype=float),
+        "ridge",
+        estimator,
+        5,
+        seed,
+    )
+    df = df.assign(_y_rdml_=resid)
+    kwargs: Dict[str, Any] = {} if h is None else {"h": float(h)}
+    return rdrobust(data=df, y="_y_rdml_", x=x, c=c, alpha=alpha, **kwargs)
 
 
 def _triangular_weights(x_vals: np.ndarray, c: float, h: float) -> np.ndarray:
@@ -179,8 +261,15 @@ def _triangular_weights(x_vals: np.ndarray, c: float, h: float) -> np.ndarray:
 def _validate_covariates(
     data: pd.DataFrame,
     covs: Optional[Sequence[str] | str],
+    y: Optional[str] = None,
+    x: Optional[str] = None,
+    function: Optional[str] = None,
 ) -> List[str]:
-    """Return validated covariate list; raise on missing columns."""
+    """Return validated covariate list; raise on missing columns.
+
+    ``y`` / ``x`` (when given) are checked together with the covariates so
+    a misspelled outcome or running variable raises ``ColumnNotFound``.
+    """
     if covs is None:
         return []  # pragma: no cover
     if isinstance(covs, str):
@@ -202,15 +291,12 @@ def _validate_covariates(
             diagnostics={"argument": "covs", "bad_values": [repr(c) for c in bad]},
         )
     missing = [c for c in cov_list if c not in data.columns]
-    if missing:
-        raise MethodIncompatibility(
-            f"Covariates not found in data: {missing}",
-            recovery_hint="Check `covs` against the DataFrame columns.",
-            diagnostics={
-                "missing_covariates": missing,
-                "available_columns": list(data.columns),
-            },
-        )  # pragma: no cover
+    check_columns(
+        data,
+        {"y": y, "x": x, "covs": covs if isinstance(covs, str) else cov_list},
+        function=function,
+        extra_diagnostics={"missing_covariates": missing},
+    )
     return cov_list
 
 
@@ -238,8 +324,16 @@ def rd_forest(
 
     Adapts the Athey-Wager (2019) generalized random forests framework to
     an RD context. Within bandwidth *h*, treatment is D = 1(X >= c).
-    Two separate random forests estimate E[Y|Z, D=0] and E[Y|Z, D=1],
-    and the CATE is their difference.
+    The outcome is first carried to the cutoff by removing a side-specific
+    linear trend in the running variable; two random forests then estimate
+    E[Y|Z, D=0] and E[Y|Z, D=1] at the cutoff, and the CATE is their
+    difference.
+
+    The headline ``estimate`` / ``se`` / ``ci`` are the average effect at
+    the cutoff from a local-linear RD (``sp.rdrobust``, robust
+    bias-corrected) on the outcome residualised on the covariates with the
+    same forest, 5-fold cross-fitted, as in ``sp.rd_flex``. The mean of the
+    fitted CATEs is reported separately as ``model_info['mean_cate']``.
 
     Parameters
     ----------
@@ -271,8 +365,16 @@ def rd_forest(
     Returns
     -------
     CausalResult
-        estimate = average CATE; detail = DataFrame with per-obs CATE
-        and SE; model_info includes variable importance.
+        estimate = average effect at the cutoff (see above); detail =
+        DataFrame with per-obs CATE and its across-tree SE; model_info
+        includes ``mean_cate``, ``running_slopes`` and variable importance.
+
+    Notes
+    -----
+    Until the 2026-10 fix the forests were fitted to the raw outcome. They see
+    covariates only, so the result was the difference of within-bandwidth
+    means, off by the slope in the running variable times the distance from
+    the cutoff, with a standard error that ignored it.
 
     Examples
     --------
@@ -291,8 +393,10 @@ def rd_forest(
     ...     df, y="y", x="x", c=0, covs=["z1", "z2"],
     ...     n_trees=50, seed=42,
     ... )
-    >>> round(float(res.estimate), 2)
-    1.2
+    >>> bool(res.ci[0] < 1.0 < res.ci[1])  # the average effect is 1.0
+    True
+    >>> res.estimand
+    'ATE at cutoff'
     >>> list(res.model_info["variable_importance"].keys())[0]
     'z1'
     """
@@ -304,12 +408,14 @@ def rd_forest(
         )
 
     # --- Validate inputs ---
-    covs = _validate_covariates(data, covs)
+    covs = _validate_covariates(data, covs, y=y, x=x, function="sp.rd_forest")
     if not covs:
         raise MethodIncompatibility(  # pragma: no cover
             "rd_forest requires at least one covariate in `covs` for "
             "heterogeneity estimation.",
-            recovery_hint="Pass at least one covariate for ML heterogeneity estimation.",
+            recovery_hint=(
+                "Pass at least one covariate for ML heterogeneity estimation."
+            ),
             diagnostics={"function": "rd_forest"},
         )
     if x in covs:
@@ -328,7 +434,13 @@ def rd_forest(
     treated = (sub[x] >= c).values
     control = ~treated
     Z = sub[covs].values.astype(float)
-    Y = sub[y].values.astype(float)
+    Y, running_slopes = _detrend_running_variable(
+        sub[y].values.astype(float),
+        sub[x].values.astype(float) - c,
+        treated,
+        Z,
+        h_used,
+    )
     n = len(sub)
 
     n_treated = treated.sum()
@@ -337,7 +449,9 @@ def rd_forest(
         raise DataInsufficient(  # pragma: no cover
             f"Too few observations on one side of cutoff (treated={n_treated}, "
             f"control={n_control}). Increase bandwidth or reduce min_leaf.",
-            recovery_hint="Increase bandwidth, reduce min_leaf, or collect more near-cutoff data.",
+            recovery_hint=(
+                "Increase bandwidth, reduce min_leaf, or collect more near-cutoff data."
+            ),
             diagnostics={
                 "function": "rd_forest",
                 "n_treated": int(n_treated),
@@ -410,15 +524,28 @@ def rd_forest(
     cate_var = np.var(tau_trees, axis=1, ddof=1) * (n_t / (n_t - 1))
     cate_se = np.sqrt(cate_var)
 
-    # --- Average treatment effect and its SE ---
-    ate = float(np.mean(cate))
-    # SE of the mean: combine within-unit variance and cross-unit variance
+    # --- Headline: average effect at the cutoff, with valid inference ---
     n_est = len(cate)
-    se_ate = float(np.sqrt(np.var(cate, ddof=1) / n_est + np.mean(cate_var) / n_est))
-
+    headline = _rdml_headline(
+        data,
+        y,
+        x,
+        c,
+        covs,
+        RandomForestRegressor(
+            n_estimators=n_trees,
+            min_samples_leaf=min_leaf,
+            random_state=seed,
+            n_jobs=-1,
+        ),
+        h,
+        alpha,
+        seed,
+    )
+    ate, se_ate = float(headline.estimate), float(headline.se)
+    ci = tuple(float(v) for v in headline.ci)
+    pvalue = float(headline.pvalue)
     z_crit = stats.norm.ppf(1 - alpha / 2)
-    ci = (ate - z_crit * se_ate, ate + z_crit * se_ate)
-    pvalue = float(2 * stats.norm.sf(abs(ate) / max(se_ate, 1e-15)))
 
     # --- Variable importance (mean decrease in impurity, averaged) ---
     imp1 = rf1.feature_importances_
@@ -453,6 +580,10 @@ def rd_forest(
         "n_treated": int(n_treated),
         "n_control": int(n_control),
         "n_estimation": n_est,
+        "mean_cate": float(np.mean(cate)),
+        "running_slopes": running_slopes,
+        "headline": _HEADLINE_NOTE,
+        "headline_bandwidth": headline.model_info.get("bandwidth_h"),
         "variable_importance": var_importance,
         "feature_names": covs,
         "oob_score_treated": oob1,
@@ -461,7 +592,7 @@ def rd_forest(
 
     return CausalResult(
         method="RD Causal Forest (Athey-Wager)",
-        estimand="CATE (avg)",
+        estimand="ATE at cutoff",
         estimate=ate,
         se=se_ate,
         pvalue=pvalue,
@@ -496,8 +627,13 @@ def rd_boost(
     """
     Gradient Boosting for RD — flexible CATE estimation.
 
-    Fits separate GBM models on each side of the cutoff and estimates
-    individual-level CATEs as mu_1(z) - mu_0(z). Standard errors are
+    Removes a side-specific linear trend in the running variable, so the
+    outcome is carried to the cutoff, then fits separate GBM models on each
+    side and estimates individual-level CATEs as mu_1(z) - mu_0(z). The
+    headline ``estimate`` / ``se`` / ``ci`` are the average effect at the
+    cutoff from a local-linear RD (``sp.rdrobust``, robust bias-corrected)
+    on the outcome residualised on the covariates with the same GBM, 5-fold
+    cross-fitted, as in ``sp.rd_flex``. CATE standard errors are
     obtained via bootstrap.
 
     Parameters
@@ -528,7 +664,9 @@ def rd_boost(
     Returns
     -------
     CausalResult
-        estimate = average CATE; detail = per-obs CATE and bootstrap SE.
+        estimate = average effect at the cutoff (see above); detail =
+        per-obs CATE and bootstrap SE; ``model_info['mean_cate']`` is the
+        mean of the fitted CATEs.
 
     Examples
     --------
@@ -547,8 +685,8 @@ def rd_boost(
     ...     df, y="y", x="x", c=0, covs=["z1", "z2"],
     ...     n_estimators=50, seed=42,
     ... )
-    >>> round(float(res.estimate), 2)
-    1.17
+    >>> bool(res.ci[0] < 1.0 < res.ci[1])  # the average effect is 1.0
+    True
     """
     try:
         from sklearn.ensemble import GradientBoostingRegressor
@@ -557,11 +695,13 @@ def rd_boost(
             "rd_boost requires scikit-learn. Install: pip install scikit-learn"
         )
 
-    covs = _validate_covariates(data, covs)
+    covs = _validate_covariates(data, covs, y=y, x=x, function="sp.rd_boost")
     if not covs:
         raise MethodIncompatibility(  # pragma: no cover
             "rd_boost requires at least one covariate in `covs`.",
-            recovery_hint="Pass at least one covariate for ML heterogeneity estimation.",
+            recovery_hint=(
+                "Pass at least one covariate for ML heterogeneity estimation."
+            ),
             diagnostics={"function": "rd_boost"},
         )
     if x in covs:
@@ -579,7 +719,13 @@ def rd_boost(
     treated = (sub[x] >= c).values
     control = ~treated
     Z = sub[covs].values.astype(float)
-    Y = sub[y].values.astype(float)
+    Y, running_slopes = _detrend_running_variable(
+        sub[y].values.astype(float),
+        sub[x].values.astype(float) - c,
+        treated,
+        Z,
+        h_used,
+    )
     n = len(sub)
 
     n_treated = int(treated.sum())
@@ -613,9 +759,8 @@ def rd_boost(
     mu1_hat = gbm1.predict(Z)
     mu0_hat = gbm0.predict(Z)
     cate = mu1_hat - mu0_hat
-    ate = float(np.mean(cate))
 
-    # --- Bootstrap SE ---
+    # --- Bootstrap SE of each fitted CATE ---
     boot_ates = np.empty(n_boot)
     boot_cates = np.empty((n_boot, n))
 
@@ -647,12 +792,29 @@ def rd_boost(
         boot_cates[b] = cate_b
         boot_ates[b] = np.mean(cate_b)
 
-    se_ate = float(np.std(boot_ates, ddof=1))
     cate_se = np.std(boot_cates, axis=0, ddof=1)
 
+    # --- Headline: average effect at the cutoff, with valid inference ---
+    headline = _rdml_headline(
+        data,
+        y,
+        x,
+        c,
+        covs,
+        GradientBoostingRegressor(
+            n_estimators=n_estimators,
+            max_depth=max_depth,
+            learning_rate=learning_rate,
+            random_state=seed,
+        ),
+        h,
+        alpha,
+        seed,
+    )
+    ate, se_ate = float(headline.estimate), float(headline.se)
+    ci = tuple(float(v) for v in headline.ci)
+    pvalue = float(headline.pvalue)
     z_crit = stats.norm.ppf(1 - alpha / 2)
-    ci = (ate - z_crit * se_ate, ate + z_crit * se_ate)
-    pvalue = float(2 * stats.norm.sf(abs(ate) / max(se_ate, 1e-15)))
 
     # --- Variable importance (from full-sample GBMs) ---
     imp1 = gbm1.feature_importances_
@@ -681,13 +843,18 @@ def rd_boost(
         "n_boot": n_boot,
         "n_treated": n_treated,
         "n_control": n_control,
+        "mean_cate": float(np.mean(cate)),
+        "mean_cate_boot_se": float(np.std(boot_ates, ddof=1)),
+        "running_slopes": running_slopes,
+        "headline": _HEADLINE_NOTE,
+        "headline_bandwidth": headline.model_info.get("bandwidth_h"),
         "variable_importance": var_importance,
         "feature_names": covs,
     }
 
     return CausalResult(
         method="RD Gradient Boosting",
-        estimand="CATE (avg)",
+        estimand="ATE at cutoff",
         estimate=ate,
         se=se_ate,
         pvalue=pvalue,
@@ -782,7 +949,7 @@ def rd_lasso(
             "rd_lasso requires scikit-learn. Install: pip install scikit-learn"
         )
 
-    covs = _validate_covariates(data, covs)
+    covs = _validate_covariates(data, covs, y=y, x=x, function="sp.rd_lasso")
     if not covs:
         raise MethodIncompatibility(  # pragma: no cover
             "rd_lasso requires candidate covariates in `covs`.",
@@ -996,8 +1163,10 @@ def rd_cate_summary(
     ...     df, y="y", x="x", c=0, covs=["z1", "z2"],
     ...     methods=["forest", "lasso"], seed=42,
     ... )
-    >>> round(float(out["forest"].estimate), 2)
-    1.16
+    >>> sorted(k for k in out if k in ("forest", "lasso"))
+    ['forest', 'lasso']
+    >>> bool(out["forest"].ci[0] < 1.0 < out["forest"].ci[1])
+    True
     """
     valid_methods = {"forest", "boost", "lasso"}
     if methods is None:
@@ -1159,7 +1328,9 @@ def _importance_plot(
         raise MethodIncompatibility(  # pragma: no cover
             "No variable_importance found in result.model_info. "
             "Pass a CausalResult from rd_forest or rd_boost.",
-            recovery_hint="Call _importance_plot with a result from rd_forest or rd_boost.",
+            recovery_hint=(
+                "Call _importance_plot with a result from rd_forest or rd_boost."
+            ),
             diagnostics={"result_method": getattr(result, "method", None)},
         )
 

@@ -28,11 +28,14 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 from scipy import stats
+from scipy.special import expit as _expit
 
 from .._aliases import accepts_aliases
+from ..core._call_record import records_call
 from ..core._vcov_spec import markout_clusters
 from ..core.results import EconometricResults
 from ..core.utils import create_design_matrices
+from ..exceptions import DataInsufficient, MethodIncompatibility
 from ..output._lineage import records_provenance
 
 LinkFunc = Callable[[np.ndarray], np.ndarray]
@@ -50,13 +53,9 @@ def _as_float_array(value: Any) -> np.ndarray:
 
 def _logit_cdf(z: np.ndarray) -> np.ndarray:
     """Logistic CDF  Λ(z) = 1/(1+exp(-z))  (numerically stable)."""
-    return _as_float_array(
-        np.where(
-            z >= 0,
-            1.0 / (1.0 + np.exp(-z)),
-            np.exp(z) / (1.0 + np.exp(z)),
-        )
-    )
+    # both branches of a np.where are evaluated, so the "stable" two-sided
+    # form still overflowed (with a RuntimeWarning) on a large index
+    return _as_float_array(_expit(np.asarray(z, dtype=float)))
 
 
 def _logit_pdf(z: np.ndarray) -> np.ndarray:
@@ -186,40 +185,102 @@ def _hessian(
 def _warn_if_separated(y: np.ndarray, p_hat: np.ndarray) -> None:
     """Warn on (quasi-)complete separation, where the MLE does not exist.
 
-    Under perfect separation Newton-Raphson does not diverge loudly — it
-    "converges" by the step tolerance while coefficients drift toward ±∞ and
-    the fitted probabilities pile up at 0/1, so the reported estimates and
-    standard errors are artefacts of the stopping rule, not a finite optimum.
+    Under separation Newton-Raphson does not diverge loudly: it "converges"
+    by the step tolerance while coefficients drift toward +/- infinity, so
+    the reported estimates and standard errors are artefacts of the stopping
+    rule, not a finite optimum.
 
-    The signature is scale-free: every observation is perfectly classified AND
-    essentially all fitted probabilities sit at the 0/1 extremes. Strong but
-    overlapping signal does not trip it (some fitted probabilities stay in the
-    interior), so it does not fire on well-identified models.
+    Two signatures, either one enough:
+
+    * every observation is classified correctly by the sign of the fitted
+      index. That *is* complete separation: a linear index that puts all
+      the ones on one side and all the zeros on the other can be scaled up
+      without bound, each step raising the likelihood.
+    * some fitted probabilities are 0 or 1 to machine precision (R ``glm``
+      warns on the same event). A finite maximum of a binary likelihood
+      does not put an observation there; it is what quasi-complete
+      separation looks like, e.g. a category in which the outcome never
+      varies.
+
+    An earlier version also required 99 percent of the fitted probabilities
+    to lie within 0.01 of the boundary. With a few dozen observations one
+    point near the separating threshold was enough to silence the warning
+    while the slope ran into the thousands.
     """
     y_arr = np.asarray(y).ravel()
     p = np.asarray(p_hat).ravel()
-    if p.size == 0:
+    if p.size == 0 or np.unique(y_arr).size < 2:
         return
-    if not np.array_equal((p >= 0.5).astype(int), y_arr.astype(int)):
+    complete = np.array_equal((p >= 0.5).astype(int), y_arr.astype(int))
+    eps = 10.0 * np.finfo(float).eps
+    n_boundary = int(np.sum((p < eps) | (p > 1.0 - eps)))
+    if not complete and n_boundary == 0:
         return
-    frac_extreme = float(np.mean((p < 1e-2) | (p > 1.0 - 1e-2)))
-    if frac_extreme >= 0.99:
-        from ..exceptions import ConvergenceWarning
-        from ..exceptions import warn as _sp_warn
+    from ..exceptions import ConvergenceWarning
+    from ..exceptions import warn as _sp_warn
 
-        _sp_warn(
-            ConvergenceWarning,
-            "Perfect or quasi-complete separation detected: the outcome is "
-            "perfectly predicted by the linear index, so the maximum-likelihood "
-            "estimates do not exist. The reported coefficients and standard "
-            "errors are driven by the optimizer's stopping rule, not a finite "
-            "optimum, and should not be interpreted.",
-            recovery_hint=(
-                "Use penalized (Firth) logistic regression, drop the perfectly "
-                "separating predictor, or pool sparse categories."
-            ),
-            stacklevel=3,
+    if complete:
+        what = (
+            "Complete separation detected: the linear index classifies every "
+            "observation correctly"
         )
+    else:
+        what = (
+            f"Quasi-complete separation suspected: {n_boundary} fitted "
+            "probabilities are numerically 0 or 1"
+        )
+    _sp_warn(
+        ConvergenceWarning,
+        what + ", so the maximum-likelihood estimates do not exist. The "
+        "reported coefficients and standard errors are driven by the "
+        "optimizer's stopping rule, not a finite optimum, and should not be "
+        "interpreted.",
+        recovery_hint=(
+            "Use a weakly informative prior "
+            "(sp.bayes_regress(..., model='logit', "
+            "prior='weakly_informative')), drop the perfectly separating "
+            "predictor, or pool sparse categories."
+        ),
+        stacklevel=3,
+    )
+
+
+def _binary_r2(
+    y: np.ndarray,
+    p: np.ndarray,
+    xb: np.ndarray,
+    ll: float,
+    ll_null: float,
+    link: str,
+) -> Dict[str, float]:
+    """Goodness-of-fit measures of a binary response model (unweighted).
+
+    No single one is "the" R-squared of a probit or logit; they answer
+    different questions and are reported together under their usual names.
+    ``mckelvey_zavoina`` is the share of the variance of the latent
+    variable explained by the index, with the error variance of the link
+    (1 for probit, pi^2 / 3 for logit); it is not defined for cloglog.
+    """
+    n = float(len(y))
+    ybar = float(np.mean(y))
+    tss = float(np.sum((y - ybar) ** 2))
+    lr = 2.0 * (ll - ll_null)
+    cox_snell = 1.0 - np.exp(-lr / n)
+    out = {
+        "mcfadden": 1.0 - ll / ll_null if ll_null != 0 else np.nan,
+        "cox_snell": cox_snell,
+        "nagelkerke": cox_snell / (1.0 - np.exp(2.0 * ll_null / n)),
+        "efron": 1.0 - float(np.sum((y - p) ** 2)) / tss,
+        "tjur": float(np.mean(p[y == 1]) - np.mean(p[y == 0])),
+        "estrella": (
+            1.0 - (ll / ll_null) ** (-2.0 / n * ll_null) if ll_null != 0 else np.nan
+        ),
+    }
+    err_var = {"probit": 1.0, "logit": np.pi**2 / 3.0}.get(link)
+    if err_var is not None:
+        v = float(np.var(xb))
+        out["mckelvey_zavoina"] = v / (v + err_var)
+    return {k: float(val) for k, val in out.items()}
 
 
 def _newton_raphson(
@@ -338,6 +399,7 @@ def _marginal_effects(
     var_names: List[str],
     kind: str = "average",
     at_values: Optional[Dict[str, float]] = None,
+    weights: Optional[np.ndarray] = None,
 ) -> pd.DataFrame:
     """
     Compute marginal effects ∂P/∂x_j = f(X'β) β_j.
@@ -346,15 +408,25 @@ def _marginal_effects(
     ----------
     kind : 'average' (AME), 'mean' (MEM), 'at' (MER)
     at_values : dict of variable -> value (for kind='at')
+    weights : the estimation weights. Averages over the sample (of the
+        density for the AME, of the regressors for MEM / MER) are weighted,
+        sum_i w_i a_i / sum_i w_i, as Stata's ``margins`` does after a
+        weighted fit; frequency weights then reproduce the expanded data.
     """
+
+    def _avg(a: np.ndarray) -> np.ndarray:
+        if weights is None:
+            return np.asarray(a.mean(axis=0))
+        return np.asarray(np.average(a, axis=0, weights=weights))
+
     if kind == "average":
         # AME: average of f(x_i'β) across all obs
         z = X @ beta
         f = pdf_func(z)
-        me = np.mean(f) * beta
+        me = _avg(f) * beta
     elif kind == "mean":
         # MEM: f evaluated at sample means
-        x_bar = X.mean(axis=0)
+        x_bar = _avg(X)
         z_bar = x_bar @ beta
         f_bar = pdf_func(np.array([z_bar]))[0]
         me = f_bar * beta
@@ -362,9 +434,17 @@ def _marginal_effects(
         # MER: at representative values
         if at_values is None:
             # Default to means
-            x_rep = X.mean(axis=0)
+            x_rep = _avg(X)
         else:
-            x_rep = X.mean(axis=0).copy()
+            x_rep = _avg(X).copy()
+            unknown = [v for v in at_values if v not in var_names]
+            if unknown:
+                raise MethodIncompatibility(
+                    f"at_values names {unknown} that are not regressors of "
+                    f"the model; the regressors are {list(var_names)}.",
+                    recovery_hint="Use the coefficient names of the fit as keys.",
+                    diagnostics={"unknown": unknown, "valid": list(var_names)},
+                )
             for vname, val in at_values.items():
                 if vname in var_names:
                     idx = var_names.index(vname)
@@ -427,25 +507,16 @@ def _roc_auc(y: np.ndarray, p_hat: np.ndarray) -> float:
     neg = p_hat[y == 0]
     if len(pos) == 0 or len(neg) == 0:
         return np.nan
+    # a rank is not defined for a NaN score
+    if not (np.isfinite(pos).all() and np.isfinite(neg).all()):
+        return np.nan
     # Efficient computation via rank sums
     n1 = len(pos)
     n0 = len(neg)
     all_scores = np.concatenate([pos, neg])
     labels = np.concatenate([np.ones(n1), np.zeros(n0)])
-    order = np.argsort(all_scores)
-    ranks = np.empty_like(order, dtype=float)
-    ranks[order] = np.arange(1, len(all_scores) + 1, dtype=float)
-
-    # Handle ties
-    sorted_scores = all_scores[order]
-    i = 0
-    while i < len(sorted_scores):
-        j = i
-        while j < len(sorted_scores) and sorted_scores[j] == sorted_scores[i]:
-            j += 1
-        avg_rank = (ranks[order[i:j]].sum()) / (j - i)
-        ranks[order[i:j]] = avg_rank
-        i = j
+    # mid-ranks: tied scores share the mean of the ranks they span
+    ranks = stats.rankdata(all_scores, method="average")
 
     rank_sum = ranks[labels == 1].sum()
     u = rank_sum - n1 * (n1 + 1) / 2
@@ -515,6 +586,56 @@ def _predict(
 # =========================================================================
 
 
+def _perfect_prediction_mask(
+    y: np.ndarray, X: np.ndarray, var_names: List[str]
+) -> Tuple[np.ndarray, List[str], List[str]]:
+    """Stata's perfect-prediction rule for indicator regressors.
+
+    For a column taking the value 0 and one other value, if the outcome is
+    constant among its non-zero rows, those rows carry no information about
+    the other coefficients and the column's own coefficient is infinite:
+    Stata ``logit`` / ``probit`` report ``"x != 0 predicts failure
+    perfectly"``, drop the rows and omit ``x``.  A category of a
+    ``C(ind)`` factor in which nobody is treated is the common case.
+    Iterated, since dropping rows can create another such column or leave
+    a column identically zero (then omitted as collinear).
+
+    Returns ``(keep_rows, dropped_columns, notes)``.
+    """
+    n, k = X.shape
+    keep = np.ones(n, dtype=bool)
+    dropped: List[str] = []
+    notes: List[str] = []
+    changed = True
+    while changed:
+        changed = False
+        for j in range(k):
+            if var_names[j] in dropped:
+                continue
+            col = X[keep, j]
+            nz = col != 0
+            if nz.all() or not nz.any():
+                if not nz.any() and keep.any():
+                    dropped.append(var_names[j])
+                    notes.append(f"{var_names[j]} omitted (identically zero)")
+                    changed = True
+                continue
+            if np.unique(col[nz]).size != 1:
+                continue
+            yv = y[keep][nz]
+            if yv.min() == yv.max():
+                outcome = "success" if yv[0] == 1 else "failure"
+                idx = np.flatnonzero(keep)[nz]
+                keep[idx] = False
+                dropped.append(var_names[j])
+                notes.append(
+                    f"{var_names[j]} != 0 predicts {outcome} perfectly; "
+                    f"{var_names[j]} omitted and {idx.size} obs not used"
+                )
+                changed = True
+    return keep, dropped, notes
+
+
 def _fit_binary(
     formula: Optional[str],
     data: Optional[pd.DataFrame],
@@ -530,13 +651,53 @@ def _fit_binary(
     tol: float,
     alpha: float,
     at_values: Optional[Dict[str, float]] = None,
+    perfect_prediction: str = "drop",
+    weights_as: Optional[str] = None,
+    design: Optional[Any] = None,
 ) -> EconometricResults:
     """
     Internal workhorse for logit / probit / cloglog estimation.
     """
+    svy = None
+    if design is not None:
+        from ..survey._regression_design import refuse_design_options
+        from ..survey.linearization import check_design
+
+        refuse_design_options(
+            link,
+            robust=robust,
+            cluster=cluster,
+            weights=weights,
+            weights_as=weights_as,
+        )
+        if data is None:
+            raise MethodIncompatibility(f"{link}: design= needs data=.")
+        svy = check_design(design, data, function=link)
+    if marginal_effects is not None and marginal_effects not in (
+        "average",
+        "mean",
+        "at",
+    ):
+        raise MethodIncompatibility(
+            f"Unknown marginal_effects={marginal_effects!r}. Choose "
+            "'average' (AME), 'mean' (at the means) or 'at' (with at_values=).",
+            recovery_hint="Use marginal_effects='average', 'mean' or 'at'.",
+            diagnostics={
+                "marginal_effects": marginal_effects,
+                "valid": ["average", "mean", "at"],
+            },
+        )
+
     # ── Prepare data ────────────────────────────────────────────────────
+    factor_levels: Optional[Dict[str, Any]] = None
     if formula is not None and data is not None:
         y_df, X_df = create_design_matrices(formula, data)
+        from ..postestimation._design import fitted_factor_levels
+
+        # for predict(): which values of each factor the fit saw
+        factor_levels = fitted_factor_levels(
+            getattr(X_df, "design_info", None), data.columns
+        )
         y_vec = y_df.values.ravel()
         X_mat = X_df.values
         var_names = list(X_df.columns)
@@ -551,12 +712,69 @@ def _fit_binary(
         var_names = ["Intercept"] + list(x)
     else:
         raise ValueError("Provide either (formula, data) or (y, x, data).")
+    row_index = X_df.index if formula is not None and data is not None else clean.index
+
+    # A dependent regressor leaves the likelihood flat in one direction;
+    # omit it (Stata's rule) instead of reporting wherever Newton stopped.
+    from ..core._collinear import drop_collinear
+
+    X_mat, var_names, collinear_omitted, _ = drop_collinear(
+        np.asarray(X_mat, dtype=float),
+        var_names,
+        link,
+        formula=formula if data is not None else None,
+        design_info=(
+            getattr(X_df, "design_info", None)
+            if formula is not None and data is not None
+            else None
+        ),
+        stacklevel=4,
+    )
+
+    # Stata drops indicator regressors that predict the outcome perfectly
+    # together with the rows they predict; keeping them leaves an MLE that
+    # does not exist and a sample that differs from Stata's (silently).
+    pp_notes: List[str] = []
+    pp_dropped: List[str] = []
+    n_pp = 0
+    if perfect_prediction not in ("drop", "keep"):
+        raise MethodIncompatibility("perfect_prediction must be 'drop' or 'keep'")
+    if perfect_prediction == "drop" and X_mat.shape[1] > 1:
+        _keep, pp_dropped, pp_notes = _perfect_prediction_mask(
+            np.asarray(y_vec, float), X_mat, var_names
+        )
+        if pp_dropped:
+            n_pp = int((~_keep).sum())
+            live = [j for j, v in enumerate(var_names) if v not in pp_dropped]
+            y_vec = y_vec[_keep]
+            X_mat = X_mat[_keep][:, live]
+            var_names = [var_names[j] for j in live]
+            row_index = row_index[_keep]
+            warnings.warn(
+                f"{link}: " + "; ".join(pp_notes) + " (Stata's rule). "
+                "Pass perfect_prediction='keep' to keep them.",
+                UserWarning,
+                stacklevel=3,
+            )
 
     # Validate binary outcome
     unique_vals = np.unique(y_vec)
     if not np.array_equal(np.sort(unique_vals), np.array([0.0, 1.0])):
         if set(unique_vals).issubset({0, 1, 0.0, 1.0}):
-            pass  # only one category present — unusual but proceed
+            # Stata r(2000) "outcome does not vary": the MLE does not exist
+            # (the intercept diverges). This used to run on and end in a
+            # ZeroDivisionError from the null log-likelihood of zero.
+            only = "empty" if len(unique_vals) == 0 else f"all {unique_vals[0]:g}"
+            raise DataInsufficient(
+                f"{link}: the outcome '{dep_var}' does not vary in the "
+                f"estimation sample ({only}); a binary response model needs "
+                "both zeros and ones.",
+                recovery_hint=(
+                    "Check the outcome coding and any sample restriction; "
+                    "rows dropped for perfect prediction also leave the sample."
+                ),
+                diagnostics={"n_obs": int(len(y_vec))},
+            )
         else:
             raise ValueError(
                 f"Dependent variable must be binary (0/1). "
@@ -567,15 +785,50 @@ def _fit_binary(
 
     # Weights
     w = None
+    svy_rows = None
+    if svy is not None:
+        from ..survey._regression_design import positions
+
+        assert data is not None
+        svy_rows = positions(data, row_index, link)
+        w = svy.weights[svy_rows]
     if weights is not None and data is not None:
-        w = data.loc[X_df.index if formula else clean.index, weights].values.astype(
-            float
-        )
+        w = data.loc[row_index, weights].values.astype(float)
+        # Same rules as sp.glm / sp.regress: a missing weight is refused
+        # (it made every fitted probability NaN), and so are negative or
+        # all-zero weights (the fit returned its starting values).
+        if not np.isfinite(w).all():
+            raise DataInsufficient(
+                f"{link}: weights column '{weights}' contains NaN or "
+                "infinite values in the estimation sample.",
+                recovery_hint="Drop or impute the rows with a missing weight.",
+                diagnostics={"n_bad": int((~np.isfinite(w)).sum())},
+            )
+        if (w < 0).any() or not (w > 0).any():
+            raise MethodIncompatibility(
+                f"{link}: weights must be non-negative with at least one "
+                "positive value.",
+                recovery_hint="Pass a column of non-negative weights.",
+                diagnostics={"n_negative": int((w < 0).sum())},
+            )
 
     # Standard-error request (Stata grammar: vce='robust', 'cluster firm', ...)
+    from ..core._agent_summary import resolve_weights_as
     from ..core._vcov import ml_vcov
     from ..core._vcov_spec import parse_se_request
 
+    weights_as = resolve_weights_as(
+        weights_as,
+        has_weights=weights is not None,
+        native="frequency",
+        entry=f"sp.{link}",
+    )
+    if (
+        weights_as == "sampling"
+        and cluster is None
+        and str(robust).lower() == "nonrobust"
+    ):
+        robust = "robust"
     se_req = parse_se_request(
         robust,
         cluster,
@@ -589,7 +842,10 @@ def _fit_binary(
     if cluster is not None:
         if data is None:
             raise ValueError("`data` must be provided for clustered SEs.")
-        cluster_arr = data.loc[X_df.index if formula else clean.index, cluster].values
+        cluster_arr = data.loc[row_index, cluster].values
+        from ._optim_helpers import require_two_clusters
+
+        require_two_clusters(cluster_arr, link)
 
     cdf_func, pdf_func, pdf_deriv_func = _LINKS[link]
 
@@ -600,7 +856,16 @@ def _fit_binary(
     # Stata conventions (core._vcov.ml_vcov): vce(robust) carries N/(N-1),
     # vce(cluster) carries G/(G-1) only.
     s_obs = _score_obs(beta, y_vec, X_mat, cdf_func, pdf_func, w)
-    vcov = ml_vcov(_mle_vcov(H), s_obs, kind=se_req.kind, clusters=cluster_arr)
+    svy_df: Optional[float] = None
+    if svy is not None:
+        from ..survey._regression_design import design_sandwich
+        from ..survey.linearization import design_df
+
+        assert svy_rows is not None
+        vcov = design_sandwich(s_obs, _mle_vcov(H), svy, svy_rows)
+        svy_df = design_df(svy, svy_rows)
+    else:
+        vcov = ml_vcov(_mle_vcov(H), s_obs, kind=se_req.kind, clusters=cluster_arr)
     se_type = {
         "nonrobust": "MLE (observed information)",
         "robust": "Robust (sandwich, N/(N-1))",
@@ -608,6 +873,8 @@ def _fit_binary(
         "hc1": "HC1 (sandwich, N/(N-K))",
         "cluster": f"Clustered ({cluster})",
     }[se_req.kind]
+    if svy is not None:
+        se_type = "Survey linearisation (strata / PSU / fpc; R svyglm)"
 
     std_errors = np.sqrt(np.maximum(np.diag(vcov), 0.0))
 
@@ -631,9 +898,9 @@ def _fit_binary(
     # ── Marginal effects ────────────────────────────────────────────────
     me_df = None
     if marginal_effects is not None:
-        kind_map = {"average": "average", "mean": "mean", "at": "at"}
-        kind = kind_map.get(marginal_effects, "average")
-        me_df = _marginal_effects(beta, X_mat, pdf_func, var_names, kind, at_values)
+        me_df = _marginal_effects(
+            beta, X_mat, pdf_func, var_names, marginal_effects, at_values, w
+        )
 
     # ── Odds ratios (logit only) ────────────────────────────────────────
     or_series = None
@@ -666,6 +933,11 @@ def _fit_binary(
     model_info = {
         "model_type": link_label[link],
         "method": "Maximum Likelihood (Newton-Raphson)",
+        "r2": (
+            _binary_r2(y_vec, p_hat, X_mat @ beta, ll, ll_null, link)
+            if weights is None
+            else None
+        ),
         "family": "binomial",
         "link": link,
         "ll": ll,
@@ -686,6 +958,10 @@ def _fit_binary(
         "classification": cls_table,
         "hosmer_lemeshow": {"chi2": hl_chi2, "p_value": hl_pval},
         "auc": auc,
+        "perfect_prediction": perfect_prediction,
+        "perfect_prediction_omitted": list(pp_dropped),
+        "omitted": collinear_omitted,
+        "n_perfect_prediction_dropped": n_pp,
     }
 
     data_info = {
@@ -701,6 +977,12 @@ def _fit_binary(
         "var_names": var_names,
         # Likelihood-based: z / chi2 inference, as Stata's logit/probit.
         "inference": "z",
+        # Unweighted per-observation log-likelihood (sp.vuong).
+        "llobs": np.where(
+            y_vec == 1,
+            np.log(np.maximum(p_hat, 1e-300)),
+            np.log(np.maximum(1.0 - p_hat, 1e-300)),
+        ),
     }
 
     diagnostics = {
@@ -719,6 +1001,27 @@ def _fit_binary(
     # sp.regress / sp.panel.
     if cluster_arr is not None:
         model_info["n_clusters"] = int(len(np.unique(cluster_arr)))
+    if w is not None and svy is None:
+        from ..core._agent_summary import note_weight_diagnostics
+
+        note_weight_diagnostics(
+            model_info,
+            w,
+            (
+                "cluster"
+                if cluster_arr is not None
+                else ("classical" if robust == "nonrobust" else "robust")
+            ),
+            entry=f"sp.{link}",
+            robust_option="robust='robust' (Stata [pw=])",
+            classical_reading="frequency weights (Stata [fw=])",
+            classical_assumption=(
+                "frequencies (each row standing for w identical observations)"
+            ),
+            cluster_keys=cluster_arr,
+            cluster=cluster,
+            weights_as=weights_as,
+        )
 
     model_info["alpha"] = alpha
     # Picklable design recipe for postestimation (sp.margins rebuilds the
@@ -727,6 +1030,17 @@ def _fit_binary(
         model_info["formula"] = formula
     if isinstance(weights, str):
         model_info["weights"] = weights
+    if svy is not None:
+        from ..survey.linearization import design_info
+
+        assert svy_df is not None
+        model_info["robust"] = "survey"
+        model_info["vcov_type"] = se_type
+        model_info["survey_design"] = design_info(svy, svy_df)
+        # Stata svy: t with the design degrees of freedom
+        data_info.pop("inference", None)
+        data_info["df_inference"] = svy_df
+        data_info["sample_index"] = row_index
     result = EconometricResults(
         params=params,
         std_errors=se_series,
@@ -741,7 +1055,17 @@ def _fit_binary(
     setattr(
         result,
         "predict",
-        functools.partial(_bound_result_predict, beta, X_mat, cdf_func),
+        functools.partial(
+            _bound_result_predict,
+            beta,
+            X_mat,
+            cdf_func,
+            _names=tuple(str(n) for n in var_names),
+            _formula=formula,
+            _vcov=np.asarray(vcov, dtype=float),
+            _alpha=alpha,
+            _levels=factor_levels,
+        ),
     )
     setattr(
         result,
@@ -758,12 +1082,102 @@ def _bound_result_predict(
     beta: np.ndarray,
     X_mat: np.ndarray,
     cdf_func: Any,
-    X_new: Optional[np.ndarray] = None,
+    X_new: Any = None,
     pred_type: str = "response",
     cutoff: float = 0.5,
-) -> np.ndarray:
-    """``result.predict`` for binary-response fits (picklable via partial)."""
-    X_pred = X_mat if X_new is None else _as_float_array(X_new)
+    *,
+    data: Optional[pd.DataFrame] = None,
+    what: Optional[str] = None,
+    alpha: Optional[float] = None,
+    _names: Tuple[str, ...] = (),
+    _formula: Optional[str] = None,
+    _vcov: Optional[np.ndarray] = None,
+    _alpha: float = 0.05,
+    _levels: Optional[Dict[str, Any]] = None,
+) -> Any:
+    """``result.predict`` for binary-response fits (picklable via partial).
+
+    ``X_new`` (or ``data=``) is a DataFrame holding the variables of the
+    model, from which the design -- transforms, factors and interactions
+    included -- is rebuilt, or an array that already is the design matrix.
+    ``pred_type`` is ``'response'`` (probabilities), ``'link'`` (the index)
+    or ``'class'`` (0/1 at ``cutoff``).
+
+    ``what='confidence'`` returns a DataFrame instead, as ``sp.regress``
+    and ``sp.glm`` results do: ``yhat`` (the probability), its delta-method
+    standard error ``se`` (R ``predict(type = "response", se.fit = TRUE)``)
+    and an interval ``lower`` / ``upper`` formed on the index and mapped
+    through the link, so it stays inside (0, 1). ``what='mean'`` and
+    ``what='link'`` are the probability and the index.
+    """
+    if what is not None:
+        key = str(what).lower()
+        if key == "mean":
+            pred_type = "response"
+        elif key == "link":
+            pred_type = "link"
+        elif key != "confidence":
+            raise MethodIncompatibility(
+                f"predict(): what={what!r} is not available for a binary "
+                "outcome; use 'mean', 'link' or 'confidence'.",
+                recovery_hint="A 0/1 outcome has no prediction interval.",
+            )
+    if data is not None:
+        X_new = data
+    if isinstance(X_new, pd.DataFrame):
+        from types import SimpleNamespace
+
+        from ..postestimation._design import design_for, reject_unseen_levels
+
+        # an unseen factor level would be predicted as the reference level
+        reject_unseen_levels(_levels, X_new)
+        shim = SimpleNamespace(
+            params=pd.Series(np.asarray(beta, dtype=float), index=list(_names)),
+            model_info={"formula": _formula},
+        )
+        try:
+            X_pred = np.asarray(design_for(shim, X_new).build(X_new), dtype=float)
+        except MethodIncompatibility as exc:
+            message = str(exc).split("\n")[0].replace("margins: ", "")
+            raise MethodIncompatibility(
+                f"predict(): {message}",
+                recovery_hint="Pass a DataFrame with every variable of the "
+                "fitted formula.",
+            ) from exc
+    else:
+        X_pred = X_mat if X_new is None else _as_float_array(X_new)
+    if X_pred.ndim != 2 or X_pred.shape[1] != np.asarray(beta).shape[0]:
+        raise MethodIncompatibility(
+            f"predict(): the design has shape {X_pred.shape} but the model has "
+            f"{np.asarray(beta).shape[0]} coefficients.",
+            recovery_hint="Pass a DataFrame with the variables of the model, "
+            "or the full design matrix including the constant.",
+        )
+    if what is not None and str(what).lower() == "confidence":
+        if _vcov is None:
+            raise MethodIncompatibility(
+                "predict(what='confidence'): the fit did not keep its "
+                "covariance matrix.",
+            )
+        from scipy import stats as _stats
+
+        level = _alpha if alpha is None else float(alpha)
+        xb = X_pred @ np.asarray(beta, dtype=float)
+        V = np.asarray(_vcov, dtype=float)
+        se_link = np.sqrt(np.maximum(np.einsum("ij,jk,ik->i", X_pred, V, X_pred), 0.0))
+        step = 1e-6
+        density = (cdf_func(xb + step) - cdf_func(xb - step)) / (2.0 * step)
+        z = float(_stats.norm.ppf(1.0 - level / 2.0))
+        index = X_new.index if isinstance(X_new, pd.DataFrame) else None
+        return pd.DataFrame(
+            {
+                "yhat": _as_float_array(cdf_func(xb)),
+                "se": _as_float_array(density * se_link),
+                "lower": _as_float_array(cdf_func(xb - z * se_link)),
+                "upper": _as_float_array(cdf_func(xb + z * se_link)),
+            },
+            index=index,
+        )
     return _predict(beta, X_pred, cdf_func, pred_type, cutoff)
 
 
@@ -785,6 +1199,7 @@ def _bound_classification_table(
 # =========================================================================
 
 
+@records_call("logit")
 @accepts_aliases(vce="robust")
 @records_provenance("sp.logit")
 @markout_clusters
@@ -802,6 +1217,9 @@ def logit(
     tol: float = 1e-8,
     alpha: float = 0.05,
     at_values: Optional[Dict[str, float]] = None,
+    perfect_prediction: str = "drop",
+    weights_as: Optional[str] = None,
+    design: Optional[Any] = None,
 ) -> EconometricResults:
     """
     Logit (logistic) regression via maximum likelihood.
@@ -819,11 +1237,27 @@ def logit(
     x : list of str, optional
         Regressor names (alternative to formula).
     robust : str, default ``'nonrobust'``
-        ``'nonrobust'`` for MLE SE, ``'hc1'`` / ``'robust'`` for sandwich SE.
+        ``'nonrobust'`` for the MLE (information-matrix) SE. Two sandwich
+        variances that differ only in the finite-sample factor:
+        ``'robust'`` is Stata's ``vce(robust)`` (HC0 times ``N/(N-1)``) and
+        ``'hc1'`` scales by ``N/(N-K)`` instead. They are not synonyms; to
+        match Stata use ``'robust'``. ``result.inference_rule()`` reports
+        which one a fit used.
     cluster : str, optional
         Column name for clustered standard errors.
     weights : str, optional
-        Column name for frequency/analytic weights.
+        Weight column. Alone it is a frequency weight (Stata ``[fw=]`` /
+        ``[iw=]``): the model-based variance scales with the weights. For
+        sampling weights say so with ``weights_as='sampling'``.
+    weights_as : {'frequency', 'sampling'}, optional
+        What the weights are. ``'frequency'`` is what ``weights=`` alone
+        already means. ``'sampling'`` (Stata ``[pw=]``) is for sampling and
+        inverse-probability weights: the same coefficients with the robust
+        variance, unless ``robust=`` or ``cluster=`` asks for another.
+        Saying which also silences the warning about dispersed weights
+        under the model-based variance. ``'analytic'`` is refused: Stata's
+        ``[aw=]`` rescales the weights to sum to ``N``, which this
+        function does not do.
     marginal_effects : str, optional
         ``'average'`` (AME), ``'mean'`` (MEM), or ``'at'`` (MER).
     odds_ratio : bool, default False
@@ -836,6 +1270,26 @@ def logit(
         Significance level for confidence intervals.
     at_values : dict, optional
         Variable values for ``marginal_effects='at'``.
+    perfect_prediction : {'drop', 'keep'}, default 'drop'
+        An indicator regressor whose non-zero rows all share one outcome
+        (e.g. an industry dummy with no treated firm) predicts the outcome
+        perfectly: its coefficient is infinite. ``'drop'`` removes those
+        rows and omits the regressor, iterated, as Stata does ("x != 0
+        predicts failure perfectly"); the omitted names and row count are
+        in ``model_info``. ``'keep'`` is the pre-1.33 behaviour.
+
+    design : SurveyDesign, optional
+        A complex survey design from :func:`sp.svydesign` declared on
+        ``data`` (same rows): the likelihood is weighted by the design
+        weights and the covariance is the survey linearisation sandwich
+        over strata, PSUs and the finite population correction (R
+        ``svyglm``, Stata ``svy: logit``), with t inference on the design
+        degrees of freedom (#PSU - #strata). Cannot be combined with
+        ``weights=``, ``cluster=`` or ``robust=``.
+        A replicate-weight design (:func:`sp.svrepdesign`) is accepted
+        too: the estimator is refitted with every replicate's weights
+        and the replicate variance replaces the linearisation (R
+        ``svrepdesign`` / Stata ``svy brr`` / ``svy jackknife``).
 
     Returns
     -------
@@ -860,6 +1314,11 @@ def logit(
     >>> bool('dy/dx' in me.columns)
     True
     """
+    if design is not None and getattr(design, "is_replicate_design", False):
+        _args = dict(locals())
+        from ..survey._replicate_refit import replicate_refit
+
+        return replicate_refit(logit, _args, design, function="sp.logit")
     return _fit_binary(
         formula=formula,
         data=data,
@@ -875,9 +1334,13 @@ def logit(
         tol=tol,
         alpha=alpha,
         at_values=at_values,
+        perfect_prediction=perfect_prediction,
+        weights_as=weights_as,
+        design=design,
     )
 
 
+@records_call("probit")
 @accepts_aliases(vce="robust")
 @records_provenance("sp.probit")
 @markout_clusters
@@ -894,6 +1357,9 @@ def probit(
     tol: float = 1e-8,
     alpha: float = 0.05,
     at_values: Optional[Dict[str, float]] = None,
+    perfect_prediction: str = "drop",
+    weights_as: Optional[str] = None,
+    design: Optional[Any] = None,
 ) -> EconometricResults:
     """
     Probit regression via maximum likelihood.
@@ -911,11 +1377,27 @@ def probit(
     x : list of str, optional
         Regressor names (alternative to formula).
     robust : str, default ``'nonrobust'``
-        ``'nonrobust'`` for MLE SE, ``'hc1'`` / ``'robust'`` for sandwich SE.
+        ``'nonrobust'`` for the MLE (information-matrix) SE. Two sandwich
+        variances that differ only in the finite-sample factor:
+        ``'robust'`` is Stata's ``vce(robust)`` (HC0 times ``N/(N-1)``) and
+        ``'hc1'`` scales by ``N/(N-K)`` instead. They are not synonyms; to
+        match Stata use ``'robust'``. ``result.inference_rule()`` reports
+        which one a fit used.
     cluster : str, optional
         Column name for clustered standard errors.
     weights : str, optional
-        Column name for frequency/analytic weights.
+        Weight column. Alone it is a frequency weight (Stata ``[fw=]`` /
+        ``[iw=]``): the model-based variance scales with the weights. For
+        sampling weights say so with ``weights_as='sampling'``.
+    weights_as : {'frequency', 'sampling'}, optional
+        What the weights are. ``'frequency'`` is what ``weights=`` alone
+        already means. ``'sampling'`` (Stata ``[pw=]``) is for sampling and
+        inverse-probability weights: the same coefficients with the robust
+        variance, unless ``robust=`` or ``cluster=`` asks for another.
+        Saying which also silences the warning about dispersed weights
+        under the model-based variance. ``'analytic'`` is refused: Stata's
+        ``[aw=]`` rescales the weights to sum to ``N``, which this
+        function does not do.
     marginal_effects : str, optional
         ``'average'`` (AME), ``'mean'`` (MEM), or ``'at'`` (MER).
     maxiter : int, default 100
@@ -926,6 +1408,26 @@ def probit(
         Significance level for confidence intervals.
     at_values : dict, optional
         Variable values for ``marginal_effects='at'``.
+    perfect_prediction : {'drop', 'keep'}, default 'drop'
+        An indicator regressor whose non-zero rows all share one outcome
+        (e.g. an industry dummy with no treated firm) predicts the outcome
+        perfectly: its coefficient is infinite. ``'drop'`` removes those
+        rows and omits the regressor, iterated, as Stata does ("x != 0
+        predicts failure perfectly"); the omitted names and row count are
+        in ``model_info``. ``'keep'`` is the pre-1.33 behaviour.
+
+    design : SurveyDesign, optional
+        A complex survey design from :func:`sp.svydesign` declared on
+        ``data`` (same rows): the likelihood is weighted by the design
+        weights and the covariance is the survey linearisation sandwich
+        over strata, PSUs and the finite population correction (R
+        ``svyglm``, Stata ``svy: probit``), with t inference on the design
+        degrees of freedom (#PSU - #strata). Cannot be combined with
+        ``weights=``, ``cluster=`` or ``robust=``.
+        A replicate-weight design (:func:`sp.svrepdesign`) is accepted
+        too: the estimator is refitted with every replicate's weights
+        and the replicate variance replaces the linearisation (R
+        ``svrepdesign`` / Stata ``svy brr`` / ``svy jackknife``).
 
     Returns
     -------
@@ -946,6 +1448,11 @@ def probit(
     >>> bool('dy/dx' in me.columns)
     True
     """
+    if design is not None and getattr(design, "is_replicate_design", False):
+        _args = dict(locals())
+        from ..survey._replicate_refit import replicate_refit
+
+        return replicate_refit(probit, _args, design, function="sp.probit")
     return _fit_binary(
         formula=formula,
         data=data,
@@ -961,9 +1468,13 @@ def probit(
         tol=tol,
         alpha=alpha,
         at_values=at_values,
+        perfect_prediction=perfect_prediction,
+        weights_as=weights_as,
+        design=design,
     )
 
 
+@records_call("cloglog")
 @accepts_aliases(vce="robust")
 @records_provenance("sp.cloglog")
 @markout_clusters
@@ -980,6 +1491,8 @@ def cloglog(
     tol: float = 1e-8,
     alpha: float = 0.05,
     at_values: Optional[Dict[str, float]] = None,
+    perfect_prediction: str = "drop",
+    weights_as: Optional[str] = None,
 ) -> EconometricResults:
     """
     Complementary log-log regression via maximum likelihood.
@@ -1000,11 +1513,27 @@ def cloglog(
     x : list of str, optional
         Regressor names (alternative to formula).
     robust : str, default ``'nonrobust'``
-        ``'nonrobust'`` for MLE SE, ``'hc1'`` / ``'robust'`` for sandwich SE.
+        ``'nonrobust'`` for the MLE (information-matrix) SE. Two sandwich
+        variances that differ only in the finite-sample factor:
+        ``'robust'`` is Stata's ``vce(robust)`` (HC0 times ``N/(N-1)``) and
+        ``'hc1'`` scales by ``N/(N-K)`` instead. They are not synonyms; to
+        match Stata use ``'robust'``. ``result.inference_rule()`` reports
+        which one a fit used.
     cluster : str, optional
         Column name for clustered standard errors.
     weights : str, optional
-        Column name for frequency/analytic weights.
+        Weight column. Alone it is a frequency weight (Stata ``[fw=]`` /
+        ``[iw=]``): the model-based variance scales with the weights. For
+        sampling weights say so with ``weights_as='sampling'``.
+    weights_as : {'frequency', 'sampling'}, optional
+        What the weights are. ``'frequency'`` is what ``weights=`` alone
+        already means. ``'sampling'`` (Stata ``[pw=]``) is for sampling and
+        inverse-probability weights: the same coefficients with the robust
+        variance, unless ``robust=`` or ``cluster=`` asks for another.
+        Saying which also silences the warning about dispersed weights
+        under the model-based variance. ``'analytic'`` is refused: Stata's
+        ``[aw=]`` rescales the weights to sum to ``N``, which this
+        function does not do.
     marginal_effects : str, optional
         ``'average'`` (AME), ``'mean'`` (MEM), or ``'at'`` (MER).
     maxiter : int, default 100
@@ -1015,6 +1544,13 @@ def cloglog(
         Significance level for confidence intervals.
     at_values : dict, optional
         Variable values for ``marginal_effects='at'``.
+    perfect_prediction : {'drop', 'keep'}, default 'drop'
+        An indicator regressor whose non-zero rows all share one outcome
+        (e.g. an industry dummy with no treated firm) predicts the outcome
+        perfectly: its coefficient is infinite. ``'drop'`` removes those
+        rows and omits the regressor, iterated, as Stata does ("x != 0
+        predicts failure perfectly"); the omitted names and row count are
+        in ``model_info``. ``'keep'`` is the pre-1.33 behaviour.
 
     Returns
     -------
@@ -1045,4 +1581,6 @@ def cloglog(
         tol=tol,
         alpha=alpha,
         at_values=at_values,
+        perfect_prediction=perfect_prediction,
+        weights_as=weights_as,
     )

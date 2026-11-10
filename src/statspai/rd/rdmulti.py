@@ -27,7 +27,7 @@ Keele, L. & Titiunik, R. (2015).
 """
 
 import warnings
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 import pandas as pd
@@ -35,6 +35,7 @@ from scipy import stats
 
 from .._result_serialize import ResultProtocolMixin
 from ..core.results import CausalResult
+from ..exceptions import MethodIncompatibility
 from ._core import _kernel_fn
 
 
@@ -75,6 +76,10 @@ class RDMultiResult(ResultProtocolMixin):
         n_cutoffs: int,
         n_total: int,
         method: str,
+        pooled_pvalue: Optional[float] = None,
+        pooled_estimate_robust: Optional[float] = None,
+        normalized: Optional[Dict[str, Any]] = None,
+        inference: str = "conventional",
     ) -> None:
         self.cutoff_results = cutoff_results  # list of dicts
         self.pooled_estimate = pooled_estimate
@@ -83,32 +88,74 @@ class RDMultiResult(ResultProtocolMixin):
         self.n_cutoffs = n_cutoffs
         self.n_total = n_total
         self.method = method
+        # Unit-specific-cutoff path only: the weighted estimate's robust
+        # p-value and bias-corrected centre, and the estimate on the
+        # normalized score (rdmulti's "Pooled" row).
+        self.pooled_pvalue = pooled_pvalue
+        self.pooled_estimate_robust = pooled_estimate_robust
+        self.normalized = normalized
+        self.inference = inference
+
+    @staticmethod
+    def _label(cr: Dict[str, Any]) -> str:
+        """Row label: the cutoff, or the boundary point's own label."""
+        return str(cr["label"]) if "label" in cr else f"{cr['cutoff']:.2f}"
 
     def summary(self) -> str:
+        points = any("label" in cr for cr in self.cutoff_results)
+        w = max([10] + [len(self._label(cr)) for cr in self.cutoff_results])
+        rule = 55 + w
         lines = [
-            f"Multi-Cutoff Regression Discontinuity ({self.method})",
-            "=" * 65,
-            f"Number of cutoffs: {self.n_cutoffs}",
+            ("Multi-Score" if points else "Multi-Cutoff")
+            + f" Regression Discontinuity ({self.method})",
+            "=" * rule,
+            f"Number of {'boundary points' if points else 'cutoffs'}: "
+            f"{self.n_cutoffs}",
             f"Total observations: {self.n_total}",
             "",
-            f"{'Cutoff':<10s} {'N':>6s} {'Estimate':>10s} {'SE':>10s} "
-            f"{'95% CI':>22s} {'p-value':>10s}",
-            "-" * 65,
+            f"{'Point' if points else 'Cutoff':<{w}s} {'N':>6s} {'Estimate':>10s} "
+            f"{'SE':>10s} {'95% CI':>22s} {'p-value':>10s}",
+            "-" * rule,
         ]
         for cr in self.cutoff_results:
             ci = f"[{cr['ci_lower']:.4f}, {cr['ci_upper']:.4f}]"
             lines.append(
-                f"{cr['cutoff']:<10.2f} {cr['n']:>6d} {cr['estimate']:>10.4f} "
+                f"{self._label(cr):<{w}s} {cr['n']:>6d} {cr['estimate']:>10.4f} "
                 f"{cr['se']:>10.4f} {ci:>22s} {cr['p_value']:>10.4f}"
             )
 
-        lines.append("-" * 65)
+        lines.append("-" * rule)
         ci_pooled = f"[{self.pooled_ci[0]:.4f}, {self.pooled_ci[1]:.4f}]"
-        lines.append(
-            f"{'Pooled':<10s} {self.n_total:>6d} {self.pooled_estimate:>10.4f} "
-            f"{self.pooled_se:>10.4f} {ci_pooled:>22s}"
+        label = "Weighted" if self.normalized is not None else "Pooled"
+        pooled_p = (
+            f" {self.pooled_pvalue:>10.4f}" if self.pooled_pvalue is not None else ""
         )
-        lines.append("=" * 65)
+        has_pooled = bool(np.isfinite(self.pooled_estimate))
+        if has_pooled:
+            lines.append(
+                f"{label:<{w}s} {self.n_total:>6d} {self.pooled_estimate:>10.4f} "
+                f"{self.pooled_se:>10.4f} {ci_pooled:>22s}{pooled_p}"
+            )
+        if self.normalized is not None:
+            nz: Dict[str, Any] = self.normalized
+            ci_nz = f"[{nz['ci_lower']:.4f}, {nz['ci_upper']:.4f}]"
+            lines.append(
+                f"{'Pooled':<{w}s} {nz['n']:>6d} {nz['estimate']:>10.4f} "
+                f"{nz['se']:>10.4f} {ci_nz:>22s} {nz['p_value']:>10.4f}"
+            )
+        lines.append("=" * rule)
+        if self.inference == "robust":
+            lines.append(
+                "Estimates are conventional; SE, CI and p-value are robust "
+                "bias-corrected."
+            )
+            if self.normalized is not None:
+                lines.append(
+                    "Weighted: effective-sample-size weights. Pooled: one RD on "
+                    "the normalized score."
+                )
+            elif points and has_pooled:
+                lines.append("Pooled: one RD on the distance to the boundary (xnorm).")
         return "\n".join(lines)
 
     def plot(self, ax: Optional[Any] = None, **kwargs: Any) -> Any:
@@ -123,7 +170,7 @@ class RDMultiResult(ResultProtocolMixin):
                 figsize=(8, max(4, len(self.cutoff_results) * 0.5 + 2))
             )
 
-        labels = [f"c = {cr['cutoff']:.1f}" for cr in self.cutoff_results] + ["Pooled"]
+        labels = [f"c = {self._label(cr)}" for cr in self.cutoff_results] + ["Pooled"]
         estimates = [cr["estimate"] for cr in self.cutoff_results] + [
             self.pooled_estimate
         ]
@@ -184,11 +231,13 @@ def _local_linear_rd(
 
     # Local linear: y = a + b*x + tau*D + delta*D*x
     X = np.column_stack([np.ones(len(x_m)), x_m, D_m, D_m * x_m])
-    W = np.diag(w_m)
+    # X'W without the n x n diagonal; row-major, as X.T @ diag(w) returns it,
+    # so the products below round the same way
+    XtW = np.ascontiguousarray(X.T * w_m)
 
     try:
-        XtWX = X.T @ W @ X
-        XtWy = X.T @ W @ y_m
+        XtWX = XtW @ X
+        XtWy = XtW @ y_m
         beta = np.linalg.solve(XtWX, XtWy)
         resid = y_m - X @ beta
         sigma2 = np.sum(w_m * resid**2) / max(mask.sum() - 4, 1)
@@ -229,7 +278,8 @@ def rdmc(
     * **Shared running variable** (``cutoffs=`` alone, the default): one
       running variable crossed by several thresholds, every unit entering
       every threshold's local regression under a common rule-of-thumb
-      bandwidth.
+      bandwidth. For that design with the CCT bandwidth and robust
+      inference, use ``sp.rdms(data, y, x1, cutoff1=[...])``.
 
     Before 1.21 only the second was available, while the docstring claimed
     equivalence to ``rdmulti::rdmc()``. On a design with unit-specific
@@ -373,8 +423,39 @@ def _rdmc_unit_cutoffs(
 
     cvals = data[cutoff_var].to_numpy()
     if cutoffs is None:
-        cutoffs = sorted(pd.unique(cvals).tolist())
+        cutoffs = sorted(pd.unique(cvals[pd.notna(cvals)]).tolist())
     z_crit = stats.norm.ppf(1 - alpha / 2)
+    kw: Dict[str, Any] = dict(rdrobust_kwargs)
+    if bandwidth is not None:
+        kw.setdefault("h", float(bandwidth))
+    # The per-cutoff fits are sub-samples of one design; the density check
+    # and its warning belong to the user's own call on the full sample.
+    kw.setdefault("manipulation_test", False)
+
+    def _row(fit: CausalResult, n_h: int, h: float) -> Dict[str, Any]:
+        # rdmulti reports the conventional point estimate with robust
+        # bias-corrected inference. A conventional interval at an
+        # MSE-optimal bandwidth ignores the smoothing bias and undercovers,
+        # which is the reason rdrobust exists.
+        detail = fit.detail
+        assert detail is not None
+        tau = float(detail["estimate"][0])
+        tau_bc = float(detail["estimate"][1])
+        se_conv = float(detail["se"][0])
+        se_rb = float(detail["se"][1])
+        return {
+            "estimate": tau,
+            "se": se_rb,
+            "ci_lower": tau_bc - z_crit * se_rb,
+            "ci_upper": tau_bc + z_crit * se_rb,
+            "p_value": float(2 * stats.norm.sf(abs(tau_bc / se_rb))),
+            "n": n_h,
+            "bandwidth": h,
+            "estimate_robust": tau_bc,
+            "se_robust": se_rb,
+            "se_conventional": se_conv,
+            "ci_conventional": (tau - z_crit * se_conv, tau + z_crit * se_conv),
+        }
 
     cutoff_results = []
     for c in cutoffs:
@@ -384,49 +465,54 @@ def _rdmc_unit_cutoffs(
                 f"cutoff {c} has only {len(sub)} units assigned by "
                 f"{cutoff_var!r}; too few to estimate an RD effect"
             )
-        kw = dict(rdrobust_kwargs)
-        if bandwidth is not None:
-            kw.setdefault("h", float(bandwidth))
         fit = _rdrobust(sub, y=y, x=x, c=float(c), kernel=kernel, **kw)
-        tau = float(fit.detail["estimate"][0])
-        se = float(fit.detail["se"][0])
-        mi = fit.model_info
-        h = float(np.ravel(mi["bandwidth_h"])[0])
-        xs = sub[x].to_numpy(dtype=float) - float(c)
-        n_h = int(np.sum(np.abs(xs) <= h))
-        cutoff_results.append(
-            {
-                "cutoff": float(c),
-                "estimate": tau,
-                "se": se,
-                "ci_lower": tau - z_crit * se,
-                "ci_upper": tau + z_crit * se,
-                "p_value": float(fit.detail["pvalue"][0]),
-                "n": n_h,
-                "bandwidth": h,
-                "estimate_robust": float(fit.detail["estimate"][1]),
-                "se_robust": float(fit.detail["se"][1]),
-            }
-        )
+        h = float(np.ravel(fit.model_info["bandwidth_h"])[0])
+        ok = sub[[y, x]].notna().all(axis=1).to_numpy()
+        xs = sub[x].to_numpy(dtype=float)[ok] - float(c)
+        row: Dict[str, Any] = {"cutoff": float(c)}
+        row.update(_row(fit, int(np.sum(np.abs(xs) <= h)), h))
+        cutoff_results.append(row)
 
     # rdmulti weights by effective sample size, not inverse variance.
     nh = np.array([cr["n"] for cr in cutoff_results], dtype=float)
     w = nh / nh.sum()
     pooled = float(np.sum(w * np.array([cr["estimate"] for cr in cutoff_results])))
+    pooled_bc = float(
+        np.sum(w * np.array([cr["estimate_robust"] for cr in cutoff_results]))
+    )
     pooled_se = float(
-        np.sqrt(np.sum(w**2 * np.array([cr["se"] ** 2 for cr in cutoff_results])))
+        np.sqrt(
+            np.sum(w**2 * np.array([cr["se_robust"] ** 2 for cr in cutoff_results]))
+        )
     )
     for cr, wi in zip(cutoff_results, w):
         cr["weight"] = float(wi)
+
+    # rdmulti's "Pooled" row: every unit's score measured from its own
+    # cutoff, then one RD at zero. It weights cutoffs by how much data each
+    # has near its threshold, implicitly.
+    norm_frame = data.assign(
+        **{"__xnorm": data[x].to_numpy(dtype=float) - cvals.astype(float)}
+    )
+    norm_frame = norm_frame.loc[np.isin(cvals, cutoffs)]
+    nfit = _rdrobust(norm_frame, y=y, x="__xnorm", c=0.0, kernel=kernel, **kw)
+    nh_norm = float(np.ravel(nfit.model_info["bandwidth_h"])[0])
+    nok = norm_frame[[y, "__xnorm"]].notna().all(axis=1).to_numpy()
+    nx = norm_frame["__xnorm"].to_numpy(dtype=float)[nok]
+    normalized = _row(nfit, int(np.sum(np.abs(nx) <= nh_norm)), nh_norm)
 
     return RDMultiResult(
         cutoff_results=cutoff_results,
         pooled_estimate=pooled,
         pooled_se=pooled_se,
-        pooled_ci=(pooled - z_crit * pooled_se, pooled + z_crit * pooled_se),
+        pooled_ci=(pooled_bc - z_crit * pooled_se, pooled_bc + z_crit * pooled_se),
         n_cutoffs=len(cutoffs),
         n_total=len(data),
         method="Multi-Cutoff RD (rdmc, unit-specific cutoffs)",
+        pooled_pvalue=float(2 * stats.norm.sf(abs(pooled_bc / pooled_se))),
+        pooled_estimate_robust=pooled_bc,
+        normalized=normalized,
+        inference="robust",
     )
 
 
@@ -434,17 +520,34 @@ def rdms(
     data: pd.DataFrame,
     y: str,
     x1: str,
-    x2: str,
-    cutoff1: float = 0,
-    cutoff2: float = 0,
+    x2: Optional[str] = None,
+    cutoff1: Union[float, Sequence[float]] = 0,
+    cutoff2: Union[float, Sequence[float]] = 0,
     treat: Optional[str] = None,
     bandwidth: Optional[float] = None,
     kernel: str = "triangular",
     alpha: float = 0.05,
+    xnorm: Optional[str] = None,
+    ranges: Optional[Sequence[Tuple[float, float]]] = None,
     **rdrobust_kwargs: object,
-) -> CausalResult:
+) -> Union[CausalResult, RDMultiResult]:
     """
-    Multi-score / Geographic RD design at a single boundary point.
+    Multi-score / Geographic RD design at one or several boundary points.
+
+    With sequences for ``cutoff1`` and ``cutoff2`` every boundary point is
+    estimated in turn and an :class:`RDMultiResult` comes back, one row per
+    point, as ``rdmulti::rdms`` prints it. ``xnorm=`` names a column
+    holding each unit's signed distance to the boundary as a whole (the
+    perpendicular distance, positive for treated units); the RD on that
+    score is reported as the pooled estimate. With scalar cutoffs and no
+    ``xnorm`` the single-point :class:`CausalResult` is returned, as
+    before.
+
+    Without ``x2`` the design is one score with **cumulative cutoffs**:
+    every unit is exposed to each threshold it has passed (a dose that
+    steps up at ``cutoff1[0]``, ``cutoff1[1]``, ...). Each cutoff is then a
+    sharp RD on ``x1``, on the whole sample or, with ``ranges``, on the
+    units whose score lies in that cutoff's ``(lower, upper)`` interval.
 
     Collapses the two-score design onto the score the reference uses --
     Euclidean distance to the boundary point, signed by treatment status,
@@ -487,8 +590,9 @@ def rdms(
         Outcome variable.
     x1 : str
         First running variable (e.g., latitude distance to boundary).
-    x2 : str
+    x2 : str, optional
         Second running variable (e.g., longitude distance to boundary).
+        Omit it for one score with cumulative cutoffs.
     cutoff1 : float, default 0
         Cutoff for x1.
     cutoff2 : float, default 0
@@ -502,13 +606,26 @@ def rdms(
         MSE-optimal cascade selects it, as the reference does.
     kernel : str, default 'triangular'
     alpha : float, default 0.05
+    xnorm : str, optional
+        Column with the signed distance to the boundary (positive on the
+        treated side). Adds the pooled estimate: a sharp RD at zero on that
+        score.
+    ranges : sequence of (lower, upper), optional
+        Cumulative cutoffs only: for each cutoff, the interval of the score
+        whose units enter its estimate. Use it to keep a neighbouring
+        cutoff out of a cutoff's estimation window. Default: all units.
     **rdrobust_kwargs
         Forwarded to :func:`statspai.rdrobust` (``p``, ``bwselect``,
         ``vce``, ``cluster``, ``covs``, ...).
 
     Returns
     -------
-    CausalResult
+    CausalResult or RDMultiResult
+        A :class:`RDMultiResult` when ``cutoff1`` / ``cutoff2`` are
+        sequences or ``xnorm`` is given: ``cutoff_results`` holds, per
+        boundary point, the conventional estimate with the robust standard
+        error, interval and p-value; ``pooled_estimate`` is the ``xnorm``
+        RD (NaN without ``xnorm``). Otherwise a :class:`CausalResult`:
         ``estimate`` / ``se`` / ``ci`` are the bias-corrected point estimate
         with robust inference. ``model_info`` carries the selected
         bandwidths, effective sample sizes either side, the conventional
@@ -533,6 +650,41 @@ def rdms(
     ...                  bandwidth=3.0)
     >>> summary_text = result.summary()
     """
+    if x2 is None:
+        return _rdms_cumulative(
+            data,
+            y=y,
+            x=x1,
+            cutoffs=cutoff1,
+            ranges=ranges,
+            bandwidth=bandwidth,
+            kernel=kernel,
+            alpha=alpha,
+            xnorm=xnorm,
+            **rdrobust_kwargs,
+        )
+    if ranges is not None:
+        raise MethodIncompatibility(
+            "rdms: ranges= applies to one score with cumulative cutoffs (no x2)."
+        )
+    multi = not np.isscalar(cutoff1) or not np.isscalar(cutoff2) or xnorm is not None
+    if multi:
+        return _rdms_points(
+            data,
+            y=y,
+            x1=x1,
+            x2=x2,
+            cutoff1=cutoff1,
+            cutoff2=cutoff2,
+            treat=treat,
+            bandwidth=bandwidth,
+            kernel=kernel,
+            alpha=alpha,
+            xnorm=xnorm,
+            **rdrobust_kwargs,
+        )
+    cutoff1 = float(cutoff1)  # type: ignore[arg-type]
+    cutoff2 = float(cutoff2)  # type: ignore[arg-type]
     if treat is None:
         treat_values = (data[x1].to_numpy(dtype=float) >= cutoff1).astype(float)
         warnings.warn(
@@ -621,4 +773,210 @@ def rdms(
             "treat_assumed": treat is None,
             "score": "signed Euclidean distance to (cutoff1, cutoff2)",
         },
+    )
+
+
+def _rdms_points(
+    data: pd.DataFrame,
+    *,
+    y: str,
+    x1: str,
+    x2: str,
+    cutoff1: Union[float, Sequence[float]],
+    cutoff2: Union[float, Sequence[float]],
+    treat: Optional[str],
+    bandwidth: Optional[float],
+    kernel: str,
+    alpha: float,
+    xnorm: Optional[str],
+    **rdrobust_kwargs: object,
+) -> RDMultiResult:
+    """``rdms`` at several boundary points, plus the ``xnorm`` pooled row."""
+    from .rdrobust import rdrobust as _rdrobust
+
+    c1 = np.atleast_1d(np.asarray(cutoff1, dtype=float))
+    c2 = np.atleast_1d(np.asarray(cutoff2, dtype=float))
+    if c1.size == 1 and c2.size > 1:
+        c1 = np.repeat(c1, c2.size)
+    if c2.size == 1 and c1.size > 1:
+        c2 = np.repeat(c2, c1.size)
+    if c1.size != c2.size or c1.ndim != 1 or c2.ndim != 1:
+        raise MethodIncompatibility(
+            "rdms: cutoff1 and cutoff2 must list the same number of boundary "
+            f"points; got {c1.size} and {c2.size}."
+        )
+    if treat is None:
+        raise MethodIncompatibility(
+            "rdms: treat= is required with several boundary points or xnorm=. "
+            "Treatment on a two-dimensional boundary is not implied by the "
+            "coordinates."
+        )
+    z_crit = stats.norm.ppf(1 - alpha / 2)
+
+    def _row(
+        est: float, est_bc: float, se: float, n_h: int, h: float
+    ) -> Dict[str, Any]:
+        return {
+            "estimate": est,
+            "se": se,
+            "ci_lower": est_bc - z_crit * se,
+            "ci_upper": est_bc + z_crit * se,
+            "p_value": float(2 * stats.norm.sf(abs(est_bc / se))),
+            "n": n_h,
+            "bandwidth": h,
+            "estimate_robust": est_bc,
+            "se_robust": se,
+        }
+
+    rows: List[Dict[str, Any]] = []
+    point_kw: Dict[str, Any] = dict(rdrobust_kwargs)
+    for a, b in zip(c1, c2):
+        fit = rdms(
+            data,
+            y=y,
+            x1=x1,
+            x2=x2,
+            cutoff1=float(a),
+            cutoff2=float(b),
+            treat=treat,
+            bandwidth=bandwidth,
+            kernel=kernel,
+            alpha=alpha,
+            **point_kw,
+        )
+        assert isinstance(fit, CausalResult)
+        mi = fit.model_info
+        row: Dict[str, Any] = {
+            "cutoff": (float(a), float(b)),
+            "label": f"({a:g},{b:g})",
+        }
+        row.update(
+            _row(
+                float(mi["conventional"]["estimate"]),
+                float(fit.estimate),
+                float(fit.se),
+                int(mi["n_effective_left"] + mi["n_effective_right"]),
+                float(np.ravel(mi["bandwidth_h"])[0]),
+            )
+        )
+        rows.append(row)
+
+    pooled, pooled_bc, pooled_se = float("nan"), float("nan"), float("nan")
+    pooled_p: Optional[float] = None
+    n_total = int(len(data))
+    if xnorm is not None:
+        kw: Dict[str, Any] = dict(rdrobust_kwargs)
+        if bandwidth is not None:
+            kw.setdefault("h", float(bandwidth))
+            kw.setdefault("b", float(bandwidth))
+        kw.setdefault("manipulation_test", False)
+        nfit = _rdrobust(data, y=y, x=xnorm, c=0.0, kernel=kernel, alpha=alpha, **kw)
+        detail = nfit.detail
+        assert detail is not None
+        pooled = float(detail["estimate"][0])
+        pooled_bc = float(detail["estimate"][1])
+        pooled_se = float(detail["se"][1])
+        pooled_p = float(2 * stats.norm.sf(abs(pooled_bc / pooled_se)))
+    return RDMultiResult(
+        cutoff_results=rows,
+        pooled_estimate=pooled,
+        pooled_se=pooled_se,
+        pooled_ci=(pooled_bc - z_crit * pooled_se, pooled_bc + z_crit * pooled_se),
+        n_cutoffs=len(rows),
+        n_total=n_total,
+        method="Multi-score RD (rdms, boundary points)",
+        pooled_pvalue=pooled_p,
+        pooled_estimate_robust=pooled_bc if xnorm is not None else None,
+        inference="robust",
+    )
+
+
+def _rdms_cumulative(
+    data: pd.DataFrame,
+    *,
+    y: str,
+    x: str,
+    cutoffs: Union[float, Sequence[float]],
+    ranges: Optional[Sequence[Tuple[float, float]]],
+    bandwidth: Optional[float],
+    kernel: str,
+    alpha: float,
+    xnorm: Optional[str],
+    **rdrobust_kwargs: object,
+) -> RDMultiResult:
+    """One score, cumulative cutoffs: a sharp RD at each cutoff.
+
+    ``rdmulti::rdms(Y, X, C)``. By default every unit enters every cutoff's
+    fit, the bandwidth doing the localizing; ``ranges`` restricts cutoff
+    ``j`` to units with the score in ``[lower_j, upper_j]``.
+    """
+    from .rdrobust import rdrobust as _rdrobust
+
+    cuts = np.atleast_1d(np.asarray(cutoffs, dtype=float))
+    if cuts.ndim != 1 or cuts.size < 1:
+        raise MethodIncompatibility("rdms: cutoff1 must list the cutoffs.")
+    if ranges is not None and len(ranges) != cuts.size:
+        raise MethodIncompatibility(
+            f"rdms: ranges= lists {len(ranges)} intervals for {cuts.size} cutoffs."
+        )
+    z_crit = stats.norm.ppf(1 - alpha / 2)
+    kw: Dict[str, Any] = dict(rdrobust_kwargs)
+    if bandwidth is not None:
+        kw.setdefault("h", float(bandwidth))
+    kw.setdefault("manipulation_test", False)
+    xv = data[x].to_numpy(dtype=float)
+
+    def _fit(frame: pd.DataFrame, score: str, c: float) -> Dict[str, Any]:
+        fit = _rdrobust(frame, y=y, x=score, c=c, kernel=kernel, alpha=alpha, **kw)
+        detail = fit.detail
+        assert detail is not None
+        est, est_bc = float(detail["estimate"][0]), float(detail["estimate"][1])
+        se = float(detail["se"][1])
+        mi = fit.model_info
+        return {
+            "estimate": est,
+            "se": se,
+            "ci_lower": est_bc - z_crit * se,
+            "ci_upper": est_bc + z_crit * se,
+            "p_value": float(2 * stats.norm.sf(abs(est_bc / se))),
+            "n": int(mi["n_effective_left"] + mi["n_effective_right"]),
+            "bandwidth": float(np.ravel(mi["bandwidth_h"])[0]),
+            "estimate_robust": est_bc,
+            "se_robust": se,
+        }
+
+    rows: List[Dict[str, Any]] = []
+    for j, c in enumerate(cuts):
+        frame = data
+        if ranges is not None:
+            lo, hi = float(ranges[j][0]), float(ranges[j][1])
+            if not lo < c < hi:
+                raise MethodIncompatibility(
+                    f"rdms: the range ({lo:g}, {hi:g}) does not contain cutoff "
+                    f"{c:g}."
+                )
+            frame = data.loc[(xv >= lo) & (xv <= hi)]
+        row: Dict[str, Any] = {"cutoff": float(c)}
+        row.update(_fit(frame, x, float(c)))
+        if ranges is not None:
+            row["range"] = (float(ranges[j][0]), float(ranges[j][1]))
+        rows.append(row)
+
+    pooled = pooled_bc = pooled_se = float("nan")
+    pooled_p: Optional[float] = None
+    if xnorm is not None:
+        prow = _fit(data, xnorm, 0.0)
+        pooled, pooled_bc = prow["estimate"], prow["estimate_robust"]
+        pooled_se, pooled_p = prow["se"], prow["p_value"]
+    return RDMultiResult(
+        cutoff_results=rows,
+        pooled_estimate=pooled,
+        pooled_se=pooled_se,
+        pooled_ci=(pooled_bc - z_crit * pooled_se, pooled_bc + z_crit * pooled_se),
+        n_cutoffs=len(rows),
+        n_total=int(len(data)),
+        method="Cumulative-cutoff RD (rdms, one score)",
+        pooled_pvalue=pooled_p,
+        pooled_estimate_robust=pooled_bc if xnorm is not None else None,
+        inference="robust",
     )

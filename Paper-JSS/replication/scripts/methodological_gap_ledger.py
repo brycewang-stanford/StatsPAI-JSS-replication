@@ -51,12 +51,14 @@ EXPECTED_METADATA = {
     "07_scm": {
         "validation_tier": "identification_dependent_native",
         "reference_backend": "Synth",
-        # 0f4b9e2b: winning start relabelled regression -> dirichlet_3; the two
-        # starts tie to 1e-12 and the optimum is unchanged (CHANGELOG [Unreleased]).
-        "solver_best_start": "dirichlet_3",
+        # StatsPAI 95d87260 (1.36.0, exact inner solver): the winning start is
+        # `regression` again in place of `dirichlet_3`; the two starts tie and
+        # the optimum is the same. The near-best weight classes are unchanged in
+        # number and their largest L1 distance moved from 0.00513 to 0.007786.
+        "solver_best_start": "regression",
         "solver_near_best_start_count": "4",
         "solver_near_best_weight_class_count": "2",
-        "solver_near_best_weight_l1_max": "0.00513",
+        "solver_near_best_weight_l1_max": "0.007786",
         "weight_solution_nonunique": "True",
     },
 }

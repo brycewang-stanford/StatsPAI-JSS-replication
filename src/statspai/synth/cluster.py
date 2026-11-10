@@ -35,11 +35,14 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 
+from .._input_validation import check_columns
+from ..core.results import CausalResult
+from ._cite import bib_citation
+
 # sklearn is imported lazily inside the helpers that need it so that
 # ``import statspai`` doesn't pull ~245 sklearn submodules through this
 # file when the user never touches cluster_synth.
 
-from ..core.results import CausalResult
 
 __all__ = ["cluster_synth"]
 
@@ -108,7 +111,14 @@ def cluster_synth(
     # 1. Validate inputs
     # ------------------------------------------------------------------
     _validate_inputs(
-        data, outcome, unit, time, treated_unit, treatment_time, cluster_method
+        data,
+        outcome,
+        unit,
+        time,
+        treated_unit,
+        treatment_time,
+        cluster_method,
+        covariates=covariates,
     )
 
     # ------------------------------------------------------------------
@@ -282,6 +292,7 @@ def cluster_synth(
 
     return CausalResult(
         method="Cluster Synthetic Control",
+        _citation_key=bib_citation("rho2025clustersc", "synth"),
         estimand="ATT",
         estimate=att,
         se=se,
@@ -307,11 +318,19 @@ def _validate_inputs(
     treated_unit: Any,
     treatment_time: Any,
     cluster_method: str,
+    covariates: Optional[List[str]] = None,
 ) -> None:
     """Raise on invalid arguments."""
-    for col in [outcome, unit, time]:
-        if col not in data.columns:
-            raise ValueError(f"Column '{col}' not found in data.")
+    check_columns(
+        data,
+        {
+            "outcome": outcome,
+            "unit": unit,
+            "time": time,
+            "covariates": covariates,
+        },
+        function="sp.synth(method='cluster')",
+    )
     if treated_unit not in data[unit].values:
         raise ValueError(f"Treated unit '{treated_unit}' not in data.")
     if treatment_time not in data[time].values:
@@ -419,11 +438,7 @@ def _fit_cluster(
     seed: Optional[int],
 ) -> np.ndarray:
     """Run one clustering algorithm and return labels."""
-    from sklearn.cluster import (
-        AgglomerativeClustering,
-        KMeans,
-        SpectralClustering,
-    )
+    from sklearn.cluster import AgglomerativeClustering, KMeans, SpectralClustering
 
     if method == "kmeans":
         model = KMeans(
@@ -622,7 +637,14 @@ def _run_placebos(
             post_rmspes.append(np.sqrt(post_mspe))
             ratios.append(float(ratio))
             units.append(placebo_unit)
-        except Exception:  # pragma: no cover
+        except Exception as exc:  # pragma: no cover
+            from ..core._fallback import warn_fallback
+
+            warn_fallback(
+                f"cluster-synth placebo fit for unit {placebo_unit!r}",
+                exc,
+                "it is left out of the placebo distribution",
+            )
             continue  # pragma: no cover
 
     return {

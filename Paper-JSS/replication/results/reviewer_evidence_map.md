@@ -6,7 +6,7 @@ Suggested review routes: 5
 Expected card identity: confirmed
 Expected route identity: confirmed
 JSS upload blockers: 0
-Final tagged-cut pending items: 2
+Final tagged-cut pending items: 3
 Archive evidence paths: 40/40 resolved
 
 ## Suggested Review Routes
@@ -33,7 +33,7 @@ Archive evidence paths: 40/40 resolved
 | `related_review_coi_boundary` | PASS | Are the related JOSS publication and conflict disclosures visible without modifying the archived JOSS files? | The cover letter discloses the published JOSS paper, states that this manuscript cites it and shares no evidence table with it, and names the maintainer, commercial downstream product, license, and funding facts. | `cover-letter.md`<br>`replication/results/jss_formal_compliance_audit.md`<br>`replication/results/release_boundary_audit.md`<br>`README.md` | `make jss-formal-compliance-audit + make release-boundary-audit` |
 | `software_installability` | PASS | Can the submitted source be installed and imported? | Formal compliance verifies JSS class/front matter, license, archive install/import, package help files, PDF-visible boundary text, source-synchronized polished PDF prose, Poppler-rendered PDF sample pages, and an all-page machine render scan; the packaged visual-check protocol adds a page-by-page inventory and makes the final full-document human spot-check actionable while keeping it an upload-time manual action rather than a machine-verified PASS. | `replication/results/jss_formal_compliance_audit.md`<br>`replication/results/pdf_render_audit.md`<br>`replication/results/pdf_visual_check_protocol.md`<br>`replication/scripts/jss_formal_compliance_audit.py`<br>`replication/scripts/pdf_render_audit.py`<br>`replication/scripts/pdf_visual_check_protocol.py`<br>`manuscript/main.pdf`<br>`pyproject.toml` | `make jss-formal-compliance-audit + make pdf-visual-check-protocol` |
 | `agent_interface_boundary` | PASS | Are agent-facing claims mechanical rather than behavioural? | The paper audits a mechanical and contractual interface: schemas, typed errors, result handles, traceable tool calls, citation resolution, and the same validation ledger as human calls, rather than claiming agent performance; the archive also ships a deferred benchmark protocol with matched baselines, task families, scoring dimensions, and leakage controls for the separate behavioural study. | `replication/results/agent_interface_audit.md`<br>`replication/results/agent_benchmark_protocol.md`<br>`replication/results/ex07_agent_trace.txt`<br>`schemas/tools.json` | `make agent-interface-audit + make agent-benchmark-protocol` |
-| `limitations_crosswalk` | PASS | Where are the compact paper's limitations and residual risks made explicit? | The compact discussion states the main limitations, while the hardening audit and risk ledger keep the residual reviewer risks visible without adding pages to the PDF. | `manuscript/sections/09-discussion-compact.tex`<br>`REVIEWER-HARDENING-AUDIT.md`<br>`replication/results/submission_risk_ledger.md`<br>`replication/results/pdf_visual_check_protocol.md`<br>`replication/results/validation_evidence_audit.md` | `make reviewer-evidence-map + make verify-submission-package` |
+| `limitations_crosswalk` | PASS | Where are the compact paper's limitations and residual risks made explicit? | The compact discussion states the main limitations, while the hardening audit and risk ledger keep the residual reviewer risks visible without adding pages to the PDF. | `manuscript/sections/09-discussion-compact.tex`<br>`RELEASE-CHECKLIST.md`<br>`replication/results/submission_risk_ledger.md`<br>`replication/results/pdf_visual_check_protocol.md`<br>`replication/results/validation_evidence_audit.md` | `make reviewer-evidence-map + make verify-submission-package` |
 | `maintenance_sustainability` | PASS | Is the validated core maintainable if the current maintainer or commercial sponsor changes? | The sustainability claim is bounded: the Discussion states that the validated core is MIT-licensed and forkable, output-changing fixes are regression-tested, and cross-language parity is scripted with environment/provenance files. | `manuscript/sections/09-discussion-compact.tex`<br>`LICENSE`<br>`replication/results/manuscript_artifact_audit.md`<br>`replication/results/reproduction_environment_audit.md` | `make audit + make verify-submission-package` |
 | `final_cut_boundary` | PASS | What remains after upload before a final tagged release? | The JSS upload snapshot is separate from final tagged-cut cleanup; pending worktree, tag, changelog, and Paper-JSS finalization items are listed as nonblocking final-cut work. | `replication/results/submission_risk_ledger.md`<br>`replication/results/source_snapshot_manifest.md`<br>`replication/results/release_boundary_audit.md` | `make submission-risk-ledger + make release-boundary-audit` |
 
@@ -41,10 +41,10 @@ Archive evidence paths: 40/40 resolved
 
 ### validation_scope
 - `claim_files_checked`: `37`
-- `certified_validated_symbols`: `558`
-- `api_stable_symbols`: `694`
+- `certified_validated_symbols`: `981`
+- `api_stable_symbols`: `643`
 - `unbacked_handwritten_stable`: `0`
-- `unbacked_auto_stable`: `601`
+- `unbacked_auto_stable`: `570`
 
 ### headline_reproduction
 - `tier1_complete`: `True`
@@ -68,8 +68,8 @@ Archive evidence paths: 40/40 resolved
 
 ### artifact_provenance
 - `active_sections`: `10`
-- `generated_artifacts`: `12`
-- `float_labels`: `22`
+- `generated_artifacts`: `15`
+- `float_labels`: `23`
 - `missing_refs`: `0`
 - `dangling_refs`: `0`
 
@@ -94,14 +94,14 @@ Archive evidence paths: 40/40 resolved
 
 ### archive_boundary
 - `jss_upload_blockers`: `0`
-- `archive_file_count`: `2964`
-- `archive_size_mib`: `27.13`
+- `archive_file_count`: `4830`
+- `archive_size_mib`: `45.13`
 - `data_provenance_status`: `PASS`
-- `data_provenance_scoped_data_files`: `877`
-- `data_provenance_csv_files`: `357`
-- `data_provenance_packaged_public_datasets`: `9`
+- `data_provenance_scoped_data_files`: `1465`
+- `data_provenance_csv_files`: `667`
+- `data_provenance_packaged_public_datasets`: `10`
 - `data_provenance_public_original_extracts`: `7`
-- `data_provenance_r_stata_fixture_csv`: `91`
+- `data_provenance_r_stata_fixture_csv`: `94`
 - `data_provenance_forbidden_raw_members`: `0`
 - `data_provenance_high_risk_path_hits`: `0`
 - `data_provenance_unknown_categories`: `0`
@@ -117,31 +117,31 @@ Archive evidence paths: 40/40 resolved
 
 ### software_installability
 - `formal_checks`: `23`
-- `page_count`: `54`
-- `pdf_text_chars`: `160008`
-- `pdf_boundary_snippets`: `18`
+- `page_count`: `48`
+- `pdf_text_chars`: `141591`
+- `pdf_boundary_snippets`: `12`
 - `missing_pdf_boundary_snippets`: `[]`
 - `pdf_stale_prose_hits`: `[]`
 - `pdf_render_status`: `PASS`
 - `pdf_rendered_pages`: `4`
-- `pdf_render_sampled_pages`: `[1, 2, 27, 54]`
-- `pdf_full_document_rendered_pages`: `54`
+- `pdf_render_sampled_pages`: `[1, 2, 24, 48]`
+- `pdf_full_document_rendered_pages`: `48`
 - `pdf_full_document_failures`: `0`
 - `pdf_render_min_width`: `910`
 - `pdf_render_min_height`: `1287`
-- `pdf_render_min_ink_ratio`: `0.027374`
-- `pdf_render_max_dark_ratio`: `0.02218`
+- `pdf_render_min_ink_ratio`: `0.052956`
+- `pdf_render_max_dark_ratio`: `0.021981`
 - `pdf_render_failures`: `0`
 - `manual_visual_spot_check_required`: `True`
 - `manual_visual_spot_check_status`: `PENDING_MANUAL_REVIEW`
 - `machine_render_not_human_review`: `True`
 - `pdf_visual_protocol_status`: `PASS`
-- `pdf_visual_protocol_page_count`: `54`
+- `pdf_visual_protocol_page_count`: `48`
 - `pdf_visual_protocol_checklist_items`: `12`
-- `pdf_visual_protocol_page_inventory_count`: `54`
-- `pdf_visual_protocol_page_inventory_text_pages`: `54`
-- `pdf_visual_protocol_page_inventory_min_text_chars`: `795`
-- `pdf_visual_protocol_page_inventory_float_markers`: `75`
+- `pdf_visual_protocol_page_inventory_count`: `48`
+- `pdf_visual_protocol_page_inventory_text_pages`: `48`
+- `pdf_visual_protocol_page_inventory_min_text_chars`: `1649`
+- `pdf_visual_protocol_page_inventory_float_markers`: `76`
 - `pdf_visual_protocol_manual_status`: `PENDING_MANUAL_REVIEW`
 - `pdf_visual_protocol_claimed_manual_acceptance`: `False`
 - `pdf_visual_protocol_recorded_by_protocol`: `False`
@@ -150,9 +150,9 @@ Archive evidence paths: 40/40 resolved
 - `official_sources_checked`: `2026-08-09`
 
 ### agent_interface_boundary
-- `schema_files`: `1255`
-- `parameter_total`: `9697`
-- `trace_tools`: `579`
+- `schema_files`: `1627`
+- `parameter_total`: `14022`
+- `trace_tools`: `45`
 - `trace_bibtex_entry_count`: `2`
 - `protocol_arms`: `3`
 - `protocol_task_families`: `5`
@@ -161,18 +161,18 @@ Archive evidence paths: 40/40 resolved
 - `protocol_claimed_behavioural_result`: `False`
 
 ### limitations_crosswalk
-- `pdf_pages`: `54`
+- `pdf_pages`: `48`
 - `documented_nonblocking_risk_count`: `6`
 - `documented_nonblocking_risk_ids`: `['final_tagged_release_cut_pending', 'registry_breadth_denominator_disclosed', 'stata_tier3_requires_license', 'methodological_t4_row_disclosed', 'compact_text_may_feel_terse', 'agent_interface_value_boundary']`
 - `pdf_visual_protocol_status`: `PASS`
 - `pdf_visual_protocol_checklist_items`: `12`
-- `pdf_visual_protocol_page_inventory_count`: `54`
-- `pdf_visual_protocol_page_inventory_text_pages`: `54`
+- `pdf_visual_protocol_page_inventory_count`: `48`
+- `pdf_visual_protocol_page_inventory_text_pages`: `48`
 - `pdf_visual_protocol_manual_status`: `PENDING_MANUAL_REVIEW`
-- `symbols_with_limitations`: `21`
-- `certified_validated_symbols`: `558`
-- `api_stable_symbols`: `694`
-- `unbacked_auto_stable`: `601`
+- `symbols_with_limitations`: `29`
+- `certified_validated_symbols`: `981`
+- `api_stable_symbols`: `643`
+- `unbacked_auto_stable`: `570`
 
 ### maintenance_sustainability
 - `mit_forkable`: `True`
@@ -185,17 +185,17 @@ Archive evidence paths: 40/40 resolved
 - `stata_reproduced_modules`: `85`
 
 ### final_cut_boundary
-- `final_tagged_cut_pending_items`: `2`
+- `final_tagged_cut_pending_items`: `3`
 - `final_tagged_cut_identity_ok`: `True`
-- `final_tagged_cut_check_ids`: `['clean_combined_worktree', 'paper_paths_finalized']`
-- `final_tagged_cut_breakdown`: `{'generated_status_counts': {'M': 20}, 'hand_edited_status_counts': {'M': 5}, 'package_code_paths': 0, 'package_docs_paths': 0, 'paper_manuscript_paths': 0, 'paper_other_paths': 3, 'paper_replication_paths': 2, 'validation_test_paths': 0}`
+- `final_tagged_cut_check_ids`: `['clean_combined_worktree', 'source_paths_finalized', 'paper_paths_finalized']`
+- `final_tagged_cut_breakdown`: `{'generated_status_counts': {'??': 3, 'M': 50}, 'hand_edited_status_counts': {'??': 4, 'M': 24}, 'package_code_paths': 0, 'package_docs_paths': 0, 'paper_manuscript_paths': 13, 'paper_other_paths': 4, 'paper_replication_paths': 10, 'validation_test_paths': 1}`
 - `final_tagged_cut_runbook_step_count`: `5`
 - `strict_release_command`: `python Paper-JSS/replication/scripts/source_snapshot_manifest.py --strict-release`
 - `documented_nonblocking_risk_identity_ok`: `True`
 - `documented_nonblocking_risk_count`: `6`
 - `documented_nonblocking_risk_ids`: `['final_tagged_release_cut_pending', 'registry_breadth_denominator_disclosed', 'stata_tier3_requires_license', 'methodological_t4_row_disclosed', 'compact_text_may_feel_terse', 'agent_interface_value_boundary']`
-- `source_release_pending_paths`: `0`
-- `paper_release_pending_paths`: `5`
+- `source_release_pending_paths`: `1`
+- `paper_release_pending_paths`: `27`
 - `ready_for_final_publication`: `False`
 
 ## Final Tagged-Cut Runbook
@@ -214,12 +214,12 @@ Strict release guard: `python Paper-JSS/replication/scripts/source_snapshot_mani
 
 | Risk | Evidence | Next action |
 |---|---|---|
-| `final_tagged_release_cut_pending` | 5 final-release pending paths; source snapshot remains explicitly labelled | commit or intentionally exclude all hand-edited source and Paper-JSS paths; move accepted [Unreleased] changes into a dated CHANGELOG release entry; align pyproject.toml, src/statspai/__init__.py, and schema bundle versions; tag the exact package-source commit used by the JSS archive; re-run make submission-ready after the tag so manifests record a clean release snapshot |
-| `registry_breadth_denominator_disclosed` | 558/1255 registry symbols are certified/validated; missing evidence paths=0 | Keep the validated-core framing and do not promote API-stable breadth without attached evidence notes. |
+| `final_tagged_release_cut_pending` | 28 final-release pending paths; source snapshot remains explicitly labelled | commit or intentionally exclude all hand-edited source and Paper-JSS paths; move accepted [Unreleased] changes into a dated CHANGELOG release entry; align pyproject.toml, src/statspai/__init__.py, and schema bundle versions; tag the exact package-source commit used by the JSS archive; re-run make submission-ready after the tag so manifests record a clean release snapshot |
+| `registry_breadth_denominator_disclosed` | 981/1627 registry symbols are certified/validated; missing evidence paths=0 | Keep the validated-core framing and do not promote API-stable breadth without attached evidence notes. |
 | `stata_tier3_requires_license` | 85/85 frozen Stata modules audited without live Stata; licensed rerun protocol packaged | Keep Tier 3 optional and keep the Stata license boundary explicit; use stata_rerun_protocol.md for any licensed reviewer rerun and treat missing Stata as an optional-runtime skip, not a JSS upload blocker. |
 | `methodological_t4_row_disclosed` | 1/1 methodological/T4 rows classified; uncategorized=0 | Keep the T4 row as a disclosure unless a deterministic T2 bridge is added. |
-| `compact_text_may_feel_terse` | active PDF has 54 pages; PDF-visible evidence-map routing present; packaged PDF visual-check protocol present; page inventory covers 54/54 pages | Keep additional reviewer evidence in replication/results and reviewer_evidence_map rather than expanding main.pdf; perform the final full-document human visual spot-check using pdf_visual_check_protocol.md and the PDF render audit before JSS upload. |
-| `agent_interface_value_boundary` | 1255 schemas, 9697 documented parameters, and 579 trace tools audited without behavioural benchmark claims | Keep the agent section mechanical and contractual unless a behavioural benchmark is actually run and packaged; keep the deferred benchmark protocol labelled as protocol rather than a completed behavioural result. |
+| `compact_text_may_feel_terse` | active PDF has 48 pages; PDF-visible evidence routing incomplete; packaged PDF visual-check protocol present; page inventory covers 48/48 pages | Keep additional reviewer evidence in replication/results and reviewer_evidence_map rather than expanding main.pdf; perform the final full-document human visual spot-check using pdf_visual_check_protocol.md and the PDF render audit before JSS upload. |
+| `agent_interface_value_boundary` | 1627 schemas, 14022 documented parameters, and 45 trace tools audited without behavioural benchmark claims | Keep the agent section mechanical and contractual unless a behavioural benchmark is actually run and packaged; keep the deferred benchmark protocol labelled as protocol rather than a completed behavioural result. |
 
 Failures: none
 

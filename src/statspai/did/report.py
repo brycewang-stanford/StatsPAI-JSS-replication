@@ -32,6 +32,7 @@ import pandas as pd
 
 from .._aliases import accepts_aliases
 from ..core.results import CausalResult
+from . import _cs_conventions as _conv
 from .aggte import aggte
 from .callaway_santanna import callaway_santanna
 from .honest_did import breakdown_m
@@ -343,7 +344,7 @@ class CSReport:
             lines.append(
                 f"- **Pre-trend Wald**: χ²({pt.get('df', 0)}) = "
                 f"{pt.get('statistic', float('nan')):.3f}, "
-                f"p = {pt.get('pvalue', float('nan')):.4g}"
+                f"{_pretrend_p_text(pt)}"
             )
         lines.append("")
 
@@ -577,7 +578,7 @@ class CSReport:
             header += (
                 f" Pre-trend Wald: $\\chi^2({pt.get('df', 0)}) = "
                 f"{pt.get('statistic', float('nan')):.3f}$, "
-                f"$p = {pt.get('pvalue', float('nan')):.4g}$."
+                f"{_pretrend_p_text(pt, latex=True)}."
             )
 
         parts: List[str] = []
@@ -787,7 +788,7 @@ class CSReport:
             lines.append(
                 f"Pre-trend Wald: χ²({pt.get('df', 0)}) = "
                 f"{pt.get('statistic', float('nan')):.3f}, "
-                f"p = {pt.get('pvalue', float('nan')):.4g}"
+                f"{_pretrend_p_text(pt)}"
             )
 
         # Dynamic (event study)
@@ -956,31 +957,11 @@ def _df_to_booktabs(df: pd.DataFrame, float_format: str = "%.4f") -> str:
             aligns.append("l")
     col_spec = "".join(aligns)
 
-    # Single-pass LaTeX escape.  Sequential replace() calls are unsafe
-    # because `\` → `\textbackslash{}` inserts `{` and `}` that later
-    # passes would re-escape, producing broken output like
-    # `\textbackslash\{\}` instead of `\textbackslash{}`.  Using re.sub
-    # with a lookup table guarantees each input character is escaped
-    # exactly once.
-    import re as _re
-
-    _LATEX_ESCAPES = {
-        "\\": r"\textbackslash{}",
-        "~": r"\textasciitilde{}",
-        "^": r"\textasciicircum{}",
-        "&": r"\&",
-        "%": r"\%",
-        "$": r"\$",
-        "#": r"\#",
-        "_": r"\_",
-        "{": r"\{",
-        "}": r"\}",
-    }
-    _LATEX_RE = _re.compile(r"[\\~^&%$#_{}]")
-
-    def _escape(v: object) -> str:
-        text = "" if (isinstance(v, float) and pd.isna(v)) else str(v)
-        return _LATEX_RE.sub(lambda m: _LATEX_ESCAPES[m.group(0)], text)
+    # This single-pass escape is now the package-wide one in
+    # ``output._format`` — it also covers "<" / ">", which matters because
+    # p-value cells read "<0.001" and a bare "<" typesets as an inverted
+    # exclamation mark under OT1.
+    from ..output._format import latex_escape as _escape
 
     header = " & ".join(_escape(c) for c in formatted.columns) + " \\\\"
     body_rows = [
@@ -1023,7 +1004,28 @@ def _record_degradation(
 # ======================================================================
 
 
-@accepts_aliases(id="i", time="t")
+def _pretrend_p_text(pt: Dict[str, Any], latex: bool = False) -> str:
+    """The pre-test p-value(s) of a CS fit, each with its distribution.
+
+    The headline ``pvalue`` is the Hotelling-F one unless the fit used
+    ``parity=``; R ``did`` and Stata ``csdid`` print the chi2 one, so both
+    are shown when the fit carries both.
+    """
+    p_f, p_chi2 = pt.get("pvalue_f"), pt.get("pvalue_chi2")
+    if p_f is None or p_chi2 is None:
+        p = pt.get("pvalue", float("nan"))
+        return f"$p = {p:.4g}$" if latex else f"p = {p:.4g}"
+    if latex:
+        parts = [f"$p_F = {p_f:.4g}$", f"$p_{{\\chi^2}} = {p_chi2:.4g}$"]
+    else:
+        parts = [f"p (Hotelling F) = {p_f:.4g}", f"p (χ²) = {p_chi2:.4g}"]
+    if pt.get("pvalue_method") == "chi2":
+        parts.reverse()
+    return "; ".join(parts)
+
+
+@accepts_aliases(id="i", time="t", seed="random_state", cohort="g", first_treat="g")
+@_conv.track_explicit
 def cs_report(
     data_or_result: Union[pd.DataFrame, CausalResult],
     y: Optional[str] = None,
@@ -1046,6 +1048,7 @@ def cs_report(
     functional_form: bool = True,
     verbose: bool = True,
     save_to: Optional[str] = None,
+    parity: Optional[str] = None,
 ) -> CSReport:
     """One-call staggered-DID workflow following Baker et al. (2026).
 
@@ -1107,6 +1110,19 @@ def cs_report(
           is installed; silently skipped otherwise)
 
         Missing parent directories are created on the fly.
+    parity : {'r', 'stata'}, optional
+        Fit and aggregate with the conventions of R ``did`` or Stata
+        ``csdid``: forwarded to every :func:`callaway_santanna` fit the
+        report runs (the headline fit and the estimator triangulation)
+        and to every :func:`aggte` call. With a pre-fitted result,
+        ``None`` keeps the fit's parity and a different one raises. Under
+        ``parity='stata'`` the aggregations report analytic standard
+        errors, as ``csdid``'s ``estat`` does, unless ``n_boot`` /
+        ``random_state`` are passed (which then raises, because they
+        contradict it). The functional-form test and the covariate
+        balance table do not depend on these conventions.
+
+        .. versionadded:: 1.40.1
 
     Returns
     -------
@@ -1125,9 +1141,22 @@ def cs_report(
     ...         y = 0.3 * t + (2.0 if post else 0.0) + (unit % 5) + rng.normal()
     ...         rows.append((unit, t, g, y))
     >>> df = pd.DataFrame(rows, columns=["id", "t", "g", "y"])
-    >>> rpt = sp.cs_report(df, y="y", g="g", t="t", i="id", random_state=42)
-    >>> rpt.dynamic           # event-study DataFrame w/ uniform bands
+    >>> rpt = sp.cs_report(df, y="y", g="g", t="t", i="id",
+    ...                    n_boot=199, random_state=42, verbose=False)
+    >>> type(rpt).__name__
+    'CSReport'
+    >>> rpt.dynamic["relative_time"].tolist()  # event study w/ uniform bands
+    [-4, -3, -2, 0, 1, 2, 3]
     """
+    # parity= goes to every fit and aggregation. Stata csdid's estat reports
+    # analytic SEs, so under parity='stata' the bootstrap is requested only
+    # when n_boot / random_state were passed (aggte then refuses them).
+    _explicit = _conv.explicit_args()
+    _parity_kw: Dict[str, Any] = {} if parity is None else {"parity": parity}
+    _agg_kw: Dict[str, Any] = dict(_parity_kw)
+    for _k, _v in (("n_boot", n_boot), ("random_state", random_state)):
+        if parity != "stata" or _k in _explicit:
+            _agg_kw[_k] = _v
     if isinstance(data_or_result, CausalResult):
         cs = data_or_result
         # Warn if the caller also supplied estimation-time arguments that
@@ -1196,6 +1225,7 @@ def cs_report(
             control_group=control_group,
             anticipation=anticipation,
             alpha=alpha,
+            **_parity_kw,
         )
 
     # ------------------------------------------------------------------
@@ -1287,14 +1317,9 @@ def cs_report(
                         control_group=control_group,
                         anticipation=anticipation,
                         alpha=alpha,
+                        **_parity_kw,
                     )
-                    agg = aggte(
-                        fit,
-                        type="simple",
-                        alpha=alpha,
-                        n_boot=n_boot,
-                        random_state=random_state,
-                    )
+                    agg = aggte(fit, type="simple", alpha=alpha, **_agg_kw)
                     rows.append(
                         {
                             "estimator": est_name,
@@ -1322,24 +1347,17 @@ def cs_report(
         overlap_info["pscore_trim"] = cs.model_info.get("pscore_trim")
 
     # Four aggregations sharing the same seed for internal consistency.
-    simple = aggte(
-        cs, type="simple", alpha=alpha, n_boot=n_boot, random_state=random_state
-    )
+    simple = aggte(cs, type="simple", alpha=alpha, **_agg_kw)
     dynamic = aggte(
         cs,
         type="dynamic",
         alpha=alpha,
-        n_boot=n_boot,
-        random_state=random_state,
         min_e=min_e,
         max_e=max_e,
+        **_agg_kw,
     )
-    group = aggte(
-        cs, type="group", alpha=alpha, n_boot=n_boot, random_state=random_state
-    )
-    calendar = aggte(
-        cs, type="calendar", alpha=alpha, n_boot=n_boot, random_state=random_state
-    )
+    group = aggte(cs, type="group", alpha=alpha, **_agg_kw)
+    calendar = aggte(cs, type="calendar", alpha=alpha, **_agg_kw)
 
     simple_detail = simple.detail if simple.detail is not None else pd.DataFrame()
     dynamic_detail = dynamic.detail if dynamic.detail is not None else pd.DataFrame()
@@ -1356,7 +1374,14 @@ def cs_report(
         e_int = int(row["relative_time"])
         try:
             m_star = breakdown_m(dynamic, e=e_int, method=rr_method, alpha=alpha)
-        except Exception:  # pragma: no cover - defensive
+        except Exception as exc:  # pragma: no cover - defensive
+            from ..core._fallback import warn_fallback
+
+            warn_fallback(
+                f"breakdown M at event time {e_int}",
+                exc,
+                "it is reported as NaN in the robustness table",
+            )
             m_star = float("nan")
         rr_rows.append(
             {

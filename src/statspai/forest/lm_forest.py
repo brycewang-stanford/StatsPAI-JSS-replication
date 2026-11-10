@@ -86,6 +86,8 @@ class LMForestResult(GRFFamilyForest):
             pred = self.coefficients
             var = self.coefficient_variance
         else:
+            if estimate_variance:
+                self._require_little_bags()
             p, v = self._engine.predict(
                 self._new_X(newdata), estimate_variance=bool(estimate_variance)
             )
@@ -200,7 +202,12 @@ def oob_multi_regression(
     return np.asarray(pred, dtype=float)
 
 
-@accepts_aliases(_strict=True, n_trees="n_estimators", min_leaf="min_samples_leaf")
+@accepts_aliases(
+    _strict=True,
+    n_trees="n_estimators",
+    min_leaf="min_samples_leaf",
+    seed="random_state",
+)
 def lm_forest(
     data: Optional[pd.DataFrame] = None,
     y: Any = None,

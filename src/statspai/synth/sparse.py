@@ -35,7 +35,9 @@ import numpy as np
 import pandas as pd
 from scipy import optimize, stats
 
+from .._input_validation import check_columns
 from ..core.results import CausalResult
+from ._cite import bib_citation
 from ._core import placebo_rank_pvalue
 
 # ---------------------------------------------------------------------------
@@ -97,17 +99,33 @@ def sparse_synth(
 
     Examples
     --------
+    Called through the ``sp.synth`` dispatcher:
+
     >>> import statspai as sp
-    >>> result = sp.sparse_synth(
-    ...     df, outcome='gdp', unit='state', time='year',
-    ...     treated_unit='California', treatment_time=1989,
-    ...     mode='lasso',
+    >>> df = sp.dgp_synth(n_units=10, n_periods=20, treatment_time=15,
+    ...                   effect=2.0, seed=0)
+    >>> result = sp.synth(
+    ...     df, outcome='y', unit='unit', time='time',
+    ...     treated_unit=0, treatment_time=15,
+    ...     method='sparse', mode='lasso',
     ... )
-    >>> result.summary()
+    >>> result.method
+    'Sparse SCM (LASSO)'
     """
     _VALID_MODES = ("lasso", "constrained_lasso", "joint")
     if mode not in _VALID_MODES:
         raise ValueError(f"mode must be one of {_VALID_MODES}, got {mode!r}")
+
+    check_columns(
+        data,
+        {
+            "outcome": outcome,
+            "unit": unit,
+            "time": time,
+            "covariates": covariates,
+        },
+        function="sp.synth(method='sparse')",
+    )
 
     # ------------------------------------------------------------------
     # 1. Reshape panel
@@ -271,7 +289,14 @@ def sparse_synth(
                 gap_post_p = actual_post_p - synth_post_p
                 placebo_atts.append(float(np.mean(gap_post_p)))
                 placebo_pre_mspes.append(float(np.mean(gap_pre_p**2)))
-            except Exception:  # pragma: no cover
+            except Exception as exc:  # pragma: no cover
+                from ..core._fallback import warn_fallback
+
+                warn_fallback(
+                    f"sparse-synth placebo fit for donor index {j}",
+                    exc,
+                    "it is left out of the placebo distribution",
+                )
                 continue  # pragma: no cover
 
     if len(placebo_atts) > 0:
@@ -381,7 +406,7 @@ def sparse_synth(
         n_obs=len(data),
         detail=weight_df,
         model_info=model_info,
-        _citation_key="sparse_synth",
+        _citation_key=bib_citation("doudchenko2016balancing", "sparse_synth"),
     )
 
 
@@ -419,12 +444,58 @@ def _coordinate_descent(
     -------
     w : (J,) weight vector.
     """
+    X = np.asarray(X)
+    y = np.asarray(y)
+    # Precompute column norms
+    col_norm_sq = np.sum(X**2, axis=0)  # (J,)
+    compiled = (
+        X.ndim == 2
+        and X.dtype == np.float64
+        and y.dtype == np.float64
+        and y.ndim == 1
+        and y.shape[0] == X.shape[0]
+        and X.shape[0] < 2**31
+        and X.shape[1] > 0  # no donors: the loop below raises, as before
+        # the layouts for which NumPy's own X[:, j] @ r is a BLAS ddot
+        and all(s > 0 and s % 8 == 0 for s in X.strides)
+    )
+    if compiled:
+        try:
+            from ._sparse_kernels import cd_loop, ddot  # numba, on first use
+        except ImportError:  # numba missing or broken: the interpreted loop
+            compiled = False
+    if not compiled:
+        return _coordinate_descent_loop(X, y, col_norm_sq, lambda_pen, max_iter, tol)
+    return np.asarray(
+        cd_loop(
+            ddot,
+            X,
+            np.ascontiguousarray(y),
+            col_norm_sq,
+            float(lambda_pen),
+            int(max_iter),
+            float(tol),
+        )
+    )
+
+
+def _coordinate_descent_loop(
+    X: np.ndarray,
+    y: np.ndarray,
+    col_norm_sq: np.ndarray,
+    lambda_pen: float,
+    max_iter: int,
+    tol: float,
+) -> np.ndarray:
+    """The sweep of ``_coordinate_descent``, interpreted.
+
+    ``_sparse_kernels.cd_loop`` is this loop compiled, operation for
+    operation; this one runs when numba cannot be imported and is the
+    reference the kernel is tested against.
+    """
     T, J = X.shape
     w = np.zeros(J, dtype=np.float64)
     r = y.copy()  # residual
-
-    # Precompute column norms
-    col_norm_sq = np.sum(X**2, axis=0)  # (J,)
 
     for _ in range(max_iter):
         w_old = w.copy()
@@ -670,7 +741,14 @@ def _cv_lambda(
 
                 y_hat = Y_d.T @ w
                 mse_matrix[j, li] = float(np.mean((y_j - y_hat) ** 2))
-            except Exception:  # pragma: no cover
+            except Exception as exc:  # pragma: no cover
+                from ..core._fallback import warn_fallback
+
+                warn_fallback(
+                    f"sparse-synth CV fit (donor index {j}, lambda index {li})",
+                    exc,
+                    "that cell is excluded from the cross-validated MSE",
+                )
                 continue  # pragma: no cover
 
     mean_mse = np.nanmean(mse_matrix, axis=0)

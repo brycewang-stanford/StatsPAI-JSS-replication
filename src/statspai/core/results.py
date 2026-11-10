@@ -4,12 +4,13 @@ Unified results class for all econometric models
 
 import warnings
 from html import escape as _html_escape
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union, cast
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union, cast
 
 import numpy as np
 import pandas as pd
 
 from ..exceptions import MethodIncompatibility
+from ._result_access import DiDAccessorsMixin
 
 if TYPE_CHECKING:
     from ..dml.oof import OOFBundle
@@ -175,9 +176,11 @@ def _to_jsonable(value: Any, *, _depth: int = 0, _max_depth: int = 6) -> Any:
     """
     if _depth > _max_depth:
         return str(value)
-    if value is None:
+    if value is None or value is pd.NaT or value is pd.NA:
         return None
-    if isinstance(value, bool):
+    if isinstance(value, (bool, np.bool_)):
+        # ``np.bool_`` is not a ``bool``: without this branch it fell
+        # through to ``str()`` and a test verdict arrived as "True".
         return bool(value)
     if isinstance(value, (int, np.integer)):
         return int(value)
@@ -202,6 +205,8 @@ def _to_jsonable(value: Any, *, _depth: int = 0, _max_depth: int = 6) -> Any:
         return _to_jsonable(head.to_dict(orient="records"), _depth=_depth + 1)
     if isinstance(value, pd.Timestamp):
         return value.isoformat()
+    if isinstance(value, np.datetime64):
+        return None if np.isnat(value) else pd.Timestamp(value).isoformat()
     # Last resort: stringify so json.dumps doesn't blow up.
     try:
         return str(value)
@@ -209,17 +214,54 @@ def _to_jsonable(value: Any, *, _depth: int = 0, _max_depth: int = 6) -> Any:
         return None
 
 
+def _label_value(value: Any) -> Any:
+    """``2004.0`` -> ``2004`` for labels built from float-typed id columns."""
+    if isinstance(value, (float, np.floating)) and float(value).is_integer():
+        return int(value)
+    return value
+
+
+def _event_study_columns(es: Any) -> Optional[Tuple[str, str]]:
+    """``(relative-time column, estimate column)`` of an event-study frame.
+
+    Two conventions are in use: ``(relative_time, att)`` from
+    did_imputation / callaway_santanna and ``(rel_time, estimate)`` from
+    wooldridge_did / etwfe. ``None`` when ``es`` is not a frame with an
+    ``se`` column and one of each.
+    """
+    if not isinstance(es, pd.DataFrame) or "se" not in es.columns:
+        return None
+    time_col = next((c for c in ("relative_time", "rel_time") if c in es.columns), None)
+    est_col = next((c for c in ("att", "estimate") if c in es.columns), None)
+    if time_col is None or est_col is None:
+        return None
+    return time_col, est_col
+
+
 def _filter_jsonable_scalars(d: Dict[str, Any]) -> Dict[str, Any]:
     """Return the subset of ``d`` whose values round-trip as JSON scalars.
 
     Used for ``diagnostics`` payloads where agents want simple key/value
-    pairs — not nested frames.
+    pairs — not nested frames. One level of nesting is kept when the
+    nested dict itself holds scalars: diagnostics such as
+    ``model_info['mccrary'] = {'pvalue': 0.69}`` or
+    ``model_info['pretrend_test'] = {'statistic': ..., 'pvalue': ...}``
+    are the tests an agent needs to see, and dropping them made a test
+    that *ran* indistinguishable from one that never did.
     """
     out: Dict[str, Any] = {}
     for k, v in (d or {}).items():
         j = _to_jsonable(v)
         if isinstance(j, (int, float, str, bool)) or j is None:
             out[str(k)] = j
+        elif isinstance(v, dict) and v:
+            sub: Dict[str, Any] = {}
+            for kk, vv in v.items():
+                jj = _to_jsonable(vv)
+                if isinstance(jj, (int, float, str, bool)) or jj is None:
+                    sub[str(kk)] = jj
+            if sub:
+                out[str(k)] = sub
     return out
 
 
@@ -236,6 +278,107 @@ def _validate_probability(value: Any, *, name: str) -> float:
             f"{name} must be a finite number in the open interval (0, 1)"
         )
     return parsed
+
+
+def _params_vcov(result: Any) -> pd.DataFrame:
+    """Covariance matrix of ``result.params``, labelled by parameter.
+
+    The stored full matrix is used when its diagonal reproduces the
+    reported standard errors (``coefficient_covariance``); a single
+    parameter needs no more than its squared SE.  Several parameters
+    without a consistent stored matrix raise instead of returning a
+    diagonal matrix, which would silently claim the estimates are
+    uncorrelated.
+    """
+    from ..postestimation._covariance import coefficient_covariance
+
+    params = result.params
+    names = list(params.index) if isinstance(params, pd.Series) else None
+    V, se = coefficient_covariance(result)
+    if V is None:
+        if len(se) != 1:
+            raise MethodIncompatibility(
+                "This result stores no covariance matrix consistent with its "
+                f"{len(se)} standard errors, so vcov() cannot report the "
+                "covariances between the estimates.",
+                recovery_hint=(
+                    "Use result.std_errors for the variances alone, or refit "
+                    "with an estimator that stores data_info['var_cov']."
+                ),
+                diagnostics={"n_params": int(len(se))},
+            )
+        V = np.array([[float(se[0]) ** 2]])
+    return pd.DataFrame(V, index=names, columns=names)
+
+
+def _event_study_with_ci(es: pd.DataFrame, alpha: float) -> pd.DataFrame:
+    """Return ``es`` with pointwise ``ci_lower`` / ``ci_upper`` columns.
+
+    Most estimators store their event-study table with the interval
+    already in it; ``sp.etwfe`` keeps the historical table without one
+    (``att`` / ``se`` only).  The plots used to index ``ci_lower``
+    unconditionally and raised ``KeyError`` on such a table.  A missing
+    interval is rebuilt as ``att -/+ z_{1-alpha/2} * se`` -- the normal
+    interval ``etwfe_emfx`` reports for the same rows -- and an existing
+    one is left untouched.
+    """
+    if {"ci_lower", "ci_upper"}.issubset(es.columns):
+        return es
+    if "se" not in es.columns or "att" not in es.columns:
+        raise MethodIncompatibility(
+            "The event-study table has neither ci_lower/ci_upper nor "
+            "att/se columns, so no interval can be drawn.",
+            recovery_hint="Add ci_lower/ci_upper columns to the table.",
+            diagnostics={"columns": list(es.columns)},
+        )
+    out = es.copy()
+    z = float(
+        _scipy_stats().norm.ppf(1 - _validate_probability(alpha, name="alpha") / 2)
+    )
+    att = out["att"].to_numpy(dtype=float)
+    se = out["se"].to_numpy(dtype=float)
+    out["ci_lower"] = att - z * se
+    out["ci_upper"] = att + z * se
+    return out
+
+
+#: Names a statsmodels / linearmodels result uses, and where the same thing
+#: is on :class:`EconometricResults`. Read by ``__getattr__`` to say so.
+_FOREIGN_RESULT_NAMES: Dict[str, str] = {
+    "bse": "standard errors are `.std_errors`",
+    "HC0_se": "refit with robust='hc0' and read `.std_errors`",
+    "HC1_se": "refit with robust='hc1' and read `.std_errors`",
+    "HC2_se": "refit with robust='hc2' and read `.std_errors`",
+    "HC3_se": "refit with robust='hc3' and read `.std_errors`",
+    "get_robustcov_results": "refit with robust= / cluster= instead",
+    "rsquared": "R-squared is `.r2`",
+    "rsquared_adj": "adjusted R-squared is `.r2_adj`",
+    "prsquared": "it is `.diagnostics['Pseudo R-squared']`",
+    "resid": "residuals are `.residuals()`",
+    "resids": "residuals are `.residuals()`",
+    "fittedvalues": "fitted values are `.fitted_values()`",
+    "fitted": "fitted values are `.fitted_values()`",
+    "llf": "it is `.diagnostics['Log-Likelihood']`; see `.glance()`",
+    "loglik": "it is `.diagnostics['Log-Likelihood']`; see `.glance()`",
+    "aic": "it is `.diagnostics['AIC']`; see `.glance()`",
+    "bic": "it is `.diagnostics['BIC']`; see `.glance()`",
+    "fvalue": "it is `.diagnostics['F-statistic']`",
+    "f_pvalue": "it is `.diagnostics['Prob (F-statistic)']`",
+    "f_statistic": "it is `.diagnostics['F-statistic']`",
+    "df_resid": "it is `.data_info['df_resid']`",
+    "mse_resid": "it is `.data_info['rss'] / .data_info['df_resid']`",
+    "scale": "it is `.data_info['rss'] / .data_info['df_resid']`",
+    "ssr": "it is `.data_info['rss']`",
+    "f_test": "use `.test('x1 = 0, x2 = 0')` or `sp.test(result, ...)`",
+    "wald_test": "use `.test('x1 = 0, x2 = 0')` or `sp.test(result, ...)`",
+    "t_test": "use `.lincom('x1 - x2')` or `sp.lincom(result, ...)`",
+    "get_margeff": "use `sp.margins(result, data, method='ame')`",
+    "get_influence": "use `sp.influence_measures(result)`",
+    "outlier_test": "use `sp.influence_measures(result)` and read `rstudent`",
+    "get_prediction": "use `.predict(data, what='confidence')`",
+    "summary2": "use `.summary()` or `sp.regtable(result)`",
+    "cov": "the covariance matrix is `.vcov()`",
+}
 
 
 class EconometricResults:
@@ -263,6 +406,78 @@ class EconometricResults:
     #: Fit-time significance level; class default keeps results that were
     #: pickled before the attribute existed (or built via ``__new__``) valid.
     alpha: float = 0.05
+
+    def __getattr__(self, name: str) -> Any:
+        # Reached only when normal lookup fails. A name statsmodels or
+        # linearmodels uses for something this result does hold is answered
+        # with where it lives here; the attribute stays absent, so
+        # ``hasattr`` checks read as before.
+        hint = None if name.startswith("_") else _FOREIGN_RESULT_NAMES.get(name)
+        message = f"{type(self).__name__!r} object has no attribute {name!r}"
+        if hint is not None:
+            message += f"; {hint}"
+        raise AttributeError(message)
+
+    @property
+    def nobs(self) -> Optional[int]:
+        """Estimation sample size (``data_info['nobs']``), ``None`` if unrecorded."""
+        n = (getattr(self, "data_info", None) or {}).get("nobs")
+        return None if n is None else int(n)
+
+    @property
+    def n_obs(self) -> int:
+        """Alias of :attr:`nobs`, the name :class:`CausalResult` uses.
+
+        A fit that recorded no sample size has no ``n_obs`` (the attribute
+        raises ``AttributeError``), so ``hasattr(result, "n_obs")`` keeps
+        meaning "the sample size is known".
+        """
+        n = self.nobs
+        if n is None:
+            raise AttributeError("n_obs: this fit recorded no sample size")
+        return n
+
+    @n_obs.setter
+    def n_obs(self, value: Any) -> None:
+        self.data_info["nobs"] = value
+
+    def vcov(self) -> pd.DataFrame:
+        """Covariance matrix of :attr:`params`, labelled by coefficient.
+
+        The matrix behind the reported standard errors (its diagonal equals
+        ``std_errors ** 2``).  Raises when the fit stores no such matrix --
+        e.g. standard errors replaced after the fit by a bootstrap -- rather
+        than returning a diagonal matrix that would claim the estimates are
+        uncorrelated.
+
+        Examples
+        --------
+        >>> import statspai as sp, numpy as np, pandas as pd
+        >>> rng = np.random.default_rng(0)
+        >>> x = rng.normal(size=50)
+        >>> df = pd.DataFrame({"y": 2.0 * x + rng.normal(size=50), "x": x})
+        >>> res = sp.regress("y ~ x", data=df)
+        >>> V = res.vcov()
+        >>> bool(np.allclose(np.sqrt(np.diag(V)), res.std_errors))
+        True
+        """
+        return _params_vcov(self)
+
+    @property
+    def r2(self) -> Optional[float]:
+        """R-squared as recorded in ``diagnostics``, ``None`` if the fit has none."""
+        v = (getattr(self, "diagnostics", None) or {}).get("R-squared")
+        return None if v is None else float(v)
+
+    @property
+    def r2_adj(self) -> Optional[float]:
+        """Adjusted R-squared (``e(r2_a)``), ``None`` if the fit has none."""
+        v = (getattr(self, "diagnostics", None) or {}).get("Adj. R-squared")
+        return None if v is None else float(v)
+
+    def cov_params(self) -> pd.DataFrame:
+        """Labelled coefficient covariance; the same matrix as ``vcov()``."""
+        return self.vcov()
 
     def __init__(
         self,
@@ -292,6 +507,14 @@ class EconometricResults:
         self.std_errors = std_errors
         self.model_info = model_info
         self.data_info = data_info or {}
+        # Some estimators record the sample size as ``n_obs``. Everything
+        # on this class reads ``nobs`` (the property, the summary footer,
+        # ``to_dict``), so those fits reported no sample size at all.
+        if (
+            self.data_info.get("nobs") is None
+            and self.data_info.get("n_obs") is not None
+        ):
+            self.data_info["nobs"] = self.data_info["n_obs"]
         self.diagnostics = diagnostics or {}
         # The significance level requested at fit time (``sp.logit(...,
         # alpha=0.1)``) is the default for every interval this object
@@ -356,9 +579,11 @@ class EconometricResults:
         # t(df) or z, by the fit's own convention: data_info['inference'] ==
         # 'z' for likelihood-based fits, data_info['df_inference'] for G - 1
         # under clustering, else df_resid (see postestimation._covariance).
-        df_resid = self._inference_df()
+        df_resid = self._coefficient_df()
         self.tvalues = pd.Series(tvalues, index=index)
-        self.pvalues = 2 * stats.t.sf(np.abs(tvalues), df_resid)
+        # Labelled like params / std_errors / tvalues; a bare ndarray here
+        # made ``r.pvalues['x']`` fail on sp.regress results (UCT replication).
+        self.pvalues = pd.Series(2 * stats.t.sf(np.abs(tvalues), df_resid), index=index)
 
         # Intervals at the fit-time level (95% unless ``alpha`` was given).
         t_crit = stats.t.ppf(1 - self.alpha / 2, df_resid)
@@ -374,6 +599,22 @@ class EconometricResults:
         from ..postestimation._covariance import inference_df
 
         return inference_df(self, stores=("data_info",))
+
+    def _coefficient_df(self) -> Any:
+        """Degrees of freedom for each coefficient's t distribution.
+
+        The scalar of :meth:`_inference_df` unless the fit recorded
+        ``data_info['df_by_coefficient']`` (a mapping from coefficient name
+        to df, as the Bell-McCaffrey correction gives), in which case an
+        array aligned with ``params``; names it does not cover fall back to
+        the scalar.
+        """
+        scalar = self._inference_df()
+        per = self.data_info.get("df_by_coefficient")
+        if per is None:
+            return scalar
+        aligned = pd.Series(per, dtype=float).reindex(self.params.index)
+        return aligned.fillna(scalar).to_numpy(dtype=float)
 
     def summary(self, alpha: Optional[float] = None) -> str:
         """
@@ -423,6 +664,16 @@ class EconometricResults:
         # Add coefficient table
         output.append(coef_table.to_string(float_format="%.4f"))
 
+        # The variance and reference distribution behind the t / p columns:
+        # identical SEs give different p-values under t(N-K), t(G-1) and z.
+        try:
+            from ._inference_rule import inference_lines
+
+            output.append("")
+            output.extend(inference_lines(self.inference_rule()))
+        except Exception as exc:  # the table must print regardless
+            output.append(f"(inference rule unavailable: {type(exc).__name__})")
+
         # Add model diagnostics
         if self.diagnostics:
             output.append("")
@@ -443,6 +694,36 @@ class EconometricResults:
         output.append("=" * 80)
         return SummaryText("\n".join(output))
 
+    def inference_rule(self) -> Dict[str, Any]:
+        """The variance, reference distribution and small-sample convention.
+
+        Coefficients and standard errors can agree with another program
+        while t / F / p values do not, because the statistics are referred
+        to a different distribution (t(N-K), t(G-1) or z) or the variance
+        carries a different finite-sample factor. This states the rule the
+        fit used, as recorded by the estimator; ``summary()`` prints it.
+
+        Returns
+        -------
+        dict
+            ``vcov``, ``distribution`` (``'t'`` / ``'z'``), ``df``,
+            ``joint_test``, ``n_obs``, and when recorded ``n_clusters``,
+            ``small``, ``ssc``, ``n_rows``, ``n_groups``, ``notes``.
+
+        Examples
+        --------
+        >>> import numpy as np, pandas as pd
+        >>> import statspai as sp
+        >>> rng = np.random.default_rng(0)
+        >>> df = pd.DataFrame({"x": rng.normal(size=60), "g": np.repeat(range(12), 5)})
+        >>> df["y"] = df.x + rng.normal(size=60)
+        >>> sp.regress("y ~ x", data=df, cluster="g").inference_rule()["df"]
+        11
+        """
+        from ._inference_rule import inference_rule
+
+        return inference_rule(self)
+
     def conf_int(self, alpha: Optional[float] = None) -> pd.DataFrame:
         """
         Return confidence intervals for parameters
@@ -461,7 +742,7 @@ class EconometricResults:
         alpha = self.alpha if alpha is None else alpha
         alpha = _validate_probability(alpha, name="alpha")
         stats = _scipy_stats()
-        t_crit = stats.t.ppf(1 - alpha / 2, self._inference_df())
+        t_crit = stats.t.ppf(1 - alpha / 2, self._coefficient_df())
         lower = self.params - t_crit * self.std_errors
         upper = self.params + t_crit * self.std_errors
 
@@ -532,7 +813,7 @@ class EconometricResults:
             conf_level = 1 - self.alpha
         conf_level = _validate_probability(conf_level, name="conf_level")
         alpha = 1 - conf_level
-        df_resid = self._inference_df()
+        df_resid = self._coefficient_df()
         stats = _scipy_stats()
         t_crit = stats.t.ppf(1 - alpha / 2, df_resid)
         lo = self.params - t_crit * self.std_errors
@@ -713,23 +994,121 @@ class EconometricResults:
             g["df_model"] = int(dm) if np.isfinite(dm) else float(dm)
         return pd.DataFrame([g])
 
-    def predict(self, data: Optional[pd.DataFrame] = None) -> np.ndarray:
+    def fixef(self) -> Dict[str, pd.Series]:
+        """Estimated fixed effects of a ``sp.feols`` / ``fepois`` / ``feglm`` fit.
+
+        R ``fixest::fixef`` / Stata ``reghdfe, savefe``: one Series per
+        absorbed effect, indexed by its levels, on the scale of the linear
+        index. Effects are identified up to one constant per connected set
+        of levels (per additional effect); the normalisation is fixest's
+        (see :mod:`statspai.fixest._fixef`). Sums of effects, and so
+        predictions, do not depend on it.
+
+        Returns
+        -------
+        dict of str to pd.Series
+
+        Examples
+        --------
+        >>> import numpy as np, pandas as pd
+        >>> import statspai as sp
+        >>> rng = np.random.default_rng(0)
+        >>> d = pd.DataFrame({"g": rng.integers(0, 5, 200), "x": rng.normal(size=200)})
+        >>> d["y"] = d.g + 0.5 * d.x + rng.normal(size=200)
+        >>> fit = sp.feols("y ~ x | g", d)
+        >>> fe = fit.fixef()["g"]
+        >>> len(fe)
+        5
+        """
+        from ..fixest._fixef import fixef as _fixef
+
+        return _fixef(self)
+
+    def predict(
+        self,
+        data: Optional[pd.DataFrame] = None,
+        what: str = "mean",
+        alpha: float = 0.05,
+        *,
+        newdata: Optional[pd.DataFrame] = None,
+    ) -> Union[np.ndarray, pd.DataFrame]:
         """
         Generate predictions from the fitted model.
 
         Parameters
         ----------
         data : pd.DataFrame, optional
-            New data for out-of-sample prediction. If None, returns
-            in-sample fitted values.
+            New data for out-of-sample prediction, holding the variables of
+            the formula (the design -- ``I(x**2)``, ``np.log(x)``, ``C(g)``,
+            interactions -- is rebuilt from them). If None, the estimation
+            sample is used. After a fit with absorbed fixed effects
+            (``sp.feols`` / ``fepois`` / ``feglm`` with ``| fe``) the
+            prediction adds the estimated effects of each row's levels, as
+            R ``fixest``'s ``predict`` does; a level the fit never saw
+            gives NaN, with a warning.
+        what : {"mean", "link", "confidence", "prediction"}, default "mean"
+            - ``"mean"`` -- the predicted mean of the outcome. For a model
+              with a link function (``sp.glm``, ``sp.poisson``, ``sp.nbreg``)
+              this is on the scale of the outcome, in and out of sample.
+            - ``"link"`` -- the linear index ``x'b``.
+            - ``"confidence"`` -- the predicted mean with its standard error
+              and a ``1 - alpha`` confidence interval for ``E[y | x]``. With
+              a link function the interval is built for the linear index and
+              mapped to the scale of the outcome.
+            - ``"prediction"`` -- a ``1 - alpha`` prediction interval for a
+              new observation of a linear model, which adds the error
+              variance ``s^2`` to the variance of the estimated mean. It
+              assumes homoskedastic errors whatever covariance estimator the
+              fit used, and is not defined after a weighted fit.
+        alpha : float, default 0.05
+            One minus the coverage of the interval.
+        newdata : pd.DataFrame, optional
+            Alias of ``data`` (the R spelling).
 
         Returns
         -------
-        np.ndarray
-            Predicted values.
+        np.ndarray or pd.DataFrame
+            The predictions (``"mean"``, ``"link"``), or a DataFrame with
+            columns ``yhat``, ``se``, ``lower``, ``upper``.
+
+        Examples
+        --------
+        >>> import numpy as np, pandas as pd
+        >>> import statspai as sp
+        >>> rng = np.random.default_rng(0)
+        >>> df = pd.DataFrame({"x": rng.normal(size=200)})
+        >>> df["y"] = 1.0 + 0.5 * df["x"] + rng.normal(size=200)
+        >>> fit = sp.regress("y ~ x + I(x**2)", data=df)
+        >>> new = pd.DataFrame({"x": [0.0, 1.0]})
+        >>> fit.predict(new).shape
+        (2,)
+        >>> list(fit.predict(new, what="prediction").columns)
+        ['yhat', 'se', 'lower', 'upper']
         """
-        # In-sample: return fitted values if available
-        if data is None:
+        from scipy import stats as _stats
+
+        valid = ("mean", "link", "confidence", "prediction")
+        if what not in valid:
+            raise MethodIncompatibility(
+                f"`what` must be one of {valid}; got {what!r}.",
+                recovery_hint="Use what='mean', 'link', 'confidence' or "
+                "'prediction'.",
+                diagnostics={"what": repr(what)},
+            )
+        if newdata is not None:
+            if data is not None:
+                raise MethodIncompatibility(
+                    "predict(): pass the new data once, as data= or newdata=.",
+                    recovery_hint="Drop one of data= / newdata=.",
+                )
+            data = newdata
+        inverse = self._inverse_link()
+        from ..fixest._fixef import has_fixed_effects
+
+        absorbed = has_fixed_effects(self)
+
+        # In-sample point predictions: the stored fitted values
+        if data is None and what == "mean":
             fv = self.data_info.get("fitted_values")
             if fv is not None:
                 return np.asarray(fv)
@@ -737,75 +1116,286 @@ class EconometricResults:
                 "In-sample fitted values not stored. "
                 "Pass data= for out-of-sample prediction."
             )
+        if self.params is None or not isinstance(self.params, pd.Series):
+            raise NotImplementedError("Prediction not available for this model type.")
 
-        # Out-of-sample: X @ params (works for simple linear models only)
-        if self.params is not None and isinstance(self.params, pd.Series):
+        index: Any = None
+        if data is None and absorbed:
+            # the stored design is the within-transformed one
+            raise MethodIncompatibility(
+                "predict(): the fit absorbed fixed effects, so its stored "
+                f"design is demeaned; what={what!r} needs the data.",
+                recovery_hint="Pass the estimation data as data=.",
+            )
+        if data is None:
+            X = self.data_info.get("X")
+            if X is None:
+                raise MethodIncompatibility(
+                    "The design matrix of the estimation sample is not stored "
+                    "on this result.",
+                    recovery_hint="Pass the estimation data as data=.",
+                )
+            X = np.asarray(X, dtype=float)
+            offset = self._prediction_offset(None, X.shape[0])
+        else:
             if not isinstance(data, pd.DataFrame):
                 raise MethodIncompatibility(
                     "Out-of-sample prediction requires a pandas DataFrame.",
                     recovery_hint=(
-                        "Pass a DataFrame containing the fitted model's "
-                        "coefficient columns."
+                        "Pass a DataFrame containing the variables of the "
+                        "fitted formula."
                     ),
                     diagnostics={"data_type": data.__class__.__name__},
                 )
-            var_names = list(self.params.index)
-            has_intercept = "Intercept" in var_names
+            X = self._prediction_design(data)
+            offset = self._prediction_offset(data, X.shape[0])
+            index = data.index
+        beta = np.asarray(self.params, dtype=float)
+        if X.shape[1] != beta.shape[0]:
+            raise MethodIncompatibility(
+                f"The prediction design has {X.shape[1]} columns but the model "
+                f"has {beta.shape[0]} coefficients.",
+                recovery_hint="Pass data with the variables of the fitted formula.",
+            )
+        eta = X @ beta + offset
+        if what == "link":
+            return np.asarray(eta)
+        if what == "mean":
+            return np.asarray(inverse(eta) if inverse is not None else eta)
 
-            # Identify derived terms (interactions, categoricals, transforms)
-            X_cols = [v for v in var_names if v != "Intercept"]
-            missing = [c for c in X_cols if c not in data.columns]
-            if missing:
-                # Check if these are formula-derived terms
-                import re
+        if not 0.0 < float(alpha) < 1.0:
+            raise MethodIncompatibility(
+                f"alpha must lie strictly between 0 and 1; got {alpha!r}.",
+                recovery_hint="Use alpha=0.05 for 95% intervals.",
+            )
+        cov = self.data_info.get("var_cov")
+        if cov is None:
+            cov = getattr(self, "_var_cov", None)
+        if cov is None:
+            raise MethodIncompatibility(
+                "This result carries no coefficient covariance matrix, so the "
+                "standard error of a prediction is not available.",
+                recovery_hint="Use what='mean' for point predictions.",
+            )
+        cov = np.asarray(cov, dtype=float)
+        var_mean = np.maximum(np.einsum("ij,jk,ik->i", X, cov, X), 0.0)
+        df_resid = self.data_info.get("df_resid", np.inf)
+        if inverse is not None or df_resid is None or not np.isfinite(df_resid):
+            crit = float(_stats.norm.ppf(1.0 - alpha / 2.0))
+        else:
+            crit = float(_stats.t.ppf(1.0 - alpha / 2.0, df_resid))
 
-                derived = [
-                    c for c in missing if ":" in c or "[" in c or re.search(r"[()]", c)
-                ]
-                if derived:
-                    raise MethodIncompatibility(
-                        f"Out-of-sample prediction is not supported for "
-                        f"models with formula transforms (found: "
-                        f"{derived[:3]}{'...' if len(derived) > 3 else ''}). "
-                        f"Re-fit using statsmodels directly, or use "
-                        f"in-sample prediction with result.predict() "
-                        f"(no arguments).",
-                        recovery_hint=(
-                            "Use the estimator-specific predict() method when "
-                            "available, or call result.predict() without data "
-                            "for stored in-sample fitted values."
-                        ),
-                        diagnostics={"derived_terms": derived},
-                    )
+        if what == "prediction":
+            if inverse is not None:
                 raise MethodIncompatibility(
-                    f"Prediction data missing column(s): {missing}",
-                    recovery_hint=(
-                        "Add the missing coefficient columns to the prediction "
-                        "DataFrame or use the estimator-specific predict()."
-                    ),
-                    diagnostics={"missing_columns": missing},
+                    "A prediction interval for a new observation is defined "
+                    "here for linear models only.",
+                    recovery_hint="Use what='confidence' for the interval of "
+                    "the conditional mean.",
                 )
-            try:
-                X = data[X_cols].to_numpy(dtype=float)
-            except (TypeError, ValueError) as exc:
+            weighted = any(
+                self.data_info.get(key) is not None
+                for key in ("analytic_weights", "weights")
+            )
+            resid = self.data_info.get("residuals")
+            if weighted or resid is None or not np.isfinite(df_resid):
                 raise MethodIncompatibility(
-                    "Prediction columns must be numeric.",
-                    recovery_hint=(
-                        "Coerce prediction data columns to numeric values "
-                        "before calling predict()."
+                    "A prediction interval needs the error variance of a new "
+                    "observation, which this fit does not define"
+                    + (
+                        " (after a weighted fit it depends on the weight of "
+                        "the new observation)."
+                        if weighted
+                        else "."
                     ),
-                    diagnostics={"columns": X_cols, "error": str(exc)},
-                ) from exc
-            if has_intercept:
-                ones = np.ones((X.shape[0], 1))
-                X = np.column_stack([ones, X])
-                ordered = ["Intercept"] + X_cols
-            else:
-                ordered = X_cols
-            beta = np.array([self.params[v] for v in ordered])
-            return np.asarray(X @ beta)
+                    recovery_hint="Use what='confidence' for the interval of "
+                    "the conditional mean.",
+                )
+            resid = np.asarray(resid, dtype=float)
+            sigma2 = float(resid @ resid) / float(df_resid)
+            se = np.sqrt(var_mean + sigma2)
+        else:
+            se = np.sqrt(var_mean)
 
-        raise NotImplementedError("Prediction not available for this model type.")
+        lower, upper = eta - crit * se, eta + crit * se
+        yhat = eta
+        if inverse is not None:
+            # delta-method standard error on the scale of the outcome; the
+            # interval is the mapped interval of the index, which stays
+            # inside the range of the outcome
+            step = 1e-6 * np.maximum(1.0, np.abs(eta))
+            slope = (inverse(eta + step) - inverse(eta - step)) / (2.0 * step)
+            yhat, se = inverse(eta), np.abs(slope) * se
+            lo, hi = inverse(lower), inverse(upper)
+            lower, upper = np.minimum(lo, hi), np.maximum(lo, hi)
+        return pd.DataFrame(
+            {"yhat": yhat, "se": se, "lower": lower, "upper": upper}, index=index
+        )
+
+    def _inverse_link(self) -> Any:
+        """Inverse link of the model, or None for a linear model."""
+        link_obj = self.data_info.get("link_obj")
+        if link_obj is not None and hasattr(link_obj, "inverse"):
+            name = str(getattr(link_obj, "name", "")).lower()
+            return None if name == "identity" else link_obj.inverse
+        name = str((self.model_info or {}).get("link") or "identity").lower()
+        if name in ("identity", "none", ""):
+            return None
+        from scipy import special as _special
+        from scipy import stats as _stats
+
+        known = {
+            "log": np.exp,
+            "logit": _special.expit,
+            "probit": _stats.norm.cdf,
+            "cloglog": lambda eta: 1.0 - np.exp(-np.exp(eta)),
+            "inverse": lambda eta: 1.0 / eta,
+        }
+        if name not in known:
+            raise MethodIncompatibility(
+                f"predict() does not know the inverse of the {name!r} link "
+                "of this model.",
+                recovery_hint="Use what='link' for the linear index.",
+            )
+        return known[name]
+
+    def _prediction_design(self, data: pd.DataFrame) -> np.ndarray:
+        """The model's design matrix evaluated on ``data``."""
+        from ..postestimation._design import (
+            _INTERCEPT_TOKENS,
+            design_for,
+            reject_unseen_levels,
+        )
+
+        # coefficients named after a column: the column has to be there,
+        # and numeric
+        plain = [
+            str(name)
+            for name in self.params.index
+            if str(name) not in _INTERCEPT_TOKENS and str(name).isidentifier()
+        ]
+        missing = [name for name in plain if name not in data.columns]
+        if missing:
+            raise MethodIncompatibility(
+                f"Prediction data missing column(s): {missing}",
+                recovery_hint=("Add the missing columns to the prediction DataFrame."),
+                diagnostics={"missing_columns": missing},
+            )
+        text = [name for name in plain if not pd.api.types.is_numeric_dtype(data[name])]
+        if text:
+            raise MethodIncompatibility(
+                f"Prediction columns must be numeric: {text}.",
+                recovery_hint=(
+                    "Coerce prediction data columns to numeric values "
+                    "before calling predict()."
+                ),
+                diagnostics={"columns": text},
+            )
+        # a level the fit never saw has zeros in every dummy of its factor
+        # and would be predicted as the reference level
+        reject_unseen_levels(self.data_info.get("factor_levels"), data)
+        try:
+            return np.asarray(design_for(self, data).build(data), dtype=float)
+        except MethodIncompatibility as exc:
+            # New rows need not show every level of a factor (a forecast
+            # for one region). The dummies of the model name the levels it
+            # was fitted with: add one scratch row per missing level so the
+            # coding is rebuilt as at fit time, then keep the real rows.
+            padded = self._with_fitted_levels(data)
+            if padded is not None:
+                try:
+                    X = design_for(self, padded).build(padded)
+                    return np.asarray(X, dtype=float)[: len(data)]
+                except MethodIncompatibility as retry:
+                    # the coding still cannot be rebuilt (the reference
+                    # level is unknown): report that
+                    exc = retry
+            message = str(exc).split("\n")[0].replace("margins: ", "")
+            raise MethodIncompatibility(
+                f"predict(): {message}",
+                recovery_hint=(
+                    "Pass a DataFrame with every variable of the fitted "
+                    "formula; a factor needs the levels it had at fit time."
+                ),
+            ) from exc
+        except Exception as exc:  # patsy and pandas raise many types
+            raise MethodIncompatibility(
+                "predict(): could not build the design matrix on the new data "
+                f"({type(exc).__name__}: {exc}).",
+                recovery_hint=(
+                    "Pass a DataFrame with every variable of the fitted "
+                    "formula, numeric and without missing values."
+                ),
+            ) from exc
+
+    def _with_fitted_levels(self, data: pd.DataFrame) -> Optional[pd.DataFrame]:
+        """``data`` followed by one row per factor level the model has a
+        dummy for and ``data`` lacks; None when there is nothing to add."""
+        from ..postestimation._design import CAT_TERM_RE
+
+        if len(data) == 0:
+            return None
+        wanted: Dict[str, List[str]] = {}
+        for term in map(str, self.params.index):
+            for part in term.split(":"):
+                match = CAT_TERM_RE.match(part.strip())
+                if match and match.group(1) in data.columns:
+                    wanted.setdefault(match.group(1), []).append(match.group(2))
+        rows = []
+        for var, levels in wanted.items():
+            column = data[var]
+            present = {str(v) for v in column.dropna().unique()}
+            numeric = pd.api.types.is_numeric_dtype(column)
+            for level in dict.fromkeys(levels):
+                value: Any = level
+                if numeric:
+                    try:
+                        value = float(level)
+                    except ValueError:
+                        return None
+                    if any(float(p) == value for p in present):
+                        continue
+                elif level in present:
+                    continue
+                row = data.iloc[[0]].copy()
+                row[var] = value
+                rows.append(row)
+        if not rows:
+            return None
+        return pd.concat([data] + rows, ignore_index=True)
+
+    def _prediction_offset(self, data: Optional[pd.DataFrame], n: int) -> np.ndarray:
+        """Offset of the linear index (``offset=``, log of ``exposure=``)."""
+        from ..postestimation._design import model_setting
+
+        total = np.zeros(n)
+        for key, transform in (("offset", None), ("exposure", np.log)):
+            setting = model_setting(self, key)
+            if setting is None:
+                continue
+            if data is None or not isinstance(setting, str):
+                values = np.asarray(setting, dtype=float)
+                if isinstance(setting, str) or values.shape != (n,):
+                    raise MethodIncompatibility(
+                        f"predict(): the model has an {key}; pass data= with "
+                        "that column to predict.",
+                        recovery_hint=f"Include the {key} column in data=.",
+                    )
+            else:
+                if setting not in data.columns:
+                    raise MethodIncompatibility(
+                        f"predict(): the model's {key} column {setting!r} is "
+                        "not in the new data.",
+                        recovery_hint=f"Add {setting!r} to the DataFrame.",
+                    )
+                values = data[setting].to_numpy(dtype=float)
+            total = total + (transform(values) if transform is not None else values)
+        if data is not None:
+            from ..fixest._fixef import fe_offset
+
+            # absorbed fixed effects enter the index like an offset
+            total = total + fe_offset(self, data, unseen="nan")
+        return total
 
     def residuals(self) -> Optional[np.ndarray]:
         """
@@ -829,7 +1419,7 @@ class EconometricResults:
         """
         return self.data_info.get("fitted_values")
 
-    def next_steps(self, print_result: bool = True) -> List[Dict[str, str]]:
+    def next_steps(self, print_result: bool = False) -> List[Dict[str, str]]:
         """
         Agent-native workflow guidance: what to do after fitting this model.
 
@@ -839,8 +1429,11 @@ class EconometricResults:
 
         Parameters
         ----------
-        print_result : bool, default True
-            Print formatted recommendations to stdout.
+        print_result : bool, default False
+            Also print the formatted recommendations to stdout. Off by
+            default so calling ``next_steps()`` from an MCP
+            stdio server, a CLI pipe or a batch job never writes a banner
+            into the output stream; the return value is identical.
 
         Returns
         -------
@@ -1018,13 +1611,15 @@ class EconometricResults:
         siunitx: bool = False,
         threeparttable: bool = False,
         siunitx_preamble: bool = False,
+        booktabs: bool = False,
         **kwargs: Any,
     ) -> str:
         """Render the regression result as a publication-quality LaTeX table.
 
         A thin wrapper over :func:`~statspai.output.regtable` (single
-        column).  Produces a ``booktabs``-style ``\\begin{table}`` float with
-        significance stars and standard errors in parentheses.
+        column).  Produces a ``\\begin{table}`` float with significance
+        stars and standard errors in parentheses; ``booktabs=True`` draws
+        ``\\toprule`` / ``\\midrule`` / ``\\bottomrule`` rules.
 
         Parameters
         ----------
@@ -1043,6 +1638,9 @@ class EconometricResults:
             (requires ``\\usepackage{threeparttable}``).
         siunitx_preamble : bool, default False
             Prepend a comment listing the required ``\\usepackage`` lines.
+        booktabs : bool, default False
+            ``booktabs`` rules instead of ``\\hline`` (requires
+            ``\\usepackage{booktabs}``).
         **kwargs
             Forwarded to :func:`~statspai.output.regtable` — e.g.
             ``coef_labels``, ``keep``, ``drop``, ``order``, ``stats``,
@@ -1073,6 +1671,7 @@ class EconometricResults:
                 siunitx=siunitx,
                 threeparttable=threeparttable,
                 siunitx_preamble=siunitx_preamble,
+                booktabs=booktabs,
             ),
         )
         if label:
@@ -1148,9 +1747,91 @@ class EconometricResults:
         self._as_regtable(title=caption, **kwargs).to_word(path)
         return path
 
+    def plot(self, type: str = "auto", **kwargs: Any) -> Any:
+        """Coefficient plot of this fit (``sp.coefplot``).
+
+        ``type`` is ``'auto'`` or ``'coefplot'``; ``**kwargs`` go to
+        :func:`statspai.coefplot` (``variables=``, ``drop=["Intercept"]``,
+        ``alpha=``, ``ax=`` ...). Returns ``(fig, ax)``.
+        """
+        if type not in ("auto", "coefplot"):
+            raise MethodIncompatibility(
+                f"plot(type={type!r}) is not a plot this result can draw.",
+                recovery_hint="Use type='auto' or 'coefplot'.",
+                diagnostics={"type": type},
+            )
+        from ..output.modelsummary import coefplot
+
+        return coefplot(self, **kwargs)
+
     # ------------------------------------------------------------------
     # Agent-native serialisation
     # ------------------------------------------------------------------
+
+    def _focal_term(self) -> Tuple[Optional[str], Optional[str]]:
+        """The coefficient that is the point of the regression, and why.
+
+        In order: the single endogenous regressor of an IV fit; a
+        treatment the fit recorded (``model_info['treatment' | 'treat' |
+        'focal_term']``); the only regressor besides the intercept.
+        ``(None, None)`` otherwise: with several regressors and nothing
+        recorded, picking one would be a guess.
+        """
+        try:
+            terms = [str(t) for t in self.params.index]
+        except AttributeError:
+            return None, None
+        iv = self.data_info.get("iv") if isinstance(self.data_info, dict) else None
+        endog = (
+            list((iv or {}).get("endog_names") or []) if isinstance(iv, dict) else []
+        )
+        if len(endog) == 1 and str(endog[0]) in terms:
+            return str(endog[0]), "endogenous regressor"
+        for key in ("focal_term", "treatment", "treat"):
+            value = self.model_info.get(key)
+            if isinstance(value, str) and value in terms:
+                return value, f"model_info[{key!r}]"
+        slopes = [t for t in terms if t != "Intercept"]
+        if len(slopes) == 1:
+            return slopes[0], "only regressor"
+        return None, None
+
+    def _headline_envelope(self) -> Dict[str, Any]:
+        """``estimand`` / ``estimate`` / ``se`` / ``pvalue`` / ``ci`` / ``alpha``."""
+        alpha = self.model_info.get("alpha", 0.05)
+        out: Dict[str, Any] = {
+            "estimand": None,
+            "estimate": None,
+            "se": None,
+            "pvalue": None,
+            "ci": None,
+            "alpha": _to_jsonable(alpha),
+            "citation_key": None,
+            "focal_term": None,
+        }
+        term, rule = self._focal_term()
+        if term is None:
+            return out
+        try:
+            pos = [str(t) for t in self.params.index].index(term)
+            pvals = self.pvalues
+            pv = pvals.iloc[pos] if isinstance(pvals, pd.Series) else pvals[pos]
+            out.update(
+                {
+                    "estimand": f"coefficient on {term}",
+                    "estimate": _to_jsonable(self.params.iloc[pos]),
+                    "se": _to_jsonable(self.std_errors.iloc[pos]),
+                    "pvalue": _to_jsonable(pv),
+                    "ci": _to_jsonable(
+                        [self.conf_int_lower.iloc[pos], self.conf_int_upper.iloc[pos]]
+                    ),
+                    "focal_term": term,
+                    "focal_term_rule": rule,
+                }
+            )
+        except (AttributeError, IndexError, KeyError, TypeError, ValueError):
+            return out
+        return out
 
     def to_dict(self, *, detail: str = "standard") -> Dict[str, Any]:
         """Return a JSON-safe dict representation of the regression result.
@@ -1200,6 +1881,10 @@ class EconometricResults:
             "dependent_var": _to_jsonable(self.data_info.get("dependent_var")),
             "n_obs": _to_jsonable(self.data_info.get("nobs")),
         }
+        # The shared envelope (estimate / se / pvalue / ci / alpha) read
+        # off one coefficient, when the fit says which one is the point of
+        # the regression; otherwise None, never a guess.
+        base.update(self._headline_envelope())
 
         if detail == "minimal":
             # Compact subset of glance fit stats so agents can decide
@@ -1225,6 +1910,21 @@ class EconometricResults:
                     fit_stats[k] = _to_jsonable(glance_row[k])
             if fit_stats:
                 base["fit_stats"] = fit_stats
+            if base.get("focal_term") is None:
+                # No designated coefficient: carry a few so the numbers an
+                # agent asked for are not dropped at this level.
+                terms = [t for t in self.params.index if str(t) != "Intercept"]
+                se = self.std_errors
+                base["coef_head"] = {
+                    str(t): [
+                        _to_jsonable(float(f"{float(self.params[t]):.6g}")),
+                        _to_jsonable(float(f"{float(se[t]):.6g}")),
+                    ]
+                    for t in terms[:4]
+                    if t in se.index
+                }
+                if len(terms) > 4:
+                    base["n_terms"] = len(terms)
             return base
 
         # standard: + full coefficient table + diagnostics + glance
@@ -1252,7 +1952,14 @@ class EconometricResults:
                     "conf_low": _to_jsonable(self.conf_int_lower.iloc[i]),
                     "conf_high": _to_jsonable(self.conf_int_upper.iloc[i]),
                 }
-        except Exception:
+        except Exception as exc:
+            from ._fallback import warn_fallback
+
+            warn_fallback(
+                "serialising the coefficient table in to_dict()",
+                exc,
+                "the 'coefficients' block is empty in this payload",
+            )
             coefs = {}
 
         base.update(
@@ -1267,16 +1974,27 @@ class EconometricResults:
             return base
 
         # agent: + violations + warnings + next_steps + suggested_functions
+        #
+        # A bug inside a diagnostic must not masquerade as a clean bill of
+        # health: an empty ``violations`` list used to mean either "no
+        # violation" or "the violation detector crashed". Failures are
+        # now recorded under ``degradations`` (and warned about) so the
+        # agent can tell the two apart (CLAUDE.md §3.7).
+        from ..workflow._degradation import record_degradation
+
+        degradations: List[Dict[str, Any]] = []
         try:
             viols = self.violations() or []
-        except Exception:
+        except Exception as exc:
             viols = []
+            record_degradation(degradations, section="violations", exc=exc)
         warns: List[str] = [v.get("message", "") for v in viols if v.get("message")]
 
         try:
             steps = self.next_steps(print_result=False) or []
-        except Exception:
+        except Exception as exc:
             steps = []
+            record_degradation(degradations, section="next_steps", exc=exc)
 
         suggested: List[str] = []
         for s in steps:
@@ -1294,6 +2012,7 @@ class EconometricResults:
                 "warnings": warns,
                 "next_steps": steps[:8],
                 "suggested_functions": suggested,
+                "degradations": degradations,
             }
         )
         return base
@@ -1457,11 +2176,17 @@ class EconometricResults:
 
         return _brief(self)
 
-    def to_json(self, indent: Optional[int] = None) -> str:
-        """Serialise :meth:`to_dict` via ``json.dumps``."""
+    def to_json(self, indent: Optional[int] = None, detail: str = "standard") -> str:
+        """Serialise :meth:`to_dict` via ``json.dumps``.
+
+        ``detail`` is forwarded to :meth:`to_dict`; pass ``"agent"`` to
+        include violations / next_steps / degradations in the JSON.
+        """
         import json
 
-        return json.dumps(self.to_dict(), indent=indent, default=_to_jsonable)
+        return json.dumps(
+            self.to_dict(detail=detail), indent=indent, default=_to_jsonable
+        )
 
     def _repr_html_(self) -> str:
         """Rich HTML display for Jupyter notebooks."""
@@ -1686,10 +2411,42 @@ def _resolve_digits(fmt: Any, digits: Optional[int], *, default: Any) -> Any:
     return resolve_digits(fmt, digits, default=default)
 
 
+def _format_pair(*values: Any, fmt: Any) -> Tuple[str, ...]:
+    """Render related scalars at one shared precision (lazy import)."""
+    from ..output._format import format_pair
+
+    return format_pair(*values, fmt=fmt)
+
+
+def _unbounded_label(value: Any, text: str) -> str:
+    """``-inf`` / ``inf`` for an infinite bound, else ``text`` unchanged."""
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return text
+    if np.isinf(v):
+        return "-inf" if v < 0 else "inf"
+    return text
+
+
+def _latex_escape(value: Any) -> str:
+    """Escape LaTeX specials in a data cell (lazy import)."""
+    from ..output._format import latex_escape
+
+    return latex_escape(value)
+
+
+def _format_pvalue(value: Any) -> str:
+    """Render a p-value, flooring at ``<0.001`` (lazy import)."""
+    from ..output._format import format_pvalue
+
+    return format_pvalue(value)
+
+
 _AUTO = "auto"
 
 
-class CausalResult:
+class CausalResult(DiDAccessorsMixin):
     """
     Unified result object for all causal inference methods in StatsPAI.
 
@@ -2987,6 +3744,82 @@ class CausalResult:
     def data_info(self) -> Dict[str, Any]:
         return {"nobs": self.n_obs}
 
+    @property
+    def nobs(self) -> Optional[int]:
+        """Alias of ``n_obs``, the name :class:`EconometricResults` uses."""
+        n = self.n_obs
+        try:
+            return None if n is None else int(n)
+        except (TypeError, ValueError):
+            return None
+
+    @nobs.setter
+    def nobs(self, value: Any) -> None:
+        self.n_obs = value
+
+    def vcov(self) -> pd.DataFrame:
+        """Covariance matrix of :attr:`params`, labelled like ``params``.
+
+        For the usual single headline effect this is the 1 x 1 matrix
+        ``se ** 2``; results whose ``params`` hold several estimates use the
+        stored matrix behind their standard errors.  The event-study
+        covariance of a DID fit is ``model_info['event_study_vcov']`` (see
+        :func:`sp.event_study_vcov`).
+
+        Examples
+        --------
+        >>> import statspai as sp
+        >>> callable(sp.CausalResult.vcov)
+        True
+        """
+        return _params_vcov(self)
+
+    def conf_int(self, alpha: Optional[float] = None) -> pd.DataFrame:
+        """Confidence intervals for :attr:`params`, as ``EconometricResults.conf_int``.
+
+        At the fit-time ``alpha`` the headline row is the interval the
+        estimator reported (``result.ci`` -- a bootstrap or t interval stays
+        what it was).  Any other ``alpha`` uses the normal approximation
+        ``estimate -/+ z * se``.
+
+        Parameters
+        ----------
+        alpha : float, optional
+            Significance level; defaults to the fit-time ``alpha``.
+
+        Returns
+        -------
+        pd.DataFrame
+            One row per parameter; columns ``f"{alpha/2:.3f}"`` and
+            ``f"{1-alpha/2:.3f}"``.
+
+        Examples
+        --------
+        >>> import statspai as sp
+        >>> callable(sp.CausalResult.conf_int)
+        True
+        """
+        fit_alpha = 0.05 if self.alpha is None else float(self.alpha)
+        a = fit_alpha if alpha is None else _validate_probability(alpha, name="alpha")
+        params = self.params
+        se = self.std_errors
+        z = float(_scipy_stats().norm.ppf(1 - a / 2))
+        lower = params - z * se
+        upper = params + z * se
+        ci = self.ci
+        if (
+            len(params) == 1
+            and np.isclose(a, fit_alpha)
+            and isinstance(ci, (tuple, list, np.ndarray))
+            and len(ci) == 2
+        ):
+            lower = pd.Series([float(ci[0])], index=params.index)
+            upper = pd.Series([float(ci[1])], index=params.index)
+        return pd.DataFrame(
+            {f"{a / 2:.3f}": lower, f"{1 - a / 2:.3f}": upper},
+            index=params.index,
+        )
+
     # ------------------------------------------------------------------
     # Uniform CATE access (shared vocabulary with CausalForest.effect)
     # ------------------------------------------------------------------
@@ -3207,7 +4040,12 @@ class CausalResult:
     # Summary
     # ------------------------------------------------------------------
 
-    def summary(self, alpha: Optional[float] = None) -> str:
+    def summary(
+        self,
+        alpha: Optional[float] = None,
+        digits: Optional[int] = None,
+        fmt: Union[str, int, None] = None,
+    ) -> str:
         """
         Generate a formatted text summary of the causal estimation results.
 
@@ -3215,6 +4053,14 @@ class CausalResult:
         ----------
         alpha : float, optional
             Override significance level for display.
+        digits : int, optional
+            Decimal places. Shorthand for ``fmt="%.3f"``; passing both raises.
+        fmt : str or int, optional
+            Numeric format, defaulting to ``"auto"`` — the same precision
+            the export methods use, so what you read on screen is what
+            :meth:`to_latex` / :meth:`to_markdown` will write. Previously
+            this block was pinned at six decimals and could not agree with
+            any exported table.
 
         Returns
         -------
@@ -3222,6 +4068,7 @@ class CausalResult:
         """
         alpha = self.alpha if alpha is None else alpha
         alpha = _validate_probability(alpha, name="alpha")
+        fmt = _resolve_digits(fmt, digits, default=_AUTO)
         lines: List[str] = []
 
         lines.append("=" * 78)
@@ -3230,11 +4077,21 @@ class CausalResult:
         lines.append("")
 
         stars = self._stars(self.pvalue)
-        lines.append(f"  {self.estimand}:      {self.estimate: .6f} {stars}")
-        lines.append(f"  Std. Error:  ({self.se:.6f})")
+        # One precision for the estimate, its SE and the interval it implies.
+        point, se, lo, hi = _format_pair(
+            self.estimate, self.se, self.ci[0], self.ci[1], fmt=fmt
+        )
+        # An unbounded end (test-inversion intervals can have one) is an
+        # answer, not a missing value: print it rather than a blank.
+        lo = _unbounded_label(self.ci[0], lo)
+        hi = _unbounded_label(self.ci[1], hi)
+        # Keep the sign column that " .6f" used to provide.
+        signed = point if point.startswith("-") else f" {point}"
+        lines.append(f"  {self.estimand}:      {signed} {stars}")
+        lines.append(f"  Std. Error:  ({se})")
         pct = int(100 * (1 - alpha))
-        lines.append(f"  [{pct}% CI]:    [{self.ci[0]:.6f},  {self.ci[1]:.6f}]")
-        lines.append(f"  P-value:     {self.pvalue:.4f}")
+        lines.append(f"  [{pct}% CI]:    [{lo},  {hi}]")
+        lines.append(f"  P-value:     {_format_pvalue(self.pvalue)}")
         lines.append("")
 
         # Identifying assumption, stated rather than implied.
@@ -3288,30 +4145,24 @@ class CausalResult:
         # (rel_time, estimate) convention emitted by wooldridge_did /
         # etwfe. Skip the block silently when neither pair is present so a
         # bare-minimum result object still summarises cleanly.
-        if "event_study" in self.model_info:
-            es = self.model_info["event_study"]
-            time_col = (
-                "relative_time"
-                if "relative_time" in es.columns
-                else ("rel_time" if "rel_time" in es.columns else None)
-            )
-            est_col = (
-                "att"
-                if "att" in es.columns
-                else ("estimate" if "estimate" in es.columns else None)
-            )
-            if time_col and est_col and "se" in es.columns:
-                lines.append("-" * 78)
-                lines.append("  Event Study Coefficients")
-                lines.append("-" * 78)
-                for _, row in es.iterrows():
-                    e = int(row[time_col])
-                    att = row[est_col]
-                    se_v = row["se"]
-                    pv = row.get("pvalue", np.nan)
-                    s = self._stars(pv)
-                    lines.append(f"  e = {e:>3d}  |  {att:>10.4f}  ({se_v:.4f}) {s}")
-                lines.append("")
+        # The key can be present with a None value (gardner_did without an
+        # event window), so test the value, not the key.
+        es = self.model_info.get("event_study")
+        es_cols = _event_study_columns(es)
+        if es_cols is not None:
+            time_col, est_col = es_cols
+            es = cast(pd.DataFrame, es)
+            lines.append("-" * 78)
+            lines.append("  Event Study Coefficients")
+            lines.append("-" * 78)
+            for _, row in es.iterrows():
+                e = int(row[time_col])
+                att = row[est_col]
+                se_v = row["se"]
+                pv = row.get("pvalue", np.nan)
+                s = self._stars(pv)
+                lines.append(f"  e = {e:>3d}  |  {att:>10.4f}  ({se_v:.4f}) {s}")
+            lines.append("")
 
         # Detailed estimates
         if self.detail is not None and len(self.detail) > 0:
@@ -3365,14 +4216,36 @@ class CausalResult:
             lines.append("")
 
         # Pre-trend test
-        if "pretrend_test" in self.model_info:
-            pt = self.model_info["pretrend_test"]
+        # ``None`` when no test was run (``pretest='none'``, or an event
+        # window without leads); summary() used to crash subscripting it.
+        pt = self.model_info.get("pretrend_test")
+        if isinstance(pt, dict) and "statistic" in pt and "pvalue" in pt:
+            dof = pt.get("df")
+            label = f"chi2({dof})" if dof is not None else "chi2"
             lines.append("-" * 78)
+            p_f, p_chi2 = pt.get("pvalue_f"), pt.get("pvalue_chi2")
+            if p_f is not None and p_chi2 is not None:
+                # Callaway-Sant'Anna reports both: the Hotelling-F p-value
+                # by default, the chi2 one that R did / csdid print.
+                both = [
+                    f"p (Hotelling F) = {float(p_f):.4f}",
+                    f"p (chi2, R did / csdid) = {float(p_chi2):.4f}",
+                ]
+                if pt.get("pvalue_method") == "chi2":
+                    both.reverse()
+                p_text = "; ".join(both)
+            else:
+                p_text = f"p-value = {float(pt['pvalue']):.4f}"
             lines.append(
-                f"  Pre-trend Test: chi2({pt['df']}) = {pt['statistic']:.4f}, "
-                f"p-value = {pt['pvalue']:.4f}"
+                f"  Pre-trend Test: {label} = {float(pt['statistic']):.4f}, "
+                f"{p_text}"
             )
             lines.append("")
+
+        # One line per convention that differs from the reference programs
+        # (e.g. callaway_santanna's base period), when the estimator says so.
+        for note in self.model_info.get("convention_notes") or ():
+            lines.append(f"  Note: {note}")
 
         # Model info footer
         lines.append("-" * 78)
@@ -3510,17 +4383,28 @@ class CausalResult:
 
         # Event study coefficients
         es = self.model_info.get("event_study")
-        if isinstance(es, pd.DataFrame) and len(es) > 0:
-            for _, r in es.iterrows():
-                e = r.get("relative_time")
-                att = r.get("att")
+        es_cols = _event_study_columns(es)
+        frame = cast(pd.DataFrame, es)
+        if es_cols is not None and len(frame) > 0:
+            time_col, est_col = es_cols
+            # etwfe publishes cohort x relative-time cells; name the cohort
+            # so every term is unique.
+            by_cohort = "cohort" in frame.columns
+            for _, r in frame.iterrows():
+                e = r.get(time_col)
+                att = r.get(est_col)
                 se = r.get("se")
                 pv = r.get("pvalue", np.nan)
+                if pd.isna(pv) and pd.notna(att) and pd.notna(se) and se > 0:
+                    pv = float(2 * _scipy_stats().norm.sf(abs(att / se)))
                 lo_r = r.get("ci_lower", att - 1.96 * se if pd.notna(att) else np.nan)
                 hi_r = r.get("ci_upper", att + 1.96 * se if pd.notna(att) else np.nan)
+                term = f"event_{int(e):+d}" if pd.notna(e) else "event"
+                if by_cohort and pd.notna(r.get("cohort")):
+                    term += f"_cohort_{_label_value(r.get('cohort'))}"
                 rows.append(
                     {
-                        "term": f"event_{int(e):+d}" if pd.notna(e) else "event",
+                        "term": term,
                         "estimate": att,
                         "std_error": se,
                         "statistic": att / se if pd.notna(se) and se > 0 else np.nan,
@@ -3538,7 +4422,9 @@ class CausalResult:
         # Hard-coding group/time produced a useless ``att(g=,t=)`` for
         # every row of an event study, discarding the event time.
         detail_cols = list(getattr(self.detail, "columns", []))
-        if self.detail is not None and "att" in detail_cols:
+        # aggte(type='dynamic') publishes its detail frame as the event study
+        # too; its rows are already in the table.
+        if self.detail is not None and "att" in detail_cols and self.detail is not es:
             has_group = "group" in detail_cols
             has_time = "time" in detail_cols
             has_rel = "relative_time" in detail_cols
@@ -3555,6 +4441,8 @@ class CausalResult:
                     return f"event_{int(e):+d}" if pd.notna(e) else "event"
                 if has_group:
                     return f"att(g={r.get('group')})"
+                if "cohort" in detail_cols:
+                    return f"att(g={_label_value(r.get('cohort'))})"
                 if has_time:
                     return f"att(t={r.get('time')})"
                 return "att"
@@ -3656,7 +4544,7 @@ class CausalResult:
         if "event_study" not in self.model_info:
             raise ValueError("No event study estimates. Use a staggered DID method.")
 
-        es = self.model_info["event_study"].copy()
+        es = _event_study_with_ci(self.model_info["event_study"], self.alpha or 0.05)
 
         if ax is None:
             fig, ax = plt.subplots(figsize=figsize)
@@ -3710,10 +4598,13 @@ class CausalResult:
         ----------
         type : str
             'auto' (recommended), 'event_study', 'coefplot',
-            'trajectory', 'gap', 'both', 'weights', 'placebo',
-            'placebo_gap', 'conformal', 'staggered', 'factors',
-            'balance', 'density', 'original', 'pointwise',
-            'cumulative', 'all'.
+            'trajectory', 'gap', 'both' (alias 'synth'), 'weights',
+            'placebo', 'placebo_gap', 'placebo_dist', 'conformal',
+            'staggered', 'factors', 'loadings', 'compare', 'balance',
+            'density' (``sp.rddensity``), 'original', 'pointwise',
+            'cumulative', 'all', and for neural estimators 'cate', 'ite',
+            'effects', 'propensity', 'overlap', 'loss'. Any other value
+            raises ``MethodIncompatibility`` (it used to draw a coefplot).
 
         Returns
         -------
@@ -3731,9 +4622,15 @@ class CausalResult:
         - Matching → Love plot (covariate balance)
         - Neural causal estimators → CATE distribution
         - RD → coefplot (use ``rdplot()`` for binned scatter)
+        - ``sp.rddensity`` → the two boundary densities with their
+          intervals (use ``sp.rdplotdensity(data, x)`` for the curves)
         - Other → coefplot
         """
         method_lower = self.method.lower()
+        if type == "synth":
+            type = "both"
+        _impact_types = {"original", "pointwise", "cumulative", "all"}
+        _neural_types = {"cate", "ite", "effects", "propensity", "overlap", "loss"}
 
         # All synth-related plot types handled by unified synthplot
         _synth_types = {
@@ -3750,6 +4647,23 @@ class CausalResult:
             "loadings",
             "compare",
         }
+
+        _valid = (
+            {"auto", "event_study", "coefplot", "balance", "density"}
+            | _synth_types
+            | _impact_types
+            | _neural_types
+        )
+        if type not in _valid:
+            raise MethodIncompatibility(
+                f"plot(type={type!r}) is not a plot this result can draw.",
+                recovery_hint=(
+                    "Use type='auto' or one of: " + ", ".join(sorted(_valid)) + "."
+                ),
+                diagnostics={"type": type},
+            )
+        if type == "density" or (type == "auto" and self._is_density_test()):
+            return self._density_test_plot(**kwargs)
 
         if type == "auto":
             # Event study (DID)
@@ -3796,7 +4710,7 @@ class CausalResult:
             from ..synth.plots import synthplot
 
             return synthplot(self, type=type, **kwargs)
-        if type in ("original", "pointwise", "cumulative", "all"):
+        if type in _impact_types:
             from ..causal_impact.impact import impactplot
 
             return impactplot(self, type=type, **kwargs)
@@ -3804,11 +4718,68 @@ class CausalResult:
             from ..matching.match import balanceplot
 
             return balanceplot(self, **kwargs)
-        if type in ("cate", "ite", "effects", "propensity", "overlap", "loss"):
+        if type in _neural_types:
             from ..neural_causal.plots import neural_causal_plot
 
             return neural_causal_plot(self, type=type, **kwargs)
         return self._coefplot(**kwargs)
+
+    def _is_density_test(self) -> bool:
+        mi = self.model_info
+        return all(
+            k in mi for k in ("density_left", "density_right", "se_left", "se_right")
+        )
+
+    def _density_test_plot(
+        self,
+        ax: Any = None,
+        figsize: tuple[float, float] = (6, 5),
+        **kwargs: Any,
+    ) -> Any:
+        """Boundary densities of a manipulation test, each with its interval.
+
+        The headline of ``sp.rddensity`` is a T statistic while its ``ci`` is
+        on the density-difference scale, so the generic coefplot drew an
+        error bar from a point outside its own interval and matplotlib
+        raised "'yerr' must not contain negative values".
+        """
+        if not self._is_density_test():
+            raise MethodIncompatibility(
+                "plot(type='density') needs a density-test result " "(sp.rddensity).",
+                recovery_hint="Use type='auto' for this result.",
+            )
+        try:
+            import matplotlib.pyplot as plt
+        except ImportError:
+            raise ImportError("matplotlib required for plotting")
+
+        mi = self.model_info
+        crit = float(_scipy_stats().norm.ppf(1 - self.alpha / 2))
+        if ax is None:
+            fig, ax = plt.subplots(figsize=figsize)
+        else:
+            fig = ax.get_figure()
+        for pos, side in ((-0.5, "left"), (0.5, "right")):
+            f = float(mi[f"density_{side}"])
+            se = float(mi[f"se_{side}"])
+            ax.errorbar(
+                pos,
+                f,
+                yerr=crit * se if np.isfinite(se) and se >= 0 else None,
+                fmt="o",
+                color="#2C3E50",
+                capsize=5,
+                markersize=8,
+            )
+        ax.set_xlim(-1.2, 1.2)
+        ax.set_xticks([-0.5, 0.5])
+        ax.set_xticklabels(["below cutoff", "above cutoff"])
+        ax.set_ylabel("Density at the cutoff")
+        ax.set_title(f"{self.method}: T = {self.estimate:.3f}, p = {self.pvalue:.3f}")
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+        fig.tight_layout()
+        return fig, ax
 
     def _is_synth_result(self) -> bool:
         """Check if this result is from any synthetic control variant."""
@@ -3864,15 +4835,24 @@ class CausalResult:
         else:
             fig = ax.get_figure()
 
-        ax.errorbar(
-            0,
-            self.estimate,
-            yerr=[[self.estimate - self.ci[0]], [self.ci[1] - self.estimate]],
-            fmt="o",
-            color="#2C3E50",
-            capsize=5,
-            markersize=8,
-        )
+        lo, hi = (float(v) for v in self.ci)
+        est = float(self.estimate)
+        if np.isfinite(lo) and np.isfinite(hi) and lo <= est <= hi:
+            ax.errorbar(
+                0,
+                est,
+                yerr=[[est - lo], [hi - est]],
+                fmt="o",
+                color="#2C3E50",
+                capsize=5,
+                markersize=8,
+            )
+        else:
+            # An interval that does not contain the estimate (a different
+            # scale, or a set-valued CI) cannot be drawn as an error bar.
+            ax.plot([0], [est], "o", color="#2C3E50", markersize=8)
+            if np.isfinite(lo) and np.isfinite(hi):
+                ax.vlines(0, lo, hi, color="#2C3E50")
         ax.axhline(y=0, color="gray", linestyle="--", linewidth=0.8)
         ax.set_xlim(-1, 1)
         ax.set_xticks([0])
@@ -4025,6 +5005,9 @@ class CausalResult:
         4. Trailing notes paragraph: ``"Standard errors in parentheses.
            Observations: N. Method: <method>."``.
 
+        ``digits`` / ``fmt`` follow :meth:`to_latex`: the default is the
+        journal-adaptive ``"auto"`` precision every other export uses.
+
         Requires ``python-docx``.
         """
         try:
@@ -4042,6 +5025,10 @@ class CausalResult:
             apply_word_booktab_rules,
             style_word_table_typography,
         )
+
+        # ``digits=None`` (the default) used to reach ``DataFrame.round(None)``
+        # and crash; resolve it the way to_latex / to_markdown do.
+        fmt = _resolve_digits(fmt, digits, default=_AUTO)
 
         doc = Document()
         title = caption or f"{self.method} — {self.estimand} Estimates"
@@ -4064,9 +5051,9 @@ class CausalResult:
             for i, (idx, row) in enumerate(df.iterrows()):
                 table.rows[i + 1].cells[0].text = str(idx)
                 for j, val in enumerate(row, 1):
-                    if isinstance(val, float):
-                        cell_text = f"{val:.{digits}f}" if np.isfinite(val) else ""
-                    elif pd.isna(val):
+                    if isinstance(val, (float, np.floating)) and not np.isfinite(val):
+                        cell_text = ""
+                    elif not isinstance(val, str) and pd.isna(val):
                         cell_text = ""
                     else:
                         cell_text = str(val)
@@ -4082,22 +5069,21 @@ class CausalResult:
             apply_word_booktab_rules(table, header_top_idx=0, header_bot_idx=0)
 
         # Estimates block — always present
-        tidy = (
-            self.tidy().round(digits).set_index(self.tidy().columns[0])
-            if "term" in self.tidy().columns or "estimand" in self.tidy().columns
-            else self.tidy().round(digits)
-        )
+        raw_tidy = self.tidy()
+        tidy = _format_frame(raw_tidy, fmt)
+        if "term" in raw_tidy.columns or "estimand" in raw_tidy.columns:
+            tidy = tidy.set_index(tidy.columns[0])
         _write_df_to_table(tidy)
 
         # Detail block — group/time ATTs, etc.
         if self.detail is not None and len(self.detail) > 0:
             doc.add_paragraph().add_run("Detail").bold = True
-            detail_view = self.detail.round(digits)
+            detail_view = self.detail
             if not detail_view.index.is_unique or detail_view.index.equals(
                 pd.RangeIndex(len(detail_view))
             ):
                 detail_view = detail_view.reset_index(drop=True)
-            _write_df_to_table(detail_view)
+            _write_df_to_table(_format_frame(detail_view, fmt))
 
         notes = (
             "Standard errors in parentheses. "
@@ -4114,6 +5100,9 @@ class CausalResult:
         *,
         caption: Optional[str] = None,
         label: Optional[str] = None,
+        digits: Optional[int] = None,
+        fmt: Union[str, int, None] = None,
+        booktabs: bool = False,
     ) -> str:
         """Generate a LaTeX table of the results.
 
@@ -4126,16 +5115,35 @@ class CausalResult:
             ``\\caption{...}`` text.
         label : str, optional
             ``\\label{...}`` cross-reference id.
+        digits : int, optional
+            Decimal places, e.g. ``digits=3``. Shorthand for
+            ``fmt="%.3f"``; passing both raises.
+        fmt : str or int, optional
+            Numeric format, defaulting to ``"auto"`` — the same
+            journal-adaptive precision :meth:`to_markdown`, :meth:`to_html`
+            and ``sp.regtable`` use, so a result exports at one precision
+            whichever surface it leaves by. Accepts ``"%.3f"`` (printf),
+            ``3`` (decimals), ``"r3"`` / ``"s3"`` (fixest spellings).
+
+        booktabs : bool, default False
+            ``\\toprule`` / ``\\midrule`` / ``\\bottomrule`` instead of the
+            default plain ``\\hline`` rules (requires
+            ``\\usepackage{booktabs}``).
 
         Notes
         -----
         The table body is wrapped in a ``threeparttable`` environment so the
         ``tablenotes`` block below the tabular is valid LaTeX; the rendered
-        source therefore requires ``\\usepackage{threeparttable}`` (and
-        ``booktabs`` is not needed — plain ``\\hline`` rules are used).
+        source therefore requires ``\\usepackage{threeparttable}`` (and,
+        by default, not ``booktabs`` — plain ``\\hline`` rules are used).
         """
-        caption = caption or f"{self.method} Results"
+        # A caller-supplied caption passes through verbatim — it may hold
+        # deliberate LaTeX ($\beta$, \citet{...}). Only the auto-generated
+        # fallback is escaped, since ``self.method`` is estimator metadata
+        # that can carry an underscore.
+        caption = caption or f"{_latex_escape(self.method)} Results"
         label = label or "tab:causal_result"
+        fmt = _resolve_digits(fmt, digits, default=_AUTO)
 
         lines = [
             "\\begin{table}[htbp]",
@@ -4187,32 +5195,40 @@ class CausalResult:
                 "coefficient": "Coefficient",
                 "tstat": "t-stat",
             }
-            lines.append(" & ".join(hdr.get(c, c) for c in cols) + " \\\\")
+            # ``hdr`` values are hand-written LaTeX ("Std.\\ Error"); anything
+            # falling through to the raw column name is user data and must be
+            # escaped, or a column called ``mean_treated`` fails to compile.
+            lines.append(
+                " & ".join(hdr[c] if c in hdr else _latex_escape(c) for c in cols)
+                + " \\\\"
+            )
             lines.append("\\hline")
-            for _, row in self.detail.iterrows():
+            # Render through the shared formatter so the LaTeX table agrees
+            # with to_markdown()/to_html() cell for cell: one precision per
+            # estimate/SE row, p-values floored at <0.001, counts as ints.
+            rendered = _format_frame(self.detail[cols], fmt)
+            pvals = (
+                list(self.detail["pvalue"])
+                if "pvalue" in self.detail.columns
+                else [np.nan] * len(self.detail)
+            )
+            for i in range(len(rendered)):
                 vals = []
                 for c in cols:
-                    v = row[c]
-                    if isinstance(v, float):
-                        s = (
-                            self._stars(row.get("pvalue", np.nan))
-                            if c == star_col
-                            else ""
-                        )
-                        vals.append(f"{v:.4f}{s}")
-                    else:
-                        vals.append(
-                            str(int(v)) if isinstance(v, (int, np.integer)) else str(v)
-                        )
+                    cell = _latex_escape(rendered[c].iloc[i])
+                    if c == star_col:
+                        cell += self._stars(pvals[i])
+                    vals.append(cell)
                 lines.append(" & ".join(vals) + " \\\\")
         else:
             lines.append("\\begin{tabular}{lc}")
             lines.append("\\hline\\hline")
+            point, se = _format_pair(self.estimate, self.se, fmt=fmt)
             lines.append(
-                f"{self.estimand} & "
-                f"{self.estimate:.4f}{self._stars(self.pvalue)} \\\\"
+                f"{_latex_escape(self.estimand)} & "
+                f"{point}{self._stars(self.pvalue)} \\\\"
             )
-            lines.append(f"& ({self.se:.4f}) \\\\")
+            lines.append(f"& ({se}) \\\\")
 
         lines += [
             "\\hline",
@@ -4222,12 +5238,16 @@ class CausalResult:
             "\\begin{tablenotes}",
             "\\footnotesize",
             "\\item Standard errors in parentheses.",
-            "\\item * p<0.1, ** p<0.05, *** p<0.01",
+            "\\item * p\\textless{}0.1, ** p\\textless{}0.05, " "*** p\\textless{}0.01",
             "\\end{tablenotes}",
             "\\end{threeparttable}",
             "\\end{table}",
         ]
         latex = "\n".join(lines)
+        if booktabs:
+            from ..output._format import booktabs_rules
+
+            latex = booktabs_rules(latex)
         if path is not None:
             from pathlib import Path
 
@@ -4366,13 +5386,60 @@ class CausalResult:
             include_provenance=include_provenance,
         )
 
-    def pretrend_test(self) -> Dict[str, Any]:
-        """Return pre-trend test results (DID methods)."""
-        if "pretrend_test" not in self.model_info:
-            raise ValueError("Pre-trend test not available for this method.")
-        return cast(Dict[str, Any], self.model_info["pretrend_test"])
+    def pretrend_test(
+        self,
+        window: Optional[Tuple[float, float]] = None,
+        type: str = "auto",
+        alpha: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """Joint pre-trend test of this DID / event-study result.
 
-    def next_steps(self, print_result: bool = True) -> List[Dict[str, str]]:
+        With no arguments, returns the test the estimator stored at fit
+        time (``model_info['pretrend_test']``) when there is one.
+        Otherwise -- a ``window``, a non-default ``type`` or ``alpha``, or
+        an estimator that stores no test, such as ``sp.etwfe`` -- it runs
+        :func:`sp.pretrends_test` on this result, so ``result.pretrend_test()``
+        and ``sp.pretrends_test(result)`` agree.
+
+        Parameters
+        ----------
+        window : tuple of (lo, hi), optional
+            Pre-periods to test, e.g. ``(-5, -2)`` for Stata ``estat event,
+            window(-5 5) pretrend``.
+        type : ``'auto'``, ``'wald'`` or ``'f'``, default ``'auto'``
+            See :func:`sp.pretrends_test`.
+        alpha : float, optional
+            Significance level; defaults to the fit-time ``alpha``.
+
+        Returns
+        -------
+        dict
+            ``statistic``, ``pvalue``, ``df``, ``type``, ``reject`` and more.
+
+        Examples
+        --------
+        >>> import statspai as sp
+        >>> callable(sp.CausalResult.pretrend_test)
+        True
+        """
+        stored = self.model_info.get("pretrend_test")
+        if stored is not None and window is None and type == "auto" and alpha is None:
+            return cast(Dict[str, Any], stored)
+        if "event_study" not in self.model_info:
+            raise ValueError(
+                "Pre-trend test not available for this method: the result has "
+                "no event-study estimates (model_info['event_study'])."
+            )
+        from ..did.pretrends import pretrends_test
+
+        return pretrends_test(
+            self,
+            type=type,
+            alpha=(self.alpha or 0.05) if alpha is None else alpha,
+            window=window,
+        )
+
+    def next_steps(self, print_result: bool = False) -> List[Dict[str, str]]:
         """
         Agent-native workflow guidance: what to do after this causal analysis.
 
@@ -4381,8 +5448,11 @@ class CausalResult:
 
         Parameters
         ----------
-        print_result : bool, default True
-            Print formatted recommendations to stdout.
+        print_result : bool, default False
+            Also print the formatted recommendations to stdout. Off by
+            default so calling ``next_steps()`` from an MCP
+            stdio server, a CLI pipe or a batch job never writes a banner
+            into the output stream; the return value is identical.
 
         Returns
         -------
@@ -4648,16 +5718,27 @@ class CausalResult:
             return out
 
         # agent: + violations + warnings + next_steps + suggested_functions
+        #
+        # A bug inside a diagnostic must not masquerade as a clean bill of
+        # health: an empty ``violations`` list used to mean either "no
+        # violation" or "the violation detector crashed". Failures are
+        # now recorded under ``degradations`` (and warned about) so the
+        # agent can tell the two apart (CLAUDE.md §3.7).
+        from ..workflow._degradation import record_degradation
+
+        degradations: List[Dict[str, Any]] = []
         try:
             viols = self.violations() or []
-        except Exception:
+        except Exception as exc:
             viols = []
+            record_degradation(degradations, section="violations", exc=exc)
         warns: List[str] = [v.get("message", "") for v in viols if v.get("message")]
 
         try:
             steps = self.next_steps(print_result=False) or []
-        except Exception:
+        except Exception as exc:
             steps = []
+            record_degradation(degradations, section="next_steps", exc=exc)
 
         suggested: List[str] = []
         for s in steps:
@@ -4675,6 +5756,7 @@ class CausalResult:
                 "warnings": warns,
                 "next_steps": steps[:8],
                 "suggested_functions": suggested,
+                "degradations": degradations,
             }
         )
         return out
@@ -4699,12 +5781,21 @@ class CausalResult:
 
         return _brief(self)
 
-    def to_json(self, indent: Optional[int] = None, detail_head: int = 5) -> str:
-        """Serialise :meth:`to_dict` via ``json.dumps``."""
+    def to_json(
+        self,
+        indent: Optional[int] = None,
+        detail_head: int = 5,
+        detail: str = "standard",
+    ) -> str:
+        """Serialise :meth:`to_dict` via ``json.dumps``.
+
+        ``detail`` is forwarded to :meth:`to_dict`; pass ``"agent"`` to
+        include violations / next_steps / degradations in the JSON.
+        """
         import json
 
         return json.dumps(
-            self.to_dict(detail_head=detail_head),
+            self.to_dict(detail_head=detail_head, detail=detail),
             indent=indent,
             default=_to_jsonable,
         )

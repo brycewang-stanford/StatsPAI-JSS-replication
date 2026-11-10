@@ -15,7 +15,7 @@ import pandas as pd
 
 from .._aliases import accepts_aliases
 from .._result_serialize import ResultProtocolMixin
-from ..exceptions import DataInsufficient, MethodIncompatibility
+from ..exceptions import ColumnNotFound, DataInsufficient, MethodIncompatibility
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -131,9 +131,11 @@ def _require_columns_present(
 ) -> None:
     missing = [col for col in columns if col not in data.columns]
     if missing:
-        raise MethodIncompatibility(
-            f"{context}: missing columns {missing}",
-            diagnostics={"missing_columns": missing, "context": context},
+        raise ColumnNotFound.from_missing(
+            missing,
+            list(data.columns),
+            context=context,
+            extra_diagnostics={"context": context},
         )
 
 
@@ -494,10 +496,16 @@ class CausalQuestion:
 
         Examples
         --------
-        >>> q = sp.causal_question("trained", "wage", data=df, design="did",
-        ...                        time="year", id="worker_id")
+        >>> import os, tempfile
+        >>> import statspai as sp
+        >>> df = sp.dgp_did(n_units=100, n_periods=10, seed=0)
+        >>> df["first_treat"] = df["first_treat"].fillna(0).astype(int)
+        >>> q = sp.causal_question("first_treat", "y", data=df, design="did",
+        ...                        estimand="ATT", time="time", id="unit")
         >>> draft = q.paper(fmt='qmd')
-        >>> draft.write("paper.qmd")
+        >>> list(draft.sections)[:3]
+        ['Question', 'Data', 'Identification']
+        >>> draft.write(os.path.join(tempfile.mkdtemp(), "paper.qmd"))
         """
         from ..workflow.paper import paper_from_question
 
@@ -1219,13 +1227,18 @@ def _dispatch_estimator(
         if q.id is not None:
             did_columns.append(q.id)
         _require_columns_present(data, did_columns, "did")
+        did_kwargs = dict(kwargs)
+        if "crit_dist" not in did_kwargs and "parity" not in did_kwargs:
+            # Pin today's critical values: no FutureWarning users cannot
+            # act on. Switch with the crit_dist default (planned 1.41).
+            did_kwargs["crit_dist"] = "legacy"
         res = sp.did(
             data=data,
             y=q.outcome,
             treat=q.treatment,
             time=q.time,
             id=q.id,
-            **kwargs,
+            **did_kwargs,
         )
         est, se, ci = _extract_generic(res)
         return EstimationResult(
@@ -1343,13 +1356,18 @@ def _dispatch_estimator(
         _require_columns_present(
             data, [q.outcome, treat_time, q.time, q.id], "event_study"
         )
+        es_kwargs = dict(kwargs)
+        if "crit_dist" not in es_kwargs and "parity" not in es_kwargs:
+            # Pin today's critical values: no FutureWarning users cannot
+            # act on. Switch with the crit_dist default (planned 1.41).
+            es_kwargs["crit_dist"] = "normal"
         res = sp.event_study(
             data=data,
             y=q.outcome,
             treat_time=treat_time,
             time=q.time,
             unit=q.id,
-            **kwargs,
+            **es_kwargs,
         )
         est, se, ci = _extract_generic(res)
         return EstimationResult(
@@ -1388,12 +1406,11 @@ def _dispatch_estimator(
             if len(q.instruments) == 1:
                 z_col = q.instruments[0]
                 if z_col not in data.columns:
-                    raise MethodIncompatibility(
-                        f"instrument {z_col!r} not found in data columns",
-                        diagnostics={
-                            "missing_column": z_col,
-                            "available_columns": list(data.columns),
-                        },
+                    raise ColumnNotFound.from_missing(
+                        {"instruments[0]": z_col},
+                        list(data.columns),
+                        context="CausalQuestion.estimate",
+                        extra_diagnostics={"missing_column": z_col},
                     )
                 z_binary = data[z_col].dropna().nunique() == 2
                 d_binary = data[q.treatment].dropna().nunique() == 2

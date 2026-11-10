@@ -19,6 +19,7 @@ Provides ``synth()`` as a single dispatcher for 20 SCM variants:
 * **bsts / causal_impact** — Bayesian Structural Time Series (Brodersen et al. 2015)
 * **penscm / abadie_lhour** — Penalized SCM (Abadie & L'Hour 2021)
 * **fdid / forward_did** — Forward DID (Li 2024)
+* **rcm / hcw** — regression control method (Hsiao, Ching & Wan 2012)
 * **cluster** — Cluster SCM (Rho et al. 2025, arXiv:2503.21629)
 * **sparse / lasso** — Sparse SCM (Amjad, Shah & Shen 2018)
 * **kernel** — Kernel-based nonlinear SCM
@@ -390,6 +391,11 @@ def _dispatch_synth_impl(
           pairwise discrepancy (Abadie & L'Hour 2021).
         * ``'fdid'`` / ``'forward_did'`` — Forward DID
           (Li 2024).
+        * ``'rcm'`` / ``'hcw'`` — regression control method, the panel
+          data approach of Hsiao, Ching & Wan (2012): an unrestricted
+          regression on control units chosen by best subset and AICc.
+          Keywords ``donors=``, ``selection=``, ``criterion=``,
+          ``placebo_cutoff=``, ``placebo_time=``.
         * ``'cluster'`` — Cluster SCM (Rho et al. 2025, arXiv:2503.21629). [@rho2025clustersc]
         * ``'sparse'`` / ``'lasso'`` — Sparse SCM
           (Amjad, Shah & Shen 2018).
@@ -403,12 +409,30 @@ def _dispatch_synth_impl(
         Run placebo inference. For ``method='classic'`` pass ``n_jobs=``
         (e.g. ``-1``) to fit the in-space placebos in parallel worker
         processes; results are bit-identical to the serial loop. See
-        :class:`SyntheticControl`.
+        :class:`SyntheticControl`. The classic fit then also returns
+        ``model_info['placebo_table']`` (pre- and post-treatment MSPE and
+        their ratio, per unit) and ``model_info['placebo_effects']`` (two-,
+        right- and left-sided placebo p-values per post-treatment period,
+        the treated unit counted among the units compared). Further
+        keywords of ``method='classic'``: ``placebo_cutoff=c`` leaves out
+        of those p-values the pretend units whose pre-treatment MSPE
+        exceeds ``c`` times the treated unit's; ``placebo_time=t`` refits
+        as if the treatment had started at ``t``
+        (``model_info['placebo_time']``); ``loo=True`` drops, one at a
+        time, each donor with a weight of at least 0.0005 and reports the
+        range of the synthetic path (``model_info['loo']``);
+        ``placebo_units=[...]`` restricts the pretend-treated units of
+        those tables (and of ``pvalue``); ``pre_periods=[...]`` and
+        ``post_periods=[...]`` restrict the periods the fit and the effect
+        use. These are the reports of Stata's ``synth2``.
     alpha : float, default 0.05
         Significance level.
     inference : str, optional
-        Override default inference: ``'placebo'``, ``'conformal'``,
-        ``'bootstrap'``, ``'jackknife'``.
+        Override default inference. ``'placebo'`` is the default.
+        ``'conformal'`` runs :func:`conformal_synth` and ``'ttest'`` runs
+        :func:`synth_ttest`, both for any ``method``; ``'bootstrap'`` and
+        ``'jackknife'`` are ``method='sdid'`` only. Any other value is an
+        error.
     treatment : str, optional
         Binary treatment column (required for ``method='staggered'``).
     **kwargs
@@ -426,13 +450,27 @@ def _dispatch_synth_impl(
           among itself and its placebos divided by ``J+1`` (so the floor is
           ``1/(J+1)``).
         * ``ci`` : tuple[float, float] — ``(1-alpha)`` confidence interval.
+          For ``method='classic'`` with placebos it is the interval dual
+          to ``pvalue``: the constant effects not rejected by the same
+          RMSPE-ratio rank test
+          (:func:`statspai.synth._core.placebo_inversion_ci`,
+          [@firpo2018synthetic]). It excludes zero exactly when
+          ``pvalue < alpha``, is not symmetric around the estimate, is not
+          ``estimate -/+ z * se``, and has infinite ends when
+          ``1 / (J + 1) > alpha`` (fewer than ``1 / alpha - 1`` donors).
+          ``model_info['ci_method']`` is then ``'placebo_inversion'``.
+          Through 1.38.0 ``ci`` was ``estimate -/+ z * sd(placebo ATTs)``;
+          that interval is in ``model_info['ci_normal']`` and is still
+          returned (``ci_method='placebo_sd'``) when the inversion is
+          empty or undefined.
         * ``detail`` : pd.DataFrame — one row per post-treatment period with
           columns ``time, treated, counterfactual, effect``.
         * ``model_info`` : dict — method-specific diagnostics. Keys present
           for most methods: ``pre_rmspe``, ``post_rmspe``, ``weights``,
           ``n_donors``, ``n_pre_periods``, ``n_post_periods``. Extra keys
           are method-specific — see each variant's own docstring
-          (``help(sp.bayesian_synth)``, ``help(sp.mc_synth)``, ...).
+          (``help(sp.mc_synth)``,
+          ``help(statspai.synth.bayesian.bayesian_synth)``, ...).
 
     Notes
     -----
@@ -441,50 +479,66 @@ def _dispatch_synth_impl(
 
     Examples
     --------
+    A small simulated panel (unit 0 treated from period 15) shared by all
+    calls below:
+
+    >>> import numpy as np
+    >>> import statspai as sp
+    >>> df = sp.dgp_synth(n_units=10, n_periods=20, treatment_time=15,
+    ...                   effect=2.0, seed=0)
+    >>> rng = np.random.default_rng(1)
+    >>> df["emp"] = 0.5 * df["y"] + rng.normal(0, 0.1, len(df))
+    >>> args = dict(outcome='y', unit='unit', time='time',
+    ...             treated_unit=0, treatment_time=15)
+
     Classic SCM:
 
-    >>> result = sp.synth(df, outcome='gdp', unit='state', time='year',
-    ...                   treated_unit='California', treatment_time=1989)
+    >>> result = sp.synth(df, **args)
+    >>> result.method
+    'Synthetic Control Method'
 
     De-meaned:
 
-    >>> result = sp.synth(..., method='demeaned')
+    >>> result = sp.synth(df, **args, method='demeaned')
 
     Unconstrained (negative weights):
 
-    >>> result = sp.synth(..., method='unconstrained')
+    >>> result = sp.synth(df, **args, method='unconstrained')
 
     Factor model:
 
-    >>> result = sp.synth(..., method='gsynth', n_factors=3)
+    >>> result = sp.synth(df, **args, method='gsynth', n_factors=2)
+    >>> result.method
+    'Generalized Synthetic Control (Xu 2017)'
 
     Conformal inference:
 
-    >>> result = sp.synth(..., inference='conformal')
+    >>> result = sp.synth(df, **args, inference='conformal')
 
-    Staggered adoption:
+    Staggered adoption (binary treatment indicator instead of a single
+    treated unit):
 
-    >>> result = sp.synth(df, outcome='gdp', unit='state', time='year',
+    >>> result = sp.synth(df, outcome='y', unit='unit', time='time',
     ...                   treatment='treated', method='staggered')
 
     Matrix completion:
 
-    >>> result = sp.synth(..., method='mc')
+    >>> result = sp.synth(df, **args, method='mc')
 
     Distributional synthetic controls:
 
-    >>> result = sp.synth(..., method='discos')
+    >>> result = sp.synth(df, **args, method='discos')
 
     Multiple outcomes:
 
-    >>> result = sp.synth(df, outcome='gdp', unit='state', time='year',
-    ...                   treated_unit='California', treatment_time=1989,
-    ...                   method='multi_outcome',
-    ...                   outcomes=['gdp', 'employment', 'investment'])
+    >>> result = sp.synth(df, **args, method='multi_outcome',
+    ...                   outcomes=['y', 'emp'])
 
     Prediction intervals:
 
-    >>> result = sp.synth(..., method='scpi')
+    >>> result = sp.synth(df, **args, method='scpi')
+    >>> type(result).__name__
+    'CausalResult'
 
     See Also
     --------
@@ -501,6 +555,69 @@ def _dispatch_synth_impl(
     alpha = _require_open_unit_float(alpha, "alpha")
     if inference is not None:
         inference = _require_string_option(inference, "inference")
+        # ``inference=`` is read by the conformal override, by the t-test
+        # override, and by method='sdid' (its se_method). Any other value
+        # used to be accepted and dropped, so inference='jackknife' on the
+        # classic method returned placebo inference under that name.
+        _sdid_only = {"bootstrap", "jackknife"}
+        _everywhere = {"placebo", "conformal", "ttest"}
+        if inference not in _everywhere | _sdid_only or (
+            inference in _sdid_only and method != "sdid"
+        ):
+            raise MethodIncompatibility(
+                f"synth: inference={inference!r} is not available for "
+                f"method={method!r}.",
+                recovery_hint=(
+                    "Use inference='placebo', 'conformal' or 'ttest'; "
+                    "'bootstrap' and 'jackknife' belong to method='sdid'."
+                ),
+                diagnostics={"inference": inference, "method": method},
+            )
+    # A list of treated units on the single-unit methods reached numpy as a
+    # shape mismatch. Several treated units have more than one synthetic
+    # control estimator; name the ones that take them.
+    if (
+        isinstance(treated_unit, (list, tuple, set, np.ndarray, pd.Index))
+        and method != "sdid"
+        and treatment is None
+    ):
+        _treated_list = list(treated_unit)
+        if len(_treated_list) == 1:
+            treated_unit = _treated_list[0]
+        elif method in ("classic", "classic_adh", "adh", "penalized", "ridge"):
+            raise MethodIncompatibility(
+                f"synth(method={method!r}) takes one treated unit; got "
+                f"{len(_treated_list)}.",
+                recovery_hint=(
+                    "sp.geolift(...) fits one synthetic control to the "
+                    "average (or sum) of the treated units; "
+                    "sp.synth(..., method='sdid') takes the list as is."
+                ),
+                diagnostics={"n_treated_units": len(_treated_list)},
+                alternative_functions=["sp.geolift", "sp.sdid"],
+            )
+
+    # --- t-test override (debiased K-fold synthetic control) ---
+    if inference == "ttest":
+        from .ttest import synth_ttest
+
+        if covariates:
+            raise MethodIncompatibility(
+                "synth(inference='ttest') fits the weights on pre-period "
+                "outcomes only; covariates= is not used by it.",
+                recovery_hint="Drop covariates=, or use inference='placebo'.",
+            )
+        return synth_ttest(
+            data=data,
+            outcome=outcome,
+            unit=unit,
+            time=time,
+            treated_unit=treated_unit,
+            treatment_time=treatment_time,
+            penalization=penalization,
+            alpha=alpha,
+            **kwargs,
+        )
 
     # --- Conformal inference override ---
     if inference == "conformal":
@@ -575,34 +692,86 @@ def _dispatch_synth_impl(
         # ``standardize=`` used to be dropped here (it is not the parameter's
         # name), so standardize=False silently standardized anyway.
         standardize_predictors = kwargs.pop(
-            "standardize_predictors", kwargs.pop("standardize", True)
+            "standardize_predictors", kwargs.pop("standardize", None)
         )
         n_random_starts = kwargs.pop("n_random_starts", 4)
         n_jobs = kwargs.pop("n_jobs", 1)
         perfect_fit = kwargs.pop("perfect_fit", "legacy")
+        placebo_cutoff = kwargs.pop("placebo_cutoff", None)
+        placebo_time = kwargs.pop("placebo_time", None)
+        placebo_units = kwargs.pop("placebo_units", None)
+        pre_periods = kwargs.pop("pre_periods", None)
+        post_periods = kwargs.pop("post_periods", None)
+        loo = bool(kwargs.pop("loo", False))
         # Anything left over used to be dropped here, so a misspelled option
         # (``v_methd=``) silently fell back to the default.
         from ..core._vcov_spec import reject_unknown_kwargs
 
         reject_unknown_kwargs(kwargs, function=f"synth(method={method!r})")
-        model = SyntheticControl(
-            data=data,
-            outcome=outcome,
-            unit=unit,
-            time=time,
-            treated_unit=treated_unit,
-            treatment_time=treatment_time,
-            covariates=covariates,
-            special_predictors=special_predictors,
-            v_method=v_method,
-            standardize_predictors=standardize_predictors,
-            n_random_starts=n_random_starts,
-            penalization=penalization,
-            alpha=alpha,
-            n_jobs=n_jobs,
-            perfect_fit=perfect_fit,
-        )
-        return model.fit(placebo=placebo)
+        if post_periods is not None:
+            wanted = list(post_periods)
+            known = set(data[time].unique().tolist())
+            bad = [t for t in wanted if t not in known or t < treatment_time]
+            if bad or not wanted:
+                raise MethodIncompatibility(
+                    "synth(post_periods=): every entry must be a period of "
+                    "the data at or after treatment_time.",
+                    diagnostics={"post_periods": bad},
+                )
+            data = data[(data[time] < treatment_time) | data[time].isin(wanted)]
+        if pre_periods is not None:
+            wanted = list(pre_periods)
+            known = set(data[time].unique().tolist())
+            bad = [t for t in wanted if t not in known or t >= treatment_time]
+            if bad or not wanted:
+                raise MethodIncompatibility(
+                    "synth(pre_periods=): every entry must be a period of "
+                    "the data before treatment_time.",
+                    diagnostics={"pre_periods": bad},
+                )
+            data = data[(data[time] >= treatment_time) | data[time].isin(wanted)]
+
+        def build(*, treatment_time: Any = treatment_time, drop_unit: Any = None):
+            frame = data if drop_unit is None else data[data[unit] != drop_unit]
+            return SyntheticControl(
+                data=frame,
+                outcome=outcome,
+                unit=unit,
+                time=time,
+                treated_unit=treated_unit,
+                treatment_time=treatment_time,
+                covariates=covariates,
+                special_predictors=special_predictors,
+                v_method=v_method,
+                standardize_predictors=standardize_predictors,
+                n_random_starts=n_random_starts,
+                penalization=penalization,
+                alpha=alpha,
+                n_jobs=n_jobs,
+                perfect_fit=perfect_fit,
+            )
+
+        result = build().fit(placebo=placebo)
+        from . import _classic_report as report
+
+        info = result.model_info
+        report.add_fit_statistics(info)
+        if (placebo and "placebo_gaps" in info) or not (
+            placebo_cutoff is None and placebo_units is None
+        ):
+            # without placebo fits this raises, naming the missing option
+            report.add_placebo_tables(info, placebo_cutoff, placebo_units)
+            if placebo_units is not None:
+                result.pvalue = info["placebo_pvalue"]
+
+        def refit(**changes: Any) -> CausalResult:
+            return build(**changes).fit(placebo=False)
+
+        if placebo_time is not None:
+            report.placebo_time_table(info, placebo_time, refit)
+        if loo:
+            report.loo_table(info, refit)
+        return result
 
     if method in ("demeaned", "detrended"):
         from .demeaned import demeaned_synth
@@ -660,9 +829,19 @@ def _dispatch_synth_impl(
     if method == "sdid":
         from .sdid import sdid as _sdid
 
+        # sdid's own name for this option is ``se_method``; accept it here
+        # too rather than passing it down twice.
+        own_se_method = kwargs.pop("se_method", None)
+        if own_se_method and inference and own_se_method != inference:
+            raise MethodIncompatibility(
+                f"sp.synth(method='sdid'): inference={inference!r} and "
+                f"se_method={own_se_method!r} name the same option and "
+                "disagree.",
+                recovery_hint="Pass one of them.",
+            )
         se_method = cast(
             Literal["placebo", "bootstrap", "jackknife"],
-            inference or "placebo",
+            own_se_method or inference or "placebo",
         )
         return _sdid(
             data=data,
@@ -681,6 +860,8 @@ def _dispatch_synth_impl(
     if method in ("factor", "gsynth"):
         from .gsynth import gsynth as _gsynth
 
+        if treatment is not None and treated_unit is None:
+            kwargs.setdefault("treat", treatment)
         return _gsynth(
             data=data,
             outcome=outcome,
@@ -845,6 +1026,22 @@ def _dispatch_synth_impl(
             **kwargs,
         )
 
+    if method in ("rcm", "hcw", "regression_control", "pda"):
+        from .rcm import rcm as _rcm
+
+        return _rcm(
+            data=data,
+            outcome=outcome,
+            unit=unit,
+            time=time,
+            treated_unit=treated_unit,
+            treatment_time=treatment_time,
+            covariates=covariates,
+            placebo=placebo,
+            alpha=alpha,
+            **kwargs,
+        )
+
     if method == "cluster":
         from .cluster import cluster_synth
 
@@ -915,7 +1112,7 @@ def _dispatch_synth_impl(
         f"'augmented', 'ascm', 'sdid', 'factor', 'gsynth', 'staggered', "
         f"'mc', 'discos', 'multi_outcome', 'scpi', "
         f"'bayesian', 'bsts', 'causal_impact', 'penscm', 'abadie_lhour', "
-        f"'fdid', 'forward_did', 'cluster', 'sparse', 'lasso', "
+        f"'fdid', 'forward_did', 'rcm', 'hcw', 'cluster', 'sparse', 'lasso', "
         f"'kernel', 'kernel_ridge'.",
         diagnostics={"method": method},
         alternative_functions=["sp.synth_compare", "sp.synth"],
@@ -1170,14 +1367,34 @@ class SyntheticControl:
         ``covariates``, the pre-treatment outcome vector itself is used as
         the predictor (V has no identifying power and is fixed to the
         identity, following Kaul et al. 2022).
-    v_method : {'auto', 'nested', 'equal'}, default 'auto'
+    v_method : {'auto', 'nested', 'equal', 'regression'}, default 'auto'
         ``'auto'`` → nested V-W when covariates / special predictors are
         supplied, equal V otherwise. ``'nested'`` forces the outer V
         optimisation even when only Y lags are used (note: the outer
-        problem is then under-identified, per Kaul et al. 2022). Equal
-        V reduces to the outcome-only simplex LS estimator.
-    standardize_predictors : bool, default True
-        Rescale predictors to unit range before the V optimization.
+        problem is then under-identified, per Kaul et al. 2022). With
+        equal V and no predictors the weights are the simplex-constrained
+        least-squares fit to the pre-treatment outcomes, which is what
+        ``augsynth(progfunc = "None")`` returns and what a nested V on
+        the outcome lags converges to.
+        ``'regression'`` is the default of Stata ``synth`` (without its
+        ``nested`` option): V comes from regressing the pre-treatment
+        outcomes on the predictors, with no search, so the fit is
+        deterministic and instant, and the donor weights reproduce Stata's
+        (its pre-treatment RMSPE to 3e-9 on the Proposition 99 data).
+        It needs ``covariates`` or ``special_predictors``.
+    standardize_predictors : bool, optional
+        Rescale each predictor to unit range before the V optimization.
+        ``None`` (default) rescales ``covariates`` and
+        ``special_predictors``, which come in different units, and leaves
+        the pre-treatment outcomes alone when they are the only predictors:
+        they are one variable in one unit, and rescaling each period by its
+        range across units would weight the periods unequally. ``True`` /
+        ``False`` force the choice either way.
+
+        .. versionchanged:: 1.39.0
+           ⚠️ The default used to be ``True`` in every case, so a fit
+           without predictors did not minimise the pre-treatment squared
+           error. Pass ``standardize_predictors=True`` for those numbers.
     n_random_starts : int, default 4
         Additional random Dirichlet starts for the outer V optimiser.
     penalization : float, default 0.0
@@ -1200,9 +1417,11 @@ class SyntheticControl:
         exactly by linear programming and reported as
         ``model_info['in_predictor_hull']``. Inside the hull every V with
         full support fits the predictors perfectly and infinitely many
-        donor-weight vectors do so, so the nested weights depend on the
-        optimiser's path and each fit can take minutes.
-        ``'legacy'`` (default) runs the ADH outer V search regardless.
+        donor-weight vectors do so. ``'legacy'`` (default) runs the ADH outer
+        V search regardless, and for each V takes the minimum-norm weights
+        among those that fit equally well, so the weights are a function of
+        V and not of an optimiser's path (through 1.35 they were SLSQP's
+        choice from a uniform start, and a fit could take minutes).
         ``'exact_balance'`` instead returns, among the weights that balance
         *every* predictor exactly, the one with the smallest pre-treatment
         outcome MSPE: a convex QP solved once in well under a second and
@@ -1210,9 +1429,10 @@ class SyntheticControl:
         then False and the reported V is the identity. This is a different
         estimator, not a faster ADH: the V search can push some V entries
         to zero, dropping those predictors, and so can fit the outcome
-        better (on Prop 99 with four covariates, Montana's pre-period SSE is
-        12417 under ``'exact_balance'`` against 2898 under the V search,
-        while Georgia's is 122 against 1022). Placebo fits follow the same
+        better or worse (on Prop 99 with four covariates, measured with
+        the earlier inner solver, Montana's pre-period SSE was 12417 under
+        ``'exact_balance'`` against 2898 under the V search, while Georgia's
+        was 122 against 1022). Placebo fits follow the same
         rule. It does not apply with ``penalization > 0`` or on the
         outcome-lags-only equal-V path.
 
@@ -1242,7 +1462,7 @@ class SyntheticControl:
         covariates: Optional[List[str]] = None,
         special_predictors: Optional[List[SpecialPredictor]] = None,
         v_method: str = "auto",
-        standardize_predictors: bool = True,
+        standardize_predictors: Optional[bool] = None,
         n_random_starts: int = 4,
         penalization: float = 0.0,
         alpha: float = 0.05,
@@ -1267,16 +1487,23 @@ class SyntheticControl:
         self.covariates = _coerce_optional_column_list(covariates, "covariates") or []
         self.special_predictors = special_predictors or []
         self.v_method = _require_string_option(v_method, "v_method")
-        if self.v_method not in {"auto", "equal", "nested"}:
+        if self.v_method not in {"auto", "equal", "nested", "regression"}:
             raise MethodIncompatibility(
-                "v_method must be one of 'auto', 'equal', or 'nested'.",
+                "v_method must be one of 'auto', 'equal', 'nested' or 'regression'.",
                 diagnostics={"v_method": v_method},
             )
-        if not isinstance(standardize_predictors, (bool, np.bool_)):
+        if standardize_predictors is not None and not isinstance(
+            standardize_predictors, (bool, np.bool_)
+        ):
             raise MethodIncompatibility(
-                "standardize_predictors must be True or False.",
+                "standardize_predictors must be True, False or None.",
                 diagnostics={"standardize_predictors": repr(standardize_predictors)},
             )
+        # None is resolved once the predictors are built: rescale covariates
+        # and special predictors, leave pre-treatment outcomes as they are.
+        self._standardize_requested = (
+            None if standardize_predictors is None else bool(standardize_predictors)
+        )
         self.standardize_predictors = bool(standardize_predictors)
         self.n_random_starts = _require_int_at_least(
             n_random_starts, "n_random_starts", 0
@@ -1442,6 +1669,8 @@ class SyntheticControl:
             self.X_treated = X_full[:, 0]  # (K,)
             self.X_donors = X_full[:, 1:]  # (K, J)
             self._has_predictors = True
+            if self._standardize_requested is None:
+                self.standardize_predictors = True
         else:
             # No covariates / special predictors → use pre-period Y
             # as predictors.  V optimisation is under-identified here
@@ -1452,6 +1681,11 @@ class SyntheticControl:
                 f"{self.outcome}[{t}]" for t in self.times[self.pre_mask]
             ]
             self._has_predictors = False
+            if self._standardize_requested is None:
+                # one variable in one unit: nothing to put on a common
+                # scale, and rescaling each period by its range would weight
+                # the periods unequally
+                self.standardize_predictors = False
 
     def _resolve_period_spec(self, period_spec: Any) -> List[Any]:
         """Expand scalar / list / slice specs into a concrete year list."""
@@ -1489,9 +1723,48 @@ class SyntheticControl:
         """
         from ._core import (
             _inner_w_given_v,
+            polish_simplex_weights,
+            regression_based_v,
             solve_synth_weights_adh,
             standardize_predictors,
         )
+
+        if getattr(self, "v_method", "auto") == "regression":
+            V, scale = regression_based_v(
+                X_treated, X_donors, Y_treated_pre, Y_donors_pre
+            )
+            X1s = X_treated / scale
+            X0s = X_donors / scale[:, None]
+            w = _inner_w_given_v(V, X1s, X0s, penalization=self.penalization)
+            if self.penalization == 0:
+                # V is fixed here, so the donor weights are a plain convex
+                # problem: solve it to full precision.
+                sqrt_v = np.sqrt(V)
+                w = polish_simplex_weights(sqrt_v * X1s, sqrt_v[:, None] * X0s, w)
+            r_outer = Y_treated_pre - Y_donors_pre @ w
+            r_inner = X1s - X0s @ w
+            loss = float(r_outer @ r_outer)
+            inner_loss = float(np.sum(V * r_inner**2))
+            return {
+                "w": w,
+                "v": V,
+                "loss": loss,
+                "inner_loss": inner_loss,
+                "scale": scale,
+                "n_starts": 1,
+                "converged": True,
+                "best_start": "regression",
+                "start_diagnostics": [
+                    {
+                        "start": "regression",
+                        "success": True,
+                        "loss": loss,
+                        "inner_loss": inner_loss,
+                        "weights": w,
+                        "v": V,
+                    }
+                ],
+            }
 
         if run_nested:
             return solve_synth_weights_adh(
@@ -1545,7 +1818,7 @@ class SyntheticControl:
 
     def _should_run_nested(self) -> bool:
         """Decide whether to run the outer V optimization."""
-        if self.v_method == "equal":
+        if self.v_method in ("equal", "regression"):
             return False
         if self.v_method == "nested":
             return True
@@ -1568,6 +1841,18 @@ class SyntheticControl:
         """
         Y_pre_treated = self.Y_treated[self.pre_mask]
         Y_pre_donors = self.Y_donors[self.pre_mask]
+
+        if self.v_method == "regression" and not self._has_predictors:
+            raise MethodIncompatibility(
+                "synth(v_method='regression') weights predictors by how well "
+                "they explain the pre-treatment outcomes, so it needs "
+                "predictors other than those outcomes themselves.",
+                recovery_hint=(
+                    "Pass covariates= or special_predictors=, or leave "
+                    "v_method='auto' for the outcome-only fit."
+                ),
+                diagnostics={"v_method": self.v_method},
+            )
 
         run_nested = self._should_run_nested()
         solver_out = self._solve_weights(
@@ -1615,12 +1900,34 @@ class SyntheticControl:
             pvalue = placebo_rank_pvalue(ratio_treated, placebo_result["ratios"])
 
             se = float(np.std(placebo_atts)) if len(placebo_atts) > 1 else 0.0
+            # Constant-effect confidence interval dual to that p-value.
+            from ._core import placebo_inversion_ci
+
+            ci_permutation = placebo_inversion_ci(
+                gap,
+                placebo_result["gaps"],
+                np.asarray(placebo_result["weights"])[:, 0],
+                self.pre_mask,
+                self.post_mask,
+                alpha=self.alpha,
+            )
         else:
+            ci_permutation = None
             pvalue = np.nan
             se = float(np.std(gap_post)) / max(np.sqrt(len(gap_post)), 1)
 
         z_crit = stats.norm.ppf(1 - self.alpha / 2)
-        ci = (att - z_crit * se, att + z_crit * se)
+        ci_normal = (att - z_crit * se, att + z_crit * se)
+        # Report the interval that the reported p-value implies. The normal
+        # approximation around the placebo spread is kept as a fallback
+        # (no usable placebos, perfect pre-fit, or every constant effect
+        # rejected) and in ``model_info['ci_normal']``.
+        if ci_permutation is not None and not np.isnan(ci_permutation).any():
+            ci = (float(ci_permutation[0]), float(ci_permutation[1]))
+            ci_method = "placebo_inversion"
+        else:
+            ci = ci_normal
+            ci_method = "placebo_sd"
 
         # --- Weight table ---
         weight_df = (
@@ -1752,6 +2059,28 @@ class SyntheticControl:
             ):
                 weight_class_reps.append(candidate)
 
+        if solver_out.get("in_predictor_hull") is True and (
+            self.perfect_fit == "legacy"
+        ):
+            # Documented under ``perfect_fit``, but it used to be silent:
+            # one covariate and 38 donors returned 36 non-zero weights and
+            # a pre-period RMSPE seven times the outcome-only fit.
+            warnings.warn(
+                "The predictors do not pin down the donor weights: the "
+                "treated unit lies inside the convex hull of the donors' "
+                "predictors, so infinitely many weight vectors fit them "
+                "exactly and the minimum-norm one is returned. The "
+                "pre-treatment outcome path was not part of the fit unless "
+                "listed. Add pre-treatment outcomes through "
+                "special_predictors=[(outcome, [periods], 'mean'), ...], or "
+                "pass perfect_fit='exact_balance' to choose, among the "
+                "exactly balancing weights, the ones that track the "
+                "pre-treatment outcome best. See "
+                "model_info['in_predictor_hull'].",
+                UserWarning,
+                stacklevel=2,
+            )
+
         # --- Model info ---
         model_info: Dict[str, Any] = {
             "backend": "native",
@@ -1779,7 +2108,11 @@ class SyntheticControl:
             "Y_synth": Y_synth,
             "Y_treated": self.Y_treated,
             "times": self.times,
-            "v_method": "nested" if run_nested else "equal",
+            "v_method": (
+                "regression"
+                if self.v_method == "regression"
+                else "nested" if run_nested else "equal"
+            ),
             "n_starts": solver_out["n_starts"],
             "converged": solver_out["converged"],
             "perfect_fit": self.perfect_fit,
@@ -1811,6 +2144,7 @@ class SyntheticControl:
             model_info["placebo_ratios"] = placebo_result["ratios"]
             model_info["placebo_gaps"] = placebo_result["gaps"]
             model_info["placebo_units"] = placebo_result["units"]
+            model_info["placebo_weights"] = placebo_result["weights"]
             model_info["placebo_failures"] = placebo_result["failures"]
             model_info["placebo_n_jobs"] = placebo_result["n_jobs"]
             model_info["placebo_parallel_fallback"] = placebo_result[
@@ -1818,6 +2152,12 @@ class SyntheticControl:
             ]
             model_info["treated_ratio"] = ratio_treated
             model_info["n_placebos"] = len(placebo_atts)
+            model_info["ci_normal"] = ci_normal
+            model_info["ci_method"] = ci_method
+            if ci_permutation is not None:
+                model_info["ci_permutation"] = ci_permutation
+                model_info["ci_permutation_lower"] = ci_permutation[0]
+                model_info["ci_permutation_upper"] = ci_permutation[1]
 
         return CausalResult(
             method="Synthetic Control Method",
@@ -1852,6 +2192,7 @@ class SyntheticControl:
         post_mspes: List[float] = []
         ratios: List[float] = []
         gap_trajectories: List[np.ndarray] = []
+        weight_rows: List[np.ndarray] = []
         units: List[Any] = []
         failed: List[Dict[str, str]] = []
 
@@ -1878,6 +2219,7 @@ class SyntheticControl:
                 n_random_starts=self.n_random_starts,
                 penalization=self.penalization,
                 perfect_fit=self.perfect_fit,
+                v_method=self.v_method,
             )
             task = functools.partial(
                 _placebo_one,
@@ -1901,13 +2243,15 @@ class SyntheticControl:
             task = functools.partial(_placebo_one, solve=self._solve_weights, **common)
             outcomes = [task(i) for i in range(n_placebos)]
 
-        for placebo_unit, out in zip(self.donor_units, outcomes):
+        for i, (placebo_unit, out) in enumerate(zip(self.donor_units, outcomes)):
             if out["ok"]:
                 atts.append(out["att"])
                 pre_mspes.append(out["pre_mspe"])
                 post_mspes.append(out["post_mspe"])
                 ratios.append(out["ratio"])
                 gap_trajectories.append(out["gap"])
+                # weights over [treated] + donors, NaN in the unit's own place
+                weight_rows.append(np.insert(out["w"], i + 1, np.nan))
                 units.append(placebo_unit)
             else:
                 # A dropped placebo shrinks the permutation distribution
@@ -1943,6 +2287,11 @@ class SyntheticControl:
             "ratios": ratios,
             "gaps": gaps,
             "units": units,
+            "weights": pd.DataFrame(
+                np.array(weight_rows).reshape(len(units), n_placebos + 1),
+                index=units,
+                columns=[self.treated_unit] + list(self.donor_units),
+            ),
             "failures": failed,
             "n_jobs": n_workers,
             "parallel_fallback": parallel_fallback,
@@ -2010,6 +2359,7 @@ def _placebo_one(
         "post_mspe": post_mspe_p,
         "ratio": ratio_p,
         "gap": gap_p,
+        "w": np.asarray(w, dtype=np.float64),
     }
 
 

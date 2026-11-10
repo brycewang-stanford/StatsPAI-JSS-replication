@@ -8,9 +8,12 @@ line by line; quoted output values are pinned by assertions).
 |---|---|---|---:|
 | 01-introduction-compact.tex | `lst:motivating` | PASS | 0.0 |
 | 02-architecture-compact.tex | `lst:validation-tier-output` | PASS | 0.0 |
+| 03-agent-facing-compact.tex | `lst:typed-error` | PASS | 0.0 |
 | 04-examples-compact.tex | `lst:card-output` | PASS | 0.0 |
 | 04-examples-compact.tex | `lst:card-cate` | PASS | 0.0 |
+| 04-examples-compact.tex | `lst:basque` | PASS | 0.0 |
 | 04-examples-compact.tex | `lst:csdid` | PASS | 0.0 |
 | 04-examples-compact.tex | `lst:csdid-output` | PASS | 0.0 |
+| 04-examples-compact.tex | `lst:other-calls` | PASS | 0.0 |
 | 04-examples-compact.tex | `lst:fect` | PASS | 0.0 |
 | 05-parity-compact.tex | `lst:scope` | PASS | 0.0 |

@@ -22,6 +22,7 @@ from . import iv as iv
 from . import longitudinal as longitudinal
 from . import mendelian as mendelian
 from . import question as question
+from . import rd as rd
 from . import target_trial as tte
 from ._agent_docs import render_agent_block as render_agent_block
 from ._agent_docs import render_agent_blocks as render_agent_blocks
@@ -44,9 +45,28 @@ from ._auto_estimators import AutoDIDResult as AutoDIDResult
 from ._auto_estimators import AutoIVResult as AutoIVResult
 from ._auto_estimators import auto_did as auto_did
 from ._auto_estimators import auto_iv as auto_iv
+from ._build_info import version_info as version_info
 from ._citation import citation as citation
+from ._doctor import doctor as doctor
+from ._routing import decision_guide as decision_guide
+from ._routing import route as route
+from .agent._translation._coverage import translation_coverage as translation_coverage
+from .agent._translation._r import from_r as from_r
+from .agent._translation._stata import from_stata as from_stata
+from .agent._translation._stata_run import stata as stata
+from .assimilation.kalman import AssimilationResult as AssimilationResult
+from .assimilation.kalman import assimilative_causal as assimilative_causal
+from .assimilation.kalman import causal_kalman as causal_kalman
+from .assimilation.particle import particle_filter as particle_filter
 from .bartik.adao_correction import shift_share_se as shift_share_se
 from .bartik.adao_correction import ssaggregate as ssaggregate
+from .bartik.political import (
+    ShiftSharePoliticalPanelResult as ShiftSharePoliticalPanelResult,
+)
+from .bartik.political import ShiftSharePoliticalResult as ShiftSharePoliticalResult
+from .bartik.political import shift_share_political as shift_share_political
+from .bartik.political import shift_share_political_panel as shift_share_political_panel
+from .bartik.rotemberg_summary import rotemberg_summary as rotemberg_summary
 from .bartik.shift_share import BartikIV as BartikIV
 from .bartik.shift_share import bartik as bartik
 from .bayes._base import BayesianCausalResult as BayesianCausalResult
@@ -55,8 +75,11 @@ from .bayes._base import BayesianHTEIVResult as BayesianHTEIVResult
 from .bayes._base import BayesianIVResult as BayesianIVResult
 from .bayes._base import BayesianMTEResult as BayesianMTEResult
 from .bayes.did import bayes_did as bayes_did
+from .bayes.dml import BayesianDMLResult as BayesianDMLResult
+from .bayes.dml import bayes_dml as bayes_dml
 from .bayes.fuzzy_rd import bayes_fuzzy_rd as bayes_fuzzy_rd
 from .bayes.hte_iv import bayes_hte_iv as bayes_hte_iv
+from .bayes.its import bayes_its as bayes_its
 from .bayes.iv import bayes_iv as bayes_iv
 from .bayes.mte import bayes_mte as bayes_mte
 from .bayes.policy_weights import policy_weight_ate as policy_weight_ate
@@ -67,10 +90,20 @@ from .bayes.policy_weights import (
 from .bayes.policy_weights import policy_weight_prte as policy_weight_prte
 from .bayes.policy_weights import policy_weight_subsidy as policy_weight_subsidy
 from .bayes.rd import bayes_rd as bayes_rd
+from .bayes.synth import bayes_synth as bayes_synth
 from .bcf.bcf import BayesianCausalForest as BayesianCausalForest
 from .bcf.bcf import bcf as bcf
+from .bcf.factor_exposure import BCFFactorExposureResult as BCFFactorExposureResult
+from .bcf.factor_exposure import bcf_factor_exposure as bcf_factor_exposure
+from .bcf.longitudinal import BCFLongResult as BCFLongResult
+from .bcf.longitudinal import bcf_longitudinal as bcf_longitudinal
+from .bcf.ordinal import BCFOrdinalResult as BCFOrdinalResult
+from .bcf.ordinal import bcf_ordinal as bcf_ordinal
+from .bounds.balke_pearl import BalkePearlResult as BalkePearlResult
+from .bounds.balke_pearl import balke_pearl as balke_pearl
 from .bounds.lee_manski import lee_bounds as lee_bounds
 from .bounds.lee_manski import manski_bounds as manski_bounds
+from .bounds.ml_bounds import MLBoundsResult as MLBoundsResult
 from .bounds.ml_bounds import ml_bounds as ml_bounds
 from .bounds.partial_id import BoundsResult as BoundsResult
 from .bounds.partial_id import breakdown_frontier as breakdown_frontier
@@ -94,13 +127,19 @@ from .causal_discovery.fci import FCIResult as FCIResult
 from .causal_discovery.fci import fci as fci
 from .causal_discovery.ges import GESResult as GESResult
 from .causal_discovery.ges import ges as ges
+from .causal_discovery.hill_climb import bootstrap_edges as bootstrap_edges
+from .causal_discovery.hill_climb import hill_climb as hill_climb
 from .causal_discovery.icp import ICPResult as ICPResult
 from .causal_discovery.icp import icp as icp
 from .causal_discovery.icp import nonlinear_icp as nonlinear_icp
+from .causal_discovery.ida import IDAResult as IDAResult
+from .causal_discovery.ida import ida as ida
 from .causal_discovery.lingam import LiNGAMResult as LiNGAMResult
 from .causal_discovery.lingam import lingam as lingam
 from .causal_discovery.lpcmci import LPCMCIResult as LPCMCIResult
 from .causal_discovery.lpcmci import lpcmci as lpcmci
+from .causal_discovery.mmhc import mmhc as mmhc
+from .causal_discovery.mmhc import mmpc as mmpc
 from .causal_discovery.notears import NOTEARS as NOTEARS
 from .causal_discovery.notears import notears as notears
 from .causal_discovery.pc import PCAlgorithm as PCAlgorithm
@@ -111,6 +150,11 @@ from .causal_discovery.pcmci import pcmci as pcmci
 from .causal_impact.impact import CausalImpactEstimator as CausalImpactEstimator
 from .causal_impact.impact import causal_impact as causal_impact
 from .causal_impact.impact import impactplot as impactplot
+from .causal_llm.causal_mas import CausalMASResult as CausalMASResult
+from .causal_llm.causal_mas import causal_mas as causal_mas
+from .causal_llm.llm_clients import anthropic_client as anthropic_client
+from .causal_llm.llm_clients import echo_client as echo_client
+from .causal_llm.llm_clients import openai_client as openai_client
 from .causal_llm.llm_dag import LLMDAGProposal as LLMDAGProposal
 from .causal_llm.llm_dag import llm_dag_propose as llm_dag_propose
 from .causal_llm.llm_dag_loop import DAGValidationResult as DAGValidationResult
@@ -131,6 +175,13 @@ from .causal_rl.benchmarks import BanditBenchmarkResult as BanditBenchmarkResult
 from .causal_rl.benchmarks import causal_rl_benchmark as causal_rl_benchmark
 from .causal_rl.causal_dqn import CausalDQNResult as CausalDQNResult
 from .causal_rl.causal_dqn import causal_dqn as causal_dqn
+from .causal_rl.core import CausalBanditResult as CausalBanditResult
+from .causal_rl.core import CFPolicyResult as CFPolicyResult
+from .causal_rl.core import StructuralMDPResult as StructuralMDPResult
+from .causal_rl.core import causal_bandit as causal_bandit
+from .causal_rl.core import (
+    counterfactual_policy_optimization as counterfactual_policy_optimization,
+)
 from .causal_rl.core import structural_mdp as structural_mdp
 from .causal_rl.offline_safe import OfflineSafeResult as OfflineSafeResult
 from .causal_rl.offline_safe import offline_safe_policy as offline_safe_policy
@@ -177,10 +228,32 @@ from .conformal_causal.counterfactual import (
 )
 from .conformal_causal.dispatcher import available_kinds as conformal_available_kinds
 from .conformal_causal.dispatcher import conformal as conformal
+from .conformal_causal.extended import (
+    ContinuousConformalResult as ContinuousConformalResult,
+)
+from .conformal_causal.extended import (
+    InterferenceConformalResult as InterferenceConformalResult,
+)
+from .conformal_causal.extended import conformal_continuous as conformal_continuous
+from .conformal_causal.extended import conformal_interference as conformal_interference
+from .conformal_causal.regression import conformal_regression as conformal_regression
+from .core._spec_counter import reset_spec_counter as reset_spec_counter
+from .core.effect_summary import EffectSummary as EffectSummary
+from .core.effect_summary import effect_summary as effect_summary
 from .core.results import CausalResult as CausalResult
 from .core.results import EconometricResults as EconometricResults
+from .core.results import ScalarEffect as ScalarEffect
+from .core.ssc_presets import ssc as ssc
+from .crossval._result import CrossValidationResult as CrossValidationResult
+from .crossval.cross_validate import cross_validate as cross_validate
 from .dag import recommend_estimator as dag_recommend_estimator
+from .dag.bayes_net import BayesNet as BayesNet
+from .dag.bayes_net import bayes_net as bayes_net
 from .dag.counterfactual import SCM as SCM
+from .dag.counterfactual_id import (
+    CounterfactualIdentification as CounterfactualIdentification,
+)
+from .dag.counterfactual_id import identify_counterfactual as identify_counterfactual
 from .dag.do_calculus import RuleCheck as RuleCheck
 from .dag.do_calculus import apply_rules as do_calculus_apply
 from .dag.do_calculus import rule1 as do_rule1
@@ -194,8 +267,19 @@ from .dag.graph import dag_examples as dag_examples
 from .dag.graph import dag_simulate as dag_simulate
 from .dag.identification import IdentificationResult as IdentificationResult
 from .dag.identification import identify as identify
+from .dag.llm_dag import LLMDAGResult as LLMDAGResult
+from .dag.llm_dag import llm_dag as llm_dag
+from .dag.llm_evaluator import LLMCausalAssessResult as LLMCausalAssessResult
+from .dag.llm_evaluator import PairwiseBenchmarkResult as PairwiseBenchmarkResult
+from .dag.llm_evaluator import llm_causal_assess as llm_causal_assess
+from .dag.llm_evaluator import pairwise_causal_benchmark as pairwise_causal_benchmark
 from .dag.swig import SWIGGraph as SWIGGraph
 from .dag.swig import swig as swig
+from .datasets import list_datasets as list_datasets
+from .datasets import load_dataset as load_dataset
+from .datasets.ingest import from_fred as from_fred
+from .datasets.ingest import from_sdmx as from_sdmx
+from .datasets.ingest import from_worldbank as from_worldbank
 from .decomposition.causal import disparity_decompose as disparity_decompose
 from .decomposition.causal import gap_closing as gap_closing
 from .decomposition.causal import mediation_decompose as mediation_decompose
@@ -207,6 +291,7 @@ from .decomposition.datasets import mincer_wage_panel as mincer_wage_panel
 from .decomposition.dfl import dfl_decompose as dfl_decompose
 from .decomposition.dispatcher import available_methods as available_methods
 from .decomposition.dispatcher import decompose as decompose
+from .decomposition.diversity import diversity_index as diversity_index
 from .decomposition.ffl import ffl_decompose as ffl_decompose
 from .decomposition.inequality import inequality_index as inequality_index
 from .decomposition.inequality import shapley_inequality as shapley_inequality
@@ -230,15 +315,35 @@ from .decomposition.yu_elwert import yu_elwert_decompose as yu_elwert_decompose
 from .deepiv.deep_iv import DeepIV as DeepIV
 from .deepiv.deep_iv import deepiv as deepiv
 from .diagnostics.battery import diagnose_result as diagnose_result
+from .diagnostics.binned import binned_residuals as binned_residuals
+from .diagnostics.binned import binned_residuals_plot as binned_residuals_plot
+from .diagnostics.causal_gap import causal_gap as causal_gap
+from .diagnostics.cmtest import cmtest as cmtest
+from .diagnostics.confounder_bias import confounder_adjust as confounder_adjust
+from .diagnostics.confounder_bias import confounder_tip as confounder_tip
 from .diagnostics.estat import estat as estat
 from .diagnostics.evalue import bias_factor as bias_factor
 from .diagnostics.evalue import evalue as evalue
 from .diagnostics.evalue import evalue_from_result as evalue_from_result
 from .diagnostics.evalue import evalue_rd as evalue_rd
+from .diagnostics.hausman import hausman as hausman
 from .diagnostics.hausman import hausman_test as hausman_test
+from .diagnostics.influence import influence_measures as influence_measures
+from .diagnostics.influence import logit_gof as logit_gof
+from .diagnostics.influence import logit_influence as logit_influence
 from .diagnostics.late_test import KitagawaResult as KitagawaResult
 from .diagnostics.late_test import kitagawa_test as kitagawa_test
 from .diagnostics.rddensity import rddensity as rddensity
+from .diagnostics.rosenbaum import RosenbaumResult as RosenbaumResult
+from .diagnostics.rosenbaum import rosenbaum_bounds as rosenbaum_bounds
+from .diagnostics.rosenbaum import rosenbaum_bounds as rosenbaum_gamma
+from .diagnostics.rosenbaum_strata import EvidenceFactorsResult as EvidenceFactorsResult
+from .diagnostics.rosenbaum_strata import SensitivityTestResult as SensitivityTestResult
+from .diagnostics.rosenbaum_strata import amplify as amplify
+from .diagnostics.rosenbaum_strata import evidence_factors as evidence_factors
+from .diagnostics.rosenbaum_strata import noether_test as noether_test
+from .diagnostics.rosenbaum_strata import rosenbaum_stratified as rosenbaum_stratified
+from .diagnostics.rosenbaum_strata import truncated_product as truncated_product
 from .diagnostics.sensemakr import sensemakr as sensemakr
 from .diagnostics.sensitivity import mccrary_test as mccrary_test
 from .diagnostics.sensitivity import oster_bounds as oster_bounds
@@ -246,42 +351,86 @@ from .diagnostics.tests import diagnose as diagnose
 from .diagnostics.tests import het_test as het_test
 from .diagnostics.tests import reset_test as reset_test
 from .diagnostics.tests import vif as vif
+from .diagnostics.vuong import vuong as vuong
 from .diagnostics.weak_iv import WeakRobustResult as WeakRobustResult
 from .diagnostics.weak_iv import anderson_rubin_test as anderson_rubin_test
 from .diagnostics.weak_iv import effective_f_test as effective_f_test
 from .diagnostics.weak_iv import tF_critical_value as tF_critical_value
 from .diagnostics.weak_iv import weakrobust as weakrobust
+from .diagnostics.weighted_rank import (
+    WeightedRankPowerResult as WeightedRankPowerResult,
+)
+from .diagnostics.weighted_rank import WeightedRankResult as WeightedRankResult
+from .diagnostics.weighted_rank import weighted_rank as weighted_rank
+from .diagnostics.weighted_rank import weighted_rank_power as weighted_rank_power
 from .did import did as did
+from .did._absorbing import check_absorbing as check_absorbing
+from .did._equivalence import pretrends_equivalence as pretrends_equivalence
+from .did._honest_breakdown import breakdown_m as breakdown_m
+from .did._honest_moments import honest_did_from_moments as honest_did_from_moments
+from .did._honest_moments import honest_did_from_result as honest_did_from_result
+from .did._staggered_rollout import staggered_cs as staggered_cs
+from .did._staggered_rollout import staggered_rollout as staggered_rollout
+from .did._staggered_rollout import staggered_sa as staggered_sa
+from .did._xtevent_smpath import xtevent_smpath as xtevent_smpath
 from .did.aggte import aggte as aggte
 from .did.analysis import DIDAnalysis as DIDAnalysis
 from .did.analysis import did_analysis as did_analysis
 from .did.bacon import bacon_decomposition as bacon_decomposition
+from .did.balance import did_balance as did_balance
 from .did.bjs_inference import bjs_pretrend_joint as bjs_pretrend_joint
+from .did.calibrated_simulation import (
+    did_calibrated_simulation as did_calibrated_simulation,
+)
 from .did.callaway_santanna import callaway_santanna as callaway_santanna
+from .did.cdlz_bunching import cdlz_bunching as cdlz_bunching
+from .did.cgs_continuous import cgs_continuous_did as cgs_continuous_did
 from .did.cic import cic as cic
 from .did.cohort_anchored import (
     cohort_anchored_event_study as cohort_anchored_event_study,
 )
 from .did.continuous_did import continuous_did as continuous_did
+from .did.cs_jackknife import cs_jackknife as cs_jackknife
 from .did.ddd import ddd as ddd
 from .did.ddd_heterogeneous import ddd_heterogeneous as ddd_heterogeneous
+from .did.design_audit import did_cluster_diagnostics as did_cluster_diagnostics
+from .did.design_audit import did_design_contract as did_design_contract
 from .did.design_robust import design_robust_event_study as design_robust_event_study
 from .did.did_2x2 import did_2x2 as did_2x2
 from .did.did_bcf import did_bcf as did_bcf
 from .did.did_forest import DIDForestResult as DIDForestResult
 from .did.did_forest import did_forest as did_forest
+from .did.did_had import did_had as did_had
+from .did.did_had import quasi_untreated_test as quasi_untreated_test
+from .did.did_had import yatchew_linearity_test as yatchew_linearity_test
 from .did.did_imputation import did_imputation as bjs
 from .did.did_imputation import did_imputation as borusyak_jaravel_spiess
 from .did.did_imputation import did_imputation as did_imputation
 from .did.did_multiplegt import did_multiplegt as did_multiplegt
 from .did.did_multiplegt_dyn import did_multiplegt_dyn as did_multiplegt_dyn
+from .did.didregress import didregress as didregress
+from .did.es_convention import (
+    compare_event_study_conventions as compare_event_study_conventions,
+)
+from .did.es_convention import event_study_convention as event_study_convention
+from .did.es_inference import event_study_vcov as event_study_vcov
+from .did.es_inference import uniform_bands as uniform_bands
 from .did.event_study import event_study as event_study
+from .did.few_treated import did_few_treated as did_few_treated
+from .did.functional_form import distributional_did as distributional_did
+from .did.functional_form import functional_form_test as functional_form_test
 from .did.gardner_2s import gardner_did as did_2stage
 from .did.gardner_2s import gardner_did as gardner_did
-from .did.honest_did import breakdown_m as breakdown_m
+from .did.harvest import HarvestDIDResult as HarvestDIDResult
+from .did.harvest import harvest_did as harvest_did
 from .did.honest_did import honest_did as honest_did
+from .did.influence import aggte_from_influence as aggte_from_influence
+from .did.influence import influence_functions as influence_functions
+from .did.jwdid import jwdid as jwdid
 from .did.lp_did import lp_did as lp_did
 from .did.misclassified import did_misclassified as did_misclassified
+from .did.overlap_did import dl_propensity_score as dl_propensity_score
+from .did.overlap_did import overlap_weighted_did as overlap_weighted_did
 from .did.plots import bacon_plot as bacon_plot
 from .did.plots import cohort_event_study_plot as cohort_event_study_plot
 from .did.plots import did_plot as did_plot
@@ -289,16 +438,26 @@ from .did.plots import did_summary_plot as did_summary_plot
 from .did.plots import event_study_plot as enhanced_event_study_plot
 from .did.plots import ggdid as ggdid
 from .did.plots import group_time_plot as group_time_plot
+from .did.plots import panel_view as panel_view
 from .did.plots import parallel_trends_plot as parallel_trends_plot
 from .did.plots import sensitivity_plot as sensitivity_plot
 from .did.plots import treatment_rollout_plot as treatment_rollout_plot
+from .did.pmatch import panel_match as panel_match
 from .did.pretrends import SensitivityResult as SensitivityResult
 from .did.pretrends import pretrends_power as pretrends_power
+from .did.pretrends import pretrends_slope_for_power as pretrends_slope_for_power
 from .did.pretrends import pretrends_summary as pretrends_summary
 from .did.pretrends import pretrends_test as pretrends_test
 from .did.pretrends import sensitivity_rr as sensitivity_rr
 from .did.report import CSReport as CSReport
 from .did.report import cs_report as cs_report
+from .did.robustness_pipeline import (
+    ParallelTrendsRobustnessResult as ParallelTrendsRobustnessResult,
+)
+from .did.robustness_pipeline import (
+    parallel_trends_robustness as parallel_trends_robustness,
+)
+from .did.spillover_rings import spillover_did as spillover_did
 from .did.stacked_did import stacked_did as stacked_did
 from .did.summary import did_report as did_report
 from .did.summary import did_summary as did_summary
@@ -308,16 +467,21 @@ from .did.sun_abraham import sun_abraham as sun_abraham
 from .did.timevarying_covariates import (
     did_timevarying_covariates as did_timevarying_covariates,
 )
+from .did.twowayfeweights import twowayfeweights as twowayfeweights
 from .did.wooldridge_did import drdid as drdid
 from .did.wooldridge_did import etwfe as etwfe
 from .did.wooldridge_did import etwfe_emfx as etwfe_emfx
 from .did.wooldridge_did import twfe_decomposition as twfe_decomposition
 from .did.wooldridge_did import wooldridge_did as wooldridge_did
+from .did.xtevent import xtevent as xtevent
 from .dml._diagnostics import DMLDiagnostics as DMLDiagnostics
 from .dml._diagnostics import dml_diagnostics as dml_diagnostics
 from .dml._sensitivity import DMLSensitivityResult as DMLSensitivityResult
 from .dml._sensitivity import dml_sensitivity as dml_sensitivity
+from .dml.did import dml_did as dml_did
 from .dml.double_ml import DoubleML as DoubleML
+from .dml.dynamic_dml import DynamicDMLResult as DynamicDMLResult
+from .dml.dynamic_dml import dynamic_dml as dynamic_dml
 from .dml.iivm import DoubleMLIIVM as DoubleMLIIVM
 from .dml.irm import DoubleMLIRM as DoubleMLIRM
 from .dml.model_averaging import DMLAveragingResult as DMLAveragingResult
@@ -329,10 +493,43 @@ from .dml.panel_dml import DMLPanelResult as DMLPanelResult
 from .dml.panel_dml import dml_panel as dml_panel
 from .dml.pliv import DoubleMLPLIV as DoubleMLPLIV
 from .dml.plr import DoubleMLPLR as DoubleMLPLR
+from .doe._common import DesignResult as DesignResult
+from .doe.criteria import design_criteria as design_criteria
+from .doe.effects import FactorialEffectsResult as FactorialEffectsResult
+from .doe.effects import factorial_effects as factorial_effects
+from .doe.factorial import FactorialDesignResult as FactorialDesignResult
+from .doe.factorial import design_aberration as design_aberration
+from .doe.factorial import factorial_design as factorial_design
+from .doe.importance import FactorImportanceResult as FactorImportanceResult
+from .doe.importance import factor_importance as factor_importance
+from .doe.mixture import mixture_design as mixture_design
+from .doe.optimal import ModelDesignResult as ModelDesignResult
+from .doe.optimal import doe_optimal as doe_optimal
+from .doe.sensitivity import MorrisResult as MorrisResult
+from .doe.sensitivity import SobolResult as SobolResult
+from .doe.sensitivity import morris_screening as morris_screening
+from .doe.sensitivity import sobol_indices as sobol_indices
+from .doe.sequential import SequentialDesignResult as SequentialDesignResult
+from .doe.sequential import sequential_design as sequential_design
+from .doe.spacefill import design_augment as design_augment
+from .doe.spacefill import space_filling as space_filling
+from .doe.support import DataSplitResult as DataSplitResult
+from .doe.support import SupportPointsResult as SupportPointsResult
+from .doe.support import split_data as split_data
+from .doe.support import support_points as support_points
 from .dose_response.gps import DoseResponse as DoseResponse
 from .dose_response.gps import dose_response as dose_response
+from .dose_response.vcnet import VCNetResult as VCNetResult
+from .dose_response.vcnet import scigan as scigan
+from .dose_response.vcnet import vcnet as vcnet
+from .dtr.a_learning import ALearningResult as ALearningResult
+from .dtr.a_learning import a_learning as a_learning
 from .dtr.g_estimation import GEstimation as GEstimation
 from .dtr.g_estimation import g_estimation as g_estimation
+from .dtr.q_learning import QLearningResult as QLearningResult
+from .dtr.q_learning import q_learning as q_learning
+from .dtr.snmm import SNMMResult as SNMMResult
+from .dtr.snmm import snmm as snmm
 from .epi.bradford_hill import bradford_hill as bradford_hill
 from .epi.diagnostic import DiagnosticTestResult as DiagnosticTestResult
 from .epi.diagnostic import KappaResult as KappaResult
@@ -340,6 +537,7 @@ from .epi.diagnostic import ROCResult as ROCResult
 from .epi.diagnostic import auc as auc
 from .epi.diagnostic import cohen_kappa as cohen_kappa
 from .epi.diagnostic import diagnostic_test as diagnostic_test
+from .epi.diagnostic import ndcg as ndcg
 from .epi.diagnostic import roc_curve as roc_curve
 from .epi.diagnostic import sensitivity_specificity as sensitivity_specificity
 from .epi.measures import attributable_risk as attributable_risk
@@ -363,16 +561,44 @@ from .exceptions import MethodIncompatibility as MethodIncompatibility
 from .exceptions import NumericalInstability as NumericalInstability
 from .exceptions import StatsPAIError as StatsPAIError
 from .exceptions import StatsPAIWarning as StatsPAIWarning
+from .experimental.adaptive import AdaptiveInferenceResult as AdaptiveInferenceResult
+from .experimental.adaptive import BanditExperimentResult as BanditExperimentResult
+from .experimental.adaptive import adaptive_inference as adaptive_inference
+from .experimental.adaptive import bandit_allocate as bandit_allocate
+from .experimental.adaptive import bandit_experiment as bandit_experiment
+from .experimental.adaptive import contextual_bandit as contextual_bandit
 from .experimental.attrition import AttritionResult as AttritionResult
 from .experimental.attrition import attrition_bounds as attrition_bounds
 from .experimental.attrition import attrition_test as attrition_test
+from .experimental.cuped import cuped as cuped
 from .experimental.design import BalanceResult as BalanceResult
 from .experimental.design import RandomizationResult as RandomizationResult
 from .experimental.design import balance_check as balance_check
 from .experimental.design import randomize as randomize
+from .experimental.group_sequential import (
+    GroupSequentialResult as GroupSequentialResult,
+)
+from .experimental.group_sequential import group_sequential as group_sequential
+from .experimental.msprt import MSPRTResult as MSPRTResult
+from .experimental.msprt import msprt as msprt
+from .experimental.msprt import msprt_lambda as msprt_lambda
 from .experimental.optimal import OptimalDesignResult as OptimalDesignResult
 from .experimental.optimal import optimal_design as optimal_design
+from .experimental.switchback import switchback as switchback
+from .experimental.switchback import switchback_design as switchback_design
+from .fairness.core import FairnessAudit as FairnessAudit
+from .fairness.core import FairnessResult as FairnessResult
+from .fairness.core import counterfactual_fairness as counterfactual_fairness
+from .fairness.core import demographic_parity as demographic_parity
+from .fairness.core import equalized_odds as equalized_odds
+from .fairness.core import fairness_audit as fairness_audit
 from .fairness.core import orthogonal_to_bias as orthogonal_to_bias
+from .fairness.evidence_test import (
+    EvidenceWithoutInjusticeResult as EvidenceWithoutInjusticeResult,
+)
+from .fairness.evidence_test import (
+    evidence_without_injustice as evidence_without_injustice,
+)
 from .fixest.wrapper import etable as etable
 from .fixest.wrapper import feglm as feglm
 from .fixest.wrapper import feols as feols
@@ -381,7 +607,9 @@ from .forest.causal_forest import CausalForest as CausalForest
 from .forest.causal_forest import causal_forest as causal_forest
 from .forest.forest_heterogeneity import cate_pretrend_test as cate_pretrend_test
 from .forest.forest_heterogeneity import forest_group_effects as forest_group_effects
+from .forest.forest_heterogeneity import forest_policy_tree as forest_policy_tree
 from .forest.forest_heterogeneity import forest_support as forest_support
+from .forest.forest_heterogeneity import rate_split as rate_split
 from .forest.forest_inference import (
     average_treatment_effect as average_treatment_effect,
 )
@@ -389,8 +617,29 @@ from .forest.forest_inference import calibrate_cate as calibrate_cate
 from .forest.forest_inference import calibration_test as calibration_test
 from .forest.forest_inference import calibration_test as test_calibration
 from .forest.forest_inference import forest_diagnostics as forest_diagnostics
+from .forest.forest_inference import grf_calibration as grf_calibration
 from .forest.forest_inference import honest_variance as honest_variance
 from .forest.forest_inference import rate as rate
+from .forest.forest_tools import best_linear_projection as best_linear_projection
+from .forest.forest_tools import get_scores as get_scores
+from .forest.forest_tools import variable_importance as variable_importance
+from .forest.iv_forest import IVForestResult as IVForestResult
+from .forest.iv_forest import instrumental_forest as instrumental_forest
+from .forest.iv_forest import iv_forest as iv_forest
+from .forest.lm_forest import LMForestResult as LMForestResult
+from .forest.lm_forest import lm_forest as lm_forest
+from .forest.multi_arm_forest import MultiArmForestResult as MultiArmForestResult
+from .forest.multi_arm_forest import multi_arm_forest as multi_arm_forest
+from .forest.regression_forests import PredictionForest as PredictionForest
+from .forest.regression_forests import (
+    multi_regression_forest as multi_regression_forest,
+)
+from .forest.regression_forests import probability_forest as probability_forest
+from .forest.regression_forests import quantile_forest as quantile_forest
+from .forest.regression_forests import regression_forest as regression_forest
+from .forest.survival_forest import SurvivalForestResult as SurvivalForestResult
+from .forest.survival_forest import survival_forest as survival_forest
+from .forest.tuning import tune_causal_forest as tune_causal_forest
 from .frontier.malmquist import MalmquistResult as MalmquistResult
 from .frontier.malmquist import malmquist as malmquist
 from .frontier.malmquist import translog_design as translog_design
@@ -403,27 +652,45 @@ from .frontier.sfa import FrontierResult as FrontierResult
 from .frontier.sfa import frontier as frontier
 from .frontier.te_tools import te_rank as te_rank
 from .frontier.te_tools import te_summary as te_summary
+from .geolift.core import geolift as geolift
 from .gformula import ice as gformula_ice_fn
 from .gformula.ice import ICEResult as ICEResult
 from .gformula.mc import MCGFormulaResult as MCGFormulaResult
 from .gformula.mc import gformula_mc as gformula_mc
 from .gmm.arellano_bond import xtabond as xtabond
+from .gmm.arellano_bond import xtdpdsys as xtdpdsys
 from .gmm.general_gmm import gmm as gmm
+from .gmm.lsdvc import xtlsdvc as xtlsdvc
 from .help import HelpResult as HelpResult
 from .help import help as help
+from .imputation._mi_test import mi_test as mi_test
 from .imputation.mice import MICEResult as MICEResult
 from .imputation.mice import mi_estimate as mi_estimate
 from .imputation.mice import mice as mice
+from .inference._jackknife_general import JackknifeResult as JackknifeResult
+from .inference._jackknife_general import jackknife as jackknife
 from .inference.aipw import aipw as aipw
+from .inference.basic_tests import ci as ci
+from .inference.basic_tests import prtest as prtest
+from .inference.basic_tests import sktest as sktest
+from .inference.basic_tests import swilk as swilk
+from .inference.bitest import BiTestResult as BiTestResult
+from .inference.bitest import bitest as bitest
 from .inference.bootstrap import BootstrapResult as BootstrapResult
 from .inference.bootstrap import bootstrap as bootstrap
 from .inference.conley import conley as conley
+from .inference.difference_in_means import difference_in_means as difference_in_means
+from .inference.effect_size import cor_test as cor_test
+from .inference.effect_size import esize as esize
 from .inference.front_door import front_door as front_door
 from .inference.g_computation import g_computation as g_computation
 from .inference.ipw import ipw as ipw
+from .inference.iv_wild import iv_wild_bootstrap as iv_wild_bootstrap
 from .inference.jackknife import cr2_se as cr2_se
 from .inference.jackknife import jackknife_se as jackknife_se
 from .inference.jackknife import wild_cluster_boot as wild_cluster_boot
+from .inference.lm_lin import lm_lin as lm_lin
+from .inference.loneway import loneway as loneway
 from .inference.meta_analysis import MetaAnalysisResult as MetaAnalysisResult
 from .inference.meta_analysis import meta_analysis as meta_analysis
 from .inference.multiway_cluster import cluster_robust_se as cluster_robust_se
@@ -431,10 +698,31 @@ from .inference.multiway_cluster import cr3_jackknife_vcov as cr3_jackknife_vcov
 from .inference.multiway_cluster import multiway_cluster_vcov as multiway_cluster_vcov
 from .inference.pate import PATEEstimator as PATEEstimator
 from .inference.pate import pate as pate
+from .inference.ppi import ppi_mean as ppi_mean
+from .inference.ppi import ppi_ols as ppi_ols
 from .inference.randomization import FisherResult as FisherResult
 from .inference.randomization import fisher_exact as fisher_exact
 from .inference.randomization import ri_test as ri_test
+from .inference.rank_tests import ClassicTestResult as ClassicTestResult
+from .inference.rank_tests import ksmirnov as ksmirnov
+from .inference.rank_tests import ktau as ktau
+from .inference.rank_tests import kwallis as kwallis
+from .inference.rank_tests import median_test as median_test
+from .inference.rank_tests import oneway as oneway
+from .inference.rank_tests import ranksum as ranksum
+from .inference.rank_tests import robvar as robvar
+from .inference.rank_tests import signrank as signrank
+from .inference.rank_tests import spearman as spearman
+from .inference.sdtest import SDTestResult as SDTestResult
+from .inference.sdtest import sdtest as sdtest
+from .inference.sdtest import ztest as ztest
+from .inference.suest import SuestResult as SuestResult
+from .inference.suest import suest as suest
+from .inference.ttest import TTestResult as TTestResult
+from .inference.ttest import ttest as ttest
 from .inference.twoway_cluster import twoway_cluster as twoway_cluster
+from .inference.vcov_refit import vcov as vcov
+from .inference.vcov_refit import vcov_compare as vcov_compare
 from .inference.wild_bootstrap import wild_cluster_bootstrap as wild_cluster_bootstrap
 from .inference.wild_subcluster import (
     subcluster_wild_bootstrap as subcluster_wild_bootstrap,
@@ -462,10 +750,21 @@ from .interference.network_exposure import (
     NetworkExposureResult as NetworkExposureResult,
 )
 from .interference.network_exposure import network_exposure as network_exposure
+from .interference.orthogonal import InwardOutwardResult as InwardOutwardResult
+from .interference.orthogonal import NetworkHTEResult as NetworkHTEResult
+from .interference.orthogonal import (
+    inward_outward_spillover as inward_outward_spillover,
+)
+from .interference.orthogonal import network_hte as network_hte
 from .interference.peer_effects import PeerEffectsResult as PeerEffectsResult
 from .interference.peer_effects import peer_effects as peer_effects
+from .interference.randomization_test import (
+    InterferenceTestResult as InterferenceTestResult,
+)
+from .interference.randomization_test import interference_test as interference_test
 from .interference.spillover import SpilloverEstimator as SpilloverEstimator
 from .interference.spillover import spillover as spillover
+from .interference.two_stage import two_stage_interference as two_stage_interference
 from .iv.continuous_late import ContinuousLATEResult as ContinuousLATEResult
 from .iv.continuous_late import continuous_iv_late as continuous_iv_late
 from .iv.iv_diag import IVDiagResult as IVDiagResult
@@ -473,6 +772,8 @@ from .iv.iv_diag import iv_compare as iv_compare
 from .iv.iv_diag import iv_diag as iv_diag
 from .iv.kernel_iv import KernelIVResult as KernelIVResult
 from .iv.kernel_iv import kernel_iv as kernel_iv
+from .iv.zero_first_stage import ZeroFirstStageResult as ZeroFirstStageResult
+from .iv.zero_first_stage import zero_first_stage as zero_first_stage
 from .longitudinal import analyze as longitudinal_analyze
 from .longitudinal import contrast as longitudinal_contrast
 from .longitudinal.analyze import LongitudinalResult as LongitudinalResult
@@ -481,8 +782,19 @@ from .longitudinal.regime import always_treat as always_treat
 from .longitudinal.regime import never_treat as never_treat
 from .longitudinal.regime import regime as regime
 from .matching import match as match
+from .matching._cem_extras import l1_imbalance as l1_imbalance
+from .matching.bal_tab import BalTabResult as BalTabResult
+from .matching.bal_tab import bal_tab as bal_tab
+from .matching.balance_randomization import (
+    BalanceRandomizationResult as BalanceRandomizationResult,
+)
+from .matching.balance_randomization import (
+    balance_vs_randomization as balance_vs_randomization,
+)
 from .matching.cbps import cbps as cbps
 from .matching.ebalance import ebalance as ebalance
+from .matching.full import FullMatchResult as FullMatchResult
+from .matching.full import full_match as full_match
 from .matching.genmatch import GenMatchResult as GenMatchResult
 from .matching.genmatch import genmatch as genmatch
 from .matching.match import MatchEstimator as MatchEstimator
@@ -503,26 +815,87 @@ from .matching.ps_diagnostics import overlap_plot as overlap_plot
 from .matching.ps_diagnostics import propensity_score as propensity_score
 from .matching.ps_diagnostics import ps_balance as ps_balance
 from .matching.ps_diagnostics import trimming as trimming
+from .matching.ps_weights import energy_distance as energy_distance
+from .matching.ps_weights import ess as ess
+from .matching.ps_weights import implied_weights as implied_weights
+from .matching.ps_weights import ps_weights as ps_weights
+from .matching.pscore import PScoreResult as PScoreResult
+from .matching.pscore import pscore as pscore
 from .matching.psmatch2 import PSMatch2Result as PSMatch2Result
 from .matching.psmatch2 import psmatch2 as psmatch2
+from .matching.residual_balance import residual_balance as residual_balance
 from .matching.sbw import SBWResult as SBWResult
 from .matching.sbw import sbw as sbw
+from .matching.two_criteria import TwoCriteriaMatchResult as TwoCriteriaMatchResult
+from .matching.two_criteria import tighten_blocks as tighten_blocks
+from .matching.two_criteria import two_criteria_match as two_criteria_match
+from .matching.weightit import WeightItResult as WeightItResult
+from .matching.weightit import weightit as weightit
 from .matrix_completion.mc_panel import MCPanel as MCPanel
 from .matrix_completion.mc_panel import mc_panel as mc_panel
+from .mcmc.arima import bayes_arima as bayes_arima
+from .mcmc.bma import BMAResult as BMAResult
+from .mcmc.bma import bma as bma
+from .mcmc.bootstrap import bayes_bootstrap as bayes_bootstrap
+from .mcmc.causal_bart import BayesCausalResult as BayesCausalResult
+from .mcmc.causal_bart import bart_causal as bart_causal
+from .mcmc.checks import BayesR2Result as BayesR2Result
+from .mcmc.checks import PPCResult as PPCResult
+from .mcmc.checks import bayes_r2 as bayes_r2
+from .mcmc.checks import loo_r2 as loo_r2
+from .mcmc.checks import mad_sd as mad_sd
+from .mcmc.checks import ppc as ppc
+from .mcmc.compare import BayesFactorResult as BayesFactorResult
+from .mcmc.compare import bayes_factor as bayes_factor
+from .mcmc.compare import savage_dickey as savage_dickey
+from .mcmc.crossval import LOOResult as LOOResult
+from .mcmc.crossval import PSISResult as PSISResult
+from .mcmc.crossval import kfold as kfold
+from .mcmc.crossval import kfold_split as kfold_split
+from .mcmc.crossval import loo as loo
+from .mcmc.crossval import loo_compare as loo_compare
+from .mcmc.crossval import loo_predict as loo_predict
+from .mcmc.crossval import psis as psis
+from .mcmc.crossval import waic as waic
+from .mcmc.diagnostics import MCMCDiagnostic as MCMCDiagnostic
+from .mcmc.diagnostics import gelman_rubin as gelman_rubin
+from .mcmc.diagnostics import geweke_diag as geweke_diag
+from .mcmc.diagnostics import heidel_diag as heidel_diag
+from .mcmc.diagnostics import hpd_interval as hpd_interval
+from .mcmc.diagnostics import mcmc_ess as mcmc_ess
+from .mcmc.diagnostics import mcmc_summary as mcmc_summary
+from .mcmc.diagnostics import raftery_diag as raftery_diag
+from .mcmc.gp import GPResult as GPResult
+from .mcmc.gp import gp_regress as gp_regress
+from .mcmc.iv import bayes_ivreg as bayes_ivreg
+from .mcmc.mixed import BayesMixedResult as BayesMixedResult
+from .mcmc.mixed import bayes_mixed as bayes_mixed
+from .mcmc.mixture import bayes_mixture as bayes_mixture
+from .mcmc.mprobit import bayes_mnprobit as bayes_mnprobit
+from .mcmc.mprobit import bayes_mvprobit as bayes_mvprobit
+from .mcmc.regress import BayesRegressResult as BayesRegressResult
+from .mcmc.regress import bayes_regress as bayes_regress
+from .mcmc.shrinkage import bayes_shrink as bayes_shrink
+from .mcmc.simulation import abc as abc
+from .mcmc.sur import bayes_sur as bayes_sur
+from .mcmc.sv import stochvol as stochvol
+from .mcmc.trees import BARTResult as BARTResult
+from .mcmc.trees import bart as bart
+from .mediation.four_way import FourWayResult as FourWayResult
+from .mediation.four_way import four_way_decomposition as four_way_decomposition
 from .mediation.mediate import MediationAnalysis as MediationAnalysis
 from .mediation.mediate import mediate as mediate
 from .mediation.mediate import mediate_interventional as mediate_interventional
+from .mediation.paths import mediate_paths as mediate_paths
 from .mediation.sensitivity import mediate_sensitivity as mediate_sensitivity
 from .mendelian.diagnostics import HeterogeneityResult as HeterogeneityResult
 from .mendelian.diagnostics import LeaveOneOutResult as LeaveOneOutResult
-from .mendelian.diagnostics import MRPressoResult as MRPressoResult
 from .mendelian.diagnostics import PleiotropyResult as PleiotropyResult
 from .mendelian.diagnostics import RadialResult as RadialResult
 from .mendelian.diagnostics import SteigerResult as SteigerResult
 from .mendelian.diagnostics import mr_heterogeneity as mr_heterogeneity
 from .mendelian.diagnostics import mr_leave_one_out as mr_leave_one_out
 from .mendelian.diagnostics import mr_pleiotropy_egger as mr_pleiotropy_egger
-from .mendelian.diagnostics import mr_presso as mr_presso
 from .mendelian.diagnostics import mr_radial as mr_radial
 from .mendelian.diagnostics import mr_steiger as mr_steiger
 from .mendelian.dispatcher import available_methods as mr_available_methods
@@ -548,10 +921,19 @@ from .mendelian.mr import mendelian_randomization as mendelian_randomization
 from .mendelian.mr import mr_egger as mr_egger
 from .mendelian.mr import mr_ivw as mr_ivw
 from .mendelian.mr import mr_median as mr_median
+from .mendelian.multivariable import MediationMRResult as MediationMRResult
+from .mendelian.multivariable import MRBMAResult as MRBMAResult
+from .mendelian.multivariable import MVMRResult as MVMRResult
+from .mendelian.multivariable import mr_bma as mr_bma
 from .mendelian.multivariable import mr_mediation as mr_mediation
+from .mendelian.multivariable import mr_multivariable as mr_multivariable
+from .mendelian.presso import MRPressoResult as MRPressoResult
+from .mendelian.presso import mr_presso as mr_presso
 from .metalearners.auto_cate import AutoCATEResult as AutoCATEResult
 from .metalearners.auto_cate import auto_cate as auto_cate
 from .metalearners.auto_cate_tuned import auto_cate_tuned as auto_cate_tuned
+from .metalearners.cate_curves import CATEGainCurveResult as CATEGainCurveResult
+from .metalearners.cate_curves import cate_gain_curve as cate_gain_curve
 from .metalearners.cate_eval import CATEEvalResult as CATEEvalResult
 from .metalearners.cate_eval import cate_eval as cate_eval
 from .metalearners.cluster_cate import ClusterCATEResult as ClusterCATEResult
@@ -578,6 +960,7 @@ from .mht.romano_wolf import benjamini_hochberg as benjamini_hochberg
 from .mht.romano_wolf import bonferroni as bonferroni
 from .mht.romano_wolf import holm as holm
 from .mht.romano_wolf import romano_wolf as romano_wolf
+from .mht.westfall_young import westfall_young as westfall_young
 from .msm.msm import MarginalStructuralModel as MarginalStructuralModel
 from .msm.msm import msm as msm
 from .msm.msm import stabilized_weights as stabilized_weights
@@ -594,6 +977,43 @@ from .multilevel.glmm import menbreg as menbreg
 from .multilevel.glmm import mepoisson as mepoisson
 from .multilevel.lmm import MixedResult as MixedResult
 from .multilevel.lmm import mixed as mixed
+from .multivariate.factor import FactorResult as FactorResult
+from .multivariate.factor import factor as factor
+from .multivariate.pca import PCAResult as PCAResult
+from .multivariate.pca import pca as pca
+from .network import network_graph as network_graph
+from .network._core import Graph as Graph
+from .network.centrality import CentralityResult as CentralityResult
+from .network.centrality import betweenness_centrality as betweenness_centrality
+from .network.centrality import bonacich_power as bonacich_power
+from .network.centrality import centrality as centrality
+from .network.centrality import closeness_centrality as closeness_centrality
+from .network.centrality import degree_centrality as degree_centrality
+from .network.centrality import eigenvector_centrality as eigenvector_centrality
+from .network.centrality import hits as hits
+from .network.centrality import katz_centrality as katz_centrality
+from .network.centrality import pagerank as pagerank
+from .network.community import CommunityResult as CommunityResult
+from .network.community import community_detection as community_detection
+from .network.community import modularity as network_modularity
+from .network.datasets import florentine_families as florentine_families
+from .network.datasets import karate_club as karate_club
+from .network.descriptives import ComponentsResult as ComponentsResult
+from .network.descriptives import NetworkSummaryResult as NetworkSummaryResult
+from .network.descriptives import assortativity as assortativity
+from .network.descriptives import clustering as clustering
+from .network.descriptives import network_components as network_components
+from .network.descriptives import network_summary as network_summary
+from .network.descriptives import reciprocity as reciprocity
+from .network.descriptives import transitivity as transitivity
+from .network.ergm import ERGMResult as ERGMResult
+from .network.ergm import ergm as ergm
+from .network.plots import network_plot as network_plot
+from .network.regression import DyadicRegressionResult as DyadicRegressionResult
+from .network.regression import QAPResult as QAPResult
+from .network.regression import dyadic_regression as dyadic_regression
+from .network.regression import netlm as netlm
+from .network.regression import netlogit as netlogit
 from .neural_causal.cevae import CEVAE as CEVAE
 from .neural_causal.cevae import CEVAEResult as CEVAEResult
 from .neural_causal.cevae import cevae as cevae
@@ -605,6 +1025,8 @@ from .neural_causal.exports import (
 from .neural_causal.exports import neural_effects_frame as neural_effects_frame
 from .neural_causal.exports import neural_summary_frame as neural_summary_frame
 from .neural_causal.exports import neural_training_frame as neural_training_frame
+from .neural_causal.gnn_causal import GNNCausalResult as GNNCausalResult
+from .neural_causal.gnn_causal import gnn_causal as gnn_causal
 from .neural_causal.models import CFRNet as CFRNet
 from .neural_causal.models import DragonNet as DragonNet
 from .neural_causal.models import TARNet as TARNet
@@ -612,11 +1034,29 @@ from .neural_causal.models import cfrnet as cfrnet
 from .neural_causal.models import dragonnet as dragonnet
 from .neural_causal.models import tarnet as tarnet
 from .neural_causal.plots import neural_causal_plot as neural_causal_plot
+from .nonparametric.conditional_tree import CTreeResult as CTreeResult
+from .nonparametric.conditional_tree import ctree as ctree
 from .nonparametric.kdensity import KDensityResult as KDensityResult
 from .nonparametric.kdensity import kdensity as kdensity
 from .nonparametric.lpoly import LPolyResult as LPolyResult
 from .nonparametric.lpoly import lpoly as lpoly
+from .nonparametric.lprobust import LProbustPoint as LProbustPoint
+from .nonparametric.lprobust import lpbwselect_ce_rot as lpbwselect_ce_rot
+from .nonparametric.lprobust import lpbwselect_imse_dpi as lpbwselect_imse_dpi
+from .nonparametric.lprobust import lpbwselect_imse_rot as lpbwselect_imse_rot
+from .nonparametric.lprobust import lpbwselect_mse_dpi as lpbwselect_mse_dpi
+from .nonparametric.lprobust import lpbwselect_mse_rot as lpbwselect_mse_rot
+from .nonparametric.lprobust import lprobust_at_point as lprobust_at_point
+from .nonparametric.series import series as series
 from .ope.estimators import OPEResult as OPEResult
+from .ope.mdp import MarginalPolicyEffectResult as MarginalPolicyEffectResult
+from .ope.mdp import MDPPolicyValueResult as MDPPolicyValueResult
+from .ope.mdp import marginal_policy_effect as marginal_policy_effect
+from .ope.mdp import mdp_policy_value as mdp_policy_value
+from .ope.sharp_confounding import CausalPolicyForestResult as CausalPolicyForestResult
+from .ope.sharp_confounding import SharpOPEResult as SharpOPEResult
+from .ope.sharp_confounding import causal_policy_forest as causal_policy_forest
+from .ope.sharp_confounding import sharp_ope_unobserved as sharp_ope_unobserved
 from .output._bibliography import citations_to_bib_entries as citations_to_bib_entries
 from .output._bibliography import csl_filename as csl_filename
 from .output._bibliography import csl_url as csl_url
@@ -638,6 +1078,12 @@ from .output._lineage import get_provenance as get_provenance
 from .output._lineage import lineage_summary as lineage_summary
 from .output._replication_pack import ReplicationPack as ReplicationPack
 from .output._replication_pack import replication_pack as replication_pack
+from .output._replication_verify import (
+    ReplicationVerification as ReplicationVerification,
+)
+from .output._replication_verify import (
+    verify_replication_pack as verify_replication_pack,
+)
 from .output.collection import Collection as Collection
 from .output.collection import CollectionItem as CollectionItem
 from .output.collection import collect as collect
@@ -647,6 +1093,7 @@ from .output.estimates import esttab as esttab
 from .output.mean_comparison import MeanComparisonResult as MeanComparisonResult
 from .output.mean_comparison import mean_comparison as mean_comparison
 from .output.modelsummary import coefplot as coefplot
+from .output.modelsummary import coefplot_tikz as coefplot_tikz
 from .output.modelsummary import modelsummary as modelsummary
 from .output.outreg2 import OutReg2 as OutReg2
 from .output.outreg2 import outreg2 as outreg2
@@ -659,12 +1106,16 @@ from .output.sumstats import balance_table as balance_table
 from .output.sumstats import sumstats as sumstats
 from .output.tab import tab as tab
 from .panel import panel as panel
+from .panel.fama_macbeth import fama_macbeth as fama_macbeth
 from .panel.feols import FEOLSResult as FEOLSResult
 from .panel.feols import feols as hdfe_ols
+from .panel.hausman_taylor import xthtaylor as xthtaylor
 from .panel.hdfe import Absorber as Absorber
+from .panel.hdfe import SlopeSpec as SlopeSpec
 from .panel.hdfe import absorb_ols as absorb_ols
 from .panel.hdfe import demean as demean
 from .panel.interactive_fe import interactive_fe as interactive_fe
+from .panel.mmqreg import mmqreg as mmqreg
 from .panel.panel_binary import panel_logit as panel_logit
 from .panel.panel_binary import panel_probit as panel_probit
 from .panel.panel_fgls import panel_fgls as panel_fgls
@@ -675,19 +1126,46 @@ from .panel.panel_reg import balance_panel as balance_panel
 from .panel.panel_reg import panel_compare as panel_compare
 from .panel.unit_root import PanelUnitRootResult as PanelUnitRootResult
 from .panel.unit_root import panel_unitroot as panel_unitroot
+from .panel.xt_tools import xtoverid as xtoverid
+from .panel.xt_tools import xtserial as xtserial
+from .panel.xt_tools import xtsum as xtsum
+from .panel.xtintreg import xtintreg as xtintreg
+from .panel.xtintreg import xttobit as xttobit
+from .panel.xtivreg import xtivreg as xtivreg
+from .panel.xtpcse import xtpcse as xtpcse
+from .panel.xtregar import xtregar as xtregar
+from .parity import ParityStatus as ParityStatus
+from .parity import parity_matrix as parity_matrix
+from .parity import parity_status as parity_status
+from .parity import parity_summary as parity_summary
+from .plots._legend_sync import refresh_legend as refresh_legend
 from .plots.binscatter import binscatter as binscatter
+from .plots.counterfactual import counterfactual_data as counterfactual_data
+from .plots.counterfactual import counterfactual_plot as counterfactual_plot
 from .plots.interactive import get_code as get_code
 from .plots.interactive import interactive as interactive
 from .plots.themes import list_themes as list_themes
 from .plots.themes import set_theme as set_theme
 from .plots.themes import use_chinese as use_chinese
+from .policy_learning.ope import direct_method as direct_method
+from .policy_learning.ope import doubly_robust as doubly_robust
+from .policy_learning.ope import ips as ips
+from .policy_learning.ope import snips as snips
 from .policy_learning.policy_tree import PolicyTree as PolicyTree
 from .policy_learning.policy_tree import PolicyTreeResult as PolicyTreeResult
 from .policy_learning.policy_tree import policy_value as policy_value
+from .policy_learning.targeting import policy_targeting as policy_targeting
 from .postestimation.contract import postestimation_contract as postestimation_contract
 from .postestimation.contract import postestimation_contract as postestimation_report
 from .postestimation.hypothesis import lincom as lincom
 from .postestimation.hypothesis import test as test
+from .postestimation.marginaleffects import avg_comparisons as avg_comparisons
+from .postestimation.marginaleffects import avg_predictions as avg_predictions
+from .postestimation.marginaleffects import avg_slopes as avg_slopes
+from .postestimation.marginaleffects import comparisons as comparisons
+from .postestimation.marginaleffects import hypotheses as hypotheses
+from .postestimation.marginaleffects import predictions as predictions
+from .postestimation.marginaleffects import slopes as slopes
 from .postestimation.margins import contrast as contrast
 from .postestimation.margins import event_study_table as event_study_table
 from .postestimation.margins import margins as margins
@@ -696,6 +1174,9 @@ from .postestimation.margins import margins_at_plot as margins_at_plot
 from .postestimation.margins import margins_table as margins_table
 from .postestimation.margins import marginsplot as marginsplot
 from .postestimation.margins import pwcompare as pwcompare
+from .postestimation.nlcom import nlcom as nlcom
+from .power.design_analysis import RetrodesignResult as RetrodesignResult
+from .power.design_analysis import retrodesign as retrodesign
 from .power.power import PowerResult as PowerResult
 from .power.power import mde as mde
 from .power.power import power as power
@@ -708,6 +1189,7 @@ from .power.power import power_rd as power_rd
 from .power.study_designs import power_case_control as power_case_control
 from .power.study_designs import power_logrank as power_logrank
 from .power.study_designs import power_two_proportions as power_two_proportions
+from .power.ttest_power import power_ttest as power_ttest
 from .principal_strat.principal_strat import (
     PrincipalStratResult as PrincipalStratResult,
 )
@@ -718,8 +1200,20 @@ from .principal_strat.principal_strat import (
 from .proximal.bidirectional import bidirectional_pci as bidirectional_pci
 from .proximal.fortified import fortified_pci as fortified_pci
 from .proximal.mtp import pci_mtp as pci_mtp
+from .proximal.negative_controls import NegativeControlResult as NegativeControlResult
+from .proximal.negative_controls import (
+    double_negative_control as double_negative_control,
+)
+from .proximal.negative_controls import (
+    negative_control_exposure as negative_control_exposure,
+)
+from .proximal.negative_controls import (
+    negative_control_outcome as negative_control_outcome,
+)
 from .proximal.p2sls import ProximalCausalInference as ProximalCausalInference
 from .proximal.p2sls import proximal as proximal
+from .proximal.pci_regression import ProximalRegResult as ProximalRegResult
+from .proximal.pci_regression import proximal_regression as proximal_regression
 from .proximal.proxy_selector import ProxyScoreResult as ProxyScoreResult
 from .proximal.proxy_selector import select_pci_proxies as select_pci_proxies
 from .qte.beyond_average import BeyondAverageResult as BeyondAverageResult
@@ -731,9 +1225,12 @@ from .qte.distributional import DTEResult as DTEResult
 from .qte.distributional import distributional_te as distributional_te
 from .qte.hd_panel import HDPanelQTEResult as HDPanelQTEResult
 from .qte.hd_panel import qte_hd_panel as qte_hd_panel
+from .qte.panel_qtet import panel_qtet as panel_qtet
 from .qte.qte import QTEResult as QTEResult
 from .qte.qte import qdid as qdid
 from .qte.qte import qte as qte
+from .quasi.ancova import ancova as ancova
+from .quasi.ancova import negd as negd
 from .question.preregister import load_preregister as load_preregister
 from .question.preregister import preregister as preregister
 from .question.question import CausalQuestion as CausalQuestion
@@ -744,6 +1241,7 @@ from .rd._aliases import boundary_rd as boundary_rd
 from .rd._aliases import geographic_rd as geographic_rd
 from .rd._aliases import multi_cutoff_rd as multi_cutoff_rd
 from .rd._aliases import multi_score_rd as multi_score_rd
+from .rd._rd2d_plot import rd2d_plot as rd2d_plot
 from .rd.bandwidth import rdbwselect as rdbwselect
 from .rd.bayes_hte import BayesRDHTEResult as BayesRDHTEResult
 from .rd.bayes_hte import rd_bayes_hte as rd_bayes_hte
@@ -755,6 +1253,7 @@ from .rd.diagnostics import rdbalance as rdbalance
 from .rd.diagnostics import rdbwsensitivity as rdbwsensitivity
 from .rd.diagnostics import rdplacebo as rdplacebo
 from .rd.diagnostics import rdsummary as rdsummary
+from .rd.diff_in_disc import rd_diff_in_disc as rd_diff_in_disc
 from .rd.distribution_valued import DistRDResult as DistRDResult
 from .rd.distribution_valued import rd_distribution as rd_distribution
 from .rd.distributional_design import DDDResult as DDDResult
@@ -776,12 +1275,13 @@ from .rd.locrand import rdsensitivity as rdsensitivity
 from .rd.locrand import rdwinselect as rdwinselect
 from .rd.multi_score import MultiScoreRDResult as MultiScoreRDResult
 from .rd.multi_score import rd_multi_score as rd_multi_score
+from .rd.optimized import rd_optimized as rd_optimized
 from .rd.rd2d import rd2d as rd2d
 from .rd.rd2d import rd2d_bw as rd2d_bw
-from .rd.rd2d import rd2d_plot as rd2d_plot
 from .rd.rd_discrete import rd_discrete as rd_discrete
 from .rd.rd_flex import rd_flex as rd_flex
 from .rd.rdit import rdit as rdit
+from .rd.rdmcplot import rdmcplot as rdmcplot
 from .rd.rdml import rd_boost as rd_boost
 from .rd.rdml import rd_cate_summary as rd_cate_summary
 from .rd.rdml import rd_forest as rd_forest
@@ -798,48 +1298,93 @@ from .rd.rkd import rkd as rkd
 from .registry import FailureMode as FailureMode
 from .registry import agent_card as agent_card
 from .registry import agent_cards as agent_cards
+from .registry import agent_schema as agent_schema
 from .registry import all_schemas as all_schemas
 from .registry import describe_function as describe_function
 from .registry import function_schema as function_schema
 from .registry import list_functions as list_functions
 from .registry import search_functions as search_functions
+from .registry import support_tier as support_tier
 from .regression.advanced_iv import jive as jive
 from .regression.advanced_iv import lasso_iv as lasso_iv
 from .regression.advanced_iv import liml as liml
+from .regression.boxcox import BoxCoxResult as BoxCoxResult
+from .regression.boxcox import boxcox as boxcox
+from .regression.cnsreg import cnsreg as cnsreg
 from .regression.count import nbreg as nbreg
 from .regression.count import poisson as poisson
 from .regression.count import ppmlhdfe as ppmlhdfe
 from .regression.count import xtnbreg as xtnbreg
+from .regression.et_count import etpoisson as etpoisson
 from .regression.fracreg import betareg as betareg
 from .regression.fracreg import fracreg as fracreg
+from .regression.gam import GAMResult as GAMResult
+from .regression.gam import gam as gam
+from .regression.gee import gee as gee
 from .regression.glm import GLMEstimator as GLMEstimator
 from .regression.glm import GLMRegression as GLMRegression
 from .regression.glm import glm as glm
+from .regression.gologit import gologit as gologit
 from .regression.heckman import heckman as heckman
+from .regression.heckprobit import heckprobit as heckprobit
+from .regression.interflex import interflex as interflex
+from .regression.interflex import interflex_plot as interflex_plot
+from .regression.intreg import intreg as intreg
 from .regression.iv import IVRegression as IVRegression
 from .regression.iv import ivreg as ivreg
+from .regression.iv_count import ivpoisson as ivpoisson
+from .regression.iv_limited import ivprobit as ivprobit
+from .regression.iv_limited import ivtobit as ivtobit
 from .regression.iv_quantile import ivqreg as ivqreg
 from .regression.logit_probit import cloglog as cloglog
 from .regression.logit_probit import logit as logit
 from .regression.logit_probit import probit as probit
 from .regression.mixed_logit import mixlogit as mixlogit
+from .regression.model_average import ModelAverageResult as ModelAverageResult
+from .regression.model_average import model_average as model_average
+from .regression.mprobit import mprobit as mprobit
 from .regression.multinomial import clogit as clogit
 from .regression.multinomial import mlogit as mlogit
 from .regression.multinomial import ologit as ologit
 from .regression.multinomial import oprobit as oprobit
+from .regression.nested_logit import nlogit as nlogit
+from .regression.nls import nls as nls
 from .regression.ols import regress as regress
+from .regression.prais import prais as prais
 from .regression.quantile import qreg as qreg
 from .regression.quantile import sqreg as sqreg
+from .regression.ridge import RidgeResult as RidgeResult
+from .regression.ridge import ridge as ridge
+from .regression.robreg import robreg as robreg
+from .regression.rolling import rolling as rolling
+from .regression.scaling import invlogit as invlogit
+from .regression.scaling import standardize as standardize
 from .regression.selection import biprobit as biprobit
 from .regression.selection import etregress as etregress
 from .regression.sur import SURResult as SURResult
 from .regression.sur import sureg as sureg
 from .regression.sur import three_sls as three_sls
+from .regression.threshold import threshold as threshold
 from .regression.tobit import tobit as tobit
 from .regression.truncreg import truncreg as truncreg
 from .regression.zeroinflated import hurdle as hurdle
 from .regression.zeroinflated import zinb as zinb
 from .regression.zeroinflated import zip_model as zip_model
+from .result_card import ResultCard as ResultCard
+from .result_card import result_card as result_card
+from .rlasso._core import rlasso as rlasso
+from .rlasso._logit import rlassologit as rlassologit
+from .rlasso.effect import rlasso_effect as rlasso_effect
+from .rlasso.effect import rlasso_effects as rlasso_effects
+from .rlasso.iv import rlasso_iv as rlasso_iv
+from .rlasso.learner import RlassoClassifier as RlassoClassifier
+from .rlasso.learner import RlassologitClassifier as RlassologitClassifier
+from .rlasso.learner import RlassoRegressor as RlassoRegressor
+from .rlasso.logit_effect import rlassologit_effect as rlassologit_effect
+from .rlasso.logit_effect import rlassologit_effects as rlassologit_effects
+from .robustness.itcv import itcv as itcv
+from .robustness.refute import RefutationResult as RefutationResult
+from .robustness.refute import refute as refute
 from .robustness.robustness_report import RobustnessResult as RobustnessResult
 from .robustness.robustness_report import robustness_report as robustness_report
 from .robustness.sensitivity_frontier import (
@@ -857,6 +1402,11 @@ from .robustness.spec_curve import spec_curve as spec_curve
 from .robustness.subgroup import SubgroupResult as SubgroupResult
 from .robustness.subgroup import subgroup_analysis as subgroup_analysis
 from .robustness.unified_sensitivity import unified_sensitivity as unified_sensitivity
+from .selection.best_subset import best_subset as best_subset
+from .selection.elastic_net import GlmnetResult as GlmnetResult
+from .selection.elastic_net import glmnet as glmnet
+from .selection.shrinkage import ShrinkageResult as ShrinkageResult
+from .selection.shrinkage import shrinkage as shrinkage
 from .selection.stepwise import SelectionResult as SelectionResult
 from .selection.stepwise import lasso_select as lasso_select
 from .selection.stepwise import stepwise as stepwise
@@ -866,6 +1416,7 @@ from .smart.audit import audit as audit
 from .smart.benchmark import verify_benchmark as verify_benchmark
 from .smart.brief import brief as brief
 from .smart.citations import bib_for as bib_for
+from .smart.citations import bibtex as bibtex
 from .smart.compare import ComparisonResult as ComparisonResult
 from .smart.compare import compare_estimators as compare_estimators
 from .smart.detect_design import detect_design as detect_design
@@ -874,11 +1425,15 @@ from .smart.identification import DiagnosticFinding as DiagnosticFinding
 from .smart.identification import IdentificationError as IdentificationError
 from .smart.identification import IdentificationReport as IdentificationReport
 from .smart.identification import check_identification as check_identification
+from .smart.intake import IntakeResult as IntakeResult
+from .smart.intake import design_intake as design_intake
+from .smart.methods_appendix import methods_appendix as methods_appendix
 from .smart.preflight import preflight as preflight
 from .smart.publication import PubReadyResult as PubReadyResult
 from .smart.publication import pub_ready as pub_ready
 from .smart.recommend import RecommendationResult as RecommendationResult
 from .smart.recommend import recommend as recommend
+from .smart.recommend_benchmark import recommend_benchmark as recommend_benchmark
 from .smart.replicate import list_replications as list_replications
 from .smart.replicate import replicate as replicate
 from .smart.sensitivity import SensitivityDashboard as SensitivityDashboard
@@ -904,6 +1459,8 @@ from .spatial.iv import spatial_iv as spatial_iv
 from .spatial.models._legacy import SpatialModel as SpatialModel
 from .spatial.models.diagnostics import lm_tests as lm_tests
 from .spatial.models.diagnostics import moran_residuals as moran_residuals
+from .spatial.models.durbin_error import gns as gns
+from .spatial.models.durbin_error import sdem as sdem
 from .spatial.models.gmm import sar_gmm as sar_gmm
 from .spatial.models.gmm import sarar_gmm as sarar_gmm
 from .spatial.models.gmm import sem_gmm as sem_gmm
@@ -914,6 +1471,9 @@ from .spatial.models.ml import sdm as sdm
 from .spatial.models.ml import sem as sem
 from .spatial.models.ml import slx as slx
 from .spatial.panel.estimator import spatial_panel as spatial_panel
+from .spatial.utils import distance_to_feature as distance_to_feature
+from .spatial.utils import line_length_in_polygon as line_length_in_polygon
+from .spatial.utils import share_within_buffer as share_within_buffer
 from .spatial.weights.block import block_weights as block_weights
 from .spatial.weights.contiguity import queen_weights as queen_weights
 from .spatial.weights.contiguity import rook_weights as rook_weights
@@ -921,8 +1481,11 @@ from .spatial.weights.core import W as W
 from .spatial.weights.distance import distance_band as distance_band
 from .spatial.weights.distance import kernel_weights as kernel_weights
 from .spatial.weights.distance import knn_weights as knn_weights
-from .structural.blp import BLPResult as BLPResult
+from .structural._blp_result import BLPResult as BLPResult
 from .structural.blp import blp as blp
+from .structural.blp import blp_instruments as blp_instruments
+from .structural.path_analysis import PathAnalysisResult as PathAnalysisResult
+from .structural.path_analysis import path_analysis as path_analysis
 from .structural.production._dispatcher import prod_fn as prod_fn
 from .structural.production._result import ProductionResult as ProductionResult
 from .structural.production.markup import markup as markup
@@ -935,6 +1498,9 @@ from .structural.production.op_lp_acf import levinsohn_petrin as levpet
 from .structural.production.op_lp_acf import olley_pakes as olley_pakes
 from .structural.production.op_lp_acf import olley_pakes as opreg
 from .structural.production.wooldridge import wooldridge_prod as wooldridge_prod
+from .surrogate.index import SurrogateResult as SurrogateResult
+from .surrogate.index import long_term_from_short as long_term_from_short
+from .surrogate.index import proximal_surrogate_index as proximal_surrogate_index
 from .surrogate.index import surrogate_index as surrogate_index
 from .survey.calibration import linear_calibration as linear_calibration
 from .survey.calibration import rake as rake
@@ -943,7 +1509,17 @@ from .survey.design import svydesign as svydesign
 from .survey.estimators import svyglm as svyglm
 from .survey.estimators import svymean as svymean
 from .survey.estimators import svytotal as svytotal
+from .survey.poststrat import PoststratResult as PoststratResult
+from .survey.poststrat import poststratify as poststratify
+from .survey.replicate import ReplicateDesign as ReplicateDesign
+from .survey.replicate import as_svrepdesign as as_svrepdesign
+from .survey.replicate import svrepdesign as svrepdesign
 from .survival.aft import aft as aft
+from .survival.causal_forest import (
+    CausalSurvivalForestResult as CausalSurvivalForestResult,
+)
+from .survival.causal_forest import causal_survival_forest as causal_survival
+from .survival.causal_forest import causal_survival_forest as causal_survival_forest
 from .survival.competing_risks import CumIncResult as CumIncResult
 from .survival.competing_risks import FineGrayResult as FineGrayResult
 from .survival.competing_risks import cuminc as cuminc
@@ -955,6 +1531,9 @@ from .survival.models import cox as cox
 from .survival.models import kaplan_meier as kaplan_meier
 from .survival.models import logrank_test as logrank_test
 from .survival.models import survreg as survreg
+from .survival.restricted_mean import RMSTResult as RMSTResult
+from .survival.restricted_mean import rmst as rmst
+from .survival.teffects import stteffects as stteffects
 from .synth.augsynth import augsynth as augsynth
 from .synth.compare import SynthComparison as SynthComparison
 from .synth.compare import synth_compare as synth_compare
@@ -969,9 +1548,16 @@ from .synth.discos import discos_plot as discos_plot
 from .synth.discos import discos_test as discos_test
 from .synth.discos import qqsynth as qqsynth
 from .synth.discos import stochastic_dominance as stochastic_dominance
+from .synth.experimental_design import (
+    SynthExperimentalDesignResult as SynthExperimentalDesignResult,
+)
+from .synth.experimental_design import (
+    synth_experimental_design as synth_experimental_design,
+)
 from .synth.exports import synth_to_excel as synth_to_excel
 from .synth.exports import synth_to_latex as synth_to_latex
 from .synth.exports import synth_to_markdown as synth_to_markdown
+from .synth.fect import fect as fect
 from .synth.gsynth import gsynth as gsynth
 from .synth.mc import mc_synth as mc_synth
 from .synth.multi_outcome import multi_outcome_synth as multi_outcome_synth
@@ -1007,6 +1593,7 @@ from .synth.sequential_sdid import sequential_sdid as sequential_sdid
 from .synth.staggered import staggered_synth as staggered_synth
 from .synth.survival import SyntheticSurvivalResult as SyntheticSurvivalResult
 from .synth.survival import synth_survival as synth_survival
+from .synth.ttest import synth_ttest as synth_ttest
 from .target_trial import emulate as target_trial_emulate
 from .target_trial import protocol as target_trial_protocol
 from .target_trial import target_checklist as target_trial_checklist
@@ -1016,29 +1603,109 @@ from .target_trial.ccw import clone_censor_weight as clone_censor_weight
 from .target_trial.diagnostics import immortal_time_check as immortal_time_check
 from .target_trial.emulate import TargetTrialResult as TargetTrialResult
 from .target_trial.protocol import TargetTrialProtocol as TargetTrialProtocol
+from .timeseries._ets import ETSResult as ETSResult
+from .timeseries._ets import ets as ets
+from .timeseries._statespace_results import KalmanResult as KalmanResult
+from .timeseries._statespace_results import StateSpaceResult as StateSpaceResult
+from .timeseries._tvp_var_results import TVPVARResult as TVPVARResult
+from .timeseries._tvp_var_sv_results import TVPVARSVResult as TVPVARSVResult
+from .timeseries.abnormal_returns import AbnormalReturnsResult as AbnormalReturnsResult
+from .timeseries.abnormal_returns import abnormal_returns as abnormal_returns
+from .timeseries.ardl import ARDLResult as ARDLResult
+from .timeseries.ardl import ardl as ardl
 from .timeseries.arima import ARIMAResult as ARIMAResult
 from .timeseries.arima import arima as arima
+from .timeseries.bagging import BaggedForecastResult as BaggedForecastResult
+from .timeseries.bagging import bagged_forecast as bagged_forecast
+from .timeseries.bagging import bootstrap_series as bootstrap_series
+from .timeseries.bds import bds as bds
+from .timeseries.beveridge_nelson import BeveridgeNelsonResult as BeveridgeNelsonResult
+from .timeseries.beveridge_nelson import beveridge_nelson as beveridge_nelson
 from .timeseries.bvar import BVARResult as BVARResult
 from .timeseries.bvar import bvar as bvar
+from .timeseries.chow import chow_test as chow_test
 from .timeseries.cointegration import CointegrationResult as CointegrationResult
 from .timeseries.cointegration import engle_granger as engle_granger
 from .timeseries.cointegration import johansen as johansen
+from .timeseries.corrgram import corrgram as corrgram
+from .timeseries.dlm import DLMResult as DLMResult
+from .timeseries.dlm import dlm as dlm
+from .timeseries.forecast_accuracy import TSCVResult as TSCVResult
+from .timeseries.forecast_accuracy import forecast_accuracy as forecast_accuracy
+from .timeseries.forecast_accuracy import tscv as tscv
 from .timeseries.garch import GARCHResult as GARCHResult
 from .timeseries.garch import garch as garch
+from .timeseries.its import ITSResult as ITSResult
+from .timeseries.its import its as its
+from .timeseries.johansen_lrtest import JohansenLRTest as JohansenLRTest
+from .timeseries.johansen_lrtest import johansen_lrtest as johansen_lrtest
 from .timeseries.local_projections import (
     LocalProjectionsResult as LocalProjectionsResult,
 )
 from .timeseries.local_projections import local_projections as local_projections
+from .timeseries.lrvar import LongRunVariance as LongRunVariance
+from .timeseries.lrvar import lrvar as lrvar
+from .timeseries.mswitch import MarkovSwitchingResult as MarkovSwitchingResult
+from .timeseries.mswitch import mswitch as mswitch
+from .timeseries.mswitch_lrtest import MarkovSwitchingLRTest as MarkovSwitchingLRTest
+from .timeseries.mswitch_lrtest import mswitch_lrtest as mswitch_lrtest
+from .timeseries.reconcile import Hierarchy as Hierarchy
+from .timeseries.reconcile import ReconcileResult as ReconcileResult
+from .timeseries.reconcile import hierarchy as hierarchy
+from .timeseries.reconcile import reconcile as reconcile
+from .timeseries.simple_forecast import SimpleForecastResult as SimpleForecastResult
+from .timeseries.simple_forecast import simple_forecast as simple_forecast
+from .timeseries.spectral import (
+    CumulativePeriodogramResult as CumulativePeriodogramResult,
+)
+from .timeseries.spectral import SpectrumResult as SpectrumResult
+from .timeseries.spectral import (
+    cumulative_periodogram_test as cumulative_periodogram_test,
+)
+from .timeseries.spectral import periodogram as periodogram
+from .timeseries.statespace import kalman_filter as kalman_filter
+from .timeseries.statespace import statespace as statespace
+from .timeseries.stl import DecompositionResult as DecompositionResult
+from .timeseries.stl import classical_decompose as classical_decompose
+from .timeseries.stl import stl as stl
 from .timeseries.structural_break import StructuralBreakResult as StructuralBreakResult
 from .timeseries.structural_break import cusum_test as cusum_test
 from .timeseries.structural_break import structural_break as structural_break
+from .timeseries.svar import SVARResult as SVARResult
+from .timeseries.svar import svar as svar
+from .timeseries.ts_features import ts_features as ts_features
+from .timeseries.ts_tools import boxcox_lambda as boxcox_lambda
+from .timeseries.ts_tools import fourier_terms as fourier_terms
+from .timeseries.ts_tools import ljungbox as ljungbox
+from .timeseries.ts_tools import ndiffs as ndiffs
+from .timeseries.ts_tools import nsdiffs as nsdiffs
+from .timeseries.ts_tools import seasonal_dummies as seasonal_dummies
+from .timeseries.tsfilter import FilterResult as FilterResult
+from .timeseries.tsfilter import tsfilter as tsfilter
+from .timeseries.tvp_var import tvp_var as tvp_var
+from .timeseries.tvp_var_sv import tvp_var_sv as tvp_var_sv
+from .timeseries.unit_root import UnitRootResult as UnitRootResult
+from .timeseries.unit_root import unitroot as unitroot
 from .timeseries.var import VARResult as VARResult
 from .timeseries.var import granger_causality as granger_causality
 from .timeseries.var import irf as irf
 from .timeseries.var import var as var
+from .timeseries.var_diagnostics import varsoc as varsoc
+from .timeseries.vecm import VECResult as VECResult
+from .timeseries.vecm import vec as vec
+from .timeseries.xcorr import CrossCorrelogram as CrossCorrelogram
+from .timeseries.xcorr import xcorr as xcorr
+from .timeseries.zivot_andrews import ZivotAndrewsResult as ZivotAndrewsResult
+from .timeseries.zivot_andrews import zivot_andrews as zivot_andrews
+from .tmle.collaborative import ctmle as ctmle
 from .tmle.hal_tmle import HALClassifier as HALClassifier
 from .tmle.hal_tmle import HALRegressor as HALRegressor
 from .tmle.hal_tmle import hal_tmle as hal_tmle
+from .tmle.lmtp import lmtp as lmtp
+from .tmle.ltmle import LTMLEResult as LTMLEResult
+from .tmle.ltmle import ltmle as ltmle
+from .tmle.ltmle_msm import LTMLEMSMResult as LTMLEMSMResult
+from .tmle.ltmle_msm import ltmle_msm as ltmle_msm
 from .tmle.ltmle_survival import LTMLESurvivalResult as LTMLESurvivalResult
 from .tmle.ltmle_survival import ltmle_survival as ltmle_survival
 from .tmle.super_learner import SuperLearner as SuperLearner
@@ -1047,12 +1714,21 @@ from .tmle.tmle import TMLE as TMLE
 from .tmle.tmle import tmle as tmle
 from .transport import generalize as transport_generalize
 from .transport import weights as transport_weights_fn
+from .transport.evidence_synthesis import ConcordanceResult as ConcordanceResult
+from .transport.evidence_synthesis import (
+    EvidenceSynthesisResult as EvidenceSynthesisResult,
+)
+from .transport.evidence_synthesis import (
+    heterogeneity_of_effect as heterogeneity_of_effect,
+)
+from .transport.evidence_synthesis import rwd_rct_concordance as rwd_rct_concordance
 from .transport.evidence_synthesis import synthesise_evidence as synthesise_evidence
 from .transport.identify import (
     TransportIdentificationResult as TransportIdentificationResult,
 )
 from .transport.identify import identify_transport as identify_transport
 from .transport.weighting import TransportWeightResult as TransportWeightResult
+from .utils.collapse import collapse as collapse
 from .utils.data_tools import pwcorr as pwcorr
 from .utils.data_tools import winsor as winsor
 from .utils.dgp import dgp_bartik as dgp_bartik
@@ -1070,6 +1746,7 @@ from .utils.dgp import dgp_rd_kink as dgp_rd_kink
 from .utils.dgp import dgp_rd_multi as dgp_rd_multi
 from .utils.dgp import dgp_rdit as dgp_rdit
 from .utils.dgp import dgp_synth as dgp_synth
+from .utils.egen import egen as egen
 from .utils.egen import outlier_indicator as outlier_indicator
 from .utils.egen import rank as rank
 from .utils.egen import rowcount as rowcount
@@ -1079,12 +1756,20 @@ from .utils.egen import rowmin as rowmin
 from .utils.egen import rowsd as rowsd
 from .utils.egen import rowtotal as rowtotal
 from .utils.io import read_data as read_data
+from .utils.io import write_data as write_data
 from .utils.iv_helpers import scalar_iv_projection as scalar_iv_projection
+from .utils.labels import decode as decode
 from .utils.labels import describe as describe
 from .utils.labels import get_label as get_label
 from .utils.labels import get_labels as get_labels
+from .utils.labels import label_values as label_values
 from .utils.labels import label_var as label_var
 from .utils.labels import label_vars as label_vars
+from .utils.reshape import reshape as reshape
+from .utils.tsops import diff as diff
+from .utils.tsops import lag as lag
+from .utils.tsops import lead as lead
+from .utils.tsops import xtset as xtset
 from .validation import ReproductionResult as ReproductionResult
 from .validation import ReproductionStep as ReproductionStep
 from .validation import ValidationReport as ValidationReport
@@ -1092,6 +1777,10 @@ from .validation import coverage_matrix as coverage_matrix
 from .validation import parity_gap_report as parity_gap_report
 from .validation import reproduce_jss_tables as reproduce_jss_tables
 from .validation import validation_report as validation_report
+from .validation_scope import ValidationScope as ValidationScope
+from .validation_scope import validation_scope as validation_scope
+from .workflow.causal_workflow import CausalWorkflow as CausalWorkflow
+from .workflow.paper import PaperDraft as PaperDraft
 from .workflow.paper import paper as paper
 
 __all__: list[str]

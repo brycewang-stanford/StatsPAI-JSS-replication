@@ -235,7 +235,7 @@ def write_outputs(results: dict) -> None:
         "    \\multicolumn{6}{@{}l}{\\emph{interflex marginal effects (module 87, binary treatment, moderator $X$, covariate $Z$)}} \\\\"
     )
     for row in results["interflex"]:
-        label = row["label"].replace("_", "\\_")
+        label = row["label"].replace("_", "\\_").replace("p-value", "$p$~value")
         is_p = row["statistic"].startswith("p_")
         cells = [
             _sci(row["statspai"]) if is_p else _fmt(row["statspai"], 5),

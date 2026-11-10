@@ -10,15 +10,30 @@ does it all and includes an interaction-based test for heterogeneity.
 
 Usage
 -----
+>>> import numpy as np
+>>> import pandas as pd
 >>> import statspai as sp
+>>> rng = np.random.default_rng(0)
+>>> n = 400
+>>> df = pd.DataFrame({
+...     "female": rng.integers(0, 2, size=n),
+...     "region": rng.integers(0, 4, size=n),
+...     "age": rng.integers(22, 60, size=n),
+...     "education": rng.normal(12, 3, size=n),
+...     "experience": rng.normal(10, 5, size=n),
+... })
+>>> df["wage"] = (5.0 + 0.4 * df["education"] + 0.1 * df["experience"]
+...               - 0.5 * df["female"] + rng.normal(size=n))
 >>> result = sp.subgroup_analysis(
 ...     data=df,
 ...     formula="wage ~ education + experience",
 ...     x='education',
 ...     by={'Gender': 'female', 'Region': 'region'},
 ... )
->>> result.plot()
->>> result.summary()
+>>> sorted(result.het_tests)
+['Gender', 'Region']
+>>> fig, ax = result.plot()
+>>> text = result.summary()
 """
 
 from __future__ import annotations
@@ -31,7 +46,10 @@ import pandas as pd
 from scipy import stats
 
 from .._aliases import accepts_aliases, accepts_formula_first
+from .._input_validation import missing_named_columns
 from .._result_serialize import ResultProtocolMixin
+from ..core._call_record import records_call
+from ..exceptions import ColumnNotFound
 
 
 @dataclass
@@ -129,7 +147,9 @@ class SubgroupResult(ResultProtocolMixin):
         lines.append("  * p<0.1, ** p<0.05, *** p<0.01")
         return "\n".join(lines)
 
-    def to_latex(
+    # Own layout without the base class's digits= / fmt= precision options;
+    # passing them raises TypeError rather than being ignored.
+    def to_latex(  # type: ignore[override]
         self,
         *,
         caption: Optional[str] = "Subgroup Heterogeneity Analysis",
@@ -330,7 +350,8 @@ def _ols_vcov(
     """OLS covariance for a canonical SE kind; ``robust`` is HC1, as in Stata."""
     n, k = X.shape
     if kind == "nonrobust":
-        return XtX_inv * (resid @ resid) / (n - k)
+        _ret: np.ndarray = XtX_inv * (resid @ resid) / (n - k)
+        return _ret
     from ..core._vcov import hc_vcov
 
     return hc_vcov(
@@ -470,6 +491,7 @@ def _interaction_het_test(
 # ---------------------------------------------------------------------------
 
 
+@records_call("subgroup_analysis")
 @accepts_formula_first()
 @accepts_aliases(vce="robust")
 def subgroup_analysis(
@@ -545,6 +567,17 @@ def subgroup_analysis(
     y_col = parsed["dependent"]
     all_rhs = parsed["exogenous"]
     controls_base = [v for v in all_rhs if v != x]
+    named = missing_named_columns({"y": y_col, "x": x}, data.columns)
+    for col in controls_base:
+        if col not in data.columns:
+            named.setdefault(col if col not in named else f"formula:{col}", col)
+    for display_name, col_name in by.items():
+        if col_name not in data.columns:
+            named[f"by[{display_name!r}]"] = col_name
+    if named:
+        raise ColumnNotFound.from_missing(
+            named, list(data.columns), context="subgroup_analysis"
+        )
 
     # Overall estimate
     overall = _quick_ols_full(data, y_col, x, controls_base, robust)
@@ -555,9 +588,6 @@ def subgroup_analysis(
     het_tests = {}
 
     for display_name, col_name in by.items():
-        if col_name not in data.columns:
-            raise ValueError(f"Column '{col_name}' not found in data.")
-
         # Remove group column from controls if present
         ctrl_clean = [c for c in controls_base if c != col_name]
 

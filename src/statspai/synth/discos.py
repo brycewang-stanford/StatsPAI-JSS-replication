@@ -77,6 +77,7 @@ from scipy.optimize import linprog
 from scipy.stats import rankdata
 
 from .._aliases import accepts_aliases
+from .._input_validation import check_columns
 from ..core.results import CausalResult
 from ..exceptions import DataInsufficient, MethodIncompatibility, NumericalInstability
 from ._core import _eq_bounded_lsq, placebo_rank_pvalue
@@ -217,9 +218,9 @@ def discos(
         raise ValueError(  # pragma: no cover
             f"method must be 'mixture' or 'quantile', got '{method}'"
         )
-    for col in (outcome, unit, time):
-        if col not in data.columns:
-            raise MethodIncompatibility(f"column {col!r} not found in data")
+    check_columns(
+        data, {"outcome": outcome, "unit": unit, "time": time}, function="sp.discos"
+    )
 
     cell_sizes = data.groupby([unit, time]).size()
     if int(cell_sizes.max()) > 1:
@@ -533,8 +534,14 @@ def qqsynth(
 
 
 def _quant7_sorted(xs: np.ndarray, probs: np.ndarray) -> np.ndarray:
-    """Type-7 quantiles of a sorted sample, operation-for-operation as
-    R ``DiSCos:::quant7_sorted`` (``stats::quantile(type = 7)``)."""
+    """Type-7 sample quantiles of a sorted sample.
+
+    ``Q(p) = (1 - g) x[j] + g x[j+1]`` with ``j = floor(n p + 1 - p)`` and
+    ``g = n p + 1 - p - j``, the definition documented for ``type = 7`` in
+    R's ``?quantile``. The floating-point order follows the helper of the
+    MIT-licensed R package DiSCos (notice in ``THIRD_PARTY_NOTICES.md``), so
+    the DiSCos parity tests agree to the last digit.
+    """
     n = xs.shape[0]
     if n == 1:
         return np.full(probs.shape[0], xs[0])
@@ -990,8 +997,9 @@ def discos_test(
     result : CausalResult
         Output from ``discos()`` or ``qqsynth()``.
     test : {'ks', 'cvm', 'stochastic_dominance'}, default 'ks'
-        ``'ks'``: two-sample Kolmogorov-Smirnov test comparing treated
-        and counterfactual quantile functions.
+        ``'ks'``: sup-norm test, the largest absolute gap between the
+        treated and counterfactual quantile functions, ranked against the
+        same statistic for the placebo units.
         ``'cvm'``: Cramér-von Mises test statistic (permutation-based).
         ``'stochastic_dominance'``: first-order stochastic dominance test.
 
@@ -1020,7 +1028,7 @@ def discos_test(
     alpha = result.alpha
 
     if test == "ks":
-        return _ks_test(Q_treated, Q_counterfactual, alpha)
+        return _ks_test(Q_treated, Q_counterfactual, mi, alpha)
     elif test == "cvm":
         return _cvm_test(Q_treated, Q_counterfactual, mi, alpha)
     elif test == "stochastic_dominance":
@@ -1349,24 +1357,45 @@ def _quantile_weights(
 def _ks_test(
     Q_treated: np.ndarray,
     Q_counterfactual: np.ndarray,
+    model_info: Dict[str, Any],
     alpha: float,
 ) -> Dict[str, Any]:
     """
-    Kolmogorov-Smirnov test on the quantile functions.
+    Sup-norm (Kolmogorov-Smirnov type) test on the quantile functions.
 
-    The KS statistic is the maximum absolute difference between the
-    two quantile functions: D = max_τ |Q_treated(τ) - Q_cf(τ)|.
+    The statistic is the largest absolute gap between the two quantile
+    functions, ``D = max_tau |Q_treated(tau) - Q_cf(tau)|``, and the
+    p-value is its rank among the same statistic for the placebo units.
 
-    Approximation: use the two-sample KS test on the quantile values
-    as if they were samples.
+    The points of a quantile function are not a sample: there are as many
+    of them as the grid has nodes, whatever the data, and neighbours are
+    almost perfectly dependent. A two-sample KS test run on them has no
+    reference distribution (it rejected a true null 57% of the time at
+    the 5% level in simulation), so without placebos no p-value is given.
     """
-    stat, pval = sp_stats.ks_2samp(Q_treated, Q_counterfactual)
+    stat = float(np.max(np.abs(Q_treated - Q_counterfactual)))
+    if "placebo_quantile_effects" in model_info:
+        plac_arr = np.asarray(model_info["placebo_quantile_effects"])
+        pval = float(placebo_rank_pvalue(stat, np.max(np.abs(plac_arr), axis=1)))
+        n_placebos: Optional[int] = int(plac_arr.shape[0])
+    else:
+        warnings.warn(
+            "discos_test(test='ks'): the result carries no placebo fits, so "
+            "the sup-norm statistic has no reference distribution and the "
+            "p-value is NaN. Refit with placebo=True.",
+            RuntimeWarning,
+            stacklevel=3,
+        )
+        pval = float("nan")
+        n_placebos = None
     return {
         "test": "Kolmogorov-Smirnov",
-        "statistic": float(stat),
-        "pvalue": float(pval),
+        "statistic": stat,
+        "pvalue": pval,
         "reject": bool(pval < alpha),
         "alpha": alpha,
+        "n_placebos": n_placebos,
+        "inference": "placebo rank of the sup-norm quantile gap",
     }
 
 
@@ -1381,9 +1410,8 @@ def _cvm_test(
 
     CvM = (1/n_q) Σ [Q_treated(τ) - Q_cf(τ)]²
 
-    P-value via placebo distribution if available, else asymptotic.
+    P-value by placebo rank; NaN when the result carries no placebos.
     """
-    n_q = len(Q_treated)
     diff_sq = (Q_treated - Q_counterfactual) ** 2
     cvm_stat = float(np.mean(diff_sq))
 
@@ -1393,11 +1421,10 @@ def _cvm_test(
         plac_cvm = np.mean(plac_arr**2, axis=1)
         pval = placebo_rank_pvalue(cvm_stat, plac_cvm)
     else:
-        # Asymptotic: treat as chi-squared approximation
-        # Under H0, n_q * CvM ~ sum of squared normals
-        pval = float(
-            sp_stats.chi2.sf(n_q * cvm_stat / max(np.var(Q_treated), 1e-10), df=n_q)
-        )
+        # No placebos, no reference distribution. A chi-squared with one
+        # degree of freedom per grid node treats the nodes as independent
+        # draws, which they are not.
+        pval = float("nan")
 
     return {
         "test": "Cramer-von Mises",
@@ -1435,11 +1462,9 @@ def _stochastic_dominance_test(
         # and the placebo min_gaps, divided by J+1.
         pval = placebo_rank_pvalue(min_gap, plac_min_gaps)
     else:
-        # Approximate: use KS test as fallback
-        ks_stat, pval = sp_stats.ks_2samp(
-            Q_treated, Q_counterfactual, alternative="less"
-        )
-        pval = float(pval)
+        # No placebos, no reference distribution: quantile-grid points
+        # are not a sample, so a KS test on them is not a test.
+        pval = float("nan")
 
     return {
         "test": "First-Order Stochastic Dominance",

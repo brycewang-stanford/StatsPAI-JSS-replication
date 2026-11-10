@@ -33,23 +33,28 @@ Mammen, E. (1993).
 
 from __future__ import annotations
 
-from typing import Any, List, Optional, Tuple
+from typing import Any, Dict, List, Literal, Optional, Tuple
 
 import numpy as np
 import pandas as pd
 from scipy import stats
 
+from .._aliases import accepts_aliases
 from ..core.results import CausalResult
 from ..exceptions import MethodIncompatibility
+from . import _cs_conventions as _conv
 from ._core import cohort_share_context as _cohort_share_context
 from ._core import multiplier_bootstrap as _core_multiplier_bootstrap
 from ._core import weight_influence as _weight_influence
+from ._validate import inference_note as _inference_note
 
 # ======================================================================
 # Public API
 # ======================================================================
 
 
+@accepts_aliases(seed="random_state", alp="alpha", biters="n_boot")
+@_conv.track_explicit
 def aggte(
     result: CausalResult,
     type: str = "simple",
@@ -57,14 +62,15 @@ def aggte(
     min_e: float = -np.inf,
     max_e: float = np.inf,
     na_rm: bool = True,
-    bstrap: bool = True,
+    bstrap: Optional[bool] = None,
     boot_type: str = "multiplier",
-    n_boot: int = 1000,
-    cband: bool = True,
+    n_boot: Optional[int] = None,
+    cband: Optional[bool] = None,
     alpha: float = 0.05,
     random_state: Optional[int] = None,
     share_variance: bool = True,
     agg_weights: str = "did",
+    parity: Optional[Literal["r", "stata"]] = None,
 ) -> CausalResult:
     """
     Aggregate group-time ATT(g, t) estimates from ``callaway_santanna``.
@@ -85,41 +91,63 @@ def aggte(
         Truncate the reported event-time window.
     na_rm : bool, default True
         Drop ATT(g, t) with missing / infinite SE before aggregating.
-    bstrap : bool, default True
+    bstrap : bool, optional
         If ``True``, compute SE / CI by multiplier bootstrap (Rademacher
         weights, matching the R ``did`` implementation) on the influence
         functions — required for the uniform ``cband``. If ``False``, use
         the closed-form influence-function SE instead, which carries the
         same cross-cell covariances but gives pointwise intervals only.
+        ``None`` (default) bootstraps when ``cband=True`` or ``n_boot`` is
+        given, and otherwise inherits the setting of the fit, as R
+        ``did::aggte(bstrap = NULL)`` inherits ``att_gt``'s: a
+        ``callaway_santanna`` fit with its default ``bstrap=False`` is
+        aggregated analytically, so repeated calls return the same SE.
+
+        .. versionchanged:: 1.33.0
+           The default was ``True`` with no seed, so ``sp.aggte(fit)``
+           returned a different SE on every call and disagreed with the
+           analytic SE of the fit it aggregated.
     boot_type : {'multiplier'}, default 'multiplier'
         Only ``'multiplier'`` is supported; kept for ``csdid`` parity.
-    n_boot : int, default 1000
-        Number of bootstrap replications.
-    cband : bool, default True
+    n_boot : int, optional
+        Number of bootstrap replications; defaults to the fit's ``biters``
+        (else 1000).
+    cband : bool, optional
         If ``True`` and ``type != 'simple'``, report a *uniform* confidence
         band (sup-t critical value) across the aggregation dimension.
-        Otherwise pointwise intervals.
+        Otherwise pointwise intervals.  ``None`` inherits the fit's
+        ``cband`` when ``bstrap`` is inherited, and otherwise follows
+        ``bstrap``.
     alpha : float, default 0.05
         Nominal level for confidence intervals.
     agg_weights : {'did', 'csdid'}, default 'did'
         Which implementation's aggregation weights to use. ``'did'`` gives
         a cohort one weight -- its share of the treated -- constant across
         ``t``, which is R ``did``'s rule and what this function has always
-        done. ``'csdid'`` weights each *cell* by its own treated-observation
-        count, which is Stata ``csdid``'s rule (``csdid_group`` in
-        ``csdid_estat.ado``); its group average additionally enters each
-        cohort at its *mean* cell weight, so a cohort observed for fewer
-        post-treatment periods is not down-weighted for it. The two coincide
-        on a balanced panel and differ on repeated cross-sections -- by 0.02
-        to 1.4 percent on the fixture in
-        ``tests/reference_parity/test_rcs_aggregation_conventions.py``.
-        Available for ``type='simple'`` and ``type='group'``.
+        done. ``'csdid'`` weights each *cell* by its own treated count,
+        which is Stata ``csdid``'s rule in every ``estat`` aggregate: on
+        repeated cross-sections the cohort's rows in the cell's two periods,
+        on an unbalanced panel (``balance='pair'``) the cohort's units seen
+        in both. The standard errors carry the estimation of those counts,
+        as csdid's do, in place of R's cohort-share term; the group average
+        enters each cohort at its *mean* post-treatment count, held fixed,
+        so a cohort observed for fewer post-treatment periods is not
+        down-weighted for it (``share_variance`` does not apply). With
+        sampling weights (``weights=`` of the fit) a cell's count is the
+        weight mass of those treated observations, as csdid ``[iw=]``
+        uses it (its ``e(gtt)`` still lists the head count). The two
+        rules coincide on a balanced panel, which carries no counts and
+        raises. Established against csdid 1.81 as a black box, unweighted
+        and weighted (``tests/reference_parity/test_cs_parity_rc_unbal.py``).
 
         .. versionadded:: 1.31.0
+        .. versionchanged:: 1.40.1
+           All four aggregation types, unbalanced panels, and csdid's
+           count term in the SEs of every aggregate.
     share_variance : bool, default True
         Carry the sampling variability of the *estimated* cohort shares
-        into the aggregated variance (R ``did:::wif``; the Callaway &
-        Sant'Anna reference convention). ``False`` holds the cohort shares
+        into the aggregated variance (the Callaway & Sant'Anna reference
+        convention, also R ``did``'s). ``False`` holds the cohort shares
         fixed, which is the convention of Stata ``csdid``'s
         ``estat group`` aggregate (``GAverage``); point estimates are
         identical either way and only the ``'group'`` overall (and any
@@ -128,7 +156,31 @@ def aggte(
 
         .. versionadded:: 1.29.0
     random_state : int, optional
-        Seed for the multiplier bootstrap.
+        Seed for the multiplier bootstrap.  When the bootstrap runs without
+        one, a seed is drawn and recorded in ``model_info['random_state']``
+        so the reported SE can be reproduced exactly.
+    parity : {'r', 'stata'}, optional
+        Aggregate with the conventions of R ``did::aggte`` or Stata
+        ``csdid``'s ``estat``. ``None`` (default) inherits the parity of
+        the fit (``sp.callaway_santanna(parity=...)``); passing a parity
+        that differs from the fit's raises, because the base period and
+        comparison group are fixed when ATT(g, t) is estimated.
+
+        - ``'r'``: cohort-share term everywhere (``share_variance=True``)
+          and R ``did``'s cohort-share weights; the bootstrap follows the
+          fit, as ``aggte(bstrap = NULL)`` does.
+        - ``'stata'``: analytic standard errors even if the fit
+          bootstrapped (``estat`` always reports them); the group
+          average holds the cohort shares fixed while every other
+          aggregate and every cell carries the share term; on repeated
+          cross-sections and unbalanced panels every aggregate uses csdid's
+          per-cell counts (``agg_weights='csdid'``).
+
+        An explicit ``share_variance`` / ``agg_weights`` / ``bstrap`` /
+        ``cband`` / ``n_boot`` that contradicts the parity raises. The
+        conventions used are in ``model_info['conventions']``.
+
+        .. versionadded:: 1.40.0
 
     Returns
     -------
@@ -179,6 +231,49 @@ def aggte(
     detail = result.detail
     inf_matrix = result._influence_funcs
     model_info = result.model_info or {}
+    from ..survey.linearization import refuse_design_result
+
+    refuse_design_result(result, "aggte")
+
+    # parity= (or the fit's parity) fixes the aggregation conventions of R
+    # did / Stata csdid; contradicting arguments raise in there.
+    parity = _conv.require_parity(parity, function="aggte")
+    _p = _conv.resolve_aggte_parity(
+        parity,
+        fit_info=model_info,
+        explicit=_conv.explicit_args(),
+        type=type,
+        bstrap=bstrap,
+        cband=cband,
+        n_boot=n_boot,
+        share_variance=share_variance,
+        agg_weights=agg_weights,
+        has_cell_counts=_has_csdid_cells(detail, model_info),
+    )
+    parity = _p["parity"]
+    bstrap, cband, agg_weights = _p["bstrap"], _p["cband"], _p["agg_weights"]
+    share_cells, share_overall = _p["share_cells"], _p["share_overall"]
+
+    # Inference settings follow the fit unless overridden (R did::aggte's
+    # bstrap = NULL / cband = NULL / biters from att_gt).
+    if bstrap is None:
+        if cband is True or n_boot is not None:
+            bstrap = True
+        else:
+            bstrap = bool(model_info.get("bstrap", False))
+            if cband is None:
+                cband = bool(model_info.get("cband", False)) and bstrap
+    if cband is None:
+        cband = bool(bstrap)
+    bstrap = bool(bstrap)
+    cband = bool(cband)
+    if n_boot is None:
+        n_boot = int(model_info.get("biters") or 1000)
+    if bstrap and random_state is None:
+        # Draw a seed and report it: an unseeded bootstrap SE could not be
+        # reproduced, not even by the caller who just printed it.
+        random_state = int(np.random.SeedSequence().entropy % (2**31 - 1))
+
     cohort_sizes = model_info.get("cohort_sizes")
     n_units = model_info.get("n_units", result.n_obs)
 
@@ -219,27 +314,53 @@ def aggte(
             f"agg_weights must be 'did' or 'csdid'; got {agg_weights!r}.",
             diagnostics={"agg_weights": agg_weights},
         )
+    csdid_ind: Optional[np.ndarray] = None
+    csdid_rx1 = np.zeros(0)
     if agg_weights == "csdid":
-        if type not in ("simple", "group"):
+        if not _has_csdid_cells(detail, model_info):
             raise MethodIncompatibility(
-                "agg_weights='csdid' is defined here for type='simple' and "
-                f"type='group', the two aggregates csdid's rule was read off "
-                f"and rebuilt from; got type={type!r}.",
-                diagnostics={"type": type, "agg_weights": agg_weights},
-            )
-        if "n_treated_obs" not in detail.columns:
-            raise MethodIncompatibility(
-                "agg_weights='csdid' weights each cell by its own treated-"
-                "observation count, which this fit did not record. Refit "
-                "with sp.callaway_santanna(panel=False) -- the convention "
-                "only differs from R did's on repeated cross-sections.",
+                "agg_weights='csdid' weights each cell by its own count of "
+                "treated observations (repeated cross-sections) or of "
+                "treated units seen in both of its periods (unbalanced "
+                "panel), which this fit did not record. On a balanced panel "
+                "the counts are the cohort sizes and the rule is R did's; "
+                "the unbalanced-panel estimator of allow_unbalanced_panel="
+                "True has no csdid counterpart.",
+                recovery_hint=(
+                    "Drop agg_weights=, or refit with "
+                    "sp.callaway_santanna(panel=False) for repeated "
+                    "cross-sections or the default balance='pair' for an "
+                    "unbalanced panel."
+                ),
                 diagnostics={"columns": list(detail.columns)},
             )
+        csdid_ind = _csdid_cell_indicators(detail, model_info)
+        # With sampling weights csdid weights a cell by the weight mass of
+        # its treated observations, not their head count (black box,
+        # csdid 1.81 [iw=]; test_cs_parity_rc_unbal.py).
+        if model_info.get("weighted"):
+            omega = model_info.get("_unit_weights")
+            if omega is None or len(omega) != csdid_ind.shape[0]:
+                raise MethodIncompatibility(
+                    "agg_weights='csdid' on a weighted fit needs the "
+                    "sampling weight of every influence-function row, "
+                    "which this result does not carry.",
+                    recovery_hint="Refit with sp.callaway_santanna(weights=...).",
+                    diagnostics={"weighted": True},
+                )
+            csdid_ind = csdid_ind * np.asarray(omega, dtype=float)[:, None]
 
     # Build the weight matrix W: rows = reported cells, cols = ATT(g, t).
-    if agg_weights == "csdid":
-        labels, W = _weights_csdid(detail, type)
-        dim_name = "overall" if type == "simple" else "group"
+    if csdid_ind is not None:
+        labels, W, csdid_rx1 = _weights_csdid(
+            detail, csdid_ind.sum(axis=0, dtype=float), type, min_e, max_e
+        )
+        dim_name = {
+            "simple": "overall",
+            "dynamic": "relative_time",
+            "group": "group",
+            "calendar": "time",
+        }[type]
     elif type == "simple":
         labels, W = _weights_simple(detail, cohort_sizes)
         dim_name = "overall"
@@ -269,20 +390,29 @@ def aggte(
     # Per-cell aggregated influence functions.
     #
     # ⚠️ correctness fix: the aggregation weights are *estimated* cohort
-    # shares, not constants.  Treating them as fixed drops R
-    # ``did:::wif`` from the variance and the reported SE came out up to
+    # shares, not constants.  Treating them as fixed drops their
+    # influence function from the variance and the reported SE came out up to
     # ~8% too small (anti-conservative).  Build the corrected functions
     # once here; every SE below is derived from them so the analytic and
     # bootstrap paths cannot drift apart.
     unit_cohorts = model_info.get("_unit_cohorts")
     # ω from the underlying fit. The aggregation weights are cohort
     # *shares* of the target population, so under ω they must be built
-    # from ω-mass — matching R did's ``pg <- mean(weights * (G == g))``.
+    # from ω-mass, pg = mean(ω · 1{G == g}) (as R did does).
     unit_weights = model_info.get("_unit_weights")
     psi_cells: Optional[np.ndarray] = None
-    if inf_matrix is not None:
+    if inf_matrix is not None and csdid_ind is not None:
+        # Stata csdid: the cell weights are estimated treated counts, and
+        # csdid carries their influence function in every aggregate. This
+        # replaces R did's cohort-share term (the two coincide on a balanced
+        # panel). The group average below holds its own weights fixed.
+        pg_cells = ind_cells = None
+        psi_cells = inf_matrix @ W.T + _csdid_count_weight_influence(
+            W, att_vec, csdid_ind
+        )
+    elif inf_matrix is not None:
         if (
-            share_variance
+            share_cells
             and unit_cohorts is not None
             and len(unit_cohorts) == inf_matrix.shape[0]
         ):
@@ -316,7 +446,7 @@ def aggte(
         # Aggregating through the influence functions carries the
         # covariance between ATT(g, t) cells that share control units;
         # summing per-cell variances would treat them as independent.
-        se_cells = _se_from_influence(psi_cells, n_units)
+        se_cells = _se_from_influence(psi_cells, n_units, cluster_ids)
         crit_unif = stats.norm.ppf(1 - alpha / 2)
     else:
         se_cells = _analytic_se(W, detail)
@@ -368,20 +498,11 @@ def aggte(
             idx = np.where(post_mask_agg)[0]
             w_overall = np.zeros(W.shape[0])
             w_overall[idx] = 1.0 / idx.size
-        elif type == "group" and agg_weights == "csdid":
+        elif type == "group" and csdid_ind is not None:
             # csdid's GAverage: each cohort enters with its MEAN cell
-            # weight, so a cohort observed for fewer post periods is not
+            # count, so a cohort observed for fewer post periods is not
             # down-weighted for it.
-            w_overall = np.array(
-                [float(_CSDID_GROUP_SHARES.get(g, 0.0)) for g in labels],
-                dtype=float,
-            )
-            total = w_overall.sum()
-            w_overall = (
-                w_overall / total
-                if total > 0
-                else np.full(W.shape[0], 1.0 / W.shape[0])
-            )
+            w_overall = csdid_rx1 / csdid_rx1.sum()
         elif type == "group":
             # ⚠️ correctness fix: R ``did::aggte(type="group")`` reports
             # the overall as sum_g (p_g / sum p_g) * theta(g), i.e. weighted
@@ -413,7 +534,7 @@ def aggte(
         # bootstrap, so the two agree only up to bootstrap noise.
         if psi_cells is not None:
             # Compose the OVERALL from the already-corrected per-cell
-            # functions.  R applies ``wif`` once, at the level where the
+            # functions.  The estimated-share term enters once, at the level where the
             # estimated cohort shares actually enter:
             #
             #   dynamic / calendar — the overall is an equal-weight mean
@@ -421,9 +542,9 @@ def aggte(
             #     are constants and carry no extra term.
             #   group — the overall re-weights theta(g) by each cohort's
             #     estimated share, so the term applies here instead (the
-            #     per-cohort cells are single-cohort and hence wif-free).
+            #     per-cohort cells are single-cohort, so their share term is zero).
             overall_inf = np.asarray(psi_cells @ w_overall, dtype=float)
-            if type == "group" and ind_cells is not None:
+            if type == "group" and ind_cells is not None and share_overall:
                 pg_g, ind_g = _cohort_share_context(
                     np.asarray(labels, dtype=float), unit_cohorts, unit_weights
                 )
@@ -441,7 +562,9 @@ def aggte(
                 )
                 overall_se = float(se_overall_arr[0])
             else:
-                overall_se = float(_se_from_influence(overall_inf[:, None], n_units)[0])
+                overall_se = float(
+                    _se_from_influence(overall_inf[:, None], n_units, cluster_ids)[0]
+                )
         else:
             overall_se = float(np.sqrt(np.sum((w_overall**2) * se_cells**2)))
 
@@ -480,7 +603,11 @@ def aggte(
         "max_e": max_e,
         "bstrap": bstrap,
         "n_boot": n_boot if bstrap else 0,
+        "random_state": random_state if bstrap else None,
         "cband": cband and type != "simple",
+        # Same comparison with R did::aggte's inherited defaults as on the
+        # att_gt result (a single overall number has no band to widen).
+        "inference_note": _inference_note(bstrap, cband or type == "simple"),
         "crit_val_uniform": float(crit_unif),
         "n_units": n_units,
         "overall_influence_function": overall_inf,
@@ -491,8 +618,26 @@ def aggte(
         "vcv_pre": vcv_pre,
         "pre_event_times": pre_event_times,
         "source_method": result.method,
-        "share_variance": bool(share_variance),
+        "share_variance": bool(share_overall if type == "group" else share_cells),
+        "parity": parity,
+        "conventions": _conv.aggte_conventions(
+            model_info,
+            parity=parity,
+            type=type,
+            bstrap=bstrap,
+            share_cells=share_cells,
+            share_overall=share_overall,
+            agg_weights=agg_weights,
+        ),
     }
+    if "base_period" in (result.model_info or {}):
+        # sp.honest_did reads it: its bounds need the universal-base path
+        agg_info["base_period"] = result.model_info["base_period"]
+    if type == "dynamic":
+        # Where Sun-Abraham, stacked and BJS keep theirs, so one accessor
+        # (``model_info['event_study']`` / ``sp.event_study_table``) serves
+        # every event-study estimator; ``detail`` is the same frame.
+        agg_info["event_study"] = out
 
     _result = CausalResult(
         method=f"Callaway and Sant'Anna (2021) — aggte[{type}]",
@@ -529,6 +674,7 @@ def aggte(
                 "alpha": alpha,
                 "random_state": random_state,
                 "share_variance": share_variance,
+                "parity": parity,
                 "upstream_run_id": upstream.run_id if upstream else None,
                 "upstream_function": upstream.function if upstream else None,
             },
@@ -547,62 +693,153 @@ def aggte(
 # ======================================================================
 
 
-#: rx1 shares from the last csdid group aggregation; the overall row is
-#: formed from them, and they are not the cohort shares R ``did`` uses.
-_CSDID_GROUP_SHARES: dict = {}
+def _has_csdid_cells(
+    detail: Optional[pd.DataFrame], model_info: Dict[str, Any]
+) -> bool:
+    """Does the fit carry what csdid's cell-count weights need?
+
+    Repeated cross-sections record each row's cohort and period; an
+    unbalanced panel (``balance='pair'``) records which periods each unit is
+    observed in. Balanced panels record neither: there every cell's count is
+    its cohort size and csdid's weights are the cohort shares.
+    """
+    if detail is None:
+        return False
+    rcs = model_info.get("_row_cohorts") is not None and "n_treated_obs" in detail
+    return bool(rcs or model_info.get("_unit_observed") is not None)
+
+
+def _csdid_cell_indicators(
+    detail: pd.DataFrame, model_info: Dict[str, Any]
+) -> np.ndarray:
+    """Which influence-function rows are treated observations of each cell.
+
+    Boolean, one row per influence-function row and one column per row of
+    ``detail``.
+
+    Column ``k`` flags, for cell ``(g, t)`` with base period ``b``:
+
+    - repeated cross-sections: the rows of cohort ``g`` observed at ``b`` or
+      ``t`` (csdid's ``N_trt`` in ``e(gtt)``);
+    - an unbalanced panel: the units of cohort ``g`` observed at both ``b``
+      and ``t``, the pairs the cell is estimated from (``N_trt`` / 2).
+
+    Stata ``csdid`` weights cell ``k`` by the column sum in every aggregate
+    (black box, ``tests/reference_parity/test_cs_parity_rc_unbal.py``);
+    with sampling weights by the weight mass of the flagged rows, which the
+    caller applies.
+    """
+    bases = model_info.get("_cell_bases") or {}
+    groups = detail["group"].to_numpy(dtype=float)
+    times = detail["time"].to_numpy(dtype=float)
+    missing = [
+        (g, t) for g, t in zip(groups, times) if (float(g), float(t)) not in bases
+    ]
+    if missing:
+        raise MethodIncompatibility(
+            "agg_weights='csdid' needs the base period of every ATT(g, t), "
+            f"which this result does not carry (e.g. cell {missing[0]}).",
+            recovery_hint="Refit with sp.callaway_santanna and aggregate that.",
+            diagnostics={"n_cells_missing": len(missing)},
+        )
+    base = np.array([bases[(float(g), float(t))] for g, t in zip(groups, times)])
+    rg = model_info.get("_row_cohorts")
+    if rg is not None:
+        rg = np.asarray(rg, dtype=float)
+        rt = np.asarray(model_info.get("_row_times"), dtype=float)
+        return (rg[:, None] == groups[None, :]) & (
+            (rt[:, None] == times[None, :]) | (rt[:, None] == base[None, :])
+        )
+    observed = np.asarray(model_info["_unit_observed"], dtype=bool)
+    periods = [float(p) for p in model_info["_time_periods"]]
+    col = {p: j for j, p in enumerate(periods)}
+    cohorts = np.asarray(model_info["_unit_cohorts"], dtype=float)
+    ind = np.zeros((observed.shape[0], len(groups)), dtype=bool)
+    for k, (g, t, b) in enumerate(zip(groups, times, base)):
+        ind[:, k] = (
+            (cohorts == g) & observed[:, col[float(t)]] & observed[:, col[float(b)]]
+        )
+    return ind
 
 
 def _weights_csdid(
     detail: pd.DataFrame,
+    counts: np.ndarray,
     type: str,
-) -> Tuple[np.ndarray, np.ndarray]:
-    """Stata ``csdid``'s aggregation weights, read off ``csdid_estat.ado``.
+    min_e: float,
+    max_e: float,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Stata ``csdid``'s aggregation weights: each cell by its treated count.
 
-    R ``did`` gives a cohort one weight, its share of the treated, constant
-    across ``t``. ``csdid`` weights each *cell* by its own treated-observation
-    count, so with repeated cross-sections the two disagree -- by 0.02 to 1.4
-    percent on the fixture in
-    ``tests/reference_parity/test_rcs_aggregation_conventions.py``, which
-    rebuilds every number below from these weights.
+    Every aggregate is a count-weighted mean of the cells it covers: the
+    post-treatment cells (``simple``), a cohort's post-treatment cells
+    (``group``), the post-treatment cells of one period (``calendar``) or
+    the cells of one event time, pre-treatment ones included
+    (``dynamic``). R ``did`` weights by cohort shares instead; on a balanced
+    panel the two coincide. Established as a black box: every ``estat``
+    estimate of csdid 1.81 is rebuilt from these weights to 1e-15
+    (``tests/reference_parity/test_cs_parity_rc_unbal.py`` and
+    ``test_rcs_aggregation_conventions.py``).
 
-    In Mata (``csdid_group``)::
-
-        bw[g, t] = N_trt(g, t) / sum over ALL cells of N_trt
-        simple   = sum_{t >= g} bw * ATT / sum_{t >= g} bw
-        ATT(g)   = sum_{t >= g, cohort g} bw * ATT / sum_{t >= g, cohort g} bw
-        GAverage = sum_g rx1_g * ATT(g),
-                   rx1_g proportional to (sum_{t >= g} bw) / #post cells of g
-
-    The last line is the one worth reading twice: a cohort enters the group
-    average with its *mean* cell weight, so being observed for fewer
-    post-treatment periods does not shrink it.
+    Returns the labels, the weight matrix and, for ``type='group'``, the
+    weights of csdid's group average: proportional to the *mean* count of a
+    cohort's post-treatment cells, so a cohort observed for fewer periods is
+    not down-weighted for it (empty otherwise).
     """
-    post = (detail["relative_time"] >= 0).to_numpy()
-    bw = detail["n_treated_obs"].to_numpy(dtype=float)
-    total = bw.sum()
-    if total <= 0 or not post.any():
-        return np.array([], dtype=object), np.zeros((0, len(detail)))
-    bw = bw / total
-
+    rel = detail["relative_time"].to_numpy(dtype=float)
+    post = rel >= 0
+    counts = np.asarray(counts, dtype=float)
     if type == "simple":
-        raw = np.where(post, bw, 0.0)
-        return np.array(["overall"]), (raw / raw.sum()).reshape(1, -1)
+        masks, labels = [post], ["overall"]
+    elif type == "group":
+        labels = sorted(detail.loc[post, "group"].unique())
+        masks = [post & (detail["group"].to_numpy() == g) for g in labels]
+    elif type == "calendar":
+        labels = sorted(detail.loc[post, "time"].unique())
+        masks = [post & (detail["time"].to_numpy() == t) for t in labels]
+    else:  # dynamic
+        keep = (rel >= min_e) & (rel <= max_e)
+        labels = sorted({int(e) for e in rel[keep]})
+        masks = [keep & (rel == e) for e in labels]
+    rows, labs, mean_count = [], [], []
+    for lab, m in zip(labels, masks):
+        w = np.where(m, counts, 0.0)
+        if w.sum() <= 0:
+            continue
+        rows.append(w / w.sum())
+        labs.append(lab if type == "simple" else int(lab))
+        mean_count.append(w.sum() / int(m.sum()))
+    if not rows:
+        return np.array([], dtype=object), np.zeros((0, len(detail))), np.zeros(0)
+    rx1 = np.asarray(mean_count, dtype=float) if type == "group" else np.zeros(0)
+    return np.array(labs), np.vstack(rows), rx1
 
-    cohorts = sorted(detail.loc[post, "group"].unique())
-    rows, rx1 = [], []
-    for g in cohorts:
-        m = post & (detail["group"].to_numpy() == g)
-        w = np.where(m, bw, 0.0)
-        s = w.sum()
-        rows.append(w / s)
-        rx1.append(s / int(m.sum()))
-    W = np.vstack(rows)
-    share = np.asarray(rx1, dtype=float)
-    _CSDID_GROUP_SHARES.clear()
-    _CSDID_GROUP_SHARES.update(
-        {g: float(v) for g, v in zip(cohorts, share / share.sum())}
-    )
-    return np.array(cohorts), W
+
+def _csdid_count_weight_influence(
+    W: np.ndarray,
+    att_vec: np.ndarray,
+    indicators: np.ndarray,
+) -> np.ndarray:
+    """Influence of csdid's estimated cell counts on each aggregate.
+
+    Row ``r`` of ``W`` weights cell ``k`` by ``p_k / sum p`` with ``p_k``
+    the mean of indicator column ``k`` (a share of the rows on a repeated
+    cross-section, of the units on a panel; under sampling weights the
+    columns are ``omega_i`` times the indicator, a share of weight mass). Those shares are estimated,
+    and csdid carries them: by the delta method each aggregate gains
+    ``IF(w) @ ATT`` over its cells, :func:`statspai.did._core.weight_influence`
+    with the cell indicators in place of cohort indicators. Within one
+    cohort of a balanced panel the term is zero; across cohorts it is R
+    ``did``'s cohort-share term.
+    """
+    out = np.zeros((indicators.shape[0], W.shape[0]))
+    for r in range(W.shape[0]):
+        keep = np.flatnonzero(W[r] != 0.0)
+        if keep.size == 0:
+            continue
+        ind = indicators[:, keep].astype(float)
+        out[:, r] = _weight_influence(ind.mean(axis=0), ind) @ att_vec[keep]
+    return out
 
 
 def _cohort_weight_series(
@@ -779,9 +1016,19 @@ def _plain_labels(labels: np.ndarray) -> List[Any]:
     return out
 
 
-def _se_from_influence(psi: np.ndarray, n_units: int) -> np.ndarray:
-    """``sqrt(mean(ψ²) / n)`` per column — R ``did``'s ``getSE``."""
-    return np.asarray(np.sqrt(np.mean(psi**2, axis=0) / n_units), dtype=float)
+def _se_from_influence(
+    psi: np.ndarray, n_units: int, cluster_ids: Optional[np.ndarray] = None
+) -> np.ndarray:
+    """``sqrt(mean(ψ²) / n)`` per column (the analytic SE R ``did`` reports).
+
+    With ``cluster_ids`` the cluster sums replace the rows (Stata
+    ``csdid, cluster()``); see :func:`statspai.did._core.influence_se_did`.
+    """
+    from ._core import influence_se_did
+
+    return np.atleast_1d(
+        np.asarray(influence_se_did(psi, n_units, cluster_ids), dtype=float)
+    )
 
 
 def _aggregated_influence(
@@ -793,21 +1040,25 @@ def _aggregated_influence(
 ) -> np.ndarray:
     """Per-cell aggregated influence functions, weight estimation included.
 
-    Column ``r`` is ``Ψ[:, keep] @ w_r + wif_r @ att[keep]`` where
-    ``keep`` are the cells row ``r`` of ``W`` actually loads on.  This is
-    R ``did:::get_agg_inf_func`` with a non-null ``wif``.
+    Column ``r`` is ``inf_matrix @ W[r]`` plus the estimated-share term
+    ``weight_influence(pg[keep], ind[:, keep]) @ att_vec[keep]`` over the
+    cells ``keep`` that row ``r`` gives non-zero weight. The share term is
+    exactly zero when those cells belong to a single cohort, so per-cohort
+    averages are unaffected. Clean-room implementation; specification in
+    ``docs/dev/cleanroom/did_drdid.md``.
+
+    Returns
+    -------
+    ndarray of shape (n_units, K)
     """
-    n_units = inf_matrix.shape[0]
-    out = np.zeros((n_units, W.shape[0]), dtype=float)
+    psi = np.asarray(inf_matrix @ W.T, dtype=float)
     for r in range(W.shape[0]):
-        keep = np.nonzero(W[r])[0]
+        keep = np.flatnonzero(W[r] != 0.0)
         if keep.size == 0:
             continue
-        w = W[r, keep]
-        psi = inf_matrix[:, keep] @ w
-        wif = _weight_influence(pg[keep], ind[:, keep])
-        out[:, r] = psi + wif @ att_vec[keep]
-    return out
+        share_if = _weight_influence(pg[keep], ind[:, keep])
+        psi[:, r] = psi[:, r] + share_if @ np.asarray(att_vec, dtype=float)[keep]
+    return psi
 
 
 def _analytic_se(W: np.ndarray, detail: pd.DataFrame) -> np.ndarray:

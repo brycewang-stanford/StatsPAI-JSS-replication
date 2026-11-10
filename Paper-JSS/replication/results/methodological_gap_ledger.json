@@ -15,10 +15,10 @@
         "native_note": "Headline row uses backend='native'. The Basque donor-weight solution is not unique under the ADH special-predictor nested-V specification: deterministic multi-start diagnostics find multiple near-best donor-weight classes, native tracks Stata synth on the same CSV, and R Synth and Stata synth choose measurably different local optima. Native correctness is separately certified on a uniquely identified DGP in module 52_scm_unique; backend='synth' is available when exact R Synth numbers are required.",
         "placebo": "False",
         "reference_backend": "Synth",
-        "solver_best_start": "dirichlet_3",
+        "solver_best_start": "regression",
         "solver_near_best_start_count": "4",
         "solver_near_best_weight_class_count": "2",
-        "solver_near_best_weight_l1_max": "0.00513",
+        "solver_near_best_weight_l1_max": "0.007786",
         "stata_command": "synth gdppc gdppc(1955..1969), trunit(.) trperiod(1970) nested",
         "strictness_tier": "`methodological` (methodological/T4 disclosure (T3/T4, not deterministic T2))",
         "tier": "T4",
@@ -41,9 +41,9 @@
           "ok": true
         },
         {
-          "expected": "dirichlet_3",
+          "expected": "regression",
           "field": "solver_best_start",
-          "observed": "dirichlet_3",
+          "observed": "regression",
           "ok": true
         },
         {
@@ -59,9 +59,9 @@
           "ok": true
         },
         {
-          "expected": "0.00513",
+          "expected": "0.007786",
           "field": "solver_near_best_weight_l1_max",
-          "observed": "0.00513",
+          "observed": "0.007786",
           "ok": true
         },
         {

@@ -26,15 +26,20 @@ Rosenbaum, P.R. and Rubin, D.B. (1983). Biometrika, 70(1), 41-55.
 Austin, P.C. (2011). Multivariate Behavioral Research, 46(3), 399-424. [@crump2009dealing]
 """
 
+import warnings
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import pandas as pd
 from scipy import optimize, stats
+from scipy.special import expit
 
 from .._aliases import accepts_aliases
+from .._input_validation import check_columns
 from .._result_serialize import ResultProtocolMixin
+from ..core._covariates import expands_categorical_covariates as _expands_categorical
 from ..exceptions import MethodIncompatibility
+from ._binary_fit import fit_binary_index
 
 # ======================================================================
 # Propensity score estimation
@@ -42,6 +47,7 @@ from ..exceptions import MethodIncompatibility
 
 
 @accepts_aliases(treat="treatment")
+@_expands_categorical("covariates")
 def propensity_score(
     data: pd.DataFrame,
     treatment: str,
@@ -70,7 +76,9 @@ def propensity_score(
     Returns
     -------
     pd.Series
-        Propensity scores indexed like *data*.
+        Propensity scores indexed like *data*. A row with a missing
+        treatment or covariate value is left out of the fit and has a
+        ``NaN`` score (with a warning that says how many).
 
     Examples
     --------
@@ -94,20 +102,40 @@ def propensity_score(
     weights) to :func:`sp.overlap_plot`, :func:`sp.ps_balance`, or
     :func:`sp.balance_diagnostics`.
     """
-    D = data[treatment].values.astype(float)
-    X = data[covariates].values.astype(float)
+    check_columns(
+        data,
+        {"treatment": treatment, "covariates": list(covariates)},
+        function="sp.propensity_score",
+    )
+    D_all = data[treatment].values.astype(float)
+    X_all = data[covariates].values.astype(float)
+    # One missing value would enter the fit and turn every score into NaN;
+    # the model is fitted on the complete rows and only the others are NaN.
+    complete = np.isfinite(D_all) & np.all(np.isfinite(X_all), axis=1)
+    if not complete.all():
+        warnings.warn(
+            f"propensity_score: {int((~complete).sum())} of {len(D_all)} rows "
+            "have a missing treatment or covariate value; they are left out "
+            "of the fit and their score is NaN.",
+            UserWarning,
+            stacklevel=2,
+        )
+        D, X = D_all[complete], X_all[complete]
+    else:
+        D, X = D_all, X_all
 
     if method == "logit":
-        ps = _logit_irls(X, D)
+        fitted = _logit_fit(X, D)
     elif method == "probit":
-        ps = _probit_mle(X, D)
+        fitted = _probit_mle(X, D)
     elif method == "gbm":
-        ps = _gbm_ps(X, D)
+        fitted = _gbm_ps(X, D)
     else:
         raise ValueError(f"method must be 'logit', 'probit', or 'gbm', got '{method}'")
 
     # Clip to avoid exact 0/1
-    ps = np.clip(ps, 1e-8, 1 - 1e-8)
+    ps = np.full(len(D_all), np.nan)
+    ps[complete] = np.clip(fitted, 1e-8, 1 - 1e-8)
     ps_series = pd.Series(ps, index=data.index, name="propensity_score")
 
     if trimming == "crump":
@@ -118,35 +146,19 @@ def propensity_score(
     return ps_series
 
 
-def _logit_irls(
-    X: np.ndarray, D: np.ndarray, max_iter: int = 50, tol: float = 1e-8
-) -> np.ndarray:
-    """Logistic regression via iteratively reweighted least squares."""
-    n, k = X.shape
-    Xa = np.column_stack([np.ones(n), X])
-    beta = np.zeros(Xa.shape[1])
+def _logit_fit(X: np.ndarray, D: np.ndarray) -> np.ndarray:
+    """Logit scores from the shared fit of :mod:`._binary_fit`.
 
-    for _ in range(max_iter):
-        eta = Xa @ beta
-        eta = np.clip(eta, -30, 30)
-        mu = 1.0 / (1.0 + np.exp(-eta))
-        W = mu * (1 - mu)
-        W = np.maximum(W, 1e-12)
-        z = eta + (D - mu) / W
-        # Weighted least squares step
-        XtW = Xa.T * W
-        try:
-            beta_new = np.linalg.solve(XtW @ Xa, XtW @ z)
-        except np.linalg.LinAlgError:
-            beta_new = np.linalg.lstsq(XtW @ Xa, XtW @ z, rcond=None)[0]
-        if np.max(np.abs(beta_new - beta)) < tol:
-            beta = beta_new
-            break
-        beta = beta_new
-
-    eta = Xa @ beta
-    eta = np.clip(eta, -30, 30)
-    return 1.0 / (1.0 + np.exp(-eta))
+    The Newton steps used to be solved here on the columns as given. With
+    a repeated or otherwise redundant covariate that system is singular,
+    ``numpy.linalg.solve`` answers anyway, and the scores were wrong by up
+    to 0.8. The shared fit works on the standardised design and leaves a
+    redundant covariate out (coefficient zero), so the scores are those of
+    the model without it.
+    """
+    beta = fit_binary_index(X, D, "logit")["beta"]
+    eta = np.column_stack([np.ones(len(D)), X]) @ beta
+    return np.asarray(expit(eta), dtype=float)
 
 
 def _probit_mle(X: np.ndarray, D: np.ndarray) -> np.ndarray:
@@ -211,7 +223,7 @@ def _gbm_ps(X: np.ndarray, D: np.ndarray) -> np.ndarray:
             X_aug = np.column_stack([X] + interactions)
         else:
             X_aug = X
-        return _logit_irls(X_aug, D)
+        return _logit_fit(X_aug, D)
 
 
 # ======================================================================
@@ -220,29 +232,38 @@ def _gbm_ps(X: np.ndarray, D: np.ndarray) -> np.ndarray:
 
 
 def _crump_alpha(ps: np.ndarray) -> float:
-    """Find optimal Crump trimming threshold alpha.
+    """Optimal trimming threshold of Crump, Hotz, Imbens and Mitnik (2009).
 
-    Solves: alpha = 1 / (2 * E[1/(e(1-e)) * I(alpha <= e <= 1-alpha)])
-    via grid search on [0, 0.5).
+    With ``g = 1 / (e (1 - e))``, the rule keeps ``g <= gamma`` where
+    ``gamma`` solves ``gamma = 2 E[g | g <= gamma]``, and the propensity
+    score cutoff is ``alpha = 1/2 - sqrt(1/4 - 1/gamma)``, i.e.
+    ``alpha (1 - alpha) = 1 / gamma``. No trimming (``alpha = 0``) when
+    ``max g <= 2 E[g]``.
+
+    The sample version of ``2 E[g | g <= gamma] - gamma`` is piecewise
+    linear in ``gamma`` and jumps up at each observed ``g``. Between two
+    consecutive order statistics the conditional mean is constant, so the
+    crossing is found exactly: it is ``2 * mean(g[:k])`` for the first
+    ``k`` at which that value does not reach the next order statistic.
     """
     ps_clean = ps[np.isfinite(ps)]
-    inv_var = 1.0 / (ps_clean * (1 - ps_clean))
-
-    best_alpha = 0.0
-    alphas = np.linspace(0, 0.49, 500)
-    for a in alphas:
-        mask = (ps_clean >= a) & (ps_clean <= 1 - a)
-        if mask.sum() < 2:
-            break
-        rhs = 1.0 / (2.0 * np.mean(inv_var[mask]))
-        if a <= rhs:
-            best_alpha = a
-        else:
-            break
-    return best_alpha
+    ps_clean = ps_clean[(ps_clean > 0) & (ps_clean < 1)]
+    if ps_clean.size < 2:
+        return 0.0
+    g = np.sort(1.0 / (ps_clean * (1.0 - ps_clean)))
+    if g[-1] <= 2.0 * g.mean():
+        return 0.0
+    running = 2.0 * np.cumsum(g) / np.arange(1, g.size + 1)
+    # first k (1-based) with 2*mean(g[:k]) < g[k]: the root lies in
+    # [g[k-1], g[k]) and equals 2*mean(g[:k]).
+    crossing = np.nonzero(running[:-1] < g[1:])[0]
+    gamma = float(running[crossing[0]]) if crossing.size else float(running[-1])
+    gamma = max(gamma, 4.0)
+    return float(0.5 - np.sqrt(0.25 - 1.0 / gamma))
 
 
 @accepts_aliases(treat="treatment")
+@_expands_categorical("covariates")
 def trimming(
     data: pd.DataFrame,
     treatment: str,
@@ -294,7 +315,7 @@ def trimming(
     >>> trimmed = sp.trimming(df, treatment='d',
     ...                       covariates=['x1', 'x2'])
     >>> (len(df), len(trimmed))
-    (300, 206)
+    (300, 192)
 
     Fixed [0.1, 0.9] trimming keeps a narrower sample:
 
@@ -325,31 +346,97 @@ def trimming(
 # ======================================================================
 
 
+def _group_variance(x: np.ndarray, w: Optional[np.ndarray]) -> float:
+    """Variance of ``x`` within one group, with or without weights.
+
+    Unweighted it is the usual ``n - 1`` variance. Weighted it is
+
+        sum(w (x - m_w)^2) / (sum(w) - sum(w^2) / sum(w)),
+
+    the form Austin and Stuart (2015) give for weighted standardized
+    differences [@austin2015moving]. It does not depend on the scale of the weights, equals
+    the ``n - 1`` variance when all weights are equal, and equals the
+    variance of the retained rows for 0/1 matching weights. ``cobalt`` and
+    ``halfmoon`` use the same form for weighted variance ratios.
+    """
+    if w is None:
+        return float(np.var(x, ddof=1)) if len(x) > 1 else 0.0
+    total = float(np.sum(w))
+    if total <= 0:
+        return float("nan")
+    mean = float(np.sum(w * x) / total)
+    ss = float(np.sum(w * (x - mean) ** 2))
+    denom = total - float(np.sum(w**2)) / total
+    if denom <= 0:
+        return ss / total
+    return ss / denom
+
+
+def _check_sd_denom(sd_denom: str) -> None:
+    if sd_denom not in ("weighted", "unweighted"):
+        raise MethodIncompatibility(
+            f"sd_denom must be 'weighted' or 'unweighted'; got {sd_denom!r}"
+        )
+
+
 def _smd(
     x_t: np.ndarray,
     x_c: np.ndarray,
     w_t: Optional[np.ndarray] = None,
     w_c: Optional[np.ndarray] = None,
+    sd_denom: str = "weighted",
 ) -> float:
-    """Standardized mean difference (Austin 2011 formula)."""
-    if w_t is not None:
-        mean_t = np.average(x_t, weights=w_t)
-        var_t = np.average((x_t - mean_t) ** 2, weights=w_t)
-    else:
-        mean_t = np.mean(x_t)
-        var_t = np.var(x_t, ddof=1) if len(x_t) > 1 else 0.0
+    """Standardized mean difference (Austin 2011; Austin and Stuart 2015).
 
-    if w_c is not None:
-        mean_c = np.average(x_c, weights=w_c)
-        var_c = np.average((x_c - mean_c) ** 2, weights=w_c)
+    ``sd_denom='weighted'`` standardizes by the weighted group variances;
+    ``'unweighted'`` keeps the unweighted ones under the weighted mean
+    difference, as ``cobalt`` does, so a set of weights cannot improve the
+    statistic by changing the spread.
+    """
+    mean_t = np.average(x_t, weights=w_t) if w_t is not None else np.mean(x_t)
+    mean_c = np.average(x_c, weights=w_c) if w_c is not None else np.mean(x_c)
+    if sd_denom == "unweighted":
+        var_t, var_c = _group_variance(x_t, None), _group_variance(x_c, None)
     else:
-        mean_c = np.mean(x_c)
-        var_c = np.var(x_c, ddof=1) if len(x_c) > 1 else 0.0
+        var_t, var_c = _group_variance(x_t, w_t), _group_variance(x_c, w_c)
 
     denom = np.sqrt((var_t + var_c) / 2.0)
-    if denom < 1e-12:
-        return 0.0
+    if not np.isfinite(denom) or not np.isfinite(mean_t - mean_c):
+        # An undefined statistic is not a balanced one.
+        return float("nan")
+    # A covariate that is constant within both groups has a pooled standard
+    # deviation of zero up to rounding (exactly 0, or 1e-16 of its size),
+    # so "zero" is judged against the size of the means. Two equal
+    # constants do not differ; two different ones separate the groups
+    # completely, which is an infinite standardized difference, not 0.
+    size = max(abs(float(mean_t)), abs(float(mean_c)))
+    if denom <= 1e-12 * size:
+        if abs(float(mean_t - mean_c)) <= 1e-12 * size:
+            return 0.0
+        return float(np.copysign(np.inf, mean_t - mean_c))
     return float((mean_t - mean_c) / denom)
+
+
+def _balance_weights(w: np.ndarray, D: np.ndarray) -> np.ndarray:
+    """Validate balance weights; a missing weight means "not in the sample".
+
+    Matched frames mark the rows that were not matched with a missing
+    ``_weight`` (the ``psmatch2`` convention), so a missing weight is read
+    as zero. Negative or infinite weights, and a treatment arm whose
+    weights sum to zero, are errors: every weighted statistic would be
+    undefined, and an undefined statistic must not be reported as balance.
+    """
+    w = np.asarray(w, dtype=float).copy()
+    w[np.isnan(w)] = 0.0
+    if np.isinf(w).any() or (w < 0).any():
+        raise ValueError("Balance weights must be finite and non-negative.")
+    for arm, label in ((1, "treated"), (0, "control")):
+        if float(w[D == arm].sum()) <= 0:
+            raise ValueError(
+                f"The {label} group has no positive weight, so weighted "
+                "balance is undefined."
+            )
+    return w
 
 
 def _variance_ratio(
@@ -359,18 +446,8 @@ def _variance_ratio(
     w_c: Optional[np.ndarray] = None,
 ) -> float:
     """Variance ratio (treated / control)."""
-    if w_t is not None:
-        mean_t = np.average(x_t, weights=w_t)
-        var_t = np.average((x_t - mean_t) ** 2, weights=w_t)
-    else:
-        var_t = np.var(x_t, ddof=1) if len(x_t) > 1 else 0.0
-
-    if w_c is not None:
-        mean_c = np.average(x_c, weights=w_c)
-        var_c = np.average((x_c - mean_c) ** 2, weights=w_c)
-    else:
-        var_c = np.var(x_c, ddof=1) if len(x_c) > 1 else 0.0
-
+    var_t = _group_variance(x_t, w_t)
+    var_c = _group_variance(x_c, w_c)
     if var_c < 1e-12:
         return np.inf if var_t > 1e-12 else 1.0
     return float(var_t / var_c)
@@ -568,12 +645,14 @@ def table_to_string(df: pd.DataFrame) -> str:
 
 
 @accepts_aliases(treat="treatment")
+@_expands_categorical("covariates")
 def ps_balance(
     data: pd.DataFrame,
     treatment: str,
     covariates: List[str],
     weights: Optional[Union[np.ndarray, pd.Series]] = None,
     method: str = "logit",
+    sd_denom: str = "weighted",
 ) -> PSBalanceResult:
     """Compute comprehensive propensity score balance table.
 
@@ -588,8 +667,17 @@ def ps_balance(
     weights : array-like, optional
         IPW or matching weights.  If None, inverse-PS weights are
         computed automatically from estimated propensity scores.
+        A missing weight means the row is outside the weighted sample
+        (unmatched rows of a matched frame) and counts as zero.
     method : str
         PS estimation method ('logit', 'probit', 'gbm').
+    sd_denom : {'weighted', 'unweighted'}, default 'weighted'
+        Standard deviation under the weighted mean difference.
+        ``'weighted'`` uses the weighted variances of the two groups
+        (Austin and Stuart 2015 [@austin2015moving]). ``'unweighted'``
+        keeps the variances of the unweighted sample, the default of R
+        ``cobalt``: the scale is then the same before and after weighting
+        and weights cannot improve the statistic by inflating the spread.
 
     Returns
     -------
@@ -621,13 +709,35 @@ def ps_balance(
     [0.02, -0.06]
     >>> fig, ax = bal.love_plot()  # doctest: +SKIP
     """
+    _check_sd_denom(sd_denom)
+    check_columns(
+        data,
+        {"treatment": treatment, "covariates": list(covariates)},
+        function="sp.ps_balance",
+    )
+    # Rows with a missing treatment or covariate value are left out, as the
+    # estimators leave them out: a matched frame carries the rows sp.match
+    # dropped, and one NaN would make the covariate's statistics NaN.
+    full_index = data.index
+    complete = data[[treatment] + list(covariates)].notna().all(axis=1).to_numpy()
+    if not complete.all():
+        warnings.warn(
+            f"ps_balance: {int((~complete).sum())} of {len(complete)} rows have "
+            "a missing treatment or covariate value and are left out of the "
+            "balance table.",
+            UserWarning,
+            stacklevel=2,
+        )
+        if weights is not None:
+            weights = np.asarray(weights, dtype=float)[complete]
+        data = data.loc[complete]
     D = data[treatment].values.astype(float)
     ps = propensity_score(data, treatment, covariates, method=method)
     ps_vals = ps.values
 
     # Compute IPW weights if not supplied
     if weights is not None:
-        w = np.asarray(weights, dtype=float)
+        w = _balance_weights(np.asarray(weights, dtype=float), D)
     else:
         # ATE weights: 1/e for treated, 1/(1-e) for control
         w = np.where(D == 1, 1.0 / ps_vals, 1.0 / (1.0 - ps_vals))
@@ -646,7 +756,7 @@ def ps_balance(
         mean_t = np.mean(x_t)
         mean_c = np.mean(x_c)
         smd_raw = _smd(x_t, x_c)
-        smd_weighted = _smd(x_t, x_c, w_t, w_c)
+        smd_weighted = _smd(x_t, x_c, w_t, w_c, sd_denom=sd_denom)
         vr = _variance_ratio(x_t, x_c, w_t, w_c)
         ks = _ks_stat(x_t, x_c, w_t, w_c)
 
@@ -663,6 +773,8 @@ def ps_balance(
         )
 
     table = pd.DataFrame(rows).set_index("variable")
+    if not complete.all():
+        ps = ps.reindex(full_index)
     return PSBalanceResult(table=table, ps=ps)
 
 
@@ -675,6 +787,7 @@ def balance_diagnostics(
     ps: Optional[Union[np.ndarray, pd.Series, str]] = None,
     method: str = "logit",
     threshold: float = 0.1,
+    sd_denom: str = "weighted",
 ) -> BalanceDiagnosticsResult:
     """Unified balance diagnostics for matching and weighting estimators.
 
@@ -695,13 +808,30 @@ def balance_diagnostics(
         Propensity-score model when ``ps`` is not supplied.
     threshold : float, default 0.1
         Balance threshold for absolute standardized mean differences.
+    sd_denom : {'weighted', 'unweighted'}, default 'weighted'
+        Standard deviation under the weighted mean difference.
+        ``'weighted'`` uses the weighted variances of the two groups
+        (Austin and Stuart 2015 [@austin2015moving]). ``'unweighted'``
+        keeps the variances of the unweighted sample, the default of R
+        ``cobalt``: the scale is then the same before and after weighting
+        and weights cannot improve the statistic by inflating the spread.
 
     Returns
     -------
     BalanceDiagnosticsResult
         ``.table`` has one row per covariate; ``.summary_stats`` records
-        max/mean SMDs, imbalance counts, effective sample size, and
-        propensity-score overlap.
+        max/mean SMDs, imbalance counts, the effective sample size
+        (overall and in each group), the energy distance between the two
+        groups before and after weighting (a joint measure that also
+        reacts to interactions and higher moments; see
+        :func:`sp.energy_distance`), and propensity-score overlap.
+
+    Notes
+    -----
+    Weighted variances use ``sum(w (x - m)^2) / (sum(w) - sum(w^2) /
+    sum(w))``, which does not depend on the scale of the weights and
+    reduces to the ``n - 1`` variance for equal weights, so
+    ``weights=1`` reproduces the unweighted columns exactly.
 
     Examples
     --------
@@ -732,6 +862,12 @@ def balance_diagnostics(
     >>> bool(bal.summary_stats['effective_sample_size'] > 0)
     True
     """
+    _check_sd_denom(sd_denom)
+    check_columns(
+        data,
+        {"treatment": treatment, "covariates": list(covariates)},
+        function="sp.balance_diagnostics",
+    )
     cols = [treatment] + list(covariates)
     df = data[cols].dropna().copy()
     if df.empty:
@@ -751,7 +887,8 @@ def balance_diagnostics(
         w_vals = np.where(D == 1, 1.0 / ps_vals, 1.0 / (1.0 - ps_vals))
         w_series = pd.Series(w_vals, index=df.index, name="weights")
     else:
-        w_vals = w_series.to_numpy(dtype=float)
+        w_vals = _balance_weights(w_series.to_numpy(dtype=float), D)
+        w_series = pd.Series(w_vals, index=df.index, name="weights")
 
     treat_mask = D == 1
     ctrl_mask = D == 0
@@ -761,7 +898,7 @@ def balance_diagnostics(
         x_t, x_c = x[treat_mask], x[ctrl_mask]
         w_t, w_c = w_vals[treat_mask], w_vals[ctrl_mask]
         smd_raw = _smd(x_t, x_c)
-        smd_weighted = _smd(x_t, x_c, w_t, w_c)
+        smd_weighted = _smd(x_t, x_c, w_t, w_c, sd_denom=sd_denom)
         rows.append(
             {
                 "variable": cov,
@@ -781,6 +918,15 @@ def balance_diagnostics(
     abs_raw = table["smd_raw"].abs()
     abs_wtd = table["smd_weighted"].abs()
     ess = _effective_sample_size(w_vals)
+    energy_raw = energy_weighted = np.nan
+    if (w_vals >= 0).all() and len(df) <= 5000:
+        # pairwise distances: O(n^2) memory, so skipped on large samples
+        from .ps_weights import energy_distance
+
+        energy_raw = energy_distance(df, treatment, list(covariates))
+        energy_weighted = energy_distance(
+            df, treatment, list(covariates), weights=w_vals
+        )
     ps_t, ps_c = ps_vals[treat_mask], ps_vals[ctrl_mask]
     common_low = float(max(ps_t.min(), ps_c.min()))
     common_high = float(min(ps_t.max(), ps_c.max()))
@@ -796,6 +942,15 @@ def balance_diagnostics(
         "n_imbalanced_raw": int((abs_raw > threshold).sum()),
         "n_imbalanced_weighted": int((abs_wtd > threshold).sum()),
         "effective_sample_size": float(ess),
+        "effective_sample_size_treated": float(
+            _effective_sample_size(w_vals[treat_mask])
+        ),
+        "effective_sample_size_control": float(
+            _effective_sample_size(w_vals[ctrl_mask])
+        ),
+        "energy_distance_raw": float(energy_raw),
+        "energy_distance_weighted": float(energy_weighted),
+        "sd_denom": sd_denom,
         "pscore_min": float(ps_vals.min()),
         "pscore_max": float(ps_vals.max()),
         "common_support_low": common_low,
@@ -819,8 +974,13 @@ def _coerce_vector(
     if value is None:
         return None
     if isinstance(value, str):
-        if value not in data.columns:
-            raise ValueError(f"Column {value!r} not found for {name}.")
+        # the user typed ps= for the propensity_score vector
+        label = "ps" if name == "propensity_score" else name
+        check_columns(
+            data,
+            {label: value},
+            message=f"Column {value!r} not found for {name}.",
+        )
         return data.loc[index, value].astype(float).rename(name)
     if isinstance(value, pd.Series):
         return value.reindex(index).astype(float).rename(name)
@@ -867,6 +1027,7 @@ def _require_matplotlib() -> Any:
 
 
 @accepts_aliases(treat="treatment")
+@_expands_categorical("covariates")
 def overlap_plot(
     data: pd.DataFrame,
     treatment: str,
@@ -933,10 +1094,13 @@ def overlap_plot(
         ps = propensity_score(data, treatment, covariates, method=method)
 
     D = data[treatment].values.astype(float)
-    ps_vals = ps.values
+    ps_vals = np.asarray(ps, dtype=float)
 
-    ps_treat = ps_vals[D == 1]
-    ps_ctrl = ps_vals[D == 0]
+    # trimmed rows (trimming='crump') and rows with a missing covariate
+    # carry a NaN score and are not part of the plotted sample
+    scored = np.isfinite(ps_vals)
+    ps_treat = ps_vals[scored & (D == 1)]
+    ps_ctrl = ps_vals[scored & (D == 0)]
 
     if ax is None:
         fig, ax = plt.subplots(figsize=figsize)
@@ -1021,6 +1185,7 @@ def love_plot(
         Covariate columns.
     weights : array-like, optional
         IPW or matching weights.  If None, inverse-PS weights are computed.
+        A missing weight counts as zero (an unmatched row).
     threshold : float
         SMD threshold for the vertical dashed line (default 0.1).
     ps_method : str
@@ -1087,8 +1252,13 @@ def _unpack_matching_result(
             )
         return data, treatment, covariates, weights
 
-    res_treat = getattr(data, "treat", None) or getattr(data, "treatment", None)
-    res_covs = getattr(data, "covariates", None)
+    info = getattr(data, "model_info", None) or {}
+    res_treat = (
+        getattr(data, "treat", None)
+        or getattr(data, "treatment", None)
+        or info.get("treat")
+    )
+    res_covs = getattr(data, "covariates", None) or info.get("covariates")
     frame = getattr(data, "matched_data", None)
     if frame is None:
         frame = getattr(data, "data", None)
@@ -1097,8 +1267,10 @@ def _unpack_matching_result(
             f"love_plot() cannot read a balance specification off a "
             f"{type(data).__name__}.",
             recovery_hint=(
-                "Pass a fitted sp.psmatch2 / sp.match result, or the "
-                "explicit love_plot(df, treatment=..., covariates=[...])."
+                "Pass a result that carries a matched sample (sp.psmatch2, "
+                "or sp.match with a nearest-neighbour, stratification or "
+                "CEM method), or the explicit love_plot(df, treatment=..., "
+                "covariates=[...], weights=...)."
             ),
         )
     # Matched samples carry a per-row weight from the matching step;

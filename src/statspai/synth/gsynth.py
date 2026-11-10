@@ -36,6 +36,7 @@ import pandas as pd
 from scipy import stats
 
 from .._aliases import accepts_aliases
+from .._input_validation import check_columns
 from ..core.results import CausalResult
 from ._core import placebo_rank_pvalue
 
@@ -46,8 +47,8 @@ def gsynth(
     outcome: str,
     unit: str,
     time: str,
-    treated_unit: Any,
-    treatment_time: Any,
+    treated_unit: Any = None,
+    treatment_time: Any = None,
     covariates: Optional[List[str]] = None,
     n_factors: Optional[int] = None,
     max_factors: int = 5,
@@ -56,9 +57,20 @@ def gsynth(
     seed: Optional[int] = None,
     alpha: float = 0.05,
     backend: str = "native",
+    *,
+    treat: Optional[str] = None,
+    inference: str = "auto",
+    n_boot: int = 200,
+    min_T0: int = 5,
 ) -> CausalResult:
     """
     Generalized Synthetic Control via interactive fixed effects.
+
+    Two ways to say who is treated. One treated unit:
+    ``treated_unit`` and ``treatment_time``. Several treated units,
+    possibly adopting at different times: ``treat``, a 0/1 column equal to
+    one in treated unit-periods, or a list of ``treated_unit`` with a
+    common ``treatment_time``.
 
     Parameters
     ----------
@@ -70,14 +82,30 @@ def gsynth(
         Unit identifier column.
     time : str
         Time period column.
-    treated_unit : any
-        Identifier of the treated unit.
+    treated_unit : any or list, optional
+        Identifier of the treated unit, or a list of identifiers that
+        share ``treatment_time``.
     treatment_time : any
         First treatment period (inclusive).
     covariates : list of str, optional
-        Additional time-varying covariates.
+        Time-varying covariates. Their coefficients are estimated within
+        the interactive fixed effects model of the never-treated units
+        (Xu 2017; Bai 2009), so they are net of unit effects, period
+        effects and the factors.
+
+        .. versionchanged:: 1.39.0
+           ⚠️ The coefficients used to come from a pooled regression of
+           the outcome on the covariates alone, without an intercept or
+           fixed effects. Covariates that are correlated with the unit
+           effects or the loadings then biased the counterfactual. Calls
+           with ``covariates`` now use the estimator described here, which
+           reproduces R ``gsynth`` to 1e-12, and their inference is the
+           bootstrap of ``inference``.
     n_factors : int, optional
         Number of latent factors. If None, selected by cross-validation.
+        With ``treat``, a list of treated units or ``covariates`` the
+        criterion is the leave-one-period-out prediction error of the
+        treated units before treatment (Xu 2017).
     max_factors : int, default 5
         Maximum factors to try during CV.
     cv_folds : int, default 5
@@ -96,10 +124,34 @@ def gsynth(
         ``r=c(0, max_factors)``, and ``se=FALSE``. The R backend is
         intended for exact reference-package parity; the native path
         remains the dependency-light default.
+    treat : str, optional
+        0/1 treatment indicator column, one in treated unit-periods and
+        absorbing. Replaces ``treated_unit`` / ``treatment_time`` and
+        allows several treated units and staggered adoption. The panel
+        must be balanced.
+    inference : {'auto', 'parametric', 'nonparametric', 'none'}
+        For the multi-unit / covariate estimator. ``'parametric'`` is the
+        bootstrap of Xu (2017, Algorithm 2): prediction errors for treated
+        units are simulated by treating each never-treated unit as treated
+        in turn. It assumes homoskedastic errors across units and is the
+        one to use with few treated units. ``'nonparametric'`` resamples
+        units and needs many treated units. ``'auto'`` takes the first
+        with fewer than 40 treated units.
+    n_boot : int, default 200
+        Bootstrap replications.
+    min_T0 : int, default 5
+        Treated units with fewer pre-treatment periods are dropped, with
+        a warning.
 
     Returns
     -------
     CausalResult
+        With ``treat`` (or several treated units, or covariates):
+        ``estimate`` is the average effect over all treated unit-periods;
+        ``detail`` lists the effect by period relative to adoption
+        (0 = first treated period); ``model_info`` holds ``beta``,
+        ``n_factors``, ``cv_table``, the factors and loadings,
+        ``counterfactual`` and ``effects`` (unit x period).
 
     Examples
     --------
@@ -110,7 +162,91 @@ def gsynth(
     ...                    treatment_time=1989, placebo=False, seed=0)
     >>> bool(result.estimate is not None)
     True
+
+    Several treated units, from a treatment column:
+
+    >>> import numpy as np, pandas as pd
+    >>> rng = np.random.default_rng(0)
+    >>> N, T = 30, 20
+    >>> f = rng.normal(size=T); lam = rng.normal(size=N)
+    >>> panel = pd.DataFrame(
+    ...     [(i, t, lam[i] * f[t] + rng.normal(scale=0.3)) for i in range(N)
+    ...      for t in range(T)], columns=["id", "t", "y"])
+    >>> panel["d"] = ((panel["id"] < 4) & (panel["t"] >= 14)).astype(int)
+    >>> panel["y"] += 2.0 * panel["d"]
+    >>> fit = sp.gsynth(panel, "y", "id", "t", treat="d", n_factors=1,
+    ...                 inference="none")
+    >>> bool(abs(fit.estimate - 2.0) < 0.5)
+    True
     """
+    from statspai.exceptions import MethodIncompatibility
+
+    many = isinstance(treated_unit, (list, tuple, set, np.ndarray, pd.Index, pd.Series))
+    if treat is not None and (treated_unit is not None or treatment_time is not None):
+        raise MethodIncompatibility(
+            "gsynth: pass either treat= or treated_unit= / treatment_time=, "
+            "not both.",
+            recovery_hint="treat= already says which unit-periods are treated.",
+        )
+    if treat is None and (treated_unit is None or treatment_time is None):
+        raise MethodIncompatibility(
+            "gsynth: say who is treated with treat= (a 0/1 column), or with "
+            "treated_unit= and treatment_time=.",
+            recovery_hint="sp.gsynth(df, y, unit, time, treat='D').",
+        )
+    native = backend.lower().replace("-", "_") == "native"
+    if native:
+        # covariates are checked (with labels) by gsynth_multi, which every
+        # native call with covariates= is routed to; backend='r' keeps its
+        # own guards
+        check_columns(
+            data,
+            {"outcome": outcome, "unit": unit, "time": time, "treat": treat},
+            function="sp.gsynth",
+        )
+    if native and (treat is not None or many or covariates):
+        from ._gsynth_multi import gsynth_multi
+
+        frame = data
+        column = treat
+        if column is None:
+            ids = list(treated_unit) if many else [treated_unit]
+            absent = [u for u in ids if u not in set(data[unit].unique())]
+            if absent:
+                from statspai.exceptions import DataInsufficient
+
+                raise DataInsufficient(
+                    f"treated_unit {absent!r} not found in column '{unit}'.",
+                    recovery_hint=f"Check against data['{unit}'].unique().",
+                )
+            column = "__gsynth_treat__"
+            frame = data.assign(
+                **{
+                    column: (
+                        data[unit].isin(ids) & (data[time] >= treatment_time)
+                    ).astype(float)
+                }
+            )
+        return gsynth_multi(
+            frame,
+            outcome,
+            unit,
+            time,
+            column,
+            covariates=covariates,
+            n_factors=n_factors,
+            max_factors=max_factors,
+            inference=inference,
+            n_boot=n_boot,
+            min_T0=min_T0 if (treat is not None or many) else min(int(min_T0), 3),
+            seed=seed,
+            alpha=alpha,
+        )
+    if many or treat is not None:
+        raise MethodIncompatibility(
+            "gsynth: the R reference backend takes a single treated unit.",
+            recovery_hint="Use backend='native'.",
+        )
     backend_norm = backend.lower().replace("-", "_")
     if backend_norm in {"gsynth", "r", "gsynth_r"}:
         if covariates:
@@ -143,6 +279,16 @@ def gsynth(
 
     # --- Build panel ---
     pivot = data.pivot_table(index=unit, columns=time, values=outcome)
+    if treated_unit not in pivot.index:
+        from statspai.exceptions import DataInsufficient
+
+        raise DataInsufficient(
+            f"treated_unit {treated_unit!r} not found in column '{unit}' "
+            f"(or it has no non-missing '{outcome}').",
+            recovery_hint=f"Check the identifier against data['{unit}'].unique().",
+            diagnostics={"n_units": int(len(pivot.index))},
+            alternative_functions=[],
+        )
     all_times = sorted(pivot.columns.tolist())
     pre_times = [t for t in all_times if t < treatment_time]
     post_times = [t for t in all_times if t >= treatment_time]
@@ -179,22 +325,6 @@ def gsynth(
 
     J, T0 = Y0_pre.shape
     T1 = len(post_times)
-
-    # --- Handle covariates ---
-    beta_X = None
-    if covariates:
-        Y0_pre, Y1_pre, Y0_post, Y1_post, beta_X = _partial_out_covariates(
-            data,
-            outcome,
-            unit,
-            time,
-            treated_unit,
-            treatment_time,
-            covariates,
-            donors,
-            pre_times,
-            post_times,
-        )
 
     Y0_all = np.concatenate([Y0_pre, Y0_post], axis=1)
     Y1_all = np.concatenate([Y1_pre, Y1_post])
@@ -242,7 +372,15 @@ def gsynth(
                 plac_fit = _fit_control_factor_model(Y_ctrl_all, Y_plac, T0, r_p)
                 hat_post = np.asarray(plac_fit["treated_counterfactual"])[T0:]
                 placebo_atts.append(float(np.mean(Y_plac_post - hat_post)))
-            except Exception:
+            except Exception as exc:
+                from ..core._fallback import warn_fallback
+
+                warn_fallback(
+                    f"gsynth placebo fit for donor index {j}",
+                    exc,
+                    "it is left out of the placebo distribution behind the SE and"
+                    " p-value",
+                )
                 continue
 
     if len(placebo_atts) > 0:
@@ -617,42 +755,6 @@ def _select_factors_cv(
             best_r = r
 
     return best_r
-
-
-def _partial_out_covariates(
-    data: Any,
-    outcome: Any,
-    unit: Any,
-    time: Any,
-    treated_unit: Any,
-    treatment_time: Any,
-    covariates: Any,
-    donors: Any,
-    pre_times: Any,
-    post_times: Any,
-) -> tuple[Any, Any, Any, Any, Any]:
-    """Partial out covariates via OLS, return residualised outcomes."""
-    pre_ctrl = data[(data[unit].isin(donors)) & (data[time].isin(pre_times))].copy()
-
-    X = pre_ctrl[covariates].values
-    y = pre_ctrl[outcome].values
-
-    # OLS: y = X beta + e
-    XtX = X.T @ X + 1e-8 * np.eye(X.shape[1])
-    beta = np.linalg.solve(XtX, X.T @ y)
-
-    # Residualise all data
-    data_res = data.copy()
-    X_all = data_res[covariates].values
-    data_res[outcome] = data_res[outcome] - X_all @ beta
-
-    pivot = data_res.pivot_table(index=unit, columns=time, values=outcome)
-    Y0_pre = pivot.loc[donors, pre_times].values.astype(np.float64)
-    Y0_post = pivot.loc[donors, post_times].values.astype(np.float64)
-    Y1_pre = pivot.loc[treated_unit, pre_times].values.astype(np.float64)
-    Y1_post = pivot.loc[treated_unit, post_times].values.astype(np.float64)
-
-    return Y0_pre, Y1_pre, Y0_post, Y1_post, beta
 
 
 # Citation

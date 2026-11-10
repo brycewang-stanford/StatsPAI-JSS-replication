@@ -36,10 +36,12 @@ import numpy as np
 import pandas as pd
 from scipy import stats as sp_stats
 
+from ..core._covariates import expands_categorical_covariates as _expands_categorical
 from ..core.results import CausalResult
 from .ps_diagnostics import balance_diagnostics
 
 
+@_expands_categorical("covariates")
 def overlap_weights(
     data: pd.DataFrame,
     y: str,
@@ -90,8 +92,12 @@ def overlap_weights(
     ...                             covariates=['education', 'experience',
     ...                                         'tenure'],
     ...                             n_bootstrap=100, seed=42)
-    >>> result.summary()
-    >>> result.model_info['effective_sample_size']
+    >>> result.estimand, round(result.estimate, 3)
+    ('ATO', 0.188)
+    >>> report = result.summary()
+    >>> ess = result.model_info['effective_sample_size']
+    >>> bool(0 < ess <= len(df))
+    True
 
     >>> # min(e, 1-e) matching weights instead of overlap weights
     >>> result = sp.overlap_weights(df, y='log_wage', treat='union',

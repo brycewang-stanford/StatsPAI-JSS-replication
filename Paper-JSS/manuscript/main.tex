@@ -40,6 +40,8 @@
 %% above the Section 4 heading. Ragged bottoms keep the page breaks and put
 %% the slack where a reader expects it.
 \raggedbottom
+%% Long unbreakable \code{} names otherwise overrun the right margin.
+\setlength{\emergencystretch}{2.5em}
 \makeatletter
 \setlength{\@fptop}{0pt}
 \setlength{\@fpsep}{\floatsep}
@@ -97,10 +99,11 @@
 %% natbib prints every author on a reference's first in-text citation.
 %% For the three large-collaboration entries that means eight names and
 %% two lines of body text to name one dependency, so force the
-%% abbreviated form everywhere: HELM (50 authors), NumPy, SciPy, and
-%% scikit-learn (16).
+%% abbreviated form everywhere: HELM (50 authors), NumPy, SciPy,
+%% scikit-learn (16), data.table (8), and the rOpenSci standards (10).
 \shortcites{liang2023helm,harris2020array,virtanen2020scipy,%
-            pedregosa2011scikit}
+            pedregosa2011scikit,barrett2026datatable,%
+            padgham2021statistical}
 \newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
 \input{generated_claims.tex}
 
@@ -125,37 +128,37 @@
 
 \Abstract{
 \statspai{} is a \proglang{Python} package for applied causal inference
-and econometrics. Every registered function carries an evidence tier that
-a user or an agent can query at call time. This article asks what such a
-label certifies, and describes a design that makes the answer checkable.
-Four links connect a label to the user, and each is verified
-mechanically. They are the implementation a parity row exercised, traced
-to the source files on its path; the entry point the evidence is
-credited to; the configuration and output the row compared, including
-whether a standard error was tested as well as the point estimate; and
-whether each automated check applies to the fit. Stochastic estimators
-are graded by seed-replicated equivalence against an explicit margin.
-The evidence covers a twelve-estimator core. It includes a
-\RParityModuleCount{}-module harness against canonical \proglang{R}
-implementations on identical data bytes, \RParityStrictCount{} of them
-at strict parity, with \proglang{Stata} references for
-\StataParityModuleCount{}, plus known-truth recovery, calibrated Monte
-Carlo coverage, and timings that keep unfavourable comparisons. Applying
-the design found defects that numerical agreement alone had missed,
-among them parity rows that compared \proglang{R} with itself and an IV
-entry point that silently ignored a requested cluster-robust covariance.
-Seven worked examples, executed as printed, and a licence-free
-replication path close the article. For the agent-facing interface the
-evidence is mechanical and contractual, not a claim of behavioural agent
-superiority.
+and econometrics whose functions carry evidence labels. This article asks
+what such a label certifies and describes a design that lets a user check.
+The strongest check is the narrowest. For 40 entry points,
+\code{sp.validation\_scope} reads a fitted object and reports which reference
+runs covered its variant and inference option, and whether they compared the
+standard error as well as the point estimate. More widely, a call trace bound
+to the source files on its path establishes which implementation ran in each
+of \RParityModuleCount{} modules compared with \proglang{R} implementations on
+identical data (\RParityStrictCount{} at same-data parity, with
+\proglang{Stata} references for \StataParityModuleCount{}). Those modules back
+\ParityTrackACrossCount{} of the \RegistryCertified{} functions the registry
+labels \code{certified}. The others rest on stored reference results, each
+held by a test, with no finer record. Further tests hold the entry point a
+label credits and whether each automated check applies to a fit. Stochastic
+estimators are graded by seed-replicated equivalence against an explicit
+margin. The evidence adds known-truth recovery, Monte Carlo coverage that
+reports under-coverage where it occurs, and timings. Applying the design found
+defects that numerical agreement alone had missed, among them parity rows that
+compared \proglang{R} with itself and an instrumental-variables entry point
+that returned CR1 errors when CR2 was requested. Seven worked examples,
+executed as printed, and a licence-free replication path accompany the article.
+The agent-facing interface is evaluated by mechanical and contractual checks,
+not by agent behaviour.
 }
 
-\Keywords{causal inference, applied econometrics, validation tiers, \proglang{Python},
-          \proglang{R}, \proglang{Stata}, software, machine learning,
-          agent-facing registry API, large language models, reproducibility}
-\Plainkeywords{causal inference, applied econometrics, validation tiers, Python, R,
-               Stata, software, machine learning, agent-facing registry API,
-               large language models, reproducibility}
+\Keywords{causal inference, applied econometrics, software validation,
+          validation tiers, numerical parity, \proglang{Python}, \proglang{R},
+          \proglang{Stata}, reproducibility, agent-facing registry API}
+\Plainkeywords{causal inference, applied econometrics, software validation,
+               validation tiers, numerical parity, Python, R, Stata,
+               reproducibility, agent-facing registry API}
 
 \Address{
   Biaoyue Wang (corresponding author)\\
@@ -176,10 +179,10 @@ superiority.
 \input{sections/01-introduction-compact.tex}
 \input{sections/02-architecture-compact.tex}
 \input{sections/03-agent-facing-compact.tex}
+\input{sections/07-agent-eval.tex}
 \input{sections/04-examples-compact.tex}
 \input{sections/05-parity-compact.tex}
 \input{sections/06-performance.tex}
-\input{sections/07-agent-eval.tex}
 \input{sections/08-computational-details-compact.tex}
 \input{sections/09-discussion-compact.tex}
 

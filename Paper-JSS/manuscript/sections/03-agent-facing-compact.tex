@@ -1,88 +1,82 @@
 \section{The agent-facing registry API}\label{sec:agent}
 
-\statspai{} exposes the surface a human \proglang{Python} user calls to
-LLM agents through typed schemas and an MCP server. The agent layer is a
-software-interface contribution. Four handoffs are usually opaque to a
-reviewer: tool discovery, failure recovery, result reuse, and citation
-resolution. The agent layer turns each of them into an artifact that
-can be inspected, and it puts machine-orchestrated calls under the same
-validation ledger as human ones. It is validated by schema/MCP/citation reproducibility,
-not by a model-quality score.
-Section~\ref{sec:agentbench} reports the mechanical evidence for it and what it does not show.
+\statspai{} exposes the surface a \proglang{Python} user calls to LLM
+agents through typed schemas and an MCP server. The agent layer is a
+software interface. Section~\ref{sec:agentbench} reports the mechanical
+evidence for it and what that evidence does not show. No claim is made about
+agent behaviour.
 
 \subsection{Schemas and agent cards}\label{sec:why-schema}\label{sec:fn-schema}
 
-Docstrings, \proglang{R} help pages, and \proglang{Stata} help files are
-prose interfaces. A tool-using agent needs a typed object containing
-parameter names, types, defaults, required fields, enumerated choices,
-and a short description including stability and limitations when
-relevant. The schema call returns the executable OpenAI-style object.
-The description and agent-card calls return richer planning metadata,
-such as assumptions, preconditions, failure modes, alternatives, typical
-sample size, references, and examples. These discovery functions are
-themselves registered, so an agent can inspect the estimator catalogue
-before it selects a method. Design-detection and preflight calls add
-cheap planning diagnostics before any estimator is run.
+A tool-using agent needs a typed object with parameter names, types,
+defaults, required fields, and enumerated choices, not a prose help page.
+\code{sp.function\_schema(name)} returns that object in the OpenAI tool
+format. \code{sp.describe\_function(name)} and \code{sp.agent\_card(name)}
+return planning metadata such as assumptions, preconditions, failure
+modes, alternatives, and references. Generating a schema from a typed
+signature is a solved problem. What is specific here is that the schema is
+the statistical registry itself, so it carries the validation status of the
+function and leads to the same evidence a human reader gets.
 
 \subsection{Typed errors and the MCP server}\label{sec:exception-envelope}\label{sec:mcp}
 
-Estimator failures inherit from \code{StatsPAIError} and carry
-structured fields: \code{error\_kind}, \code{detail},
-\code{recovery\_hint}, \code{alternative\_functions}, and any partial
-\code{diagnostics}. Warnings use the same idea for non-fatal
-degradations. The MCP server serializes these records as structured
-errors, so an agent can branch on \code{weak\_instrument},
-\code{no\_overlap}, \code{rank\_deficient}, or similar identifiers
-without scraping English messages.
+Most estimator failures inherit from \code{StatsPAIError}, and
+\code{to\_dict()} returns \code{kind}, \code{message},
+\code{recovery\_hint}, \code{alternative\_functions}, and
+\code{diagnostics}. Some failures still arrive as plain \proglang{Python}
+exceptions. The MCP server adds \code{error\_kind} (such as
+\code{assumption\_violation} or \code{numerical\_instability}) and a
+\code{remediation} category (such as \code{weak\_instrument} or
+\code{collinearity}), so an agent can branch without scraping English
+messages. Listing~\ref{lst:typed-error} shows the record a misspelled
+column produces.
 
-The \code{statspai-mcp} server exposes registered functions as MCP
-tools. Tool inputs are generated from the registry schemas, outputs are
-JSON-safe result payloads plus \code{result\_id} handles, and typed
-errors use the exception envelope above. Chained tools cover auditing,
-Honest-DiD sensitivity, generic sensitivity analysis, CS aggregation,
-Bacon decomposition, paper generation, and citation. They accept result
-handles, so an agent does not have to marshal coefficient, covariance,
-or cross-fit arrays through model context. The
-deterministic trace in Section~\ref{sec:agentbench} exercises this
-contract.
+\begin{lstlisting}[caption={A typed error, as a dictionary. An MCP client
+receives this record with the additional \code{error\_kind} and
+\code{remediation} fields.},label={lst:typed-error},captionpos=b]
+>>> try:
+...     sp.regress("lwage ~ educ + expr", data = card)
+... except sp.exceptions.StatsPAIError as err:
+...     record = err.to_dict()
+>>> record["kind"], record["class"]
+('column_not_found', 'ColumnNotFound')
+>>> record["recovery_hint"][:39]
+"'expr' not found; did you mean 'exper'?"
+\end{lstlisting}
 
-\subsection{The estimand-first DSL and robustness audit}\label{sec:causal-question}
+The \code{statspai-mcp} server exposes registered functions as MCP tools.
+Tool inputs are generated from the registry schemas, outputs are JSON-safe
+payloads plus \code{result\_id} handles, and failures use the record
+above. By default \code{tools/list} serves a curated profile, because a
+manifest with one tool per registered function is larger than an agent's
+context holds. The profile lists hand-written estimator, workflow, and
+pipeline tools and three meta-tools (\code{search\_functions},
+\code{describe\_function}, \code{call\_function}), through which every
+registered function stays reachable. \code{-{}-profile full} serves the
+738 estimator-level tools; plots, datasets, and utilities stay out by
+design. Chained tools for auditing, Honest-DiD sensitivity, generic
+sensitivity analysis, Bacon decomposition, and citation accept result
+handles, so an agent does not have to carry coefficient or covariance
+arrays through its context.
+
+\subsection{Questions, audits, and citations}\label{sec:causal-question}\label{sec:cite}\label{sec:agent-compare}
 
 \code{sp.causal\_question(...)} accepts a requested estimand, treatment,
-outcome, data, optional design, covariates, instruments, and sensitivity
-flag, then routes to the appropriate estimator and returns a
-\code{CausalQuestionResult}. The result bundles the fitted estimator,
-the design-detection provenance, optional sensitivity output, and an
-\code{audit\_report}. The standalone \code{sp.audit(result)} call
-produces the same missing-evidence checklist for any fitted result and
-points to follow-up functions such as RD density tests, Honest-DiD
-sensitivity, or unobserved-confounding bounds. Each check carries one of
-four statuses (passed, failed, missing, or not applicable). The last
-status is decided from the fit's own metadata by an explicit
-applicability rule. For example, an over-identification test is not
-applicable to a just-identified IV model, and the audit says why. An
-agent is therefore never sent after a test that does not exist. The companion \code{sp.validation\_scope}
-answers the neighbouring question of which validation artifacts cover
-the fitted configuration and which of its outputs they compared
-(Section~\ref{sec:validation-tiers}).
+outcome, data, optional design, covariates, and instruments, and returns a
+\code{CausalQuestion}. Its \code{.identify()} gives the plan and its
+\code{.estimate()} an \code{EstimationResult} wrapping the fitted
+estimator. \code{sp.audit(result)} produces a checklist of the design
+evidence a reader will expect for a fitted result and points to follow-up
+functions. Each check carries one of four statuses: passed, failed,
+missing, or not applicable. The last is decided from the fit's own
+metadata by an explicit rule. An over-identification test is not applicable
+to a just-identified IV model, and the audit says why. The rules are not
+complete. Generic fits can still be sent after checks that do not suit
+them, so an audit is a prompt and not a verdict.
 
-\subsection{The bibliography verifier}\label{sec:cite}
-
-Every public-facing citation emitted by the package must come from the
-curated \code{paper.bib}. Function specs store bibliography keys, result
-objects expose \code{cite(format=...)}, and tests assert that registered
-keys parse cleanly and do not collide on author/year/title triples.
-When a key is missing, the package raises an error rather than emitting
-a plausible-looking citation. This targets a concrete agent failure
-mode: hallucinated references.
-
-\subsection{Comparison with existing platforms and prior art}\label{sec:agent-compare}
-
-Generating a JSON schema from a typed signature is a solved problem.
-\pkg{Pydantic}, \pkg{FastAPI}, and the LLM-vendor tool adapters all do
-it. What is specific to this package is that the schema is the
-statistical registry itself. It is tied to validation status and to
-typed statistical errors, and it offers result handles for
-estimate-to-audit-to-sensitivity chains. The result is a
-validation-tiered tool catalogue with a citation verifier, which
-statistical help systems do not expose.
+Every citation the package emits comes from a curated \code{paper.bib}.
+Function specs store bibliography keys, result objects expose
+\code{cite(format=...)}, and a missing key raises an error instead of
+producing a plausible-looking reference. This addresses a known failure of
+LLM agents, invented references. It checks that a key exists in the file.
+It does not check the file, and the entries are verified by hand.

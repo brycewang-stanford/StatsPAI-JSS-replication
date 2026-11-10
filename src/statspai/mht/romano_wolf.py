@@ -39,6 +39,7 @@ Clarke, D., Romano, J.P. and Wolf, M. (2020).
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass
 from typing import Any, List, Optional, Sequence, Union
 
@@ -48,6 +49,8 @@ from scipy import stats as sp_stats
 
 from .._aliases import accepts_aliases
 from .._result_serialize import ResultProtocolMixin
+from ..core._call_record import records_call
+from ..core._vcov_spec import accepts_vce
 
 # ──────────────────────────────────────────────────────────────────────
 # Classical (non-resampling) adjustments
@@ -160,9 +163,111 @@ def benjamini_hochberg(pvalues: PValueInput) -> np.ndarray:
     return result
 
 
+def _sorted_with_missing_as_one(p: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Order and sorted values, a missing p-value counting as 1.
+
+    A test that returned no p-value is still a member of the family. Putting
+    1 in its place keeps the family size and cannot lower any adjusted
+    p-value; the caller puts the NaN back afterwards.
+    """
+    filled = np.where(np.isnan(p), 1.0, p)
+    order = np.argsort(filled, kind="stable")
+    return order, filled[order]
+
+
+def _hochberg(pvalues: PValueInput) -> np.ndarray:
+    """Hochberg (1988) step-up: ``min_{j >= i} (S - j + 1) p_(j)``, capped at 1.
+
+    Uniformly at least as powerful as Holm; valid under independence or
+    positive dependence of the test statistics (the Simes inequality).
+    """
+    p = np.asarray(pvalues, dtype=float)
+    S = len(p)
+    order, sp_ = _sorted_with_missing_as_one(p)
+    adjusted = np.minimum(sp_ * (S - np.arange(S)), 1.0)
+    adjusted = np.minimum.accumulate(adjusted[::-1])[::-1]
+    out = np.empty(S)
+    out[order] = adjusted
+    out[np.isnan(p)] = np.nan
+    return out
+
+
+def _hommel(pvalues: PValueInput) -> np.ndarray:
+    """Hommel (1988), by the algorithm of Wright (1992).
+
+    The closed test built on Simes' global test: at least as powerful as
+    Hochberg, under the same condition.
+    """
+    p = np.asarray(pvalues, dtype=float)
+    S = len(p)
+    if S <= 1:
+        return p.copy()
+    order, sp_ = _sorted_with_missing_as_one(p)
+    ranks = np.arange(1, S + 1)
+    q = np.full(S, float(np.min(S * sp_ / ranks)))
+    adjusted = q.copy()
+    for m in range(S - 1, 1, -1):
+        head = S - m + 1  # the first `head` ordered p-values
+        tail_bound = float(np.min(m * sp_[head:] / np.arange(2, m + 1)))
+        q[:head] = np.minimum(m * sp_[:head], tail_bound)
+        q[head:] = q[head - 1]
+        adjusted = np.maximum(adjusted, q)
+    adjusted = np.minimum(np.maximum(adjusted, sp_), 1.0)
+    out = np.empty(S)
+    out[order] = adjusted
+    out[np.isnan(p)] = np.nan
+    return out
+
+
+def _benjamini_yekutieli(pvalues: PValueInput) -> np.ndarray:
+    """Benjamini-Yekutieli (2001): BH times ``sum_{i<=S} 1/i``.
+
+    Controls the false discovery rate under any dependence between the
+    tests, at the price of that harmonic factor.
+    """
+    p = np.asarray(pvalues, dtype=float)
+    S = len(p)
+    order, sp_ = _sorted_with_missing_as_one(p)
+    ranks = np.arange(1, S + 1)
+    harmonic = float(np.sum(1.0 / ranks))
+    adjusted = np.minimum(sp_ * S * harmonic / ranks, 1.0)
+    adjusted = np.minimum.accumulate(adjusted[::-1])[::-1]
+    out = np.empty(S)
+    out[order] = adjusted
+    out[np.isnan(p)] = np.nan
+    return out
+
+
+def _sidak(pvalues: PValueInput) -> np.ndarray:
+    """Sidak: ``1 - (1 - p)^S``, exact for independent tests."""
+    p = np.asarray(pvalues, dtype=float)
+    return np.asarray(-np.expm1(len(p) * np.log1p(-p)), dtype=float)
+
+
 # ──────────────────────────────────────────────────────────────────────
 # OLS helper (no external dependency)
 # ──────────────────────────────────────────────────────────────────────
+
+
+def _independent_cols(X: np.ndarray, tol: float = 1e-12) -> List[int]:
+    """Columns of ``X`` kept in order, dropping those spanned by earlier ones."""
+    A = X.T @ X
+    kept: List[int] = []
+    for j in range(A.shape[0]):
+        ajj = A[j, j]
+        if not np.isfinite(ajj) or ajj <= 0:
+            continue
+        if kept:
+            akj = A[kept, j]
+            try:
+                r = ajj - akj @ np.linalg.solve(A[np.ix_(kept, kept)], akj)
+            except np.linalg.LinAlgError:  # pragma: no cover
+                continue
+        else:
+            r = ajj
+        if r > tol * ajj:
+            kept.append(j)
+    return kept
 
 
 def _ols_fit(
@@ -179,6 +284,13 @@ def _ols_fit(
     Standard errors are heteroskedasticity-robust (HC1) or
     cluster-robust (Liang-Zeger) when ``cluster_ids`` is provided.
     """
+    # Columns aliased with earlier ones (a village dummy that is all zero in
+    # a bootstrap sample) are omitted, as Stata's regress does; the
+    # treatment is column 0 and is kept unless it is itself unidentified.
+    live = _independent_cols(X)
+    if not live or live[0] != 0:
+        raise np.linalg.LinAlgError("treatment coefficient not identified")
+    X = X[:, live]
     n, k = X.shape
     # QR-based OLS for numerical stability
     Q, R = np.linalg.qr(X)
@@ -483,7 +595,9 @@ class RomanoWolfResult(ResultProtocolMixin):
 # ──────────────────────────────────────────────────────────────────────
 
 
+@records_call("romano_wolf")
 @accepts_aliases(covariates="controls")
+@accepts_vce(default=None)
 def romano_wolf(
     data: pd.DataFrame,
     y: List[str],
@@ -506,8 +620,9 @@ def romano_wolf(
     Parameters
     ----------
     data : pd.DataFrame
-        Analysis data (complete cases used; rows with NaN in any
-        relevant column are dropped).
+        Analysis data. Rows missing ``x``, a control or the cluster are
+        dropped; each outcome is then estimated on its own non-missing
+        rows (Stata ``rwolf``), reported in ``table['n_obs']``.
     y : list of str
         Outcome variable names (one regression per outcome).
     x : str or list of str
@@ -540,8 +655,9 @@ def romano_wolf(
     2. For each bootstrap draw *b*:
        a. Resample rows (or clusters) with replacement.
        b. Re-estimate all *S* regressions on the bootstrap sample.
-       c. Centre the bootstrap test statistics:
-          ``t*_s = t_boot_s - t_orig_s``.
+       c. Studentise and recentre: ``t*_s = (b*_s - b_s) / se*_s``;
+          draws in which a treatment coefficient is unidentified are
+          discarded (aliased controls are omitted, as Stata ``regress``).
     3. Apply the stepdown algorithm on centred ``|t*|`` to compute
        adjusted p-values with enforced monotonicity.
 
@@ -570,24 +686,40 @@ def romano_wolf(
     if controls is None:
         controls = []
 
-    all_cols = list(y) + list(x) + list(controls)
+    base_cols = list(x) + list(controls)
     if cluster is not None:
-        all_cols.append(cluster)
+        base_cols.append(cluster)
 
-    # Drop rows with missing values in relevant columns
-    df = data[all_cols].dropna().reset_index(drop=True)
+    # Rows need the regressors (and cluster); each outcome then uses its own
+    # non-missing rows, as Stata rwolf's per-outcome regressions do. Dropping
+    # rows with *any* missing outcome silently shrank every regression to the
+    # intersection (a 70-79 country sample to 15 in the Kinship replication).
+    df = data[list(dict.fromkeys(list(y) + base_cols))]
+    df = df.dropna(subset=base_cols).reset_index(drop=True)
     n = len(df)
 
     if n == 0:
         raise ValueError("No complete observations after dropping missing values.")
 
     S = len(y)  # number of hypotheses
+    n_by_outcome = [int(df[o].notna().sum()) for o in y]
+    if min(n_by_outcome) == 0:
+        raise ValueError(
+            "An outcome has no non-missing observations: "
+            + ", ".join(o for o, k in zip(y, n_by_outcome) if k == 0)
+        )
 
     cluster_ids: Optional[np.ndarray] = None
     if cluster is not None:
         cluster_ids = df[cluster].values
 
     rng = np.random.default_rng(seed)
+
+    def _fit_outcome(frame: pd.DataFrame, outcome: str) -> Any:
+        sub = frame[frame[outcome].notna()]
+        y_vec, X_mat = _build_design(sub, outcome, x, controls or None)
+        cl = sub[cluster].values if cluster is not None else None
+        return _ols_fit(y_vec, X_mat, cl)
 
     # ── Step 1: original regressions ───────────────────────────────
     orig_coefs = np.empty(S)
@@ -596,31 +728,47 @@ def romano_wolf(
     orig_p = np.empty(S)
 
     for s, outcome in enumerate(y):
-        y_vec, X_mat = _build_design(df, outcome, x, controls or None)
-        coef, se, t, p = _ols_fit(y_vec, X_mat, cluster_ids)
+        coef, se, t, p = _fit_outcome(df, outcome)
         orig_coefs[s] = coef
         orig_se[s] = se
         orig_t[s] = t
         orig_p[s] = p
 
     # ── Step 2: bootstrap ──────────────────────────────────────────
-    # Store centred bootstrap |t|-statistics: shape (n_boot, S)
-    boot_t_abs = np.empty((n_boot, S))
+    # Null-imposed studentised statistics |b* - b| / se* (Romano & Wolf
+    # 2005, Clarke, Romano & Wolf 2020). A draw in which a treatment
+    # coefficient is not identified is discarded, not scored as t* = 0:
+    # the latter counted every such draw as exceeding every observed t and
+    # put a floor under the adjusted p-values (UCT replication with 119
+    # village dummies: p_rw = 0.027 at |t| = 10).
+    boot_t_abs = np.full((n_boot, S), np.nan)
 
     for b in range(n_boot):
         idx = _resample_indices(n, cluster_ids, rng)
         df_boot = df.iloc[idx].reset_index(drop=True)
-        cluster_boot = df_boot[cluster].values if cluster is not None else None
-
         for s, outcome in enumerate(y):
-            y_vec, X_mat = _build_design(df_boot, outcome, x, controls or None)
             try:
-                _, _, t_boot, _ = _ols_fit(y_vec, X_mat, cluster_boot)
+                c_b, se_b, _, _ = _fit_outcome(df_boot, outcome)
             except np.linalg.LinAlgError:
-                # Singular bootstrap sample -- use 0 (conservative)
-                t_boot = 0.0
-            # Centre: subtract original t-stat, then take absolute value
-            boot_t_abs[b, s] = abs(t_boot - orig_t[s])
+                break
+            if not (np.isfinite(se_b) and se_b > 0):
+                break
+            boot_t_abs[b, s] = abs(c_b - orig_coefs[s]) / se_b
+
+    valid = np.isfinite(boot_t_abs).all(axis=1)
+    n_failed = int((~valid).sum())
+    if n_failed == n_boot:
+        raise ValueError(
+            "Every bootstrap draw left a treatment coefficient unidentified."
+        )
+    if n_failed:
+        warnings.warn(
+            f"romano_wolf: {n_failed} of {n_boot} bootstrap draws left a "
+            "treatment coefficient unidentified and were discarded.",
+            UserWarning,
+            stacklevel=2,
+        )
+    boot_t_abs = boot_t_abs[valid]
 
     # ── Step 3: Romano-Wolf stepdown ───────────────────────────────
     abs_t = np.abs(orig_t)
@@ -667,6 +815,7 @@ def romano_wolf(
             "p_bonf": p_bonf,
             "p_holm": p_holm,
             "p_bh": p_bh,
+            "n_obs": n_by_outcome,
         }
     )
 
@@ -698,8 +847,19 @@ def adjust_pvalues(
         Adjustment method.  One of:
 
         - ``'bonferroni'`` -- Bonferroni correction.
-        - ``'holm'`` -- Holm (1979) step-down.
+        - ``'sidak'`` -- ``1 - (1 - p)^S``, exact under independence.
+        - ``'holm'`` -- Holm (1979) step-down. Valid under any dependence.
+        - ``'hochberg'`` -- Hochberg (1988) step-up. More powerful than
+          Holm; needs independent or positively dependent tests.
+        - ``'hommel'`` -- Hommel (1988). More powerful than Hochberg, under
+          the same condition.
         - ``'bh'`` or ``'fdr'`` -- Benjamini-Hochberg FDR.
+        - ``'by'`` -- Benjamini-Yekutieli (2001) FDR under any dependence.
+
+        These are the methods of R's ``p.adjust`` (plus Sidak), and return
+        the same numbers. A missing p-value stays missing and still counts
+        towards the size of the family, which is where this differs from
+        ``p.adjust``: R drops it from the count.
 
         For Romano-Wolf or Westfall-Young adjustments (which require
         the original data and bootstrap), use :func:`romano_wolf`
@@ -714,7 +874,15 @@ def adjust_pvalues(
     --------
     >>> import statspai as sp
     >>> sp.adjust_pvalues([0.01, 0.04, 0.03, 0.20], method='holm')
-    array([0.04, 0.12, 0.09, 0.20])
+    array([0.04, 0.09, 0.09, 0.2 ])
+    >>> sp.adjust_pvalues([0.01, 0.04, 0.03, 0.20], method='hommel')
+    array([0.04, 0.08, 0.08, 0.2 ])
+
+    References
+    ----------
+    [@holm1979simple], [@hochberg1988sharper], [@hommel1988stagewise],
+    [@wright1992adjusted], [@benjamini1995controlling],
+    [@benjamini2001control]
     """
     _dispatch = {
         "bonferroni": bonferroni,
@@ -724,12 +892,19 @@ def adjust_pvalues(
         "fdr": benjamini_hochberg,
         "benjamini_hochberg": benjamini_hochberg,
         "benjamini-hochberg": benjamini_hochberg,
+        "hochberg": _hochberg,
+        "hommel": _hommel,
+        "by": _benjamini_yekutieli,
+        "benjamini_yekutieli": _benjamini_yekutieli,
+        "benjamini-yekutieli": _benjamini_yekutieli,
+        "sidak": _sidak,
     }
-    method_lower = method.lower()
+    method_lower = str(method).lower()
     if method_lower not in _dispatch:
+        available = ["bonferroni", "sidak", "holm", "hochberg", "hommel", "bh", "by"]
         raise ValueError(
             f"Unknown adjustment method '{method}'. "
-            f"Available: {sorted(set(_dispatch.values()), key=lambda f: f.__name__)}. "
+            f"Available: {available}. "
             f"For Romano-Wolf, use romano_wolf() directly."
         )
-    return _dispatch[method_lower](pvalues)
+    return np.asarray(_dispatch[method_lower](pvalues), dtype=float)

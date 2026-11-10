@@ -21,96 +21,56 @@ Roth, J. (2022).
 "Pretest with Caution: Event-Study Estimates after Testing for
 Parallel Trends."
 *American Economic Review: Insights*, 4(3), 305-322. [@roth2022pretest]
+
+Layout: this module holds :func:`honest_did` and its native tables; the
+argument checks and the event-study extractor are in ``_honest_common``, the
+R backend in ``_honest_r``, :func:`breakdown_m` in ``_honest_breakdown`` and
+the array interface (:func:`honest_did_from_moments`) in ``_honest_moments``.
+All of them are re-exported here.
 """
 
-import json
-import shutil
-import subprocess
-import tempfile
 import warnings
-from numbers import Real
-from pathlib import Path
-from typing import Any, List, Optional, Sequence, cast
+from typing import Any, List, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
 from scipy import stats
 
 from ..core.results import CausalResult
-from ..exceptions import ConvergenceFailure, DataInsufficient, MethodIncompatibility
-from ._arp import rm_confidence_set
-from ._flci import breakdown_m_sd, event_study_moments, flci_delta_sd
-
-
-def _require_string(value: Any, *, argument: str) -> str:
-    if not isinstance(value, str) or not value:
-        raise MethodIncompatibility(
-            f"`{argument}` must be a non-empty string.",
-            recovery_hint=f"Pass a supported string value for `{argument}`.",
-            diagnostics={"argument": argument, "type": type(value).__name__},
-        )
-    return value
-
-
-def _require_alpha(alpha: Any) -> float:
-    if isinstance(alpha, (bool, np.bool_)) or not isinstance(alpha, Real):
-        raise MethodIncompatibility(
-            "`alpha` must be a finite number in (0, 1).",
-            recovery_hint="Pass a significance level such as alpha=0.05.",
-            diagnostics={"argument": "alpha", "value": alpha},
-        )
-    out = float(alpha)
-    if not np.isfinite(out) or not (0.0 < out < 1.0):
-        raise MethodIncompatibility(
-            "`alpha` must be a finite number in (0, 1).",
-            recovery_hint="Pass a significance level such as alpha=0.05.",
-            diagnostics={"argument": "alpha", "value": alpha},
-        )
-    return out
-
-
-def _require_int(value: Any, *, argument: str) -> int:
-    if isinstance(value, (bool, np.bool_)):
-        raise MethodIncompatibility(
-            f"`{argument}` must be an integer.",
-            recovery_hint=f"Pass an integer relative-time value for `{argument}`.",
-            diagnostics={"argument": argument, "value": value},
-        )
-    try:
-        return int(value)
-    except (TypeError, ValueError) as exc:
-        raise MethodIncompatibility(
-            f"`{argument}` must be an integer.",
-            recovery_hint=f"Pass an integer relative-time value for `{argument}`.",
-            diagnostics={"argument": argument, "type": type(value).__name__},
-        ) from exc
-
-
-def _coerce_m_grid(m_grid: Optional[Sequence[float]], *, se_hat: float) -> List[float]:
-    if m_grid is None:
-        sigma = float(se_hat)
-        return [0.0, 0.5 * sigma, sigma, 1.5 * sigma, 2.0 * sigma, 3.0 * sigma]
-    try:
-        out = [float(m) for m in m_grid]
-    except (TypeError, ValueError) as exc:
-        raise MethodIncompatibility(
-            "`m_grid` must be a sequence of finite non-negative numbers.",
-            recovery_hint="Pass m_grid=[0, 0.5, 1.0] or leave it as None.",
-            diagnostics={"argument": "m_grid", "type": type(m_grid).__name__},
-        ) from exc
-    if not out:
-        raise DataInsufficient(
-            "`m_grid` must contain at least one value.",
-            recovery_hint="Pass at least one M value or leave m_grid as None.",
-            diagnostics={"argument": "m_grid"},
-        )
-    if any((not np.isfinite(m)) or m < 0 for m in out):
-        raise MethodIncompatibility(
-            "`m_grid` must be a sequence of finite non-negative numbers.",
-            recovery_hint="Remove NaN/Inf/negative M values from m_grid.",
-            diagnostics={"argument": "m_grid", "values": out},
-        )
-    return out
+from ..exceptions import DataInsufficient, MethodIncompatibility, StatsPAIError
+from ._arp_sets import rm_confidence_set
+from ._flci import event_study_moments, flci_delta_sd
+from ._honest_breakdown import _breakdown_rm, breakdown_m  # noqa: F401
+from ._honest_common import (  # noqa: F401  (re-exported for callers)
+    _FAMILY_OF_METHOD,
+    _HM_CANONICAL,
+    _HYBRID_OF_HM,
+    _INTERVAL_OF_METHOD,
+    _MOMENTS_METHOD,
+    _RESTRICTION_LABEL,
+    _RM_DEFAULT_GRID,
+    _SOURCE_TOKENS,
+    _coerce_l_vec,
+    _coerce_m_grid,
+    _coerce_window,
+    _extract_event_study,
+    _require_alpha,
+    _require_int,
+    _require_string,
+    _resolve_restriction,
+    _rm_inputs,
+    _scope_attrs,
+    _target_kind,
+    _vcov_source,
+    _window_filter,
+)
+from ._honest_moments import (  # noqa: F401
+    _moments_from_fit,
+    event_study_from_moments,
+    honest_did_from_moments,
+    honest_did_from_result,
+)
+from ._honest_r import _find_rscript, _honest_did_r_backend  # noqa: F401
 
 
 def honest_did(
@@ -121,6 +81,16 @@ def honest_did(
     alpha: float = 0.05,
     backend: str = "native",
     honestdid_method: Optional[str] = None,
+    l_vec: Optional[Any] = None,
+    window: Optional[Tuple[float, float]] = None,
+    grid_lb: Optional[float] = None,
+    grid_ub: Optional[float] = None,
+    grid_points: int = 1000,
+    grid_expand: bool = True,
+    bias_direction: Optional[str] = None,
+    monotonicity_direction: Optional[str] = None,
+    seed: int = 0,
+    breakdown: Optional[bool] = None,
 ) -> pd.DataFrame:
     """
     Rambachan & Roth (2023) sensitivity analysis for parallel trends.
@@ -140,11 +110,23 @@ def honest_did(
         0 = on-impact effect, 1 = one period after, etc.
     m_grid : list of float, optional
         Grid of M values (maximum violation magnitude) to evaluate.
-        Default: [0, 0.5σ, 1σ, 1.5σ, 2σ] where σ is the SE at e.
+        Default for ``'smoothness'``: [0, 0.5σ, 1σ, 1.5σ, 2σ, 3σ] where σ
+        is the SE at e. Default for ``'relative_magnitude'``: ten equally
+        spaced M̄ from 0 to 2 (``HonestDiD``'s ``Mbarvec``), since M̄ is a
+        unitless ratio to the largest pre-period violation.
     method : str, default 'smoothness'
         Type of restriction on violations:
-        - ``'smoothness'``: |Δδ_t| ≤ M (bounded change in violation)
-        - ``'relative_magnitude'``: |δ_post| ≤ M̄ × max|δ_pre|
+        - ``'smoothness'``: |Δ²δ_t| ≤ M (``Delta^SD``: the slope of the
+          violation changes by at most M per period)
+        - ``'relative_magnitude'``: |Δδ_post| ≤ M̄ × max|Δδ_pre|
+          (``Delta^RM``)
+        - ``'smoothness_relative_magnitude'`` (alias ``'sdrm'``):
+          |Δ²δ_post| ≤ M̄ × max|Δ²δ_pre| (``Delta^SDRM``, HonestDiD's
+          ``bound = "deviation from linear trend"``); needs two or more
+          pre-periods.
+        Each can be intersected with a sign restriction
+        (``bias_direction``) or a shape restriction
+        (``monotonicity_direction``).
     alpha : float, default 0.05
         Significance level.
     backend : {'native', 'honestdid', 'r'}, default 'native'
@@ -176,8 +158,9 @@ def honest_did(
         up to that Monte Carlo error. Like the FLCI it needs the joint
         event-study covariance; without it the function falls back to the
         worst-case-bias approximation ``θ̂ ± M̄·max|δ_pre| ± z·SE`` and warns.
-        A set that reaches either end of the grid is reported with a warning,
-        because its true bound lies outside the grid.
+        A set that reaches an end of the default grid is not truncated
+        there: with ``grid_expand=True`` that side is extended at the same
+        step until the set closes (see ``grid_expand``).
 
         ``'honestdid'``/``'r'`` delegates to the R ``HonestDiD`` package
         through ``Rscript``. It is handed the same full covariance when
@@ -186,16 +169,104 @@ def honest_did(
         covariance and materially changes the confidence set.
     honestdid_method : {'C-LF', 'Conditional', 'FLCI', 'C-F'}, optional
         Inference method. The default preserves HonestDiD defaults:
-        ``'C-LF'`` for ``method='relative_magnitude'`` and ``'FLCI'`` for
-        ``method='smoothness'``. The native backend implements ``'FLCI'``
-        (smoothness) and ``'C-LF'`` / ``'Conditional'`` (relative
-        magnitudes); the R backend accepts all four.
+        ``'C-LF'`` for the relative-magnitude restrictions, ``'FLCI'`` for
+        ``method='smoothness'``, and ``'C-F'`` for ``method='smoothness'``
+        with a sign or shape restriction (the FLCI ignores those, so asking
+        for it then warns, as HonestDiD does). Both backends implement all
+        four for smoothness (``'Conditional'``: the Andrews-Roth-Pakes
+        conditional test; ``'C-F'``: the conditional-FLCI hybrid;
+        ``'C-LF'``: the conditional least-favourable hybrid) and
+        ``'C-LF'`` / ``'Conditional'`` for the relative-magnitude families.
+        ``'Conditional'`` involves no simulation and accepts the same grid
+        points as HonestDiD; ``'C-LF'`` simulates its first-stage critical
+        value (NumPy draws, not R's) and so agrees up to that Monte Carlo
+        error.
+    l_vec : sequence of float or ``'average'``, optional
+        Target ``l' tau_post`` instead of the single period ``e`` (HonestDiD's
+        ``l_vec``): one weight per post-treatment event time of the
+        (windowed) event study, in increasing order.  ``'average'`` is the
+        mean of the post-treatment effects.  ``e`` is ignored when given.
+        Both backends: ``backend='r'`` passes the weights to HonestDiD.
+    window : tuple of (lo, hi), optional
+        Use only the event times with ``lo <= t <= hi`` (inclusive; must
+        straddle zero), e.g. ``(-5, 5)`` for an analysis run on Stata
+        ``estat event, window(-5 5)``.  The leads outside the window no
+        longer calibrate the restriction.  Both backends.
+    grid_lb, grid_ub : float, optional
+        Test-inverted sets only (every interval except the FLCI): the ends of
+        the grid for ``l' tau_post`` (HonestDiD's ``grid.lb`` / ``grid.ub``).
+        Default ``-/+ 20 sd(l' tau_post)`` for the relative-magnitude
+        families; for smoothness the identified set at ``beta = 0`` widened
+        by ``20 sd`` (``'Conditional'`` / ``'C-LF'``) or the level
+        ``alpha/10`` FLCI (``'C-F'``), as HonestDiD lays them out. A bound
+        given here is honoured as is and never extended. Native backend;
+        ``backend='r'`` passes them for the relative-magnitude families.
+    grid_points : int, default 1000
+        Points on that grid (HonestDiD's ``gridPoints``).
+    grid_expand : bool, default True
+        Native backend, test-inverted sets: when the accepted set reaches an
+        end of the default grid, extend that side by another ``grid_points``
+        points at the same step (up to 10 times) instead of reporting the
+        grid end as the bound. HonestDiD (R) and versions of StatsPAI before
+        1.33 report the grid end, which understates the interval whenever
+        the set is wider than the grid; ``False`` reproduces that. A set
+        still open after the extensions is reported with a warning and
+        ``attrs['open_at']``. The ``'C-F'`` set lies inside its first-stage
+        FLCI, its grid, and is never extended. ``backend='r'`` runs
+        HonestDiD's own grid: widen it there with ``grid_lb`` / ``grid_ub``.
+    bias_direction : {'positive', 'negative'}, optional
+        Sign restriction on the post-treatment violation: ``delta_post >= 0``
+        or ``<= 0`` (HonestDiD's ``biasDirection``; ``Delta^SDPB``,
+        ``Delta^RMNB`` ...). Use it when the confound can only push the
+        estimate one way. Not together with ``monotonicity_direction``.
+        Needs the joint event-study covariance.
+    monotonicity_direction : {'increasing', 'decreasing'}, optional
+        Shape restriction: the violation ``delta`` is monotone in event time
+        through the reference period (HonestDiD's ``monotonicityDirection``;
+        ``Delta^SDI``, ``Delta^RMD`` ...). Not together with
+        ``bias_direction``. Needs the joint event-study covariance.
+    seed : int, default 0
+        Seed of the simulated first-stage critical value of the ``'C-LF'``
+        hybrid, the default for the relative-magnitude families (1,000
+        multivariate-normal draws; HonestDiD's ``seed`` argument and default).
+        A fixed seed makes every run give the same interval. The draws are
+        NumPy's, not R's or Stata's, so the C-LF bounds differ from
+        HonestDiD / ``honestdid`` by that Monte Carlo error (typically in
+        the third decimal). ``honestdid_method='Conditional'`` (and the FLCI
+        and ``'C-F'``) use no simulation: their critical values are exact
+        and match HonestDiD's grid point by point. ``backend='r'`` passes
+        the seed to HonestDiD.
+    breakdown : bool, optional
+        Also compute the breakdown value (:func:`breakdown_m` for the same
+        target, restriction and method) and store it in
+        ``attrs['breakdown_m']``. ``None`` (default) does so when it is cheap,
+        that is for the FLCI (the default under ``'smoothness'``), where it
+        costs about half of the table; the test-inverted sets (C-LF,
+        Conditional, C-F) need a scan in ``M`` that takes 2 to 6 times as
+        long as the table, so there pass ``breakdown=True`` or call
+        :func:`breakdown_m`. Native backend only.
 
     Returns
     -------
     pd.DataFrame
         Columns: M, ci_lower, ci_upper, rejects_zero.
-        Each row is a different M value.
+        Each row is a different M value.  For test-inverted sets,
+        ``attrs['grid_extended_at']`` lists the ``M`` whose grid was
+        extended and ``attrs['open_at']`` those whose set still reaches the
+        grid edge (bound unknown). ``attrs['delta']`` names the restriction
+        set as HonestDiD does (``'DeltaSD'``, ``'DeltaSDRMPB'`` ...).
+        ``attrs['simulated_cv']`` says whether the critical value was
+        simulated (C-LF); if so ``attrs['seed']`` and ``attrs['lf_draws']``
+        record the seed and the number of draws. ``attrs['breakdown_m']``
+        holds the breakdown value when it was computed (see ``breakdown``),
+        and ``attrs['next_steps']`` the :func:`breakdown_m` call for this
+        table.
+
+    See Also
+    --------
+    breakdown_m : the largest ``M`` (``Mbar``) at which the interval still
+        excludes zero, for the same ``e`` or ``l_vec`` (e.g. the average
+        post-treatment effect) and restriction.
 
     Examples
     --------
@@ -247,18 +318,130 @@ def honest_did(
     trends. *Review of Economic Studies*. [@rambachan2023more]
     """
     e = _require_int(e, argument="e")
+    e_target = e
+    seed = _require_int(seed, argument="seed")
     method = _require_string(method, argument="method")
     alpha = _require_alpha(alpha)
     backend = _require_string(backend, argument="backend")
     backend_norm = backend.lower().replace("-", "_")
+    win = _coerce_window(window)
+    source = _vcov_source(result)
+    family, hm, bias, mono = _resolve_restriction(
+        method, honestdid_method, bias_direction, monotonicity_direction
+    )
+    if hm == "FLCI" and (bias is not None or mono is not None):
+        warnings.warn(
+            "honest_did: honestdid_method='FLCI' does not use the sign or shape "
+            "restriction (HonestDiD warns the same); the interval below is "
+            "the FLCI under smoothness alone. Use honestdid_method='C-F' (the "
+            "default with a restriction), 'Conditional' or 'C-LF' to impose it.",
+            UserWarning,
+            stacklevel=2,
+        )
+        bias = mono = None
+    shape = "sign" if bias is not None else ("monotone" if mono is not None else "none")
+    varying_base = (getattr(result, "model_info", None) or {}).get(
+        "base_period"
+    ) == "varying"
+    if varying_base:
+        warnings.warn(
+            "honest_did: this event study uses base_period='varying', so "
+            "each pre-treatment coefficient is a one-period change, not the "
+            "pre-trend path relative to the reference period that the "
+            "smoothness and relative-magnitude restrictions bound. The "
+            "intervals below are not the Rambachan-Roth ones. Refit with "
+            "callaway_santanna(..., base_period='universal').",
+            UserWarning,
+            stacklevel=2,
+        )
+
+    def _stamp(out: pd.DataFrame, code_path: str) -> pd.DataFrame:
+        if varying_base:
+            out.attrs["base_period"] = "varying"
+        # What sp.validation_scope reads back from the table.
+        out.attrs.update(
+            _scope_attrs(
+                out,
+                method=_RESTRICTION_LABEL[family],
+                alpha=alpha,
+                l_vec=l_vec,
+                window=win,
+                code_path=code_path,
+                source=source,
+                honestdid_method=hm,
+                custom_grid=(
+                    grid_lb is not None or grid_ub is not None or grid_points != 1000
+                ),
+                shape=shape,
+            )
+        )
+        if "delta" not in out.attrs:
+            from ._honest_sets import delta_name
+
+            out.attrs["delta"] = (
+                "DeltaSD"
+                if out.attrs.get("interval") in ("flci", "worst_case_bias")
+                and family == "smoothness"
+                else delta_name(family, bias, mono)
+            )
+        simulated = out.attrs.get("interval") == "arp_c_lf"
+        out.attrs["simulated_cv"] = simulated
+        if simulated:
+            out.attrs["seed"] = seed
+            out.attrs["lf_draws"] = _LF_DRAWS
+        bd_kwargs = _breakdown_kwargs(
+            e_target, family, hm, bias, mono, alpha, l_vec, win, seed
+        )
+        out.attrs["next_steps"] = [_breakdown_step(bd_kwargs)]
+        want = (
+            breakdown
+            if breakdown is not None
+            else (code_path == "native" and out.attrs.get("interval") == "flci")
+        )
+        if want and code_path == "native":
+            try:
+                out.attrs["breakdown_m"] = float(breakdown_m(result, **bd_kwargs))
+            except StatsPAIError as exc:
+                if breakdown:
+                    raise
+                # default (auto) mode: the table stands without the extra
+                warnings.warn(
+                    f"honest_did: the breakdown value could not be computed "
+                    f"({type(exc).__name__}: {exc}); attrs['breakdown_m'] is "
+                    "None. Call sp.breakdown_m directly to see the error.",
+                    UserWarning,
+                    stacklevel=3,
+                )
+                out.attrs["breakdown_m"] = None
+        return out
+
     if backend_norm in {"r", "honestdid", "honest_did", "honestdid_r"}:
-        return _honest_did_r_backend(
-            result=result,
-            e=e,
-            m_grid=m_grid,
-            method=method,
-            alpha=alpha,
-            honestdid_method=honestdid_method,
+        if breakdown:
+            raise MethodIncompatibility(
+                "honest_did(breakdown=True) computes the breakdown value "
+                "natively; it is not available with backend='r'.",
+                recovery_hint="Call sp.breakdown_m(result, ...) separately, "
+                "or use backend='native'.",
+                diagnostics={"backend": backend},
+            )
+        return _stamp(
+            _honest_did_r_backend(
+                result=result,
+                e=e,
+                m_grid=m_grid,
+                method=_RESTRICTION_LABEL[family],
+                alpha=alpha,
+                honestdid_method=hm,
+                l_vec=l_vec,
+                window=win,
+                grid_lb=grid_lb,
+                grid_ub=grid_ub,
+                grid_points=grid_points,
+                bias_direction=bias,
+                monotonicity_direction=mono,
+                seed=seed,
+            ),
+            "r",
         )
     if backend_norm not in {"native", "statspai"}:
         raise MethodIncompatibility(
@@ -269,26 +452,6 @@ def honest_did(
             diagnostics={"backend": backend},
         )
 
-    method_l = str(method).lower()
-    if method_l == "relative_magnitudes":
-        method = method_l = "relative_magnitude"
-    if honestdid_method is not None:
-        _hm = str(honestdid_method).upper().replace("_", "-")
-        _allowed = {
-            "relative_magnitude": {"C-LF", "CONDITIONAL"},
-            "smoothness": {"FLCI"},
-        }
-        if method_l in _allowed and _hm not in _allowed[method_l]:
-            raise MethodIncompatibility(
-                f"honestdid_method={honestdid_method!r} is not implemented by "
-                f"backend='native' for method={method!r}.",
-                recovery_hint=(
-                    "Use 'C-LF' or 'Conditional' for relative magnitudes and "
-                    "'FLCI' for smoothness, or pass backend='r'."
-                ),
-                diagnostics={"method": method, "honestdid_method": honestdid_method},
-            )
-
     _mi = getattr(result, "model_info", None) or {}
     if _mi.get("event_vcov") is not None and "cohorts" in _mi:
         # A raw sp.etwfe fit stores cohort-by-period cells; its event study
@@ -298,43 +461,113 @@ def honest_did(
         result = etwfe_emfx(result, type="event", include_leads=True)
 
     es = _extract_event_study(result)
-    z_crit = stats.norm.ppf(1 - alpha / 2)
-
-    # Find the target period
-    target_row = es[es["relative_time"] == e]
-    if len(target_row) == 0:
+    if win is not None:
+        es = es[(es["relative_time"] >= win[0]) & (es["relative_time"] <= win[1])]
+    if not (es["relative_time"] < 0).any():
+        # Both restrictions are calibrated by the pre-treatment coefficients.
+        # Without any, the old fallback returned theta +/- z*SE (relative
+        # magnitudes) under a "covariance unavailable" warning, which reads
+        # as a robustness result. The R backend raises the same error.
         raise DataInsufficient(
-            f"No event study estimate at relative time e={e}",
-            recovery_hint="Choose an `e` value present in the event-study table.",
-            diagnostics={"e": e, "available": es["relative_time"].tolist()},
+            "honest_did needs at least one pre-treatment event-study "
+            "coefficient; this event study has none"
+            + (f" inside window={win}" if win is not None else "")
+            + ".",
+            recovery_hint=(
+                "Refit the event study with leads (e.g. callaway_santanna with "
+                "base_period='universal', or an event study that reports "
+                "pre-periods), or widen `window`."
+            ),
+            diagnostics={
+                "available": sorted(int(t) for t in es["relative_time"].tolist()),
+                "window": win,
+            },
         )
+    z_crit = stats.norm.ppf(1 - alpha / 2)
+    moments = _window_filter(event_study_moments(result), win)
 
-    theta_hat = float(target_row["att"].iloc[0])
-    se_hat = float(target_row["se"].iloc[0])
+    # Target: the period e, or l' tau_post over the post-treatment periods.
+    lv: Optional[np.ndarray] = None
+    if l_vec is not None:
+        if moments is not None:
+            post_t = moments[2][moments[2] >= 0]
+        else:
+            post_t = np.sort(
+                es.loc[es["relative_time"] >= 0, "relative_time"].to_numpy(dtype=int)
+            )
+        lv = _coerce_l_vec(l_vec, post_t)
+        if moments is not None:
+            b, S, t = moments
+            pm = t >= 0
+            theta_hat = float(lv @ b[pm])
+            se_hat = float(np.sqrt(lv @ S[np.ix_(pm, pm)] @ lv))
+        else:
+            post_es = es[es["relative_time"] >= 0].sort_values("relative_time")
+            theta_hat = float(lv @ post_es["att"].to_numpy(dtype=float))
+            se_hat = float(np.sqrt(lv**2 @ post_es["se"].to_numpy(dtype=float) ** 2))
+        # the worst-case fallback drifts to the furthest weighted period
+        e = int(post_t[np.flatnonzero(lv != 0)].max())
+    else:
+        target_row = es[es["relative_time"] == e]
+        if len(target_row) == 0:
+            raise DataInsufficient(
+                f"No event study estimate at relative time e={e}",
+                recovery_hint="Choose an `e` value present in the event-study table.",
+                diagnostics={"e": e, "available": es["relative_time"].tolist()},
+            )
+        theta_hat = float(target_row["att"].iloc[0])
+        se_hat = float(target_row["se"].iloc[0])
 
     # Pre-treatment estimates (for calibrating M)
     pre = es[es["relative_time"] < 0].sort_values("relative_time")
     pre_atts = pre["att"].values
 
-    # Default M grid: multiples of SE
-    m_grid = _coerce_m_grid(m_grid, se_hat=se_hat)
+    # Default M grid: multiples of SE (smoothness) or HonestDiD's M-bar
+    # grid (relative magnitudes).
+    m_grid = _coerce_m_grid(
+        m_grid, se_hat=se_hat, relative_magnitude=(family != "smoothness")
+    )
 
     rows = []
 
-    if method == "smoothness":
+    if hm != "FLCI" and (family != "rm" or bias is not None or mono is not None):
+        # Test-inverted sets beyond plain relative magnitudes: smoothness
+        # with the conditional test or a hybrid, a sign or shape
+        # restriction, or relative magnitudes of second differences.
+        return _stamp(
+            _native_restricted_table(
+                moments,
+                e,
+                lv,
+                m_grid,
+                alpha,
+                family,
+                hm,
+                bias,
+                mono,
+                grid_lb=grid_lb,
+                grid_ub=grid_ub,
+                grid_points=grid_points,
+                grid_expand=grid_expand,
+                seed=seed,
+            ),
+            "native",
+        )
+
+    if family == "smoothness":
         # Preferred path: the actual Rambachan-Roth fixed-length confidence
         # interval, which needs the joint event-study covariance.  It is
         # recoverable from a Callaway-Sant'Anna fit's influence functions;
         # when it is not (no influence functions attached) we fall back to the
         # worst-case-bias approximation below and say so.
-        _moments = event_study_moments(result)
+        _moments = moments
         if _moments is not None:
             _beta, _sigma, _times = _moments
             _post_mask = _times >= 0
             _n_pre = int((~_post_mask).sum())
             _post_times = _times[_post_mask]
-            if _n_pre >= 1 and e in set(_post_times.tolist()):
-                _l_post = (_post_times == e).astype(float)
+            if _n_pre >= 1 and (lv is not None or e in set(_post_times.tolist())):
+                _l_post = lv if lv is not None else (_post_times == e).astype(float)
                 # Reorder to pre-then-post, which is what flci_delta_sd wants.
                 _order = np.concatenate(
                     [np.where(~_post_mask)[0], np.where(_post_mask)[0]]
@@ -361,7 +594,7 @@ def honest_did(
                     )
                 _out = pd.DataFrame(rows)
                 _out.attrs["interval"] = "flci"
-                return _out
+                return _stamp(_out, "native")
 
         warnings.warn(
             "honest_did(method='smoothness'): the event-study covariance is "
@@ -370,9 +603,8 @@ def honest_did(
             "FLCI. That approximation ignores the pre-period covariance and "
             "can be narrower than the true confidence set, overstating "
             "robustness. The estimator did not expose a joint event-study "
-            "covariance (see sp.event_study_vcov: did_imputation's BJS leads "
-            "come from a separate regression); refit with an estimator that "
-            "does, or pass backend='r'.",
+            "covariance (see sp.event_study_vcov); refit with an estimator "
+            "that does, or pass backend='r'.",
             UserWarning,
             stacklevel=2,
         )
@@ -395,13 +627,24 @@ def honest_did(
                 }
             )
 
-    elif method == "relative_magnitude":
+    else:
         # Preferred path: the Rambachan-Roth / ARP confidence set, which needs
         # the joint event-study covariance (as the FLCI does).
-        _moments = event_study_moments(result)
-        _rm = _native_rm_table(_moments, e, m_grid, alpha, honestdid_method)
+        _rm = _native_rm_table(
+            moments,
+            e,
+            m_grid,
+            alpha,
+            hm,
+            l_vec=lv,
+            grid_lb=grid_lb,
+            grid_ub=grid_ub,
+            grid_points=grid_points,
+            grid_expand=grid_expand,
+            seed=seed,
+        )
         if _rm is not None:
-            return _rm
+            return _stamp(_rm, "native")
 
         warnings.warn(
             "honest_did(method='relative_magnitude'): the event-study "
@@ -435,36 +678,139 @@ def honest_did(
                 }
             )
 
-    else:
-        raise MethodIncompatibility(
-            f"method must be 'smoothness' or 'relative_magnitude', got '{method}'",
-            recovery_hint="Use method='smoothness' or method='relative_magnitude'.",
-            diagnostics={"method": method},
-        )
-
     _out = pd.DataFrame(rows)
     _out.attrs["interval"] = "worst_case_bias"
-    return _out
+    return _stamp(_out, "native")
 
 
-def _rm_inputs(moments: Optional[tuple], e: int) -> Optional[tuple]:
-    """(betahat, sigma, n_pre, n_post, l_post) in HonestDiD order, or None."""
-    if moments is None:
-        return None
-    beta, sigma, times = moments
-    post_mask = times >= 0
-    n_pre = int((~post_mask).sum())
-    post_times = times[post_mask]
-    if n_pre < 1 or e not in set(post_times.tolist()):
-        return None
-    order = np.concatenate([np.where(~post_mask)[0], np.where(post_mask)[0]])
-    return (
-        beta[order],
-        sigma[np.ix_(order, order)],
-        n_pre,
-        int(post_mask.sum()),
-        (post_times == e).astype(float),
+#: Draws of the simulated C-LF first-stage critical value
+#: (``_arp._least_favorable_cv``; HonestDiD's ``sims = 1000``).
+_LF_DRAWS = 1000
+
+
+def _breakdown_kwargs(
+    e: int,
+    family: str,
+    hm: str,
+    bias: Optional[str],
+    mono: Optional[str],
+    alpha: float,
+    l_vec: Any,
+    window: Optional[tuple],
+    seed: int,
+) -> dict:
+    """:func:`breakdown_m` arguments for the table honest_did just built."""
+    kw: dict = {
+        "method": _RESTRICTION_LABEL[family],
+        "alpha": alpha,
+        "honestdid_method": hm,
+        "seed": seed,
+    }
+    if l_vec is None:
+        kw["e"] = e
+    else:
+        kw["l_vec"] = l_vec
+    if window is not None:
+        kw["window"] = tuple(window)
+    if bias is not None:
+        kw["bias_direction"] = bias
+    if mono is not None:
+        kw["monotonicity_direction"] = mono
+    return kw
+
+
+def _breakdown_step(kwargs: dict) -> dict:
+    """A ``next_steps`` entry (the shape of ``core.next_steps.Step``)."""
+
+    def fmt(v: Any) -> str:
+        if isinstance(v, np.ndarray):
+            v = v.tolist()
+        return repr(v)
+
+    args = ", ".join(
+        f"{k}={fmt(v)}" for k, v in kwargs.items() if not (k == "seed" and v == 0)
     )
+    return {
+        "action": f"sp.breakdown_m(result, {args})",
+        "reason": "Rambachan & Roth (2023): the largest violation magnitude "
+        "at which this interval still excludes zero (the breakdown value).",
+        "priority": "recommended",
+        "category": "sensitivity",
+        "executable": True,
+    }
+
+
+def _native_restricted_table(
+    moments: Optional[tuple],
+    e: int,
+    l_vec: Optional[np.ndarray],
+    m_grid: Sequence[float],
+    alpha: float,
+    family: str,
+    hm: str,
+    bias: Optional[str],
+    mono: Optional[str],
+    grid_lb: Optional[float] = None,
+    grid_ub: Optional[float] = None,
+    grid_points: int = 1000,
+    grid_expand: bool = True,
+    seed: int = 0,
+) -> pd.DataFrame:
+    """Native table for the restriction sets of :mod:`._honest_sets`.
+
+    These sets have no worst-case-bias stand-in, so a missing joint
+    covariance is an error rather than a warned fallback.
+    """
+    from ._honest_sets import delta_name, restricted_table
+
+    inputs = _rm_inputs(moments, e, l_vec)
+    if inputs is None:
+        raise MethodIncompatibility(
+            f"honest_did: {delta_name(family, bias, mono)} with "
+            f"honestdid_method={hm!r} needs the joint covariance of the "
+            "event-study coefficients, which this result does not expose.",
+            recovery_hint="Refit with an estimator that stores it (see "
+            "sp.event_study_vcov), pass the coefficients and covariance to "
+            "sp.honest_did_from_moments, or use backend='r'.",
+            diagnostics={"restriction": delta_name(family, bias, mono)},
+        )
+    grid_points = _require_int(grid_points, argument="grid_points")
+    if grid_points < 2:
+        raise MethodIncompatibility(
+            "grid_points must be at least 2.",
+            recovery_hint="HonestDiD's default is 1000.",
+            diagnostics={"grid_points": grid_points},
+        )
+    out = restricted_table(
+        inputs,
+        m_grid,
+        alpha,
+        _HYBRID_OF_HM[hm],
+        family,
+        bias,
+        mono,
+        grid_lb,
+        grid_ub,
+        grid_points,
+        grid_expand,
+        seed=seed,
+    )
+    if out.attrs["open_at"]:
+        warnings.warn(
+            f"honest_did ({out.attrs['delta']}, {hm}): the confidence set "
+            "reaches the edge of the test-inversion grid at M = "
+            f"{out.attrs['open_at']}; the reported bound is the grid edge, not "
+            "the true bound. "
+            + (
+                "Pass grid_expand=True (the default) or a wider grid_lb / grid_ub."
+                if not grid_expand or grid_lb is not None or grid_ub is not None
+                else "The set did not close within 10 extensions and may be "
+                "unbounded at this M."
+            ),
+            UserWarning,
+            stacklevel=3,
+        )
+    return out
 
 
 def _native_rm_table(
@@ -473,15 +819,29 @@ def _native_rm_table(
     m_grid: Sequence[float],
     alpha: float,
     honestdid_method: Optional[str],
+    l_vec: Optional[np.ndarray] = None,
+    grid_lb: Optional[float] = None,
+    grid_ub: Optional[float] = None,
+    grid_points: int = 1000,
+    grid_expand: bool = True,
+    seed: int = 0,
 ) -> Optional[pd.DataFrame]:
     """Native Delta^RM confidence sets over ``m_grid`` (None if no covariance)."""
-    inputs = _rm_inputs(moments, e)
+    inputs = _rm_inputs(moments, e, l_vec)
     if inputs is None:
         return None
     b, s, n_pre, n_post, l_post = inputs
     rm_method = "C-LF" if honestdid_method is None else str(honestdid_method)
+    grid_points = _require_int(grid_points, argument="grid_points")
+    if grid_points < 2:
+        raise MethodIncompatibility(
+            "grid_points must be at least 2.",
+            recovery_hint="HonestDiD's default is 1000.",
+            diagnostics={"grid_points": grid_points},
+        )
     rows = []
     open_at: List[float] = []
+    extended_at: List[float] = []
     for m_bar in m_grid:
         lo, hi, grid, accept = rm_confidence_set(
             b,
@@ -492,7 +852,14 @@ def _native_rm_table(
             l_vec=l_post,
             alpha=alpha,
             method=rm_method,
+            grid_points=grid_points,
+            grid_lb=grid_lb,
+            grid_ub=grid_ub,
+            seed=seed,
+            max_expand=10 if grid_expand else 0,
         )
+        if grid.size > grid_points:
+            extended_at.append(float(m_bar))
         if accept.size and (accept[0] == 1 or accept[-1] == 1):
             open_at.append(float(m_bar))
         rows.append(
@@ -506,548 +873,27 @@ def _native_rm_table(
     if open_at:
         warnings.warn(
             "honest_did(method='relative_magnitude'): the confidence set reaches "
-            f"the edge of the +/-20 SD grid at Mbar = {open_at}; the reported "
-            "bound is the grid edge, not the true bound (HonestDiD reports the "
-            "same and warns likewise).",
+            f"the edge of the test-inversion grid at Mbar = {open_at}; the "
+            "reported bound is the grid edge, not the true bound. "
+            + (
+                "Pass grid_expand=True (the default) or a wider grid_lb / grid_ub."
+                if not grid_expand or grid_lb is not None or grid_ub is not None
+                else "The set did not close within 10 extensions and may be "
+                "unbounded at this Mbar."
+            ),
             UserWarning,
             stacklevel=3,
         )
     out = pd.DataFrame(rows)
+    out.attrs["grid_extended_at"] = extended_at
+    out.attrs["open_at"] = open_at
     out.attrs["interval"] = (
         "arp_conditional" if rm_method.upper() == "CONDITIONAL" else "arp_c_lf"
     )
     return out
 
 
-def _honest_did_r_backend(
-    result: CausalResult,
-    e: int,
-    m_grid: Optional[List[float]],
-    method: str,
-    alpha: float,
-    honestdid_method: Optional[str] = None,
-) -> pd.DataFrame:
-    """Run the R HonestDiD reference implementation for CI parity."""
-    e = _require_int(e, argument="e")
-    method = _require_string(method, argument="method")
-    alpha = _require_alpha(alpha)
-    method_norm = method.lower().replace("-", "_")
-    if method_norm not in {"smoothness", "relative_magnitude", "relative_magnitudes"}:
-        raise MethodIncompatibility(
-            f"method must be 'smoothness' or 'relative_magnitude', got '{method}'",
-            recovery_hint="Use method='smoothness' or method='relative_magnitude'.",
-            diagnostics={"method": method},
-        )
-    if honestdid_method is None:
-        honestdid_method_arg = (
-            "C-LF"
-            if method_norm in {"relative_magnitude", "relative_magnitudes"}
-            else "FLCI"
-        )
-    else:
-        honestdid_method = _require_string(
-            honestdid_method,
-            argument="honestdid_method",
-        )
-        method_aliases = {
-            "c_lf": "C-LF",
-            "c-lf": "C-LF",
-            "clf": "C-LF",
-            "conditional": "Conditional",
-            "flci": "FLCI",
-            "c_f": "C-F",
-            "c-f": "C-F",
-            "cf": "C-F",
-        }
-        key = honestdid_method.lower().replace(" ", "_")
-        if key not in method_aliases:
-            raise MethodIncompatibility(
-                "honestdid_method must be one of 'C-LF', 'Conditional', "
-                "'FLCI', or 'C-F'.",
-                recovery_hint=(
-                    "Use an HonestDiD solver method supported by the selected "
-                    "restriction."
-                ),
-                diagnostics={"honestdid_method": honestdid_method},
-            )
-        honestdid_method_arg = method_aliases[key]
-    if method_norm in {"relative_magnitude", "relative_magnitudes"} and (
-        honestdid_method_arg not in {"C-LF", "Conditional"}
-    ):
-        raise MethodIncompatibility(
-            "honestdid_method must be 'C-LF' or 'Conditional' for "
-            "method='relative_magnitude'.",
-            recovery_hint="Use honestdid_method='C-LF' or 'Conditional'.",
-            diagnostics={
-                "method": method_norm,
-                "honestdid_method": honestdid_method_arg,
-            },
-        )
-
-    rscript = _find_rscript()
-    if rscript is None:
-        raise ImportError(
-            "backend='honestdid' requires Rscript and the R package HonestDiD."
-        )
-
-    es = _extract_event_study(result)
-    target_row = es[es["relative_time"] == e]
-    if len(target_row) == 0:
-        raise DataInsufficient(
-            f"No event study estimate at relative time e={e}",
-            recovery_hint="Choose an `e` value present in the event-study table.",
-            diagnostics={"e": e, "available": es["relative_time"].tolist()},
-        )
-
-    se_hat = float(target_row["se"].iloc[0])
-    m_grid = _coerce_m_grid(m_grid, se_hat=se_hat)
-
-    pre = es[es["relative_time"] < 0].sort_values("relative_time")
-    post = es[es["relative_time"] >= 0].sort_values("relative_time")
-    if len(pre) == 0:
-        raise DataInsufficient(
-            "backend='honestdid' requires at least one pre-treatment period.",
-            recovery_hint=(
-                "Use an event study with at least one pre-treatment " "coefficient."
-            ),
-            diagnostics={"backend": "honestdid"},
-        )
-    if len(post) == 0 or e not in set(post["relative_time"].astype(int)):
-        raise DataInsufficient(
-            "backend='honestdid' requires e to be a post-treatment period.",
-            recovery_hint="Choose a post-treatment relative time for `e`.",
-            diagnostics={"backend": "honestdid", "e": e},
-        )
-
-    r_code = r"""
-suppressPackageStartupMessages({
-  if (!requireNamespace("HonestDiD", quietly = TRUE)) {
-    stop("R package 'HonestDiD' is not installed")
-  }
-  if (!requireNamespace("jsonlite", quietly = TRUE)) {
-    stop("R package 'jsonlite' is not installed")
-  }
-})
-args <- commandArgs(trailingOnly = TRUE)
-input <- args[[1]]
-method <- args[[2]]
-alpha <- as.numeric(args[[3]])
-grid <- as.numeric(strsplit(args[[4]], ",", fixed = TRUE)[[1]])
-target_e <- as.numeric(args[[5]])
-honestdid_method <- args[[6]]
-df <- utils::read.csv(input)
-pre <- df[df$relative_time < 0, ]
-post <- df[df$relative_time >= 0, ]
-pre <- pre[order(pre$relative_time), ]
-post <- post[order(post$relative_time), ]
-if (nrow(pre) < 1 || nrow(post) < 1) {
-  stop("HonestDiD backend requires pre and post event-study periods")
-}
-post_idx <- which(post$relative_time == target_e)
-if (length(post_idx) != 1) {
-  stop("target e must match exactly one post-treatment period")
-}
-betahat <- c(pre$att, post$att)
-ses <- c(pre$se, post$se)
-# Full event-study covariance when StatsPAI could recover it from the
-# influence functions; a diagonal built from the SEs otherwise. The
-# diagonal discards the (large, positive) cross-period covariance and
-# materially changes the confidence set, so it is a fallback, not a
-# convention.
-if (length(args) >= 7 && nzchar(args[[7]]) && file.exists(args[[7]])) {
-  sigma <- as.matrix(utils::read.csv(args[[7]], header = FALSE))
-  dimnames(sigma) <- NULL
-} else {
-  sigma <- diag(ses^2)
-}
-l_vec <- rep(0, nrow(post))
-l_vec[post_idx] <- 1
-l_vec <- matrix(l_vec, ncol = 1)
-if (method == "relative_magnitude") {
-  sens <- suppressWarnings(
-    HonestDiD::createSensitivityResults_relativeMagnitudes(
-      betahat = betahat,
-      sigma = sigma,
-      numPrePeriods = nrow(pre),
-      numPostPeriods = nrow(post),
-      l_vec = l_vec,
-      Mbarvec = grid,
-      method = honestdid_method,
-      alpha = alpha
-    )
-  )
-  out <- data.frame(M = sens$Mbar, ci_lower = sens$lb, ci_upper = sens$ub)
-} else {
-  sens <- suppressWarnings(
-    HonestDiD::createSensitivityResults(
-      betahat = betahat,
-      sigma = sigma,
-      numPrePeriods = nrow(pre),
-      numPostPeriods = nrow(post),
-      l_vec = l_vec,
-      Mvec = grid,
-      method = honestdid_method,
-      alpha = alpha
-    )
-  )
-  out <- data.frame(M = sens$M, ci_lower = sens$lb, ci_upper = sens$ub)
-}
-cat(jsonlite::toJSON(out, dataframe = "rows", auto_unbox = TRUE,
-                     digits = 16, null = "null"))
-"""
-
-    with tempfile.TemporaryDirectory(prefix="statspai-honestdid-") as tmp:
-        tmp_path = Path(tmp)
-        csv_path = tmp_path / "event_study.csv"
-        script_path = tmp_path / "run_honestdid.R"
-        es[["relative_time", "att", "se"]].to_csv(csv_path, index=False)
-        script_path.write_text(r_code, encoding="utf-8")
-
-        # Hand R the full event-study covariance when we can recover it.
-        # Feeding HonestDiD diag(se^2) silently drops the cross-period
-        # covariance, which changes the confidence set materially.
-        sigma_path = ""
-        _moments = event_study_moments(result)
-        if _moments is not None:
-            _beta_r, _sigma_r, _times_r = _moments
-            _es_times = es["relative_time"].to_numpy()
-            if len(_times_r) == len(_es_times) and set(_times_r) == set(_es_times):
-                _order_r = np.concatenate(
-                    [
-                        np.where(_times_r < 0)[0][np.argsort(_times_r[_times_r < 0])],
-                        np.where(_times_r >= 0)[0][np.argsort(_times_r[_times_r >= 0])],
-                    ]
-                )
-                _sig_path = tmp_path / "sigma.csv"
-                np.savetxt(
-                    _sig_path,
-                    _sigma_r[np.ix_(_order_r, _order_r)],
-                    delimiter=",",
-                )
-                sigma_path = str(_sig_path)
-        grid_arg = ",".join(f"{float(m):.17g}" for m in m_grid)
-        method_arg = (
-            "relative_magnitude"
-            if method_norm in {"relative_magnitude", "relative_magnitudes"}
-            else "smoothness"
-        )
-        proc = subprocess.run(
-            [
-                rscript,
-                str(script_path),
-                str(csv_path),
-                method_arg,
-                f"{alpha:.17g}",
-                grid_arg,
-                f"{float(e):.17g}",
-                honestdid_method_arg,
-                sigma_path,
-            ],
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-
-    if proc.returncode != 0:
-        raise ConvergenceFailure(
-            "backend='honestdid' failed while running the R HonestDiD package: "
-            f"{proc.stderr.strip() or proc.stdout.strip()}",
-            recovery_hint=(
-                "Check the local R HonestDiD/jsonlite installation or use "
-                "backend='native'."
-            ),
-            diagnostics={"backend": "honestdid", "returncode": proc.returncode},
-        )
-
-    out = json.loads(proc.stdout)
-    rows = []
-    for item in out:
-        ci_lower = float(item["ci_lower"])
-        ci_upper = float(item["ci_upper"])
-        rows.append(
-            {
-                "M": float(item["M"]),
-                "ci_lower": ci_lower,
-                "ci_upper": ci_upper,
-                "rejects_zero": not (ci_lower <= 0 <= ci_upper),
-            }
-        )
-    return pd.DataFrame(rows)
-
-
-def _find_rscript() -> Optional[str]:
-    """Return an Rscript executable, including the standard macOS R path."""
-    candidate = shutil.which("Rscript")
-    if candidate:
-        return candidate
-    for path in (
-        "/Library/Frameworks/R.framework/Resources/bin/Rscript",
-        "/usr/local/bin/Rscript",
-        "/opt/homebrew/bin/Rscript",
-    ):
-        if Path(path).exists():
-            return path
-    return None
-
-
-def breakdown_m(
-    result: CausalResult,
-    e: int = 0,
-    method: str = "smoothness",
-    alpha: float = 0.05,
-) -> float:
-    """
-    Compute the breakdown value of M.
-
-    The breakdown M* is the largest violation magnitude under which
-    the treatment effect at relative time ``e`` remains statistically
-    significant. Larger M* = more robust.
-
-    Parameters
-    ----------
-    result : CausalResult
-        DID result with event study.
-    e : int, default 0
-        Relative time period.
-    method : {'smoothness', 'relative_magnitude'}, default 'smoothness'
-        The restriction whose confidence set is inverted; the same meaning
-        as in :func:`honest_did`.
-    alpha : float, default 0.05
-
-    Returns
-    -------
-    float
-        Breakdown value M*. The effect is significant for all M < M*.
-
-    Examples
-    --------
-    >>> import numpy as np
-    >>> import pandas as pd
-    >>> import statspai as sp
-    >>> rng = np.random.default_rng(0)
-    >>> rows = []  # staggered panel: half treated at t=5, half never
-    >>> for i in range(30):
-    ...     g = 5 if i < 15 else 0
-    ...     ui = rng.normal(0, 1)
-    ...     for t in range(1, 9):
-    ...         post = 1 if (g != 0 and t >= g) else 0
-    ...         y = ui + 0.3 * t + 2.0 * post + rng.normal(0, 0.5)
-    ...         rows.append({"unit": i, "time": t, "y": y, "g": g})
-    >>> df = pd.DataFrame(rows)
-    >>> r = sp.sun_abraham(df, y='y', g='g', t='time', i='unit')
-    >>> m_star = sp.breakdown_m(r, e=0)
-    >>> bool(m_star >= 0)  # parallel trends can deviate by up to M* per period
-    True
-
-    Notes
-    -----
-    M* = sup{M : 0 not in CI(M)}, where CI(M) is exactly the interval
-    :func:`honest_did` reports for the same ``result``, ``e``, ``method`` and
-    ``alpha`` with ``backend='native'``. The breakdown value is a property of
-    that confidence set, so it is computed by inverting it:
-
-    * ``method='smoothness'`` with a recoverable event-study covariance (a
-      Callaway-Sant'Anna fit or its ``aggte(type='dynamic')``): the
-      Rambachan-Roth fixed-length confidence interval under ``Delta^SD(M)``,
-      inverted by root-finding on the bound that faces zero. This is what
-      R ``HonestDiD`` reports when its ``createSensitivityResults(method =
-      'FLCI')`` grid is refined to the crossing.
-    * ``method='smoothness'`` without the covariance: :func:`honest_did` falls
-      back to the worst-case-bias interval ``theta_hat +/- (M (e+1) +
-      z SE)``, and so does this function, giving the closed form
-      ``(|theta_hat| - z SE) / (e + 1)``. It warns, as :func:`honest_did`
-      does.
-    * ``method='relative_magnitude'`` with the covariance: the
-      conditional least-favourable hybrid confidence set under
-      ``Delta^RM(Mbar)`` (HonestDiD's default), bisected in ``Mbar`` to
-      1e-3. The set is nested in ``Mbar``, so the crossing is unique.
-    * ``method='relative_magnitude'`` without it: the worst-case-bias
-      approximation ``theta_hat +/- (Mbar max|pre| + z SE)``, giving
-      ``(|theta_hat| - z SE) / max|pre|``, with a warning.
-
-    Through 1.28.0 this function returned ``(|theta_hat| - z SE) / (e + 1)``
-    for every input: ``method`` was validated and then ignored, and the
-    smoothness value did not invert the FLCI that :func:`honest_did` reports
-    for the same fit (on the event study in
-    ``tests/reference_parity/test_did_synth_R_parity.py``, at ``e = 1`` it
-    returned 0.0967 where the FLCI breakdown -- and R ``HonestDiD`` -- give
-    0.0646; on mpdta's Callaway-Sant'Anna fit at ``e = 0``, 0.0193 against
-    0.0080).
-
-    See Rambachan & Roth (2023, *ReStud*) [@rambachan2023more].
-    """
-    e = _require_int(e, argument="e")
-    alpha = _require_alpha(alpha)
-    method = _require_string(method, argument="method")
-    method_norm = method.lower()
-    if method_norm == "relative_magnitudes":
-        method_norm = "relative_magnitude"
-    if method_norm not in {"smoothness", "relative_magnitude"}:
-        raise MethodIncompatibility(
-            f"method must be 'smoothness' or 'relative_magnitude', got '{method}'",
-            recovery_hint="Use method='smoothness' or method='relative_magnitude'.",
-            diagnostics={"method": method},
-        )
-    es = _extract_event_study(result)
-
-    target = es[es["relative_time"] == e]
-    if len(target) == 0:
-        raise DataInsufficient(
-            f"No estimate at relative time e={e}",
-            recovery_hint="Choose an `e` value present in the event-study table.",
-            diagnostics={"e": e, "available": es["relative_time"].tolist()},
-        )
-
-    theta = float(target["att"].iloc[0])
-    se = float(target["se"].iloc[0])
-    z_crit = stats.norm.ppf(1 - alpha / 2)
-
-    if method_norm == "smoothness":
-        moments = event_study_moments(result)
-        if moments is not None:
-            beta, sigma, times = moments
-            post_mask = times >= 0
-            n_pre = int((~post_mask).sum())
-            post_times = times[post_mask]
-            if n_pre >= 1 and e in set(post_times.tolist()):
-                order = np.concatenate(
-                    [np.where(~post_mask)[0], np.where(post_mask)[0]]
-                )
-                return breakdown_m_sd(
-                    beta[order],
-                    sigma[np.ix_(order, order)],
-                    n_pre=n_pre,
-                    n_post=int(post_mask.sum()),
-                    l_post=(post_times == e).astype(float),
-                    alpha=alpha,
-                )
-        warnings.warn(
-            "breakdown_m(method='smoothness'): the event-study covariance is "
-            "unavailable, so this inverts honest_did's worst-case-bias "
-            "fallback interval (theta_hat +/- M*(e+1) +/- z*SE) rather than "
-            "the Rambachan-Roth FLCI. Pass a Callaway-Sant'Anna result, which "
-            "carries influence functions.",
-            UserWarning,
-            stacklevel=2,
-        )
-        n_drift = max(e + 1, 1)
-        # M* such that |theta| - M* x n_drift - z x SE = 0
-        return float(max((abs(theta) - z_crit * se) / n_drift, 0.0))
-
-    inputs = _rm_inputs(event_study_moments(result), e)
-    if inputs is not None:
-        return _breakdown_rm(*inputs, alpha=alpha)
-
-    warnings.warn(
-        "breakdown_m(method='relative_magnitude'): the event-study covariance "
-        "is unavailable, so this inverts honest_did's worst-case-bias fallback "
-        "interval (theta_hat +/- Mbar*max|pre| +/- z*SE), not the "
-        "Rambachan-Roth conditional / hybrid confidence set.",
-        UserWarning,
-        stacklevel=2,
-    )
-    pre_atts = es.loc[es["relative_time"] < 0, "att"].to_numpy(dtype=float)
-    max_pre = float(np.max(np.abs(pre_atts))) if pre_atts.size else 0.0
-    scale = max_pre if max_pre > 0 else se
-    return float(max((abs(theta) - z_crit * se) / scale, 0.0))
-
-
-def _breakdown_rm(
-    b, s, n_pre, n_post, l_post, *, alpha: float, tol: float = 1e-3
-) -> float:
-    """Largest Mbar whose C-LF Delta^RM set excludes zero (bisection).
-
-    The set is nested in Mbar, so ``0 in CI(Mbar)`` is monotone and the
-    crossing can be bracketed and bisected to ``tol``.
-    """
-
-    def excludes_zero(m_bar: float) -> bool:
-        lo, hi, _, _ = rm_confidence_set(
-            b, s, n_pre, n_post, m_bar, l_vec=l_post, alpha=alpha, method="C-LF"
-        )
-        return bool(np.isfinite(lo) and not (lo <= 0 <= hi))
-
-    if not excludes_zero(0.0):
-        return 0.0
-    hi = 1.0
-    while excludes_zero(hi):
-        hi *= 2.0
-        if hi > 1e4:
-            return float("inf")
-    lo = hi / 2.0 if hi > 1.0 else 0.0
-    while hi - lo > tol:
-        mid = 0.5 * (lo + hi)
-        if excludes_zero(mid):
-            lo = mid
-        else:
-            hi = mid
-    return float(lo)
-
-
-# ======================================================================
-# Polymorphic event-study extractor
-# ======================================================================
-
-
-def _extract_event_study(result: CausalResult) -> pd.DataFrame:
-    """Locate the event-study table inside a CausalResult.
-
-    Accepts three flavours, all of which now surface the same shape:
-
-    1. ``callaway_santanna()`` / ``sun_abraham()`` → event study lives in
-       ``result.model_info['event_study']`` (legacy).
-    2. ``aggte(cs, type='dynamic')`` → event study **is** the ``detail``
-       frame (has ``relative_time`` + ``att`` + ``se``).
-    3. ``did_multiplegt()`` → event study in ``model_info['event_study']``
-       but placebos carry negative ``relative_time`` and dynamics
-       non-negative ``relative_time`` — already compatible.
-
-    Raises
-    ------
-    ValueError
-        If no event study can be found.
-    """
-    info = result.model_info or {}
-    es = cast(Optional[pd.DataFrame], info.get("event_study"))
-    if isinstance(es, dict):
-        # sp.gardner_did keeps its event study as a 'D_k+h'-keyed dict.
-        from .es_inference import _es_frame
-
-        es = _es_frame(result)
-    if es is None and getattr(result, "detail", None) is not None:
-        det = result.detail
-        if isinstance(det, pd.DataFrame) and {"relative_time", "att", "se"}.issubset(
-            det.columns
-        ):
-            es = det
-    if es is None:
-        raise MethodIncompatibility(
-            "Result does not expose an event-study table.  Supported "
-            "inputs: callaway_santanna(), sun_abraham(), did_multiplegt(), "
-            "or aggte(result, type='dynamic').",
-            recovery_hint=(
-                "Pass a DID/event-study result with relative_time, att, and se "
-                "columns."
-            ),
-            diagnostics={"result_type": type(result).__name__},
-        )
-    # Defensive copy — callers mutate / filter it.
-    es = es.copy()
-    # If aggte produced uniform-band columns but no explicit 'type', ignore.
-    required = {"relative_time", "att", "se"}
-    missing = required - set(es.columns)
-    if missing:
-        raise MethodIncompatibility(
-            f"Event-study table is missing required columns: {missing}",
-            recovery_hint=(
-                "Provide an event-study table with relative_time, att, and se "
-                "columns."
-            ),
-            diagnostics={"missing_columns": sorted(missing)},
-        )
-    return es
-
-
+# Citation
 # Citation
 CausalResult._CITATIONS["honest_did"] = (
     "@article{rambachan2023more,\n"

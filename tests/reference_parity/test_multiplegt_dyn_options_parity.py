@@ -63,7 +63,10 @@ _GOLDEN = (
     / "85_multiplegt_dyn_options_Stata.json"
 )
 
-ATOL = 1e-6
+# Fixture regenerated in double precision 2026-10-02; every Stata comparison
+# here holds at 1e-9. Against the single-precision fixture the budget was
+# 1e-6 / 1e-7.
+ATOL = 1e-9
 
 # aggregation='switchers' matches e(Av_tot_effect); se_method='analytic'
 # with n_boot=0 keeps the point-estimate comparison fast and deterministic.
@@ -154,7 +157,7 @@ class TestSwitcherOptionsParity:
             "the option, or the test proves nothing"
         )
 
-    def test_restricted_switchers_stay_available_as_controls(self, panel):
+    def test_restricted_switchers_stay_available_as_controls(self, panel, golden):
         """same_switchers must not delete those units from the panel.
 
         A unit that switches at F=8 cannot support horizon 3, so it is
@@ -164,7 +167,7 @@ class TestSwitcherOptionsParity:
         put same_switchers 2.9e-2 away from Stata before it was fixed.
         """
         res = _fit(panel, same_switchers=True)
-        want = 0.441039354850848  # Stata
+        want = golden["same_switchers"]["Av_tot_eff"]  # Stata
         assert res.estimate == pytest.approx(want, abs=ATOL)
 
     def test_in_and_out_partition_the_switchers(self, panel, golden):
@@ -325,9 +328,21 @@ class TestEffectsEqual:
         """
         assert _boot_fit(panel).diagnostics["effects_equal_test"] is None
 
-    def test_requires_bootstrap_draws(self, panel):
-        """Documented behaviour: the covariance comes from the bootstrap."""
-        assert _fit(panel, effects_equal=True).diagnostics["effects_equal_test"] is None
+    def test_analytic_fit_tests_on_the_analytic_covariance(self, panel):
+        """Since 1.39.0 an analytic fit needs no bootstrap draw for the test.
+
+        The covariance is the joint analytic one of the horizons, as in the
+        reference (p-values pinned against Stata in
+        test_dcdh_textbook_stata_parity.py).
+        """
+        res = _fit(panel, effects_equal=True)
+        test = res.diagnostics["effects_equal_test"]
+        if res.model_info["se_method"] == "analytic":
+            assert test is not None
+            assert test["df"] == len(test["horizons"]) - 1
+            assert 0.0 <= test["pvalue"] <= 1.0
+        else:
+            assert test is None
 
     @pytest.mark.parametrize("bad", [(3, 1), "all", (1,)])
     def test_invalid_range_rejected(self, panel, bad):

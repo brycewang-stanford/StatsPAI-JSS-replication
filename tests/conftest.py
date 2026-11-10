@@ -21,4 +21,52 @@ PyO3 type stays registered under a stable ``sys.modules`` key for the
 entire process lifetime.
 """
 
+import importlib.util  # noqa: E402
+import sys  # noqa: E402
+
+import pytest  # noqa: E402
 import scipy.optimize  # noqa: F401 — stabilise PyO3 type registry
+
+_HAS_PYFIXEST = importlib.util.find_spec("pyfixest") is not None
+
+
+@pytest.fixture(autouse=True)
+def _fresh_specification_counter():  # type: ignore[no-untyped-def]
+    """Start every test with an empty specification-search count.
+
+    ``sp.regress`` / ``feols`` / ... record each fitted specification in a
+    per-process counter, and ``violations()`` reports a
+    ``specification_search`` item once an outcome has been fitted more
+    than five ways. Without a reset that count leaks from whatever tests
+    ran earlier in the same worker, so a test asserting ``violations() ==
+    []`` passed or failed with the test order (nightly 2026-10-20, all
+    platforms). Only reset when the module is already loaded, so this adds
+    no import.
+    """
+    mod = sys.modules.get("statspai.core._spec_counter")
+    if mod is not None:
+        mod.reset_specification_counter()
+    yield
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_call(item):  # type: ignore[no-untyped-def]
+    """Skip, rather than fail, a test that needs pyfixest where it cannot be.
+
+    pyfixest is an optional extra, and a pyfixest-backed test is meant to
+    skip where it is not installed (a core install, a slim CI job). Many
+    tests forgot the ``importorskip`` guard: a full run without pyfixest
+    failed 40 of them on ``MissingDependencyError``. This applies the rule
+    in one place.
+
+    It fires only when pyfixest is truly absent and the error names it, so
+    it cannot hide a failure on an interpreter that has the package, and a
+    test that asserts on the missing-dependency error itself (by mocking
+    pyfixest away) is untouched: its error is caught inside the test.
+    """
+    outcome = yield
+    if _HAS_PYFIXEST or outcome.excinfo is None:
+        return
+    exc = outcome.excinfo[1]
+    if isinstance(exc, ImportError) and "pyfixest" in str(exc):
+        pytest.skip(f"pyfixest is not installed: {exc}")

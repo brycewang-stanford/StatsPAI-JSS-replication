@@ -26,6 +26,7 @@ Arellano, M. and Bond, S. (1991). "Some Tests of Specification for Panel Data."
 Blundell, R. and Bond, S. (1998). "Initial Conditions and Moment Restrictions."
 """
 
+import re
 import warnings
 from typing import Any, Dict, List, Optional, Tuple, Union
 
@@ -35,10 +36,22 @@ from scipy import stats
 
 from .._aliases import accepts_aliases, accepts_formula_first
 from .._result_serialize import ResultProtocolMixin
+from ..core._call_record import records_call
 from ..core.results import EconometricResults
-from ..exceptions import AssumptionWarning, DataInsufficient, MethodIncompatibility
-from ._cre import fit_cre
-from ._ssc import SSCInference, panel_ssc_inference, resolve_ssc
+from ..exceptions import (
+    AssumptionWarning,
+    ColumnNotFound,
+    DataInsufficient,
+    MethodIncompatibility,
+)
+from ._cre import fit_cre, fit_re, within_rank_deficient
+from ._ssc import (
+    SSCInference,
+    default_change_applies,
+    panel_ssc_inference,
+    resolve_ssc,
+    warn_default_change,
+)
 
 _PANEL_ALTERNATIVES = ["sp.panel", "sp.panel_compare", "sp.feols"]
 
@@ -86,14 +99,13 @@ def _require_panel_column(data: pd.DataFrame, column: Any, role: str) -> str:
             recovery_hint="Pass panel role columns as strings.",
         )
     if column not in data.columns:
-        raise _panel_method_error(
-            f"Column '{column}' not found in data.",
-            diagnostics={
-                "role": role,
-                "column": column,
-                "available_columns": [str(c) for c in data.columns],
-            },
-            recovery_hint="Check the column spelling or rename the DataFrame.",
+        # formula terms are labelled by themselves; named arguments by role
+        label = role if role in ("entity", "time", "cluster") else column
+        raise ColumnNotFound.from_missing(
+            {label: column},
+            list(data.columns),
+            message=f"Column '{column}' not found in data.",
+            extra_diagnostics={"role": role, "column": column},
         )
     return column
 
@@ -195,17 +207,29 @@ class PanelResults(EconometricResults):
     # Hausman test: FE vs RE
     # ------------------------------------------------------------------
 
-    def hausman_test(self, alpha: float = 0.05) -> Dict[str, Any]:
+    def hausman_test(
+        self, alpha: float = 0.05, sigmamore: bool = False
+    ) -> Dict[str, Any]:
         """
         Hausman (1978) specification test: FE vs RE.
 
         Under H0 (RE consistent), both FE and RE are consistent but RE
         is efficient. Under H1, only FE is consistent.
 
+        Parameters
+        ----------
+        alpha : float, default 0.05
+        sigmamore : bool, default False
+            Stata's ``hausman fe re, sigmamore``: base both covariance
+            matrices on the RE disturbance variance. Use it when the
+            classical statistic is negative (``recommendation ==
+            "inconclusive"``).
+
         Returns
         -------
         dict
-            'statistic', 'df', 'pvalue', 'recommendation', 'interpretation'
+            'statistic', 'df', 'pvalue', 'recommendation' ('FE', 'RE' or
+            'inconclusive'), 'psd_violation', 'sigmamore', 'interpretation'
         """
         panel_data, dep_var, indep_vars, entity, time = self._stored_design(
             "Hausman test"
@@ -219,6 +243,7 @@ class PanelResults(EconometricResults):
             entity,
             time,
             alpha,
+            sigmamore=sigmamore,
         )
 
     # ------------------------------------------------------------------
@@ -508,6 +533,8 @@ _METHOD_ALIASES = {
     "random_effects": "re",
     "be": "be",
     "between": "be",
+    "mle": "mle",
+    "re_mle": "mle",
     "fd": "fd",
     "first_difference": "fd",
     "pooled": "pooled",
@@ -588,6 +615,85 @@ def balance_panel(
     return balanced.reset_index(drop=True)
 
 
+def _expand_formula_terms(
+    indep: str, data: pd.DataFrame, formula: str
+) -> Tuple[List[str], pd.DataFrame]:
+    """Regressor names of a panel formula, with ``C(g)``, ``I(...)`` and
+    interaction terms built as columns.
+
+    A formula of plain column names is split and returned with the data it
+    came with. Anything else is expanded with the rules ``sp.regress`` and
+    ``sp.iv`` use (treatment coding, the lowest level omitted; columns named
+    ``g[2]``, ``x:z``) on a copy of the data.
+    """
+    from ..regression.iv import _PLAIN_NAME, _safe_term_name, _top_level_terms
+
+    terms = _top_level_terms(indep)
+
+    def plain(term: str) -> bool:
+        return term in data.columns or bool(_PLAIN_NAME.match(term.replace(" ", "")))
+
+    if all(plain(t) for t in terms):
+        return terms, data
+
+    from patsy import NAAction, dmatrix
+
+    from ..core.utils import (
+        _coerce_string_extension_dtypes,
+        formula_eval_env,
+        r_formula_idioms,
+        raise_if_formula_names_missing,
+    )
+
+    build = [t for t in terms if not plain(t)]
+    frame = _coerce_string_extension_dtypes(
+        data, "1 + " + r_formula_idioms(" + ".join(build))
+    ).copy()
+    if not frame.index.is_unique:
+        frame = frame.reset_index(drop=True)
+    try:
+        design = dmatrix(
+            "1 + " + r_formula_idioms(" + ".join(build)),
+            frame,
+            eval_env=formula_eval_env(),
+            return_type="dataframe",
+            NA_action=NAAction(on_NA="drop"),
+        )
+    except Exception as exc:
+        raise_if_formula_names_missing(" + ".join(build), frame, exc)
+        raise _panel_method_error(
+            f"Could not build the formula term(s) {build!r}: {exc}",
+            diagnostics={"formula": formula},
+            recovery_hint="Check the column names inside C(...) / I(...).",
+        ) from exc
+    built: Dict[str, List[str]] = {t: [] for t in build}
+    slices = design.design_info.term_name_slices
+    for term_name, where in slices.items():
+        if term_name == "Intercept":
+            continue
+        for col in design.columns[where]:
+            safe = _safe_term_name(str(col))
+            # rows with a missing value stay missing and leave the
+            # estimation sample with the other incomplete rows
+            frame[safe] = design[col].reindex(frame.index)
+            built.setdefault(term_name, []).append(safe)
+    names: List[str] = []
+    ordered = list(slices)
+    cursor = [n for n in ordered if n != "Intercept"]
+    for term in terms:
+        if plain(term):
+            names.append(term)
+        elif cursor:
+            names.extend(built.get(cursor.pop(0), []))
+    # terms patsy split further (``a*b``) leave names behind; keep them all
+    for leftover in cursor:
+        names.extend(built.get(leftover, []))
+    seen: Dict[str, None] = {}
+    for name in names:
+        seen.setdefault(name, None)
+    return list(seen), frame
+
+
 def panel(
     data: pd.DataFrame,
     formula: str,
@@ -610,6 +716,7 @@ def panel(
     wild_weight_type: str = "rademacher",
     seed: Optional[int] = None,
     ssc: Optional[str] = None,
+    weights_as: Optional[str] = None,
 ) -> PanelResults:
     """Public ``sp.panel`` entry point — see ``_dispatch_panel_impl``
     for the full docstring on methods and parameters.
@@ -622,29 +729,43 @@ def panel(
     individual panel backend having to opt in. The dispatcher itself
     lives in :func:`_dispatch_panel_impl`.
     """
-    _result = _dispatch_panel_impl(
-        data=data,
-        formula=formula,
-        entity=entity,
-        time=time,
-        method=method,
-        robust=robust,
-        cluster=cluster,
-        weights=weights,
-        alpha=alpha,
-        balance=balance,
-        lags=lags,
-        gmm_lags=gmm_lags,
-        twostep=twostep,
-        vce=vce,
-        conley_lat=conley_lat,
-        conley_lon=conley_lon,
-        conley_cutoff=conley_cutoff,
-        wild_reps=wild_reps,
-        wild_weight_type=wild_weight_type,
-        seed=seed,
-        ssc=ssc,
+    from ..core._agent_summary import declaring_weights_as, resolve_weights_as
+
+    weights_as = resolve_weights_as(
+        weights_as, has_weights=weights is not None, native="analytic", entry="sp.panel"
     )
+    if (
+        weights_as == "sampling"
+        and cluster is None
+        and vce is None
+        and str(robust).lower() == "nonrobust"
+    ):
+        robust = "robust"
+    with declaring_weights_as(weights_as):
+        _result = _dispatch_panel_impl(
+            data=data,
+            formula=formula,
+            entity=entity,
+            time=time,
+            method=method,
+            robust=robust,
+            cluster=cluster,
+            weights=weights,
+            alpha=alpha,
+            balance=balance,
+            lags=lags,
+            gmm_lags=gmm_lags,
+            twostep=twostep,
+            vce=vce,
+            conley_lat=conley_lat,
+            conley_lon=conley_lon,
+            conley_cutoff=conley_cutoff,
+            wild_reps=wild_reps,
+            wild_weight_type=wild_weight_type,
+            seed=seed,
+            ssc=ssc,
+        )
+    _panel_design_checks(_result, data, formula, entity, time, method, robust, cluster)
     try:
         from ..output._lineage import attach_provenance as _attach_prov
 
@@ -724,7 +845,17 @@ def _dispatch_panel_impl(
         - ``'fe'``          Fixed Effects (within estimator)
         - ``'re'``          Random Effects (GLS)
         - ``'be'``          Between estimator
-        - ``'fd'``          First Differences
+        - ``'mle'``         Random Effects by Gaussian maximum likelihood
+          (Stata ``xtreg, mle``; native). Standard errors from the observed
+          information of the full likelihood; ``model_info`` carries
+          ``sigma_u``, ``sigma_e``, ``rho``, the log likelihood and the
+          likelihood-ratio test of ``sigma_u = 0``.
+        - ``'fd'``          First Differences: OLS of ``D.y`` on ``D.x``
+          without a constant, differences taken between consecutive periods
+          of a unit whatever the order of the rows (Stata ``regress D.y D.x,
+          nocons``). Across a gap inside a unit no difference is formed, and
+          a warning says so: R ``plm(model='fd')`` differences adjacent rows
+          instead and also adds an intercept.
         - ``'pooled'``      Pooled OLS
         - ``'twoway'``      Two-way FE (entity + time effects)
 
@@ -748,6 +879,13 @@ def _dispatch_panel_impl(
         Analytic-weight column (WLS). Supported for ``'fe'``, ``'twoway'``
         and ``'pooled'``, where it matches ``sp.feols(weights=)``; other
         methods raise ``MethodIncompatibility``.
+    weights_as : {'analytic', 'sampling'}, optional
+        What the weights are. ``'analytic'`` (Stata ``[aw=]``) is what
+        ``weights=`` alone already means. ``'sampling'`` (Stata ``[pw=]``)
+        gives the same coefficients with the heteroskedasticity-robust
+        variance, unless ``robust=``, ``vce=`` or ``cluster=`` asks for
+        another. Saying which also silences the warning about dispersed
+        weights under the classical variance. ``'frequency'`` is refused.
     alpha : float, default 0.05
         Significance level.
     balance : bool, default False
@@ -759,12 +897,16 @@ def _dispatch_panel_impl(
         GMM instrument lag range (for ``'ab'``/``'system'``).
     twostep : bool, default False
         Two-step GMM (for ``'ab'``/``'system'``).
-    ssc : {'stata', 'fixest'}, optional
+    ssc : {'stata', 'fixest', 'linearmodels'}, optional
         Small-sample convention for the standard errors. By default the
-        linearmodels scaling is kept. ``'stata'`` reproduces the command
-        each method corresponds to -- ``xtreg, fe`` / ``xtreg ... i.t, fe``
-        / ``regress`` / ``regress D.y D.x, nocons`` / ``xtreg, re`` /
-        ``xtreg, be`` -- including ``G/(G-1)*(N-1)/(N-K)`` for clusters,
+        linearmodels scaling is kept, and a fit whose standard errors or
+        p-values would differ under ``'stata'`` warns (``FutureWarning``):
+        from 1.42 the default is ``'stata'`` wherever it is defined.
+        ``'linearmodels'`` keeps today's numbers without the warning.
+        ``'stata'`` reproduces the command each method corresponds to --
+        ``xtreg, fe`` / ``xtreg ... i.t, fe`` / ``regress`` /
+        ``regress D.y D.x, nocons`` / ``xtreg, re`` / ``xtreg, be`` --
+        including ``G/(G-1)*(N-1)/(N-K)`` for clusters,
         t(G-1) (z for RE), and Stata's rule that ``vce(robust)`` after
         ``xtreg`` clusters on the panel variable (``areg`` counting when the
         cluster does not nest the unit). ``'fixest'`` reproduces R
@@ -807,11 +949,23 @@ def _dispatch_panel_impl(
 
     Examples
     --------
+    >>> import numpy as np, pandas as pd
     >>> import statspai as sp
+    >>> rng = np.random.default_rng(0)
+    >>> n_id, n_t = 60, 6
+    >>> ids = np.repeat(np.arange(n_id), n_t)
+    >>> alpha_i = rng.normal(size=n_id)[ids]
+    >>> edu = rng.normal(12, 2, n_id * n_t) + alpha_i
+    >>> exp = rng.normal(10, 3, n_id * n_t)
+    >>> wage = (1.0 + 0.08 * edu + 0.05 * exp + alpha_i
+    ...         + rng.normal(0, 0.5, n_id * n_t))
+    >>> df = pd.DataFrame({"id": ids, "year": np.tile(np.arange(2010, 2016), n_id),
+    ...                    "wage": wage, "edu": edu, "exp": exp})
     >>>
     >>> # Fixed Effects
     >>> r = sp.panel(df, "wage ~ edu + exp", entity='id', time='year')
-    >>> print(r.summary())
+    >>> r.params.round(2).to_dict()
+    {'edu': 0.08, 'exp': 0.05}
     >>>
     >>> # Two-way FE (entity + time)
     >>> r = sp.panel(df, "wage ~ edu + exp", entity='id', time='year',
@@ -822,11 +976,13 @@ def _dispatch_panel_impl(
     ...              method='mundlak')
     >>>
     >>> # Arellano-Bond dynamic panel
-    >>> r = sp.panel(df, "y ~ x1 + x2", entity='id', time='year',
+    >>> r = sp.panel(df, "wage ~ edu + exp", entity='id', time='year',
     ...              method='ab', lags=1)
+    >>> list(r.params.index)
+    ['L1.wage', 'edu', 'exp']
     >>>
     >>> # System GMM (Blundell-Bond)
-    >>> r = sp.panel(df, "y ~ x1 + x2", entity='id', time='year',
+    >>> r = sp.panel(df, "wage ~ edu + exp", entity='id', time='year',
     ...              method='system', lags=1, twostep=True)
     >>>
     >>> # Two-way clustered SE
@@ -834,10 +990,12 @@ def _dispatch_panel_impl(
     ...              method='fe', cluster='twoway')
     >>>
     >>> # Diagnostics on result
-    >>> r.hausman_test()       # FE vs RE
-    >>> r.bp_lm_test()         # Pooled vs RE
-    >>> r.f_test_effects()     # Joint significance of FE
-    >>> r.compare('re')        # Side-by-side comparison
+    >>> haus = r.hausman_test()     # FE vs RE
+    >>> lm = r.bp_lm_test()         # Pooled vs RE
+    >>> ftest = r.f_test_effects()  # Joint significance of FE
+    >>> sorted(ftest)[:3]
+    ['df1', 'df2', 'interpretation']
+    >>> cmp = r.compare('re')       # Side-by-side comparison
 
     See Also
     --------
@@ -872,7 +1030,17 @@ def _dispatch_panel_impl(
         )
     dep, indep = formula.split("~", 1)
     dep_var = dep.strip()
-    indep_vars = [v.strip() for v in indep.split("+") if v.strip()]
+    indep_vars, data = _expand_formula_terms(indep, data, formula)
+    if dep_var and dep_var not in data.columns:
+        # a transformed outcome, ``np.log(y) ~ ...``, built as a column
+        from ..core.utils import evaluate_formula_expression
+        from ..regression.iv import _safe_term_name
+
+        if not data.index.is_unique:
+            data = data.reset_index(drop=True)
+        built = _safe_term_name(dep_var)
+        data = data.assign(**{built: evaluate_formula_expression(dep_var, data)})
+        dep_var = built
 
     dep_var = _require_panel_column(data, dep_var, "dependent variable")
     indep_vars = [_require_panel_column(data, col, "regressor") for col in indep_vars]
@@ -894,6 +1062,44 @@ def _dispatch_panel_impl(
                 alternative_functions=_PANEL_ALTERNATIVES,
             )
 
+    # --- Regressors the fixed effects absorb ---
+    if canonical in ("fe", "twoway"):
+        kept, omitted = _drop_absorbed_regressors(
+            data, dep_var, indep_vars, entity, time, canonical
+        )
+        if omitted and kept:
+            warnings.warn(
+                f"sp.panel(method={canonical!r}): {omitted} omitted because "
+                "the fixed effects absorb them (no variation left within "
+                f"{'units and periods' if canonical == 'twoway' else 'units'}"
+                ", or collinear with the other regressors).",
+                UserWarning,
+                stacklevel=4,
+            )
+            result = _dispatch_panel_impl(
+                data,
+                dep_var + " ~ " + " + ".join(kept),
+                entity=entity,
+                time=time,
+                method=method,
+                robust=robust,
+                cluster=cluster,
+                weights=weights,
+                alpha=alpha,
+                balance=False,
+                vce=vce,
+                conley_lat=conley_lat,
+                conley_lon=conley_lon,
+                conley_cutoff=conley_cutoff,
+                wild_reps=wild_reps,
+                wild_weight_type=wild_weight_type,
+                seed=seed,
+                ssc=ssc,
+            )
+            result.model_info["omitted"] = list(omitted)
+            result.model_info["formula"] = formula
+            return result
+
     # --- Native extended SE menu on the entity-within design ---
     # Bias-reduced (CR2 / CR3 / jackknife), spatial-HAC (Conley) and two-way
     # cluster SEs are computed on the entity-demeaned (FE-absorbed) design via
@@ -902,6 +1108,21 @@ def _dispatch_panel_impl(
     # anchor used by ``sp.feols``), so the panel FE row gets the full menu
     # without touching the linearmodels path.
     _vce_l = vce.lower() if isinstance(vce, str) else None
+    if _vce_l is not None and _vce_l not in _PANEL_BR_VCE:
+        # correctness fix (2026-10): any other value used to fall through
+        # and return the classical SE without a word. ``vce='robust'`` gave
+        # the same numbers as no option at all, and so did ``vce='nonsense'``.
+        raise _panel_method_error(
+            f"vce={vce!r} is not a variance option of sp.panel.",
+            diagnostics={"vce": vce, "accepted": sorted(_PANEL_BR_VCE)},
+            recovery_hint=(
+                "vce= selects the extended menu only: "
+                + ", ".join(repr(v) for v in sorted(_PANEL_BR_VCE))
+                + ". For heteroskedasticity-robust SEs pass robust='robust'; "
+                "for cluster-robust SEs pass cluster='<column>'; omit vce= "
+                "for the classical SEs."
+            ),
+        )
     _cluster_is_pair = isinstance(cluster, (list, tuple))
     if ssc is not None and (
         _vce_l in _PANEL_BR_VCE or _cluster_is_pair or canonical in _GMM_METHODS
@@ -914,6 +1135,16 @@ def _dispatch_panel_impl(
             recovery_hint="Drop ssc=, or drop vce= / use a static method.",
         )
     ssc_key = resolve_ssc(ssc, canonical)
+    if (
+        ssc is None
+        and _vce_l not in _PANEL_BR_VCE
+        and default_change_applies(canonical, robust, cluster)
+    ):
+        from ..did._crit import _external_stacklevel
+
+        # +1: the warning is issued one frame down, in warn_default_change
+        warn_default_change(canonical, stacklevel=_external_stacklevel() + 1)
+    _refuse_unusable_panel_keys(data, entity, time, canonical, cluster, ssc_key)
     if _vce_l in _PANEL_BR_VCE or _cluster_is_pair:
         return _panel_bias_reduced(
             data=data,
@@ -960,6 +1191,24 @@ def _dispatch_panel_impl(
             recovery_hint="Drop cluster= or pass cluster='entity'.",
         )
 
+    if canonical == "mle":
+        if robust != "nonrobust" or cluster is not None or weights is not None:
+            raise _panel_method_error(
+                "sp.panel(method='mle') reports observed-information standard "
+                "errors only; robust=, cluster= and weights= are not supported.",
+                diagnostics={"method": canonical},
+                recovery_hint="Use method='re' with cluster= for a robust "
+                "random-effects fit.",
+            )
+        return _fit_re_mle(
+            data=data,
+            dep_var=dep_var,
+            indep_vars=indep_vars,
+            entity=entity,
+            time=time,
+            formula=formula,
+            alpha=alpha,
+        )
     if canonical in _GMM_METHODS:
         return _fit_gmm(
             data=data,
@@ -1007,9 +1256,200 @@ def _dispatch_panel_impl(
         )
 
 
+def _refuse_unusable_panel_keys(
+    data: pd.DataFrame,
+    entity: str,
+    time: str,
+    method: str,
+    cluster: Any,
+    ssc: Optional[str],
+) -> None:
+    """Refuse, by name, the inputs the static backends fail on obscurely:
+    a missing unit or period id, a missing cluster id under ``ssc=`` (the
+    default path refuses it in ``_build_cov_kwargs``), and a one-unit panel
+    for the estimators that compare units or remove unit means."""
+    static = method in _LINEARMODELS_METHODS
+    for role, col, applies in (
+        ("entity", entity, static),
+        ("time", time, static or method in _CRE_METHODS),
+    ):
+        n_missing = int(data[col].isna().sum()) if applies else 0
+        if n_missing:
+            raise _panel_method_error(
+                f"{role} column {col!r} has {n_missing} missing value(s); a "
+                "row without a unit or period id cannot be placed in the "
+                "panel.",
+                diagnostics={"column": col, "n_missing": n_missing},
+                recovery_hint=f"Drop the rows with a missing {col!r} first.",
+            )
+    if (
+        ssc is not None
+        and isinstance(cluster, str)
+        and cluster not in (entity, time)
+        and cluster in data.columns
+        and data[cluster].isna().any()
+    ):
+        raise _panel_method_error(
+            f"cluster column {cluster!r} has missing values.",
+            diagnostics={
+                "cluster": cluster,
+                "n_missing": int(data[cluster].isna().sum()),
+            },
+            recovery_hint="Drop rows with a missing cluster id first.",
+        )
+    if method in ("fe", "be", "twoway") and data[entity].nunique() < 2:
+        raise DataInsufficient(
+            f"sp.panel(method={method!r}) needs at least two units; the "
+            f"entity column {entity!r} has one.",
+            recovery_hint="Check the entity column; a single time series is "
+            "sp.regress.",
+            diagnostics={"n_units": int(data[entity].nunique())},
+            alternative_functions=_PANEL_ALTERNATIVES,
+        )
+
+
+def _fit_re_mle(
+    data: pd.DataFrame,
+    dep_var: str,
+    indep_vars: List[str],
+    entity: str,
+    time: str,
+    formula: str,
+    alpha: float,
+) -> PanelResults:
+    """Random effects by Gaussian maximum likelihood (Stata ``xtreg, mle``)."""
+    from ._re_mle import fit_re_mle
+
+    fit = fit_re_mle(data, dep_var, indep_vars, entity, alpha)
+    index = pd.Index(fit["names"])
+    cov = pd.DataFrame(fit["cov"], index=index, columns=index)
+    info = dict(fit["model_info"])
+    info.update(
+        model_type="Panel RE (ML)", method="mle", robust="nonrobust", alpha=alpha
+    )
+    return PanelResults(
+        params=pd.Series(fit["beta"], index=index),
+        std_errors=pd.Series(np.sqrt(np.diag(fit["cov"])), index=index),
+        model_info=info,
+        data_info={
+            "nobs": fit["nobs"],
+            "df_model": len(indep_vars),
+            "df_resid": fit["nobs"] - len(index),
+            "dependent_var": dep_var,
+            "fitted_values": fit["fitted"],
+            "residuals": fit["residuals"],
+            "vcov": cov,
+            "inference": "z",
+        },
+        diagnostics={
+            "Log-Likelihood": info["ll"],
+            "LR chi2": info["lr_chi2"],
+            "Prob > chi2": info["lr_pvalue"],
+            "sigma_u": info["sigma_u"],
+            "sigma_e": info["sigma_e"],
+            "rho": info["rho"],
+            "N entities": float(fit["n_groups"]),
+        },
+        _panel_data=data,
+        _formula=formula,
+        _entity=entity,
+        _time=time,
+        _dep_var=dep_var,
+        _indep_vars=list(indep_vars),
+        _method="mle",
+        _lm_result=None,
+    )
+
+
 # ======================================================================
 # linearmodels-based estimators (fe, re, be, fd, pooled, twoway)
 # ======================================================================
+
+
+def _indexed_columns(panel_data: pd.DataFrame, cols: List[str]) -> pd.DataFrame:
+    """Columns of an (entity, time)-indexed frame; a regressor that is the
+    time or entity variable itself (a linear trend ``year``) is read from
+    the index, where ``set_index`` moved it."""
+    out = {}
+    for col in cols:
+        if col in panel_data.columns:
+            out[col] = panel_data[col].to_numpy()
+        else:
+            out[col] = panel_data.index.get_level_values(col).to_numpy()
+    return pd.DataFrame(out, index=panel_data.index)
+
+
+def _independent_columns(
+    X: np.ndarray, names: List[str], tol: float = 1e-9
+) -> List[str]:
+    """Names of the columns of ``X`` that add rank, read left to right."""
+    kept: List[str] = []
+    basis: List[np.ndarray] = []
+    for j, name in enumerate(names):
+        col = X[:, j].astype(float)
+        scale = float(np.linalg.norm(col))
+        resid = col.copy()
+        for q in basis:
+            resid -= q * float(q @ resid)
+        # a second pass keeps the projection accurate when columns are
+        # nearly collinear
+        for q in basis:
+            resid -= q * float(q @ resid)
+        norm = float(np.linalg.norm(resid))
+        if scale > 0 and norm > tol * scale:
+            basis.append(resid / norm)
+            kept.append(name)
+    return kept
+
+
+def _drop_absorbed_regressors(
+    data: pd.DataFrame,
+    dep_var: str,
+    indep_vars: List[str],
+    entity: str,
+    time: str,
+    method: str,
+) -> Tuple[List[str], List[str]]:
+    """Regressors the fixed effects leave something of, and those they do not.
+
+    A regressor that does not vary within a unit (``educ`` in a wage panel),
+    or that is a linear combination of the effects and the regressors before
+    it, is not identified by the within estimator. Stata and R's ``plm``
+    omit it and say so; this returns ``(kept, omitted)`` so the caller can
+    do the same.
+    """
+    cols = list(dict.fromkeys([dep_var] + indep_vars))
+    work = data[list(dict.fromkeys([entity, time] + cols))].dropna()
+    if len(work) == 0 or not indep_vars:
+        return list(indep_vars), []
+    X = work[indep_vars].to_numpy(dtype=float)
+    raw_scale = np.linalg.norm(X - X.mean(axis=0), axis=0)
+    ent = pd.factorize(work[entity])[0]
+    tim = pd.factorize(work[time])[0]
+
+    def sweep(M: np.ndarray, codes: np.ndarray) -> np.ndarray:
+        counts = np.bincount(codes).astype(float)
+        sums = np.zeros((counts.size, M.shape[1]))
+        np.add.at(sums, codes, M)
+        return M - (sums / counts[:, None])[codes]
+
+    W = sweep(X, ent)
+    if method == "twoway":
+        for _ in range(200):
+            previous = W
+            W = sweep(sweep(W, tim), ent)
+            if np.max(np.abs(W - previous)) <= 1e-12 * max(1.0, np.max(np.abs(X))):
+                break
+    # a column the effects reproduce up to rounding has nothing left
+    scale = np.where(raw_scale > 0, raw_scale, 1.0)
+    alive = np.linalg.norm(W, axis=0) > 1e-9 * scale
+    W = np.where(alive[None, :], W / scale[None, :], 0.0)
+    if alive.all() and np.linalg.matrix_rank(W) == W.shape[1]:
+        # the usual case: nothing is absorbed
+        return list(indep_vars), []
+    kept = _independent_columns(W, list(indep_vars))
+    omitted = [v for v in indep_vars if v not in kept]
+    return kept, omitted
 
 
 def _fit_linearmodels(
@@ -1038,9 +1478,11 @@ def _fit_linearmodels(
     )
     from statsmodels.tools import add_constant
 
+    if method == "fd":
+        data = _fd_row_order(data, [dep_var, *indep_vars], entity, time)
     panel_data = data.set_index([entity, time])
-    dep = panel_data[dep_var]
-    exog = panel_data[indep_vars]
+    dep = _indexed_columns(panel_data, [dep_var])[dep_var]
+    exog = _indexed_columns(panel_data, indep_vars)
     w = None if weights is None else _panel_weights(panel_data, weights)
 
     lm_model: Any
@@ -1092,7 +1534,12 @@ def _fit_linearmodels(
                 "another time-varying variable.",
             )
         cov_kwargs = _build_cov_kwargs(robust, cluster, panel_data, entity, time)
-    lm_result = lm_model.fit(**cov_kwargs)
+    if method == "re" and within_rank_deficient(exog):
+        # a regressor constant within unit: linearmodels' variance
+        # components count it as a within parameter (see _cre)
+        lm_result = fit_re(dep, add_constant(exog), cov_kwargs)
+    else:
+        lm_result = lm_model.fit(**cov_kwargs)
     ssc_inf = None
     if ssc is not None:
         ssc_inf = panel_ssc_inference(
@@ -1123,7 +1570,112 @@ def _fit_linearmodels(
         ssc_inf=ssc_inf,
     )
     result.model_info["weights"] = weights
+    if method in ("fe", "re", "be") and w is None:
+        _use_xtreg_rsquared(result, data, dep_var, indep_vars, entity)
+    if w is not None:
+        from ..core._agent_summary import note_weight_diagnostics
+
+        _keys = (
+            None
+            if cluster is None
+            else _binding_cluster_keys(cluster, entity, time, data)
+        )
+        note_weight_diagnostics(
+            result.model_info,
+            w.to_numpy(),
+            (
+                "cluster"
+                if cluster is not None
+                else ("classical" if robust == "nonrobust" else "robust")
+            ),
+            entry="sp.panel",
+            robust_option="robust='robust' or cluster=",
+            classical_reading="analytic weights (Stata [aw=])",
+            cluster_keys=_keys if _keys is not None and len(_keys) == len(w) else None,
+            cluster=cluster,
+        )
     return result
+
+
+def _use_xtreg_rsquared(
+    result: PanelResults,
+    data: pd.DataFrame,
+    dep_var: str,
+    indep_vars: List[str],
+    entity: str,
+) -> None:
+    """Report the within / between / overall R-squared as Stata ``xtreg``
+    defines them (squared correlations, the same formulas after fe, re and
+    be). linearmodels' 1 - SSR/SST versions answer another question under
+    the same labels: on a fixed-effects fit the between value was 0.47 where
+    ``xtreg, fe`` reports 0.87. They stay in ``model_info``."""
+    from .xt_tools import _xtreg_rsquared
+
+    xs = [v for v in indep_vars if v in result.params.index]
+    r2 = _xtreg_rsquared(
+        data, dep_var, xs, entity, result.params[xs].to_numpy(dtype=float)
+    )
+    old = result.diagnostics
+    result.model_info["r2_linearmodels"] = {
+        k: old.pop(f"R-squared ({k})")
+        for k in ("within", "between")
+        if f"R-squared ({k})" in old
+    }
+    new = {"R-squared": old.pop("R-squared")}
+    for k in ("within", "between", "overall"):
+        new[f"R-squared ({k})"] = r2[f"r2_{k}"]
+    new.update(old)
+    result.diagnostics = new
+    result.model_info["r2_convention"] = "xtreg"
+
+
+def _fd_row_order(
+    data: pd.DataFrame, cols: List[str], entity: str, time: str
+) -> pd.DataFrame:
+    """Rows in an order that makes ``FirstDifferenceOLS`` difference
+    consecutive periods, whatever order they arrived in.
+
+    linearmodels lays the time axis out in order of first appearance in the
+    rows and differences along it, so the rows are sorted by (entity, time)
+    -- a no-op on a sorted panel -- and, when the first unit does not start
+    at the first period (so that even sorted rows leave the axis out of
+    order), by (time, entity). The estimator is then OLS of ``D.y`` on
+    ``D.x`` over pairs of consecutive periods of a unit (Stata's ``D.``
+    operator on an ``xtset`` panel); a warning names the other convention
+    when a unit has a gap, because there the two give different numbers.
+    """
+    used = [c for c in dict.fromkeys(cols) if c in data.columns]
+
+    def axis_in_order(frame: pd.DataFrame) -> bool:
+        return bool(pd.Index(pd.unique(frame[time])).is_monotonic_increasing)
+
+    out = data
+    keys = data[[entity, time]]
+    if not keys.isna().to_numpy().any():
+        order = np.lexsort((keys[time].to_numpy(), keys[entity].to_numpy()))
+        if not np.array_equal(order, np.arange(len(data))):
+            out = data.iloc[order]
+        complete = out.loc[out[used].notna().all(axis=1)]
+        if not (axis_in_order(out) and axis_in_order(complete)):
+            out = data.sort_values([time, entity], kind="stable")
+        # a gap: two adjacent observed rows of a unit that are not adjacent
+        # periods of the panel (positions among the periods in use)
+        cc = complete[[entity, time]]
+        pos = np.searchsorted(np.sort(cc[time].unique()), cc[time].to_numpy())
+        same = cc[entity].to_numpy()[1:] == cc[entity].to_numpy()[:-1]
+        n_gap = int(np.sum(same & (pos[1:] != pos[:-1] + 1)))
+        if n_gap:
+            warnings.warn(
+                f"sp.panel(method='fd'): {n_gap} within-unit gap(s) in the "
+                "time variable. First differences are taken between "
+                "consecutive periods only (Stata's D. operator), so the "
+                "observations on either side of a gap do not form a "
+                "difference; R plm(model='fd') differences adjacent rows "
+                "across the gap and gives different estimates.",
+                UserWarning,
+                stacklevel=5,
+            )
+    return out
 
 
 _WEIGHTED_METHODS = frozenset({"fe", "twoway", "pooled"})
@@ -1132,10 +1684,11 @@ _WEIGHTED_METHODS = frozenset({"fe", "twoway", "pooled"})
 def _panel_weights(panel_data: pd.DataFrame, weights: str) -> pd.Series:
     """Validated analytic weights aligned with ``panel_data``."""
     if weights not in panel_data.columns:
-        raise _panel_method_error(
-            f"weights column {weights!r} not found in data.",
-            diagnostics={"weights": weights},
-            recovery_hint="Pass the name of a numeric column.",
+        raise ColumnNotFound.from_missing(
+            {"weights": weights},
+            list(panel_data.columns),
+            message=f"weights column {weights!r} not found in data.",
+            extra_diagnostics={"weights": weights},
         )
     w = pd.to_numeric(panel_data[weights], errors="coerce").astype(float)
     if not np.all(np.isfinite(w.to_numpy())) or (w <= 0).any():
@@ -1163,7 +1716,15 @@ def _build_cov_kwargs(
     elif cluster:
         # A named column: cluster on it. (Before 1.32 any other name silently
         # clustered by entity while the result reported the requested column.)
-        if panel_data is None or cluster not in panel_data.columns:
+        if panel_data is not None and cluster not in panel_data.columns:
+            raise ColumnNotFound.from_missing(
+                {"cluster": cluster},
+                list(panel_data.columns),
+                message=f"cluster column {cluster!r} not found in data.",
+                extra_hint="Or pass 'entity', 'time' or 'twoway'.",
+                extra_diagnostics={"cluster": cluster},
+            )
+        if panel_data is None:
             raise _panel_method_error(
                 f"cluster column {cluster!r} not found in data.",
                 diagnostics={"cluster": cluster},
@@ -1187,7 +1748,20 @@ def _build_cov_kwargs(
         return {"cov_type": "robust"}
     elif robust == "kernel" or robust == "driscoll-kraay":
         return {"cov_type": "kernel"}
-    return {"cov_type": "unadjusted"}
+    elif robust in ("nonrobust", "unadjusted", None, False):
+        return {"cov_type": "unadjusted"}
+    # Anything else used to fall through to the classical covariance, so
+    # robust='hc1' or robust='cluster' returned homoskedastic SEs labelled as
+    # requested.
+    raise _panel_method_error(
+        f"robust={robust!r} is not a standard-error type sp.panel knows.",
+        diagnostics={"robust": robust},
+        recovery_hint=(
+            "Use robust='nonrobust', 'robust', 'kernel' or 'driscoll-kraay'; "
+            "for cluster-robust standard errors pass cluster='entity', "
+            "'time', 'twoway' or a column name."
+        ),
+    )
 
 
 _METHOD_NAMES = {
@@ -1228,10 +1802,85 @@ def _binding_n_clusters(
     return int(data[cluster].nunique())
 
 
-def _maybe_warn_few_clusters(n_clusters: int, cluster: Optional[str]) -> None:
+#: What ``ssc=None`` computes. Measured against ``ssc='stata'`` in
+#: ``tests/test_panel_vce_contract.py``.
+_LINEARMODELS_REFERENCE = (
+    "linearmodels scaling: N/(N-k) on the covariance, no G/(G-1) cluster factor, "
+    "tests referred to N - K degrees of freedom (t / F, also after RE). "
+    "ssc='stata' gives xtreg's G/(G-1) factor and t(G-1), and z / chi2 after "
+    "xtreg, re; ssc='fixest' gives R fixest's."
+)
+
+
+def _panel_design_checks(
+    result: Any,
+    data: Any,
+    formula: str,
+    entity: str,
+    time: str,
+    method: str,
+    robust: str,
+    cluster: Any,
+) -> None:
+    """Run the shared design guardrails (``core/_design_guardrails.py``).
+
+    Fixed / random effects and pooled fits only; the absorbed effects are
+    the entity (``'fe'``) or entity and time (``'twoway'``, or ``'fe'`` with
+    ``TimeEffects`` / ``C(time)`` in the formula).
+    """
+    key = str(method).lower().strip().replace("-", "_")
+    canon = _METHOD_ALIASES.get(key, key)
+    if canon not in ("fe", "twoway", "re", "pooled") or not isinstance(formula, str):
+        return
+    from ..core._design_guardrails import check_design
+
+    fe: List[str] = []
+    if canon in ("fe", "twoway"):
+        fe = [entity]
+        if canon == "twoway" or re.search(
+            rf"TimeEffects|C\(\s*{re.escape(str(time))}\s*\)", formula
+        ):
+            fe.append(time)
+    if cluster in ("entity", "time", "twoway"):
+        cluster = {"entity": entity, "time": time, "twoway": [entity, time]}[cluster]
+    check_design(
+        result,
+        data,
+        formula=re.sub(r"\+\s*(EntityEffects|TimeEffects)\b", "", formula),
+        entry="sp.panel",
+        fe=fe,
+        cluster=cluster,
+        vcov=robust,
+        unit=entity,
+        time=time,
+    )
+
+
+def _binding_cluster_keys(
+    cluster: Optional[str], entity: str, time: str, data: pd.DataFrame
+) -> Optional[pd.Series]:
+    """The one-way cluster key the CRVE rests on (``None`` for two-way)."""
+    if not cluster or cluster == "twoway":
+        return None
+    if cluster == "time" or cluster == time:
+        col = time
+    elif cluster in ("entity", entity) or cluster not in data.columns:
+        col = entity
+    else:
+        col = cluster
+    if col in data.columns:
+        return data[col]
+    if col in getattr(data.index, "names", ()):
+        return pd.Series(data.index.get_level_values(col))
+    return None
+
+
+def _maybe_warn_few_clusters(
+    n_clusters: int, cluster: Optional[str], default_convention: bool = False
+) -> None:
     """Emit a typed, actionable warning when cluster-robust SEs rest on too
     few clusters (Cameron-Gelbach-Miller 2008; MacKinnon-Webb 2017)."""
-    from ..core._agent_summary import _FEW_CLUSTERS_MIN
+    from ..core._agent_summary import _FEW_CLUSTERS_MIN, FEW_CLUSTERS_HINT
 
     if n_clusters >= _FEW_CLUSTERS_MIN:
         return
@@ -1241,9 +1890,14 @@ def _maybe_warn_few_clusters(n_clusters: int, cluster: Optional[str]) -> None:
             f"cluster='{cluster}' — cluster-robust standard errors are "
             "downward-biased and t-tests over-reject with few clusters.",
             recovery_hint=(
-                "Report sp.wild_cluster_bootstrap (or sp.wild_cluster_ci_inv "
-                "for CIs), which keeps correct size when the number of "
-                "clusters is small."
+                FEW_CLUSTERS_HINT
+                + (
+                    " The default small-sample convention applies no "
+                    "G/(G-1) factor and refers tests to N - K degrees of "
+                    "freedom; ssc='stata' uses xtreg's factor and t(G-1)."
+                    if default_convention
+                    else ""
+                )
             ),
             diagnostics={"n_clusters": int(n_clusters), "threshold": _FEW_CLUSTERS_MIN},
             alternative_functions=[
@@ -1288,6 +1942,9 @@ def _convert_lm_result(
         "method": method,
         "robust": robust,
         "cluster": cluster,
+        # what the within / between R-squared mean; sp.panel switches fe /
+        # re / be to Stata's xtreg definitions (_use_xtreg_rsquared)
+        "r2_convention": "linearmodels",
     }
 
     # Record the binding number of clusters so few-cluster inference risk is
@@ -1299,9 +1956,37 @@ def _convert_lm_result(
         model_info["ssc_reference"] = ssc_inf.reference
         model_info["vce_type"] = ssc_inf.vce
         n_clusters = ssc_inf.n_clusters
+    else:
+        # The default is a convention too; say which one, so a reader of
+        # the result does not have to know that ``ssc=None`` means this.
+        model_info["ssc"] = "linearmodels"
+        model_info["ssc_reference"] = _LINEARMODELS_REFERENCE
     if n_clusters is not None:
         model_info["n_clusters"] = n_clusters
-        _maybe_warn_few_clusters(n_clusters, cluster)
+        _maybe_warn_few_clusters(
+            n_clusters, cluster, default_convention=ssc_inf is None
+        )
+        _keys = _binding_cluster_keys(cluster, entity, time, raw_data)
+        if _keys is not None:
+            from ..core._agent_summary import warn_if_clusters_unequal
+
+            model_info["n_clusters_effective"] = warn_if_clusters_unequal(
+                _keys, cluster
+            )
+            if all(c in raw_data.columns for c in indep_vars) and len(_keys) == len(
+                raw_data
+            ):
+                from ..core._agent_summary import warn_if_few_ever_treated
+
+                _few = warn_if_few_ever_treated(
+                    raw_data[list(indep_vars)].to_numpy(dtype=float),
+                    list(indep_vars),
+                    _keys,
+                    cluster,
+                    stacklevel=4,
+                )
+                if _few:
+                    model_info["few_treated_clusters"] = _few
 
     data_info = {
         "nobs": int(lm_result.nobs),
@@ -1319,6 +2004,13 @@ def _convert_lm_result(
         "residuals": lm_result.resids.values.ravel(),
         "vcov": vcov,
     }
+    # Rows and groups beside the N the degrees of freedom use: the between
+    # estimator's N is the number of groups, where xtreg, be reports rows.
+    try:
+        data_info["n_rows"] = int(lm_result.model.dependent.dataframe.shape[0])
+        data_info["n_groups"] = int(lm_result.entity_info.total)
+    except (AttributeError, TypeError, ValueError):
+        pass
     if ssc_inf is not None:
         if ssc_inf.df_inference is None:
             data_info["inference"] = "z"
@@ -1343,7 +2035,7 @@ def _convert_lm_result(
         diagnostics["F-statistic"] = float(lm_result.f_statistic.stat)
         diagnostics["F p-value"] = float(lm_result.f_statistic.pval)
 
-    return PanelResults(
+    result = PanelResults(
         params=params,
         std_errors=std_errors,
         model_info=model_info,
@@ -1358,6 +2050,56 @@ def _convert_lm_result(
         _method=method,
         _lm_result=lm_result,
     )
+    if (
+        ssc_inf is not None
+        or model_info.get("cluster") is not None
+        or str(model_info.get("robust", "nonrobust")).lower() != "nonrobust"
+    ):
+        _model_test_from_own_variance(result)
+    return result
+
+
+def _model_test_from_own_variance(result: PanelResults) -> None:
+    """Replace linearmodels' model F by the Wald test of the reported variance.
+
+    linearmodels' ``f_statistic`` is the homoskedastic F whatever the
+    covariance, so under ``cluster=`` the summary printed 12.29 where the
+    clustered test of the same slopes (``sp.test``, ``xtreg ..., vce(cluster)``)
+    is 28.49 (2026-10-23 audit data). The model test now uses the variance,
+    small-sample convention and reference distribution of the coefficients:
+    F(q, df) under t inference, Wald chi2(q) under z (``xtreg, re`` with
+    ``ssc='stata'``).
+    """
+    from ..postestimation.hypothesis import test as _wald
+
+    slopes = [
+        str(n) for n in result.params.index if str(n) not in ("const", "Intercept")
+    ]
+    if not slopes:
+        return
+    diag = result.diagnostics
+    try:
+        out = _wald(result, [f"{n} = 0" for n in slopes])
+    except (MethodIncompatibility, np.linalg.LinAlgError, ValueError) as exc:
+        # linearmodels' F ignores this variance, so it is not reported either
+        diag.pop("F-statistic", None)
+        diag.pop("F p-value", None)
+        warnings.warn(
+            "sp.panel: the model test of all slopes could not be computed "
+            f"from the reported variance ({type(exc).__name__}: {exc}); it is "
+            "left out of the diagnostics.",
+            RuntimeWarning,
+            stacklevel=4,
+        )
+        return
+    diag.pop("F-statistic", None)
+    diag.pop("F p-value", None)
+    if out["distribution"] == "chi2":
+        diag["Wald chi2"] = float(out["statistic"])
+        diag["Prob > chi2"] = float(out["pvalue"])
+    else:
+        diag["F-statistic"] = float(out["statistic"])
+        diag["F p-value"] = float(out["pvalue"])
 
 
 # ======================================================================
@@ -1508,7 +2250,44 @@ def _panel_bias_reduced(
         se_vals: Dict[str, float] = {}
         wild_pvals = {}
         wild_ci = {}
-        for v in indep_vars:
+        # Bootstrapping the already-demeaned design is valid only when every
+        # entity lies in one cluster. Otherwise the flipped residuals are no
+        # longer orthogonal to the entity dummies and the bootstrap must
+        # re-absorb them in each draw (boottest after areg / reghdfe; the
+        # same fix as hdfe_ols(wild=True) and sp.wild_cluster_boot).
+        nested = bool((work.groupby(entity)[ccol].nunique(dropna=False) <= 1).all())
+        reabsorb: Optional[Any] = None
+        if not nested:
+            from ._wild_fe import wild_cluster_fe
+
+            ent_codes = pd.factorize(work[entity])[0]
+            n_ent = int(ent_codes.max()) + 1
+            cnt = np.bincount(ent_codes, minlength=n_ent).astype(float)
+
+            def _demean(v: np.ndarray) -> np.ndarray:
+                tot = np.zeros((n_ent,) + v.shape[1:])
+                np.add.at(tot, ent_codes, v)
+                means = tot / cnt.reshape((-1,) + (1,) * (v.ndim - 1))
+                return np.asarray(v - means[ent_codes])
+
+            cl_values = work[ccol].to_numpy()
+
+            def _reabsorb(j: int) -> Dict[str, Any]:
+                return wild_cluster_fe(
+                    _demean,
+                    y,
+                    X,
+                    cl_values,
+                    j,
+                    n_boot=wild_reps,
+                    weight_type=wild_weight_type,
+                    seed=seed,
+                    alpha=alpha,
+                )
+
+            reabsorb = _reabsorb
+
+        for j, v in enumerate(indep_vars):
             out = wild_cluster_boot(
                 shim,
                 work,
@@ -1520,6 +2299,8 @@ def _panel_bias_reduced(
                 alpha=alpha,
             )
             se_vals[v] = float(out["se_cluster"])
+            if reabsorb is not None:
+                out = reabsorb(j)
             wild_pvals[v] = float(out["p_boot"])
             wild_ci[v] = (float(out["ci_boot"][0]), float(out["ci_boot"][1]))
         std_errors = pd.Series(se_vals)
@@ -1661,6 +2442,22 @@ def _fit_cre(
             mean_col = f"_mean_{var}"
             df[mean_col] = df.groupby(entity)[var].transform("mean")
             mundlak_vars.append(mean_col)
+        # The mean of a regressor that is constant within units is the
+        # regressor itself, and the means of period dummies are constants
+        # in a balanced panel: such a mean adds a column but no rank, and
+        # the device needs only the means that do.
+        complete = df[[dep_var] + indep_vars + mundlak_vars].dropna()
+        design = np.column_stack(
+            [np.ones(len(complete)), complete[indep_vars + mundlak_vars].to_numpy()]
+        )
+        design = design / np.where(
+            np.linalg.norm(design, axis=0) > 0, np.linalg.norm(design, axis=0), 1.0
+        )
+        independent = _independent_columns(
+            design, ["const"] + indep_vars + mundlak_vars
+        )
+        cre_means_omitted = [m for m in mundlak_vars if m not in independent]
+        mundlak_vars = [m for m in mundlak_vars if m in independent]
         all_exog = indep_vars + mundlak_vars
     else:
         # Chamberlain: add entity means for each time period interaction
@@ -1682,8 +2479,8 @@ def _fit_cre(
         all_exog = indep_vars + chamberlain_vars
 
     panel_data = df.set_index([entity, time])
-    dep = panel_data[dep_var]
-    exog = add_constant(panel_data[all_exog])
+    dep = _indexed_columns(panel_data, [dep_var])[dep_var]
+    exog = add_constant(_indexed_columns(panel_data, all_exog))
 
     cov_kwargs = (
         {"cov_type": "unadjusted"}
@@ -1728,6 +2525,10 @@ def _fit_cre(
     # Test: are the Mundlak terms jointly significant?
     # (equivalent to Hausman test)
     if cre_method == "mundlak":
+        result.model_info["cre_means"] = [m[len("_mean_") :] for m in mundlak_vars]
+        result.model_info["cre_means_omitted"] = [
+            m[len("_mean_") :] for m in cre_means_omitted
+        ]
         mundlak_params = {
             k: v for k, v in lm_result.params.items() if k.startswith("_mean_")
         }
@@ -1882,6 +2683,7 @@ def _fit_gmm(
 # ======================================================================
 
 
+@records_call("panel_compare")
 @accepts_formula_first()
 @accepts_aliases(id="entity", vce="robust")
 def panel_compare(

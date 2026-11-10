@@ -16,7 +16,10 @@ from scipy import optimize, stats
 
 from .._aliases import accepts_aliases
 from .._result_serialize import ResultProtocolMixin
+from ..core._call_record import records_call
 from ..core.results import EconometricResults
+from ..exceptions import DataInsufficient, MethodIncompatibility
+from ._cox_core import CoxKernel, harrell_c, km_left_survival
 
 # ---------------------------------------------------------------------------
 # Formula parser (local)
@@ -150,43 +153,208 @@ class CoxResult(EconometricResults):
         return self._baseline_hazard_df.copy()
 
     # -- PH test (Schoenfeld residuals) ------------------------------------
-    def ph_test(self) -> pd.DataFrame:
+    def ph_test(self, transform: Any = "km", method: str = "score") -> pd.DataFrame:
         """
-        Test the proportional hazards assumption via Schoenfeld residuals.
+        Test the proportional hazards assumption (Grambsch and Therneau).
 
-        Computes the correlation of scaled Schoenfeld residuals with time
-        for each covariate and reports a chi-squared test.
+        For each covariate the model is embedded in one whose coefficient
+        varies with time, ``beta_j(t) = beta_j + theta_j * g(t)``, and
+        ``theta_j = 0`` is tested by a score test at the fitted model; the
+        ``GLOBAL`` row tests all the ``theta_j`` jointly. No larger model
+        is fitted. This is the test of ``survival::cox.zph`` in R (version
+        3.0 and later), and the statistics agree with it under either tie
+        rule and with strata.
+
+        Parameters
+        ----------
+        transform : {'km', 'rank', 'identity', 'log'} or callable
+            The function of time ``g``. ``'km'`` (default, as in
+            ``cox.zph``) is one minus the left-continuous Kaplan-Meier
+            estimate of the pooled sample, which spreads the event times
+            evenly and keeps a few late events from dominating;
+            ``'identity'`` is time itself (the default of Stata
+            ``estat phtest``); ``'rank'`` is the rank of the time among all
+            observations (among the failures under ``method='approx'``, as
+            in Stata); ``'log'`` needs positive times. A callable is
+            applied to the array of event times.
+        method : {'score', 'approx'}, default 'score'
+            ``'score'`` is the score test described above. ``'approx'`` is
+            the approximation of Grambsch and Therneau (1994) that Stata
+            ``estat phtest`` and versions of ``survival`` before 3.0 report:
+            it replaces the information matrix at each event time by the
+            average over event times, which turns the test into a
+            regression of the scaled Schoenfeld residuals on ``g(t)``. With
+            ``transform='identity'`` it reproduces ``estat phtest``, and
+            with the other three its ``km``, ``rank`` and ``log`` options.
+            Unweighted right-censored fits only.
 
         Returns
         -------
         pd.DataFrame
-            Columns: ``variable``, ``rho``, ``chi2``, ``p_value``.
+            One row per covariate and a final ``GLOBAL`` row, with columns
+            ``variable``, ``rho`` (correlation of the scaled Schoenfeld
+            residuals with ``g(t)``; missing for ``GLOBAL``), ``chi2``,
+            ``df`` and ``p_value``.
+
+        Notes
+        -----
+        Weighted fits (``weights=``) and counting-process fits (``start=``)
+        get the score test of ``cox.zph`` for such fits: the case weights
+        enter the score and the information as they enter the partial
+        likelihood, the information is the model-based one whatever
+        variance the fit reports, and ``g`` ignores the weights (``'km'``
+        is the unweighted Kaplan-Meier of the ``(start, stop]`` data,
+        ``'rank'`` ranks the stop times of all rows). Fits with
+        ``design=`` are refused.
+
+        The two methods differ most when the covariate distribution of the
+        risk set changes over time, which is when the average information
+        matrix is a poor stand-in for each event time's own.
+
+        Before 1.39 this method returned ``n * rho^2`` with ``rho`` the
+        Spearman correlation between time and the unscaled residuals. That
+        number is not the Grambsch-Therneau statistic and was several times
+        too small in places.
+
+        Examples
+        --------
+        >>> import numpy as np, pandas as pd
+        >>> import statspai as sp
+        >>> rng = np.random.default_rng(0)
+        >>> n = 400
+        >>> x = rng.binomial(1, 0.5, n)
+        >>> t = rng.exponential(1.0, n) ** np.where(x == 1, 2.0, 1.0)
+        >>> df = pd.DataFrame({"t": t, "d": 1, "x": x})
+        >>> fit = sp.cox(data=df, duration="t", event="d", x=["x"])
+        >>> bool(fit.ph_test().loc[0, "p_value"] < 0.01)
+        True
+
+        References
+        ----------
+        [@grambsch1994proportional]
         """
-        if self._schoenfeld_resid is None:
-            raise RuntimeError("Schoenfeld residuals not stored (strata model).")
-
-        resid = self._schoenfeld_resid  # (n_events, p)
-        times = self._durations[self._events == 1]
-        # sort by time
-        order = np.argsort(times)
-        times = times[order]
-        resid = resid[order]
-
-        n = resid.shape[0]
+        if self.model_info.get("survey_design") is not None:
+            raise MethodIncompatibility(
+                "ph_test: this fit used design= (a complex survey design); "
+                "the score test here uses the model-based information and "
+                "would ignore the strata and PSUs.",
+                recovery_hint="Refit with weights=<design weight column> for "
+                "a weighted (non-design) proportional-hazards test.",
+            )
+        w_arr = getattr(self, "_weights", None)
+        start_arr = getattr(self, "_start", None)
+        beta = np.asarray(self.params.values, dtype=float)
+        X = np.asarray(self._X, dtype=float)
+        T = np.asarray(self._durations, dtype=float)
+        E = np.asarray(self._events)
+        strata = self._strata
+        if strata is None:
+            strata = np.zeros(len(T), dtype=int)
+        breslow = str(self.model_info.get("ties", "efron")).lower() == "breslow"
         names = list(self.params.index)
+        p = len(names)
+        method = str(method).lower()
+        if method not in ("score", "approx"):
+            raise MethodIncompatibility(
+                f"ph_test: method must be 'score' or 'approx', got {method!r}",
+                recovery_hint="Use method='score' (cox.zph) or 'approx' (Stata).",
+            )
+        if method == "approx" and (w_arr is not None or start_arr is not None):
+            raise MethodIncompatibility(
+                "ph_test(method='approx') is the Grambsch-Therneau "
+                "approximation for unweighted right-censored fits; this fit "
+                "used weights= or start= (counting-process data).",
+                recovery_hint="Use method='score' (R survival::cox.zph), "
+                "which handles case weights and (start, stop] data.",
+            )
+
+        kern = CoxKernel(
+            X,
+            T,
+            E,
+            np.asarray(strata),
+            breslow=breslow,
+            weights=w_arr,
+            start=start_arr,
+        )
+        ev, times, U_k, resid_group, resid = kern.event_time_scores(beta)
+        if len(times) < 2:
+            raise DataInsufficient(
+                "ph_test needs at least two distinct event times.",
+            )
+        ev_only = method == "approx"
+        g_k = _ph_time_transform(transform, T, E, times, ev_only, start=start_arr)
+        if not np.all(np.isfinite(g_k)):
+            raise DataInsufficient(
+                f"ph_test: transform={transform!r} is not finite at every "
+                "event time (the log needs positive times).",
+                recovery_hint="Use transform='km' or 'rank'.",
+            )
+        # g at each death is g at its event time
+        g_group = np.zeros(kern.rs.n_groups)
+        g_group[ev] = g_k
+        g_event = g_group[resid_group]
+
+        # The information of each event time enters only through three
+        # weighted sums, which need no per-time matrix.
+        is_event = np.zeros(kern.rs.n_groups)
+        is_event[ev] = 1.0
+        U = np.einsum("k,kj->j", g_k, U_k)
+        I_bb = kern.information(beta, is_event)
+        I_bg = kern.information(beta, g_group)
+        I_gg = kern.information(beta, g_group**2)
+        try:
+            I_bb_inv = np.linalg.inv(I_bb)
+        except np.linalg.LinAlgError:
+            I_bb_inv = np.linalg.pinv(I_bb)
+        V_theta = I_gg - I_bg @ I_bb_inv @ I_bg
+
+        # Scaled Schoenfeld residuals: the descriptive correlation, and the
+        # whole of the 1994 approximation.
+        n_dead = resid.shape[0]
+        scaled = resid @ I_bb_inv * n_dead
+        g_c = g_event - g_event.mean()
+        ss_g = float(g_c @ g_c)
+        approx_num = g_c @ scaled  # (p,)
+        approx_raw = g_c @ resid
+
         rows = []
         for j, var in enumerate(names):
-            col = resid[:, j]
-            if np.std(col) < 1e-15 or n < 3:
-                rho, chi2, pv = 0.0, 0.0, 1.0
+            if method == "score":
+                v_j = float(V_theta[j, j])
+                chi2 = float(U[j] ** 2 / v_j) if v_j > 0 else float("nan")
             else:
-                rho, _ = stats.spearmanr(times, col)
-                if np.isnan(rho):
-                    rho, chi2, pv = 0.0, 0.0, 1.0
-                else:
-                    chi2 = n * rho**2
-                    pv = stats.chi2.sf(chi2, df=1)
-            rows.append({"variable": var, "rho": rho, "chi2": chi2, "p_value": pv})
+                chi2 = float(approx_num[j] ** 2 / (n_dead * I_bb_inv[j, j] * ss_g))
+            col = scaled[:, j]
+            if np.std(col) > 0 and np.std(g_event) > 0:
+                rho = float(np.corrcoef(g_event, col)[0, 1])
+            else:
+                rho = float("nan")
+            rows.append(
+                {
+                    "variable": var,
+                    "rho": rho,
+                    "chi2": chi2,
+                    "df": 1,
+                    "p_value": float(stats.chi2.sf(chi2, df=1)),
+                }
+            )
+        if method == "approx":
+            chi2_g = float(approx_raw @ I_bb_inv @ approx_raw * n_dead / ss_g)
+        else:
+            try:
+                chi2_g = float(U @ np.linalg.solve(V_theta, U))
+            except np.linalg.LinAlgError:
+                chi2_g = float(U @ np.linalg.pinv(V_theta) @ U)
+        rows.append(
+            {
+                "variable": "GLOBAL",
+                "rho": float("nan"),
+                "chi2": chi2_g,
+                "df": p,
+                "p_value": float(stats.chi2.sf(chi2_g, df=p)),
+            }
+        )
         return pd.DataFrame(rows)
 
     # -- plot ---------------------------------------------------------------
@@ -201,8 +369,25 @@ class CoxResult(EconometricResults):
             ``'hazard'`` — baseline cumulative hazard,
             ``'hr'`` — hazard ratio forest plot.
         ax : matplotlib.Axes, optional
+        **kwargs
+            ``type=`` is accepted as an alias of ``kind`` (the spelling
+            other result classes use); the rest go to matplotlib.
         """
         import matplotlib.pyplot as plt
+
+        if "type" in kwargs:
+            # ``type=`` used to fall into **kwargs and be handed to
+            # matplotlib, so an unknown value silently drew the survival
+            # curve.
+            kind = kwargs.pop("type")
+            if kind == "auto":
+                kind = "survival"
+        if kind not in ("survival", "hazard", "hr"):
+            raise MethodIncompatibility(
+                f"Unknown kind={kind!r}. Use 'survival', 'hazard', or 'hr'.",
+                recovery_hint="Pass kind='survival', 'hazard' or 'hr'.",
+                diagnostics={"kind": kind},
+            )
 
         if ax is None:
             fig, ax = plt.subplots(figsize=kwargs.pop("figsize", (7, 4)))
@@ -280,7 +465,8 @@ class KMResult(ResultProtocolMixin):
     ...     "time": rng.exponential(10, n).round(2),
     ...     "status": (rng.random(n) < 0.7).astype(int),
     ... })
-    >>> km = sp.kaplan_meier(data=df, duration="time", event="status")
+    >>> km = sp.kaplan_meier(data=df, duration="time", event="status",
+    ...                      conf_type="log-log")
     >>> type(km).__name__
     'KMResult'
     >>> "survival" in km.survival_table.columns
@@ -392,45 +578,73 @@ class KMResult(ResultProtocolMixin):
 # ===================================================================
 
 
-def _km_table(durations: Any, events: Any, alpha: float = 0.05) -> pd.DataFrame:
+def _km_table(
+    durations: Any, events: Any, alpha: float = 0.05, conf_type: str = "plain"
+) -> pd.DataFrame:
     """Build a KM life table from raw duration/event arrays."""
     durations = np.asarray(durations, dtype=float)
     events = np.asarray(events, dtype=float)
     n_total = len(durations)
 
-    unique_times = np.sort(np.unique(durations[events == 1]))
-    rows = []
-    survival = 1.0
-    var_sum = 0.0
     z = stats.norm.ppf(1 - alpha / 2)
 
-    for t in unique_times:
-        n_risk = np.sum(durations >= t)
-        n_event = np.sum((durations == t) & (events == 1))
-        n_censor = np.sum((durations == t) & (events == 0))
+    # One pass over the distinct times: the risk set at a time is everyone
+    # not yet counted out, so the counts are running totals.
+    all_times, inv, counts = np.unique(
+        durations, return_inverse=True, return_counts=True
+    )
+    dead_at = np.bincount(inv, weights=(events == 1), minlength=len(all_times))
+    cens_at = np.bincount(inv, weights=(events == 0), minlength=len(all_times))
+    risk_at = n_total - (np.cumsum(counts) - counts)
+    keep = dead_at > 0
+    unique_times = all_times[keep]
+    n_risk = risk_at[keep].astype(float)
+    n_event = dead_at[keep]
+    n_censor = cens_at[keep]
 
-        if n_risk > 0:
-            survival *= 1 - n_event / n_risk
-            # Greenwood variance
-            if n_risk > n_event:
-                var_sum += n_event / (n_risk * (n_risk - n_event))
+    survival = np.cumprod(1 - n_event / n_risk)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        # Greenwood variance; a time that empties the risk set adds nothing
+        inc = np.where(n_risk > n_event, n_event / (n_risk * (n_risk - n_event)), 0.0)
+    var_sum = np.cumsum(inc)
+    se = survival * np.sqrt(var_sum)
 
-        se = survival * np.sqrt(var_sum) if var_sum >= 0 else 0.0
-        ci_lo = max(0.0, survival - z * se)
-        ci_hi = min(1.0, survival + z * se)
+    plain = (
+        (conf_type == "plain") | (var_sum <= 0) | ~((survival > 0.0) & (survival < 1.0))
+    )
+    ci_lo = np.maximum(0.0, survival - z * se)
+    ci_hi = np.minimum(1.0, survival + z * se)
+    if conf_type != "plain":
+        undefined = plain & (survival <= 0.0)  # undefined on the log scales
+        ci_lo[undefined] = np.nan
+        ci_hi[undefined] = np.nan
+        ok = ~plain
+        with np.errstate(divide="ignore", invalid="ignore"):
+            if conf_type == "log":
+                # symmetric for log S(t): R survival::survfit's default
+                half = z * np.sqrt(var_sum)
+                lo = survival * np.exp(-half)
+                hi = np.minimum(1.0, survival * np.exp(half))
+            else:
+                # symmetric for log(-log S(t)): Stata sts list's default
+                half = z * np.sqrt(var_sum) / np.abs(np.log(survival))
+                lo = survival ** np.exp(half)
+                hi = survival ** np.exp(-half)
+        ci_lo[ok] = lo[ok]
+        ci_hi[ok] = hi[ok]
 
-        rows.append(
-            {
-                "time": t,
-                "n_risk": int(n_risk),
-                "n_event": int(n_event),
-                "n_censor": int(n_censor),
-                "survival": survival,
-                "std_err": se,
-                "ci_lower": ci_lo,
-                "ci_upper": ci_hi,
-            }
-        )
+    body = pd.DataFrame(
+        {
+            "time": unique_times,
+            "n_risk": n_risk.astype(int),
+            "n_event": n_event.astype(int),
+            "n_censor": n_censor.astype(int),
+            "survival": survival,
+            "std_err": se,
+            "ci_lower": ci_lo,
+            "ci_upper": ci_hi,
+        }
+    )
 
     # Prepend time=0 row
     t0 = {
@@ -443,7 +657,9 @@ def _km_table(durations: Any, events: Any, alpha: float = 0.05) -> pd.DataFrame:
         "ci_lower": 1.0,
         "ci_upper": 1.0,
     }
-    return pd.DataFrame([t0] + rows)
+    if not len(body):
+        return pd.DataFrame([t0])
+    return pd.concat([pd.DataFrame([t0]), body], ignore_index=True)
 
 
 # ===================================================================
@@ -457,6 +673,12 @@ def kaplan_meier(
     event: str,
     group: Optional[str] = None,
     alpha: float = 0.05,
+    conf_type: Optional[str] = "log-log",
+    weights: Optional[str] = None,
+    start: Optional[str] = None,
+    cluster: Optional[str] = None,
+    se_method: Optional[str] = None,
+    design: Optional[Any] = None,
 ) -> KMResult:
     """
     Kaplan-Meier non-parametric survival function estimator.
@@ -473,6 +695,58 @@ def kaplan_meier(
         Column name for group variable (stratification).
     alpha : float
         Significance level for confidence intervals (Greenwood formula).
+    conf_type : {"log-log", "log", "plain"}, default "log-log"
+        Scale on which the interval is symmetric. ``"plain"`` is ``S(t)
+        +/- z se`` truncated to [0, 1]; ``"log"`` is symmetric for ``log
+        S(t)`` (the default of R ``survival::survfit``); ``"log-log"`` for
+        ``log(-log S(t))`` (the default of Stata ``sts list``), which
+        always stays inside (0, 1) and has the best coverage in the
+        tails. The estimate and its standard error are the same under all
+        three.
+
+        .. versionchanged:: 1.40.0
+            The default is ``"log-log"`` (it was ``"plain"``): the plain
+            interval is the one of the three that leaves [0, 1] and has to
+            be truncated, and it is neither reference package's default.
+            Pass ``conf_type="plain"`` for the interval of 1.39 and
+            earlier.
+    weights : str, optional
+        Column of non-negative case weights (inverse-probability-of-
+        treatment weights give the IPTW-adjusted curve of each ``group``).
+        Deaths and the number at risk are weighted sums, as in R
+        ``survfit(weights=)``; ``n_risk`` / ``n_event`` / ``n_censor`` are
+        then weighted and reported as floats.
+    start : str, optional
+        Column with each row's entry time: counting-process data ``(start,
+        duration]`` (delayed entry), as R ``Surv(start, stop, event)``. A
+        row is at risk at ``t`` iff ``start < t <= duration``.
+    cluster : str, optional
+        Column whose levels are independent units (subject id with several
+        rows); the robust variance sums the influence within each.
+    se_method : {'greenwood', 'ij', 'xie_liu'}, optional
+        ``'greenwood'`` is Greenwood's formula on the (weighted) counts;
+        ``'ij'`` the infinitesimal jackknife (robust) variance of R
+        ``survfit(robust=TRUE)``, which treats the weights as fixed
+        sampling weights; ``'xie_liu'`` Greenwood's formula with the
+        effective number at risk ``(sum w)^2 / sum w^2`` in the denominator,
+        the variance R ``adjustedCurves`` reports for IPTW Kaplan-Meier
+        curves (``adjustedsurv(method = "iptw_km")``). Not given: R
+        survfit's default, ``'ij'`` with ``cluster=`` or non-integer weights
+        and ``'greenwood'`` otherwise.
+    design : SurveyDesign, optional
+        A complex survey design from :func:`sp.svydesign` declared on
+        ``data`` (same rows). The curve is weighted by the design weights
+        and ``std_err`` is the survey linearisation of the influence of
+        each row on ``S(t)`` over strata, PSUs and the finite population
+        correction (R ``survey::svyrecvar`` applied to the weighted
+        infinitesimal-jackknife influence that ``survival``'s
+        ``resid(survfit, type = "surv")`` reports), with intervals on
+        the t distribution with the design degrees of freedom. R
+        ``svykm(se = TRUE)`` is not this estimator: its curve differs
+        from the product-limit one. Each
+        ``group``'s curve is a domain: its standard errors keep every PSU
+        of the design. Not with ``weights=``, ``cluster=`` or
+        ``se_method=``.
 
     Returns
     -------
@@ -490,22 +764,99 @@ def kaplan_meier(
     ...     "time": rng.exponential(10, n).round(2),
     ...     "status": (rng.random(n) < 0.7).astype(int),
     ... })
-    >>> km = sp.kaplan_meier(data=df, duration="time", event="status")
+    >>> km = sp.kaplan_meier(data=df, duration="time", event="status",
+    ...                      conf_type="log-log")
     >>> bool("survival" in km.survival_table.columns)
     True
     >>> bool(isinstance(km.median_survival, float))
     True
     """
-    data = data.dropna(subset=[duration, event])
+    if conf_type is None:  # explicit None: the default
+        conf_type = "log-log"
+    conf_type = str(conf_type).lower().replace("loglog", "log-log")
+    if conf_type not in ("plain", "log", "log-log"):
+        raise ValueError(
+            f"conf_type must be 'plain', 'log' or 'log-log', got {conf_type!r}"
+        )
+    svy: Any = None
+    if design is not None:
+        from ..survey.linearization import check_design
+
+        svy = check_design(
+            design,
+            data,
+            function="kaplan_meier",
+            weights=weights,
+            cluster=cluster,
+            allow_calibrated=False,
+        )
+        if se_method is not None:
+            raise MethodIncompatibility(
+                "kaplan_meier: design= gives the survey linearisation "
+                "variance; se_method= cannot be combined with it.",
+                recovery_hint="Drop se_method=.",
+            )
+        data = data.assign(__svy_row__=np.arange(len(data)))
+    extra = [c for c in (weights, start, cluster) if c is not None]
+    from ._validate import check_duration_event, warn_missing_weights
+
+    warn_missing_weights(data, weights, "kaplan_meier")
+    data = data.dropna(subset=[duration, event] + extra)
+    check_duration_event(data[duration], data[event], "kaplan_meier")
+
+    from ._km import km_table_weighted, resolve_km_se
+
+    w_all = data[weights].values.astype(float) if weights is not None else None
+    if w_all is not None and (not np.all(np.isfinite(w_all)) or (w_all < 0).any()):
+        raise MethodIncompatibility(
+            "kaplan_meier: weights must be finite and non-negative.",
+            recovery_hint="Check the weight column for negative or infinite values.",
+        )
+    if start is not None and not np.all(
+        data[start].values.astype(float) < data[duration].values.astype(float)
+    ):
+        raise DataInsufficient(
+            "kaplan_meier: start must be strictly less than the duration on "
+            "every row.",
+            recovery_hint="Drop or fix the zero-length intervals.",
+        )
+    se_kind = resolve_km_se(se_method, w_all, cluster)
+    plain_path = weights is None and start is None and se_kind == "greenwood"
+    if svy is not None:
+        se_kind = "survey_linearization"
+
+    def _table(gdf: pd.DataFrame) -> pd.DataFrame:
+        if svy is not None:
+            from ._km import km_table_design
+
+            return km_table_design(
+                gdf[duration].values.astype(float),
+                gdf[event].values,
+                gdf[start].values.astype(float) if start is not None else None,
+                svy,
+                gdf["__svy_row__"].to_numpy(),
+                alpha,
+                conf_type,
+            )
+        if plain_path:
+            return _km_table(gdf[duration].values, gdf[event].values, alpha, conf_type)
+        return km_table_weighted(
+            gdf[duration].values.astype(float),
+            gdf[event].values,
+            gdf[weights].values.astype(float) if weights is not None else None,
+            gdf[start].values.astype(float) if start is not None else None,
+            gdf[cluster].values if cluster is not None else None,
+            se_kind,
+            alpha,
+            conf_type,
+        )
 
     if group is None:
-        tables = {"all": _km_table(data[duration].values, data[event].values, alpha)}
+        tables = {"all": _table(data)}
     else:
         tables = {}
         for g_val, gdf in data.groupby(group):
-            tables[str(g_val)] = _km_table(
-                gdf[duration].values, gdf[event].values, alpha
-            )
+            tables[str(g_val)] = _table(gdf)
 
     _result = KMResult(tables, alpha=alpha)
     try:
@@ -519,6 +870,11 @@ def kaplan_meier(
                 "event": event,
                 "group": group,
                 "alpha": alpha,
+                "weights": weights,
+                "start": start,
+                "cluster": cluster,
+                "se_method": se_kind,
+                "design": None if design is None else repr(design),
             },
             data=data,
             overwrite=False,
@@ -575,6 +931,9 @@ def logrank_test(
     mantel1959statistical
     """
     data = data.dropna(subset=[duration, event, group])
+    from ._validate import check_duration_event
+
+    check_duration_event(data[duration], data[event], "logrank_test")
     groups = data[group].unique()
     K = len(groups)
     if K < 2:
@@ -584,49 +943,35 @@ def logrank_test(
     E = data[event].values.astype(float)
     G = data[group].values
 
-    event_times = np.sort(np.unique(T[E == 1]))
+    # Counts by (distinct time, group); the number at risk is everyone not
+    # yet counted out, a running total down the time axis.
+    times, t_idx = np.unique(T, return_inverse=True)
+    g_idx = pd.Series(G).map({g: k for k, g in enumerate(groups)}).to_numpy()
+    n_t = len(times)
+    flat = t_idx * K + g_idx
+    count = np.bincount(flat, minlength=n_t * K).reshape(n_t, K).astype(float)
+    dead = np.bincount(flat, weights=(E == 1), minlength=n_t * K).reshape(n_t, K)
+    risk = count[::-1].cumsum(axis=0)[::-1]
+    d_tot = dead.sum(axis=1)
+    keep = d_tot > 0
+    risk, dead, d_tot = risk[keep], dead[keep], d_tot[keep]
+    n_tot = risk.sum(axis=1)
 
-    observed = {g: 0.0 for g in groups}
-    expected = {g: 0.0 for g in groups}
-    var_mat = np.zeros((K - 1, K - 1))
+    obs_k = dead.sum(axis=0)
+    exp_k = (risk * (d_tot / n_tot)[:, None]).sum(axis=0)
+    observed = {g: float(obs_k[k]) for k, g in enumerate(groups)}
+    expected = {g: float(exp_k[k]) for k, g in enumerate(groups)}
 
-    for t in event_times:
-        at_risk_total = np.sum(T >= t)
-        events_total = np.sum((T == t) & (E == 1))
-
-        if at_risk_total == 0:
-            continue
-
-        for g in groups:
-            mask_g = G == g
-            n_g = np.sum(mask_g & (T >= t))
-            d_g = np.sum(mask_g & (T == t) & (E == 1))
-            observed[g] += d_g
-            e_g = n_g * events_total / at_risk_total
-            expected[g] += e_g
-
-        # Variance (hypergeometric)
-        if at_risk_total > 1:
-            for i in range(K - 1):
-                gi = groups[i]
-                ni = np.sum((G == gi) & (T >= t))
-                for j in range(i, K - 1):
-                    gj = groups[j]
-                    nj = np.sum((G == gj) & (T >= t))
-                    if i == j:
-                        v = (
-                            ni
-                            * (at_risk_total - ni)
-                            * events_total
-                            * (at_risk_total - events_total)
-                        ) / (at_risk_total**2 * (at_risk_total - 1))
-                    else:
-                        v = -(
-                            ni * nj * events_total * (at_risk_total - events_total)
-                        ) / (at_risk_total**2 * (at_risk_total - 1))
-                    var_mat[i, j] += v
-                    if i != j:
-                        var_mat[j, i] += v
+    # Variance (hypergeometric); a risk set of one contributes nothing
+    with np.errstate(divide="ignore", invalid="ignore"):
+        factor = np.where(
+            n_tot > 1, d_tot * (n_tot - d_tot) / (n_tot**2 * (n_tot - 1)), 0.0
+        )
+    r = risk[:, : K - 1]
+    var_mat = (
+        np.diag((r * (factor * n_tot)[:, None]).sum(axis=0))
+        - (r * factor[:, None]).T @ r
+    )
 
     # Test statistic
     O_E = np.array([observed[groups[i]] - expected[groups[i]] for i in range(K - 1)])
@@ -662,37 +1007,7 @@ def _cox_neg_logpl_efron(
     breslow: bool = False,
 ) -> float:
     """Negative log partial likelihood (Efron, or Breslow, for ties)."""
-    n, p = X.shape
-    xb = X @ beta
-    nll = 0.0
-
-    if strata_arr is None:
-        strata_arr = np.zeros(n, dtype=int)
-
-    for s in np.unique(strata_arr):
-        mask = strata_arr == s
-        Ts, Es, xbs = T[mask], E[mask], xb[mask]
-        order = np.argsort(-Ts)  # descending
-        Ts, Es, xbs = Ts[order], Es[order], xbs[order]
-
-        event_times = np.unique(Ts[Es == 1])
-
-        for t in event_times:
-            at_risk = Ts >= t
-            events_at_t = (Ts == t) & (Es == 1)
-            d = events_at_t.sum()
-
-            risk_sum = np.exp(xbs[at_risk]).sum()
-            event_exp = np.exp(xbs[events_at_t])
-            event_xb_sum = xbs[events_at_t].sum()
-
-            nll -= event_xb_sum
-            event_exp_sum = event_exp.sum()
-            for ell in range(d):
-                c = 0.0 if breslow else ell / d
-                nll += np.log(risk_sum - c * event_exp_sum)
-
-    return float(nll)
+    return CoxKernel(X, T, E, strata_arr, breslow=breslow).neg_loglik(beta)
 
 
 def _cox_score_hessian_efron(
@@ -705,49 +1020,7 @@ def _cox_score_hessian_efron(
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Score vector and Hessian of Cox log partial likelihood (Efron or
     Breslow ties)."""
-    n, p = X.shape
-    xb = X @ beta
-    score = np.zeros(p)
-    hessian = np.zeros((p, p))
-
-    if strata_arr is None:
-        strata_arr = np.zeros(n, dtype=int)
-
-    for s in np.unique(strata_arr):
-        mask = strata_arr == s
-        Ts, Es, xbs, Xs = T[mask], E[mask], xb[mask], X[mask]
-        order = np.argsort(-Ts)
-        Ts, Es, xbs, Xs = Ts[order], Es[order], xbs[order], Xs[order]
-
-        event_times = np.unique(Ts[Es == 1])
-
-        for t in event_times:
-            at_risk = Ts >= t
-            events_at_t = (Ts == t) & (Es == 1)
-            d = events_at_t.sum()
-
-            w_r = np.exp(xbs[at_risk])
-            S0 = w_r.sum()
-            S1 = (Xs[at_risk] * w_r[:, None]).sum(axis=0)
-            S2 = (Xs[at_risk].T * w_r[None, :]) @ Xs[at_risk]
-
-            w_d = np.exp(xbs[events_at_t])
-            D0 = w_d.sum()
-            D1 = (Xs[events_at_t] * w_d[:, None]).sum(axis=0)
-            D2 = (Xs[events_at_t].T * w_d[None, :]) @ Xs[events_at_t]
-
-            score += Xs[events_at_t].sum(axis=0)
-
-            for ell in range(d):
-                c = 0.0 if breslow else ell / d
-                denom = S0 - c * D0
-                if denom <= 0:
-                    continue
-                weighted_x = (S1 - c * D1) / denom
-                score -= weighted_x
-                hessian -= (S2 - c * D2) / denom - np.outer(weighted_x, weighted_x)
-
-    return score, hessian
+    return CoxKernel(X, T, E, strata_arr, breslow=breslow).score_hessian(beta)
 
 
 def _cox_score_individual(
@@ -756,130 +1029,31 @@ def _cox_score_individual(
     T: np.ndarray,
     E: np.ndarray,
     strata_arr: Optional[np.ndarray] = None,
+    breslow: bool = False,
 ) -> np.ndarray:
-    """Per-observation score contributions (for sandwich variance).
+    """Per-observation score residuals, the ingredients of the sandwich.
 
-    Uses the counting-process decomposition: for each subject i,
-    U_i = delta_i * (x_i - xbar_i) - sum over risk sets of
-    [exp(x_i'b) / S0(t)] * (x_i - xbar(t)) * dN(t)
-    where the sum is over all event times t <= T_i.
+    Counting-process decomposition of the partial-likelihood score: at an
+    event time ``t`` with ``d`` tied deaths, risk set ``R`` and risk scores
+    ``r_k = exp(x_k'b)``, the Efron likelihood has ``d`` terms, the
+    ``l``-th with the deaths down-weighted by ``1 - l/d``::
+
+        S0_l = sum_R r_k - (l/d) sum_D r_k,    xbar_l = S1_l / S0_l
+
+    A subject at risk contributes ``- r_k w_kl (x_k - xbar_l) / S0_l`` to
+    each term, with ``w_kl = 1 - l/d`` for a death at ``t`` and 1
+    otherwise; a death adds ``(x_k - xbar_l) / d``. The residuals sum to
+    the score, which is zero at the estimate, and are the rows whose
+    outer products the robust variance of Lin and Wei [@lin1989robust]
+    sums, as R ``survival::coxph(robust = TRUE)`` computes it. ``breslow``
+    drops the down-weighting (one term, counted ``d`` times).
+
+    Before 1.39 the Breslow residuals were used under either tie rule, so
+    the robust and clustered standard errors of the default
+    ``ties='efron'`` fit were off wherever event times were tied (2% on
+    daily relapse data); with no ties the two coincide.
     """
-    n, p = X.shape
-    xb = X @ beta
-    scores = np.zeros((n, p))
-
-    if strata_arr is None:
-        strata_arr = np.zeros(n, dtype=int)
-
-    for s in np.unique(strata_arr):
-        mask = strata_arr == s
-        idx_s = np.where(mask)[0]
-        Ts = T[mask]
-        Es = E[mask]
-        xbs = xb[mask]
-        Xs = X[mask]
-        event_times = np.sort(np.unique(Ts[Es == 1]))
-
-        for t in event_times:
-            at_risk = Ts >= t
-            events_at_t = (Ts == t) & (Es == 1)
-            d = int(events_at_t.sum())
-            if d == 0:
-                continue
-
-            w_r = np.exp(xbs[at_risk])
-            S0 = w_r.sum()
-            S1 = (Xs[at_risk] * w_r[:, None]).sum(axis=0)
-
-            w_d = np.exp(xbs[events_at_t])
-            D0 = w_d.sum()
-            D1 = (Xs[events_at_t] * w_d[:, None]).sum(axis=0)
-
-            # Event subjects get +x_i
-            ev_local = np.where(events_at_t)[0]
-            for loc in ev_local:
-                scores[idx_s[loc]] += Xs[loc]
-
-            # Efron correction: for each tie ell in 0..d-1
-            for ell in range(d):
-                c = ell / d
-                denom = S0 - c * D0
-                if denom <= 0:
-                    continue
-                xbar = (S1 - c * D1) / denom
-
-                # Each event subject subtracts xbar / d
-                for loc in ev_local:
-                    scores[idx_s[loc]] -= xbar / d
-
-                # Each at-risk subject subtracts its weight * (x_i - xbar) / d
-                # (this is the martingale-residual piece)
-                risk_local = np.where(at_risk)[0]
-                for k in risk_local:
-                    wi = np.exp(xbs[k]) / denom
-                    # The contribution from this event time to subject k
-                    # is -(wi / d) * (x_k - xbar) but we need to be careful:
-                    # we already subtracted xbar for event subjects above.
-                    # The full decomposition for at-risk subjects is:
-                    #   -wi * x_k  (subtracted from denominator)
-                    # We handle this via the residual approach below.
-                    pass
-
-    # Fallback: use numerical gradient per observation for correctness
-    # This is O(n*p) per observation but guarantees correct sandwich SE
-    scores = np.zeros((n, p))
-    eps = 1e-7
-    for i in range(n):
-        for j in range(p):
-            bp = beta.copy()
-            bm = beta.copy()
-            bp[j] += eps
-            bm[j] -= eps
-            # Contribution of obs i to log PL
-            # We approximate by computing full log PL with/without obs i
-            # Actually, use finite diff on score evaluated at beta
-            pass
-
-    # Use the efficient approach: score_i = d l_i / d beta
-    # For Cox, l_i = delta_i * [x_i'b - log(sum_j in R_i exp(x_j'b))]
-    #             - sum_{k: t_k <= t_i, delta_k=1} exp(x_i'b) / sum_{j in R_k}
-    #             exp(x_j'b) * ...
-    # This is complex with Efron ties. Use the simple Breslow approximation for score_i:
-    scores = np.zeros((n, p))
-    for s in np.unique(strata_arr):
-        mask = strata_arr == s
-        idx_s = np.where(mask)[0]
-        Ts_s = T[mask]
-        Es_s = E[mask]
-        xbs_s = xb[mask]
-        Xs_s = X[mask]
-
-        event_times = np.sort(np.unique(Ts_s[Es_s == 1]))
-
-        for t in event_times:
-            at_risk = Ts_s >= t
-            events_at_t = (Ts_s == t) & (Es_s == 1)
-            d = int(events_at_t.sum())
-            if d == 0:
-                continue
-
-            w_r = np.exp(xbs_s[at_risk])
-            S0 = w_r.sum()
-            S1 = (Xs_s[at_risk] * w_r[:, None]).sum(axis=0)
-            xbar = S1 / S0
-
-            # Event subjects: score += (x_i - xbar)
-            ev_local = np.where(events_at_t)[0]
-            for loc in ev_local:
-                scores[idx_s[loc]] += Xs_s[loc] - xbar
-
-            # All at-risk subjects: score -= (d / S0) * exp(x_i'b) * (x_i - xbar)
-            risk_local = np.where(at_risk)[0]
-            for k in risk_local:
-                wi = np.exp(xbs_s[k]) / S0
-                scores[idx_s[k]] -= d * wi * (Xs_s[k] - xbar)
-
-    return scores
+    return CoxKernel(X, T, E, strata_arr, breslow=breslow).score_residuals(beta)
 
 
 def _breslow_baseline_hazard(
@@ -888,38 +1062,25 @@ def _breslow_baseline_hazard(
     T: np.ndarray,
     E: np.ndarray,
     strata_arr: Optional[np.ndarray] = None,
+    _kernel: Optional[CoxKernel] = None,
 ) -> pd.DataFrame:
     """Breslow estimator of baseline cumulative hazard."""
-    n = X.shape[0]
-    xb = X @ beta
-
-    if strata_arr is None:
-        strata_arr = np.zeros(n, dtype=int)
-
-    rows = []
-    for s in np.unique(strata_arr):
-        mask = strata_arr == s
-        Ts, Es, xbs = T[mask], E[mask], xb[mask]
-        event_times = np.sort(np.unique(Ts[Es == 1]))
-        cumhaz = 0.0
-        for t in event_times:
-            at_risk = Ts >= t
-            d = ((Ts == t) & (Es == 1)).sum()
-            risk_sum = np.exp(xbs[at_risk]).sum()
-            cumhaz += d / risk_sum
-            rows.append(
-                {
-                    "time": t,
-                    "baseline_cumhaz": cumhaz,
-                    "baseline_survival": np.exp(-cumhaz),
-                }
-            )
-
-    # Prepend t=0
-    df = pd.DataFrame(
-        [{"time": 0.0, "baseline_cumhaz": 0.0, "baseline_survival": 1.0}] + rows
+    kern = _kernel if _kernel is not None else CoxKernel(X, T, E, strata_arr)
+    code, time, inc = kern.breslow_increments(beta)
+    # cumulate within stratum: the running total less its value at the
+    # start of the stratum
+    total = np.cumsum(inc)
+    first = np.ones(len(code), dtype=bool)
+    first[1:] = code[1:] != code[:-1]
+    offset = np.where(first, total - inc, 0.0)
+    cumhaz = total - np.maximum.accumulate(offset)
+    return pd.DataFrame(
+        {
+            "time": np.concatenate([[0.0], time]),
+            "baseline_cumhaz": np.concatenate([[0.0], cumhaz]),
+            "baseline_survival": np.concatenate([[1.0], np.exp(-cumhaz)]),
+        }
     )
-    return df
 
 
 def _concordance_index(
@@ -929,28 +1090,48 @@ def _concordance_index(
     E: np.ndarray,
 ) -> float:
     """Harrell's C-statistic for Cox model."""
-    risk_scores = X @ beta
-    concordant = 0
-    discordant = 0
-    tied_risk = 0
+    return harrell_c(X @ beta, T, E)
 
-    # Only consider pairs where at least one had the event
-    event_idx = np.where(E == 1)[0]
-    for i in event_idx:
-        # Compare with subjects who survived longer
-        later = (T > T[i]) | ((T == T[i]) & (E == 0))
-        for j in np.where(later)[0]:
-            if risk_scores[i] > risk_scores[j]:
-                concordant += 1
-            elif risk_scores[i] < risk_scores[j]:
-                discordant += 1
-            else:
-                tied_risk += 1
 
-    total = concordant + discordant + tied_risk
-    if total == 0:
-        return 0.5
-    return (concordant + 0.5 * tied_risk) / total
+def _ph_time_transform(
+    transform: Any,
+    T: np.ndarray,
+    E: np.ndarray,
+    at: np.ndarray,
+    rank_events_only: bool = False,
+    start: Optional[np.ndarray] = None,
+) -> np.ndarray:
+    """``g(t)`` of the proportional-hazards test, evaluated at ``at``.
+
+    Case weights do not enter ``g`` (R ``cox.zph`` uses the unweighted
+    Kaplan-Meier and ranks, checked on its outputs); ``start`` makes the
+    Kaplan-Meier one of counting-process data."""
+    at = np.asarray(at, dtype=float)
+    if callable(transform):
+        return np.asarray(transform(at), dtype=float)
+    name = str(transform).lower()
+    if name == "identity":
+        return at
+    if name == "log":
+        with np.errstate(divide="ignore", invalid="ignore"):
+            return np.asarray(np.log(at), dtype=float)
+    if name == "rank":
+        # cox.zph ranks the time among all observations; estat phtest
+        # among the failures.
+        pool = T[E == 1] if rank_events_only else T
+        ranks = stats.rankdata(pool)
+        lookup = dict(zip(pool.tolist(), ranks.tolist()))
+        return np.asarray([lookup[t] for t in at.tolist()], dtype=float)
+    if name == "km":
+        # 1 - S(t-): the Kaplan-Meier estimate of the pooled sample just
+        # before each time.
+        times, left = km_left_survival(T, E, start)
+        return np.asarray(1.0 - left[np.searchsorted(times, at)], dtype=float)
+    raise MethodIncompatibility(
+        "ph_test: transform must be 'km', 'rank', 'identity', 'log' or a "
+        f"callable, got {transform!r}",
+        recovery_hint="Use transform='km' (the default of cox.zph).",
+    )
 
 
 def _schoenfeld_residuals(
@@ -959,37 +1140,19 @@ def _schoenfeld_residuals(
     T: np.ndarray,
     E: np.ndarray,
     strata_arr: Optional[np.ndarray] = None,
+    _kernel: Optional[CoxKernel] = None,
 ) -> np.ndarray:
     """Schoenfeld residuals for PH test."""
-    n, p = X.shape
-    xb = X @ beta
-
-    if strata_arr is None:
-        strata_arr = np.zeros(n, dtype=int)
-
-    resid_list = []
-
-    for s in np.unique(strata_arr):
-        mask = strata_arr == s
-        Ts, Es, xbs, Xs = T[mask], E[mask], xb[mask], X[mask]
-        order = np.argsort(Ts)
-        Ts, Es, xbs, Xs = Ts[order], Es[order], xbs[order], Xs[order]
-
-        event_times = np.sort(np.unique(Ts[Es == 1]))
-
-        for t in event_times:
-            at_risk = Ts >= t
-            events_at_t = (Ts == t) & (Es == 1)
-
-            w = np.exp(xbs[at_risk])
-            w /= w.sum()
-            expected_x = (Xs[at_risk] * w[:, None]).sum(axis=0)
-
-            # One residual per event at this time
-            for idx_e in np.where(events_at_t)[0]:
-                resid_list.append(Xs[idx_e] - expected_x)
-
-    return np.array(resid_list) if resid_list else np.empty((0, p))
+    p = X.shape[1]
+    kern = _kernel if _kernel is not None else CoxKernel(X, T, E, strata_arr)
+    rs = kern.rs
+    if not rs.dead.any():
+        return np.empty((0, p))
+    expected = kern.breslow_expected_x(beta)
+    # stratum, ascending time, data order among deaths tied on a time
+    rows = np.flatnonzero(rs.dead)
+    rows = rows[np.lexsort((rs.order[rows], rs.T[rows], rs.codes[rows]))]
+    return np.asarray(kern.X_raw[rows] - expected[rs.group[rows]])
 
 
 # ===================================================================
@@ -997,6 +1160,7 @@ def _schoenfeld_residuals(
 # ===================================================================
 
 
+@records_call("cox")
 @accepts_aliases(vce="robust")
 def cox(
     formula: Optional[str] = None,
@@ -1010,6 +1174,11 @@ def cox(
     cluster: Optional[str] = None,
     hazard_ratio: bool = True,
     alpha: float = 0.05,
+    weights: Optional[str] = None,
+    start: Optional[str] = None,
+    ssc: Optional[str] = None,
+    weights_as: Optional[str] = None,
+    design: Optional[Any] = None,
 ) -> CoxResult:
     """
     Cox Proportional Hazards model via partial likelihood.
@@ -1039,12 +1208,66 @@ def cox(
         If True, report hazard ratios in the summary alongside coefficients.
     alpha : float, default 0.05
         Significance level for confidence intervals.
+    weights : str, optional
+        Column of non-negative case weights (inverse-probability-of-
+        treatment weights, survey weights, frequency counts). Weighted
+        partial likelihood as in R ``coxph(weights=)``: risk sets sum
+        ``w_k exp(x_k'b)`` and each Efron term of an event time carries the
+        mean weight of its deaths. The model-based variance reads the
+        weights as frequencies; for sampling / IPT weights pass
+        ``weights_as='sampling'`` (or ``robust='hc0'`` / ``cluster=``),
+        which is what R reports by default for non-integer weights and
+        Stata ``stcox [pw=]`` always does.
+    start : str, optional
+        Column with the start of each row's interval: counting-process data
+        ``(start, duration]`` as in R ``Surv(start, stop, event)`` and Stata
+        ``stset stop, time0(start)`` / ``enter()``. A row is at risk at
+        ``t`` iff ``start < t <= duration``, which covers delayed entry
+        (left truncation) and time-varying covariates split into intervals.
+        With several rows per subject pass ``cluster=<subject id>`` for the
+        robust variance by subject (``coxph(cluster=id)``; Stata clusters on
+        the ``stset`` id automatically).
+    ssc : {'r', 'stata'}, optional
+        Small-sample factor of the robust and clustered variances. ``'r'``
+        applies none, as R ``coxph(robust=TRUE)`` / ``coxph(cluster=)``.
+        ``'stata'`` multiplies the robust variance by ``N/(N-1)`` and the
+        clustered one by ``G/(G-1)``, as Stata ``stcox, vce(robust)`` /
+        ``vce(cluster)`` (``N`` counts observations, not weights). Not
+        given: the robust variance has no factor and the clustered one
+        ``G/(G-1)`` (the behaviour before this option existed). The
+        model-based variance and the coefficients are unaffected.
+    weights_as : {'frequency', 'sampling'}, optional
+        How to read ``weights=``. ``'frequency'`` keeps the model-based
+        variance; ``'sampling'`` (Stata ``[pw=]``) asks for the robust one
+        when neither ``robust=`` nor ``cluster=`` chose a variance.
+    design : SurveyDesign, optional
+        A complex survey design from :func:`sp.svydesign` declared on
+        ``data`` (same rows). The partial likelihood is weighted by the
+        design weights and the covariance is ``I^-1 M I^-1`` with ``M`` the
+        survey linearisation covariance of the weighted score residuals
+        over strata, PSUs and the finite population correction -- R
+        ``survey::svycoxph`` (Binder 1992). Inference uses t with the
+        design degrees of freedom. With counting-process rows (``start=``)
+        the subject's rows must lie in one PSU. Not with ``weights=``,
+        ``cluster=``, ``robust=`` or ``ssc=``.
+        A replicate-weight design (:func:`sp.svrepdesign`) is accepted
+        too: the estimator is refitted with every replicate's weights
+        and the replicate variance replaces the linearisation (R
+        ``svrepdesign`` / Stata ``svy brr`` / ``svy jackknife``).
 
     Returns
     -------
     CoxResult
         Result object extending ``EconometricResults`` with
         ``.concordance``, ``.baseline_hazard()``, ``.ph_test()``, ``.plot()``.
+
+    Notes
+    -----
+    With ``start=`` or ``weights=`` the concordance is computed over the
+    risk sets of the fit (pairs in which one row fails while the other is
+    at risk, weighted by the product of their weights), as R
+    ``concordance()`` does for counting-process and weighted fits; Harrell's
+    pairwise C of right-censored data is the special case without either.
 
     Examples
     --------
@@ -1066,9 +1289,33 @@ def cox(
     >>> bool(isinstance(res.summary(), str))
     True
     """
+    if design is not None and getattr(design, "is_replicate_design", False):
+        _args = dict(locals())
+        from ..survey._replicate_refit import replicate_refit
+
+        return replicate_refit(cox, _args, design, function="sp.cox")
+    svy: Any = None
+    if design is not None:
+        from ..survey._regression_design import refuse_design_options
+        from ..survey.linearization import check_design
+
+        refuse_design_options("cox", robust=robust, ssc=ssc, weights_as=weights_as)
+        svy = check_design(
+            design, data, function="cox", weights=weights, cluster=cluster
+        )
+        data = data.assign(__svy_row__=np.arange(len(data)), __svy_weight__=svy.weights)
+        weights = "__svy_weight__"
+        weights_as = "sampling"
+
     # ---- Parse inputs -------------------------------------------------
     if formula is not None:
         dur_name, x_names = _parse_formula(formula)
+        if x is None and any(name not in data for name in x_names):
+            # C(site), a*b, I(x^2): built as columns, the way sp.regress
+            # and sp.qreg read the same right-hand side
+            from ..core.utils import formula_to_columns
+
+            data, dur_name, x_names = formula_to_columns(formula, data)
         if duration is None:
             duration = dur_name
         if x is None:
@@ -1081,12 +1328,52 @@ def cox(
         cols_needed.append(strata)
     if cluster is not None:
         cols_needed.append(cluster)
+    if weights is not None:
+        cols_needed.append(weights)
+    if start is not None:
+        cols_needed.append(start)
+    from ._validate import check_duration_event, warn_missing_weights
+
+    warn_missing_weights(data, weights, "sp.cox")
     data = data.dropna(subset=cols_needed).copy()
+    check_duration_event(data[duration], data[event], "sp.cox")
+
+    from ..core._agent_summary import resolve_weights_as
+    from ._cox_inputs import check_cox_inputs, resolve_cox_ssc
+
+    weights_as = resolve_weights_as(
+        weights_as,
+        has_weights=weights is not None,
+        native="frequency",
+        entry="sp.cox",
+    )
+    ssc = resolve_cox_ssc(ssc)
+    if weights_as == "sampling" and cluster is None and robust in ("nonrobust", None):
+        robust = "hc0"
 
     T = data[duration].values.astype(float)
     E = data[event].values.astype(float)
     X = data[x].values.astype(float)
     n, p = X.shape
+    w_arr = data[weights].values.astype(float) if weights is not None else None
+    start_arr = data[start].values.astype(float) if start is not None else None
+    w_arr, keep = check_cox_inputs(
+        T,
+        E,
+        w_arr,
+        start_arr,
+        robust=robust,
+        cluster=cluster,
+        weights_as=weights_as,
+    )
+    if keep is not None:
+        # zero weights carry no information: drop them (coxph does too)
+        data = data.iloc[np.flatnonzero(keep)]
+        T, E, X = T[keep], E[keep], X[keep]
+        w_arr = w_arr[keep]
+        if start_arr is not None:
+            start_arr = start_arr[keep]
+        n = len(T)
 
     strata_arr = data[strata].values if strata else None
     cluster_arr = data[cluster].values if cluster else None
@@ -1099,16 +1386,17 @@ def cox(
 
     breslow = ties == "breslow"
 
-    def neg_logpl(b: np.ndarray) -> float:
-        return _cox_neg_logpl_efron(b, X, T, E, strata_arr, breslow=breslow)
+    # The risk sets are sorted once and shared by every evaluation below.
+    kern = CoxKernel(
+        X, T, E, strata_arr, breslow=breslow, weights=w_arr, start=start_arr
+    )
+    neg_logpl = kern.neg_loglik
 
     # Newton-Raphson with fallback to L-BFGS-B
     beta = beta0.copy()
     converged = False
     for iteration in range(50):
-        score, hessian = _cox_score_hessian_efron(
-            beta, X, T, E, strata_arr, breslow=breslow
-        )
+        score, hessian = kern.score_hessian(beta)
         neg_H = -hessian
         # Check if Hessian is positive definite
         try:
@@ -1142,19 +1430,29 @@ def cox(
         beta = result.x
 
     # ---- Variance estimation ------------------------------------------
-    _, hessian = _cox_score_hessian_efron(beta, X, T, E, strata_arr, breslow=breslow)
+    _, hessian = kern.score_hessian(beta)
     neg_H = -hessian
     try:
         info_inv = np.linalg.inv(neg_H)
     except np.linalg.LinAlgError:
         info_inv = np.linalg.pinv(neg_H)
 
-    if cluster is not None:
-        score_i = _cox_score_individual(beta, X, T, E, strata_arr)
-        var_beta = _cluster_variance(X, info_inv, score_i, cluster_arr)
-    elif robust in ("hc0", "HC0", "robust"):
-        score_i = _cox_score_individual(beta, X, T, E, strata_arr)
-        var_beta = _sandwich_variance(X, info_inv, score_i)
+    svy_df: Optional[float] = None
+    if svy is not None:
+        from ..survey.linearization import design_df, design_vcov
+
+        assert w_arr is not None
+        svy_rows = data["__svy_row__"].to_numpy()
+        score_i = kern.score_residuals(beta) * w_arr[:, None]
+        var_beta = info_inv @ design_vcov(score_i, svy, svy_rows) @ info_inv
+        svy_df = design_df(svy, svy_rows)
+    elif cluster is not None or robust in ("hc0", "HC0", "robust"):
+        from ._cox_inputs import cox_robust_vcov
+
+        score_i = kern.score_residuals(beta)
+        if w_arr is not None:
+            score_i = score_i * w_arr[:, None]
+        var_beta = cox_robust_vcov(info_inv, score_i, cluster_arr, ssc)
     else:
         var_beta = info_inv
 
@@ -1163,13 +1461,20 @@ def cox(
     # ---- Derived quantities -------------------------------------------
     loglik = -neg_logpl(beta)
     loglik0 = -neg_logpl(np.zeros(p))
-    bh_df = _breslow_baseline_hazard(beta, X, T, E, strata_arr)
-    c_index = _concordance_index(beta, X, T, E)
-    schoenfeld = _schoenfeld_residuals(beta, X, T, E, strata_arr)
+    bh_df = _breslow_baseline_hazard(beta, X, T, E, strata_arr, _kernel=kern)
+    if w_arr is None and start_arr is None:
+        c_index = _concordance_index(beta, X, T, E)
+    else:
+        from ._cox_inputs import risk_set_concordance
+
+        c_index = risk_set_concordance(X @ beta, T, E, start_arr, w_arr, strata_arr)
+    schoenfeld = _schoenfeld_residuals(beta, X, T, E, strata_arr, _kernel=kern)
 
     # Hazard ratios
     hr = np.exp(beta)
     z_crit = stats.norm.ppf(1 - alpha / 2)
+    if svy_df is not None:
+        z_crit = stats.t.ppf(1 - alpha / 2, svy_df)
     hr_ci = np.column_stack([np.exp(beta - z_crit * se), np.exp(beta + z_crit * se)])
 
     # ---- Build result -------------------------------------------------
@@ -1184,6 +1489,22 @@ def cox(
     }
     if strata:
         model_info["strata"] = strata
+    if weights is not None:
+        model_info["weights"] = weights
+        model_info["weights_as"] = weights_as or "frequency"
+    if start is not None:
+        model_info["start"] = start
+    if ssc is not None:
+        model_info["ssc"] = ssc
+    if svy is not None:
+        from ..survey.linearization import design_info
+
+        assert svy_df is not None
+        model_info["robust"] = "survey"
+        model_info["weights"] = None
+        model_info["weights_as"] = None
+        model_info["vcov_type"] = "Survey linearisation (R svycoxph)"
+        model_info["survey_design"] = design_info(svy, svy_df)
 
     data_info = {
         "nobs": n,
@@ -1191,17 +1512,43 @@ def cox(
         "dependent_var": duration,
         "event_var": event,
         "df_resid": np.inf,  # use normal distribution for Cox
+        "n_clusters": (
+            int(pd.Series(cluster_arr).nunique()) if cluster is not None else None
+        ),
     }
+    if svy_df is not None:
+        data_info["df_inference"] = svy_df
+
+    # The other two tests of beta = 0 that survival::coxph prints. The Wald
+    # statistic uses the reported covariance (robust when one was asked
+    # for); the score statistic is evaluated at zero and, without
+    # covariates beyond a group indicator, is the log-rank test.
+    try:
+        wald = float(beta @ np.linalg.solve(var_beta, beta))
+    except np.linalg.LinAlgError:
+        wald = float("nan")
+    score0, hess0 = kern.score_hessian(np.zeros(p))
+    try:
+        score_stat = float(score0 @ np.linalg.solve(-hess0, score0))
+    except np.linalg.LinAlgError:
+        score_stat = float("nan")
 
     diagnostics = {
         "Log-likelihood": loglik,
         "Log-likelihood (null)": loglik0,
         "LR chi2": 2 * (loglik - loglik0),
         "LR chi2 p-value": stats.chi2.sf(2 * (loglik - loglik0), df=p),
+        "Wald chi2": wald,
+        "Wald chi2 p-value": float(stats.chi2.sf(wald, df=p)),
+        "Score chi2": score_stat,
+        "Score chi2 p-value": float(stats.chi2.sf(score_stat, df=p)),
         "Concordance (C)": c_index,
         "AIC": -2 * loglik + 2 * p,
         "BIC": -2 * loglik + np.log(E.sum()) * p,
     }
+    if w_arr is not None:
+        # the model-based Wald / score / LR tests assume frequency weights
+        diagnostics["Sum of weights"] = float(w_arr.sum())
 
     model_info["alpha"] = alpha
     _result = CoxResult(
@@ -1220,11 +1567,14 @@ def cox(
         _hazard_ratios=hr,
         _hr_ci=hr_ci,
     )
+    _result._weights = w_arr
+    _result._start = start_arr
     # Store the global proportional-hazards test (from the Schoenfeld residuals
     # computed above) so result.violations() can flag a PH violation without
     # recomputing it — best-effort: strata models don't expose the residuals.
     try:
         _ph = _result.ph_test()
+        _ph = _ph[_ph["variable"] != "GLOBAL"].reset_index(drop=True)
         _imin = int(np.asarray(_ph["p_value"].values).argmin())
         _result.model_info["ph_test"] = {
             "min_pvalue": float(_ph["p_value"].iloc[_imin]),
@@ -1249,6 +1599,11 @@ def cox(
                 "cluster": cluster,
                 "hazard_ratio": hazard_ratio,
                 "alpha": alpha,
+                "weights": weights,
+                "start": start,
+                "ssc": ssc,
+                "weights_as": weights_as,
+                "design": None if design is None else repr(design),
             },
             data=data,
             overwrite=False,
@@ -1328,6 +1683,29 @@ def _loglogistic_loglik(
     return float(-ll.sum())
 
 
+def _softplus(z: np.ndarray) -> np.ndarray:
+    """``log(1 + exp(z))`` without overflow; complex-step safe."""
+    pos = np.real(z) > 0
+    return np.asarray(np.where(pos, z, 0.0) + np.log1p(np.exp(np.where(pos, -z, z))))
+
+
+def _aft_log_density_survivor(z: np.ndarray, family: str) -> Tuple[Any, Any]:
+    """Log density and log survivor function of the standardised log time.
+
+    ``z = (log t - x'b) / sigma``. The density is that of ``z``; the caller
+    subtracts ``log(sigma) + log(t)`` to get the density of ``t``.
+    """
+    from scipy import special
+
+    if family == "weibull":  # standard extreme value
+        return z - np.exp(z), -np.exp(z)
+    if family == "lognormal":
+        return -0.5 * np.log(2.0 * np.pi) - 0.5 * z * z, special.log_ndtr(-z)
+    sp_z = _softplus(z)  # log-logistic
+    return z - 2.0 * sp_z, -sp_z
+
+
+@records_call("survreg")
 @accepts_aliases(vce="robust")
 def survreg(
     formula: Optional[str] = None,
@@ -1339,9 +1717,13 @@ def survreg(
     robust: str = "nonrobust",
     cluster: Optional[str] = None,
     alpha: float = 0.05,
+    frailty: Optional[str] = None,
 ) -> EconometricResults:
     """
     Parametric survival model (AFT parameterization).
+
+    The data may also come first: ``sp.survreg(df, duration=..., event=...,
+    x=[...])`` and ``sp.survreg(df, "t ~ x1 + x2", event=...)``.
 
     Parameters
     ----------
@@ -1358,14 +1740,31 @@ def survreg(
         Distribution: ``'weibull'``, ``'exponential'``, ``'lognormal'``,
         ``'loglogistic'``.
     robust : str, default ``'nonrobust'``
+        ``'nonrobust'`` (observed information), ``'robust'`` (sandwich,
+        Stata's ``vce(robust)``) or ``'cluster'``. ``vce=`` is an alias.
     cluster : str, optional
+        Cluster column; implies the cluster sandwich.
     alpha : float, default 0.05
+    frailty : {None, 'gamma'}, optional
+        Unobserved heterogeneity. ``'gamma'`` multiplies each
+        observation's hazard by a gamma variable with mean one and
+        variance ``theta``, as Stata's ``streg, frailty(gamma)``. The
+        survivor function becomes ``[1 - theta log S(t)]^(-1/theta)``.
+        ``log(theta)`` is reported with the other parameters, and
+        ``model_info`` carries ``theta`` and the likelihood-ratio test of
+        ``theta = 0``, whose p-value is halved because the null is on the
+        boundary. Ignoring heterogeneity biases a Weibull fit towards
+        negative duration dependence.
 
     Returns
     -------
     EconometricResults
         Fitted parametric survival model.  Parameters include covariates
-        and ``log(sigma)`` (scale).
+        and ``log(sigma)`` (scale). ``diagnostics['Log-likelihood']`` is
+        the likelihood of the durations, as R ``survival::survreg``
+        reports it; ``model_info['ll_log_time']`` is the likelihood of the
+        log durations, which is what Stata's ``streg`` prints (the two
+        differ by the sum of ``log(t)`` over the events).
 
     Examples
     --------
@@ -1386,6 +1785,18 @@ def survreg(
     True
     """
     # ---- Parse inputs -------------------------------------------------
+    from ..core._vcov import ml_vcov
+    from ..core._vcov_spec import parse_se_request
+    from ..exceptions import ConvergenceWarning, MethodIncompatibility
+    from ..regression._optim_helpers import (
+        inverse_information,
+        ml_newton_polish,
+        se_from_vcov,
+    )
+
+    if isinstance(formula, pd.DataFrame):
+        # data first, as in sp.tobit and sp.qreg
+        formula, data = (data if isinstance(data, str) else None), formula
     if formula is not None:
         dur_name, x_names = _parse_formula(formula)
         if duration is None:
@@ -1394,14 +1805,33 @@ def survreg(
             x = x_names
     if duration is None or event is None or x is None:
         raise ValueError("Provide (formula + event) or (duration, event, x).")
+    se_req = parse_se_request(
+        robust,
+        cluster,
+        function="survreg",
+        supported=("nonrobust", "robust", "cluster"),
+    )
+    se_kind, cluster = se_req.kind, se_req.cluster
+    frailty_kind = None if frailty is None else str(frailty).lower()
+    if frailty_kind not in (None, "gamma"):
+        raise MethodIncompatibility(
+            f"survreg: frailty={frailty!r} is not available; use 'gamma' or None."
+        )
 
-    cols_needed = [duration, event] + x
-    if cluster is not None:
+    cols_needed = [duration, event] + list(x)
+    if isinstance(cluster, str):
         cols_needed.append(cluster)
     data = data.dropna(subset=cols_needed).copy()
 
     T = data[duration].values.astype(float)
     E = data[event].values.astype(float)
+    if np.any(T <= 0):
+        raise MethodIncompatibility(
+            f"survreg: {int(np.sum(T <= 0))} durations are zero or negative; "
+            "the model is for the log of a positive duration. Drop those "
+            "rows or shift the time origin.",
+            diagnostics={"n_nonpositive": int(np.sum(T <= 0))},
+        )
     # Design matrix with intercept
     X = np.column_stack([np.ones(len(T)), data[x].values.astype(float)])
     n, p = X.shape  # p includes intercept
@@ -1409,78 +1839,112 @@ def survreg(
 
     # ---- Select distribution -----------------------------------------
     dist_lower = dist.lower()
-    if dist_lower in ("weibull", "exponential"):
-        loglik_fn = _weibull_loglik
-    elif dist_lower == "lognormal":
-        loglik_fn = _lognormal_loglik
-    elif dist_lower == "loglogistic":
-        loglik_fn = _loglogistic_loglik
-    else:
+    if dist_lower not in ("weibull", "exponential", "lognormal", "loglogistic"):
         raise ValueError(
             f"dist must be weibull/exponential/lognormal/loglogistic, got {dist!r}"
         )
+    family = "weibull" if dist_lower == "exponential" else dist_lower
+    has_scale = dist_lower != "exponential"
+    log_t = np.log(T)
+    events = E > 0
 
-    def neg_ll_wrapper(params: np.ndarray) -> float:
-        return loglik_fn(params, X, T, E)
+    def obs_loglik(theta: np.ndarray, with_frailty: bool) -> np.ndarray:
+        """Per-observation log-likelihood of t; complex-step safe."""
+        theta = np.asarray(theta)
+        ln_s = theta[p] if has_scale else 0.0
+        z = (log_t - X @ theta[:p]) / np.exp(ln_s)
+        log_f, log_S = _aft_log_density_survivor(z, family)
+        log_f = log_f - ln_s - log_t
+        if with_frailty:
+            th = np.exp(theta[-1])
+            g = np.log(1.0 - th * log_S)
+            # f_theta = h * [1 - theta log S]^(-1/theta - 1), h the hazard.
+            log_f = (log_f - log_S) - (1.0 / th + 1.0) * g
+            log_S = -g / th
+        return np.asarray(np.where(events, log_f, log_S))
 
-    # Initial params: beta=0, log_sigma=0
-    init = np.zeros(p + 1)
-    if dist_lower == "exponential":
-        # Fix sigma=1 => log_sigma=0, only optimize beta
-        def neg_ll_exp(beta: np.ndarray) -> float:
-            return loglik_fn(np.append(beta, 0.0), X, T, E)
+    def fit(with_frailty: bool, start: np.ndarray) -> Tuple[Any, ...]:
+        def fn(t: np.ndarray) -> np.ndarray:
+            return obs_loglik(t, with_frailty)
 
-        res = optimize.minimize(neg_ll_exp, np.zeros(p), method="L-BFGS-B")
-        full_params = np.append(res.x, 0.0)
-    else:
-        res = optimize.minimize(neg_ll_wrapper, init, method="L-BFGS-B")
-        full_params = res.x
+        def neg(t: np.ndarray) -> float:
+            with np.errstate(all="ignore"):
+                v = float(np.sum(np.real(fn(t))))
+            return -v if np.isfinite(v) else 1e300
 
-    beta_hat = full_params[:p]
-    log_sigma_hat = full_params[p]
+        res = optimize.minimize(neg, start, method="BFGS", options={"gtol": 1e-7})
+        est, scores, H, _ = ml_newton_polish(fn, np.asarray(res.x, dtype=float))
+        return est, scores, H, float(np.sum(np.real(fn(est))))
 
-    # ---- Standard errors (observed information) -----------------------
-    # Numerical Hessian
-    eps = 1e-5
-    k = len(full_params)
-    H = np.zeros((k, k))
-    for i in range(k):
-        for j in range(i, k):
-            e_i = np.zeros(k)
-            e_j = np.zeros(k)
-            e_i[i] = eps
-            e_j[j] = eps
-            fpp = neg_ll_wrapper(full_params + e_i + e_j)
-            fpm = neg_ll_wrapper(full_params + e_i - e_j)
-            fmp = neg_ll_wrapper(full_params - e_i + e_j)
-            fmm = neg_ll_wrapper(full_params - e_i - e_j)
-            H[i, j] = (fpp - fpm - fmp + fmm) / (4 * eps * eps)
-            H[j, i] = H[i, j]
+    k_base = p + (1 if has_scale else 0)
+    start = np.zeros(k_base)
+    start[0] = float(np.mean(log_t))
+    est0, scores0, H0, ll0 = fit(False, start)
 
-    try:
-        var_mat = np.linalg.inv(H)
-    except np.linalg.LinAlgError:
-        var_mat = np.linalg.pinv(H)
+    frailty_info: Dict[str, Any] = {}
+    est, scores, H, loglik_val = est0, scores0, H0, ll0
+    at_boundary = False
+    if frailty_kind == "gamma":
+        est1, scores1, H1, ll1 = fit(True, np.append(est0, np.log(0.5)))
+        theta_hat = float(np.exp(est1[-1]))
+        # The plain model is the limit theta -> 0. When the fit runs to that
+        # boundary the likelihood is flat in log(theta) and nothing about
+        # theta is identified beyond "zero".
+        at_boundary = theta_hat < 1e-5 or ll1 <= ll0 + 1e-8
+        if at_boundary:
+            import warnings
 
-    # Extract only beta part for the result
-    var_beta = var_mat[:p, :p]
-    se_beta = np.sqrt(np.diag(var_beta))
+            warnings.warn(
+                "survreg: the frailty variance is estimated at its boundary "
+                "(theta = 0); the fit is the model without frailty and "
+                "log(theta) has no standard error.",
+                ConvergenceWarning,
+                stacklevel=2,
+            )
+            theta_hat, lr = 0.0, 0.0
+        else:
+            est, scores, H, loglik_val = est1, scores1, H1, ll1
+            lr = 2.0 * (ll1 - ll0)
+        frailty_info = {
+            "frailty": "gamma",
+            "theta": theta_hat,
+            "theta_at_boundary": bool(at_boundary),
+            "lr_theta_chi2": float(lr),
+            # H0 is on the boundary: chibar2(01), half the chi2(1) tail.
+            "lr_theta_pvalue": (1.0 if lr <= 0 else float(0.5 * stats.chi2.sf(lr, 1))),
+            "ll_no_frailty": float(ll0),
+        }
 
-    se_log_sigma = np.sqrt(var_mat[p, p]) if var_mat[p, p] > 0 else np.nan
+    # ---- Standard errors ---------------------------------------------
+    clusters = data[cluster].to_numpy() if se_kind == "cluster" else None
+    var_mat = ml_vcov(
+        inverse_information(H),
+        scores if se_kind != "nonrobust" else None,
+        kind=se_kind,
+        clusters=clusters,
+    )
+    se_all = se_from_vcov(var_mat)
+    grad_norm = float(np.max(np.abs(scores.sum(axis=0))))
 
-    loglik_val = -neg_ll_wrapper(full_params)
-
-    # ---- Build result -------------------------------------------------
-    # Include log(sigma) as a reported parameter
-    all_param_names = param_names + ["log(sigma)"]
-    all_params = np.append(beta_hat, log_sigma_hat)
-    all_se = np.append(se_beta, se_log_sigma)
-
-    if dist_lower == "exponential":
-        # sigma is fixed at 1, don't report it
-        all_param_names = param_names
-        all_params = beta_hat
-        all_se = se_beta
+    beta_hat = est[:p]
+    log_sigma_hat = float(est[p]) if has_scale else 0.0
+    all_param_names = list(param_names)
+    all_params = list(beta_hat)
+    all_se = list(se_all[:p])
+    if has_scale:
+        all_param_names.append("log(sigma)")
+        all_params.append(log_sigma_hat)
+        all_se.append(se_all[p])
+    if frailty_kind == "gamma":
+        all_param_names.append("log(theta)")
+        if at_boundary:
+            all_params.append(-np.inf)
+            all_se.append(np.nan)
+        else:
+            all_params.append(float(est[-1]))
+            all_se.append(se_all[-1])
+            # Delta method for theta itself.
+            frailty_info["theta_se"] = float(se_all[-1] * frailty_info["theta"])
 
     params_s = pd.Series(all_params, index=all_param_names, name="coef")
     se_s = pd.Series(all_se, index=all_param_names, name="se")
@@ -1489,16 +1953,28 @@ def survreg(
         "model_type": f"Parametric Survival ({dist})",
         "method": "AFT — Maximum Likelihood",
         "distribution": dist,
-        "robust": robust if cluster is None else f"cluster({cluster})",
+        "robust": se_kind if se_kind != "cluster" else f"cluster({cluster})",
+        "vce": se_kind,
+        "cluster": cluster if se_kind == "cluster" else None,
+        "ll": loglik_val,
+        "ll_log_time": float(loglik_val + np.sum(log_t[events])),
+        "gradient_norm": grad_norm,
+        "converged": bool(grad_norm < 1e-5 * max(1.0, n**0.5)),
+        **frailty_info,
     }
+    if se_kind == "cluster" and clusters is not None:
+        model_info["n_clusters"] = int(pd.unique(clusters).size)
 
-    n_params = len(all_params)
+    n_params = int(np.sum(np.isfinite(all_params)))
     data_info_dict = {
         "nobs": n,
         "n_events": int(E.sum()),
         "dependent_var": duration,
         "event_var": event,
         "df_resid": np.inf,
+        "var_cov": var_mat,
+        "llobs": np.real(obs_loglik(est, len(est) > k_base)),
+        "n_params": n_params,
     }
 
     diagnostics = {
@@ -1509,6 +1985,10 @@ def survreg(
     }
     if dist_lower == "weibull":
         diagnostics["shape (1/sigma)"] = 1.0 / np.exp(log_sigma_hat)
+    if frailty_info:
+        diagnostics["theta (frailty variance)"] = frailty_info["theta"]
+        diagnostics["LR test of theta = 0 (chibar2)"] = frailty_info["lr_theta_chi2"]
+        diagnostics["Prob >= chibar2"] = frailty_info["lr_theta_pvalue"]
 
     model_info["alpha"] = alpha
     return EconometricResults(

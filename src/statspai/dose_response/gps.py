@@ -31,6 +31,8 @@ import numpy as np
 import pandas as pd
 from scipy import stats as sp_stats
 
+from .._aliases import accepts_aliases
+
 # sklearn is imported lazily inside the methods that need it so that
 # ``import statspai`` doesn't pull ~245 sklearn submodules through this
 # file when the user never touches dose_response. ``BaseEstimator`` only
@@ -38,13 +40,18 @@ from scipy import stats as sp_stats
 if TYPE_CHECKING:
     from sklearn.base import BaseEstimator
 
+from .._input_validation import missing_named_columns
+from ..core._covariates import expands_categorical_covariates as _expands_categorical
 from ..core.results import CausalResult
+from ..exceptions import ColumnNotFound, MethodIncompatibility
 
 # ======================================================================
 # Public API
 # ======================================================================
 
 
+@accepts_aliases(seed="random_state")
+@_expands_categorical("covariates")
 def dose_response(
     data: pd.DataFrame,
     y: str,
@@ -57,6 +64,9 @@ def dose_response(
     n_bootstrap: int = 200,
     alpha: float = 0.05,
     random_state: int = 42,
+    method: str = "gps",
+    bandwidth: Optional[float] = None,
+    n_folds: int = 5,
 ) -> CausalResult:
     """
     Estimate the dose-response function for a continuous treatment.
@@ -78,12 +88,48 @@ def dose_response(
     treatment_model : sklearn estimator, optional
         Model for E[T|X]. Default: GBM.
     outcome_model : sklearn estimator, optional
-        Model for E[Y|T, GPS]. Default: GBM.
+        Model for E[Y|T, GPS]. Default: GBM. The outcome model sees the two
+        columns ``[T, GPS]``, so
+        ``make_pipeline(PolynomialFeatures(2), LinearRegression())`` with
+        ``treatment_model=LinearRegression()`` is the quadratic
+        specification of Hirano and Imbens (2004).
+
+        Neither choice is reliable in general. On a linear confounded
+        design (``T = 1 + 0.8x + 0.3x2 + e``, ``Y = 0.8T + x + 0.5x2 + u``,
+        n = 1000, 30 draws) the default GBM pair is nearly unbiased for the
+        25th-75th percentile effect (bias -0.13 against a truth of about
+        1.9) but noisy (SD 0.43) and its curve was never monotone, while the
+        Hirano-Imbens quadratic is precise (SD 0.07) and badly biased
+        (+1.27, close to the unadjusted slope), because ``E[Y | T, GPS]`` is
+        not quadratic there. The default is therefore kept, and a call
+        with both default models warns. For an average slope with valid
+        inference use ``sp.dml(model='plr')``.
     n_bootstrap : int, default 200
         Bootstrap iterations for confidence bands.
     alpha : float, default 0.05
         Significance level.
     random_state : int, default 42
+    method : {'gps', 'dr'}, default 'gps'
+        ``'gps'``: the generalized-propensity-score regression of Hirano
+        and Imbens (2004) with bootstrap bands (the default, unchanged).
+        ``'dr'``: the doubly robust curve of Kennedy, Ma, McHugh and Small
+        (2017): a local linear regression of the pseudo-outcome
+        ``(Y - mu(X, T)) / pi(T | X) * mean_j pi(T | X_j) + mean_j
+        mu(X_j, T)`` on ``T``, consistent if either the outcome regression
+        ``mu`` (``outcome_model``, on ``[X, T]``; default gradient
+        boosting) or the normal treatment density ``pi``
+        (``treatment_model`` for its mean, default linear, and a linear
+        regression of squared residuals for its variance) is right.
+        Nuisances are cross-fitted (``n_folds``); the bandwidth minimises
+        the smoother's leave-one-out risk unless ``bandwidth`` is given;
+        bands are the robust local-linear sandwich on the pseudo-outcomes
+        (no bootstrap), for the smoothed curve. R ``npcausal::ctseff``
+        computes the same estimator with other nuisance and smoothing
+        choices; the curves agree in shape, not to parity.
+    bandwidth : float, optional
+        ``method='dr'``: kernel bandwidth in units of the treatment.
+    n_folds : int, default 5
+        ``method='dr'``: cross-fitting folds (1 = no cross-fitting).
 
     Returns
     -------
@@ -104,9 +150,40 @@ def dose_response(
     >>> df = pd.DataFrame({"outcome": outcome, "dosage": dosage,
     ...                    "age": age, "weight": weight})
     >>> result = sp.dose_response(df, y="outcome", treat="dosage",
-    ...                           covariates=["age", "weight"])
-    >>> result.detail            # dose-response curve
+    ...                           covariates=["age", "weight"],
+    ...                           n_dose_points=10, n_bootstrap=20)
+    >>> curve = result.detail            # dose-response curve
+    >>> curve.shape
+    (10, 6)
+    >>> list(curve.columns)
+    ['dose', 'response', 'se', 'ci_lower', 'ci_upper', 'marginal_effect']
     """
+    if method not in ("gps", "dr"):
+        raise MethodIncompatibility(
+            f"dose_response: method must be 'gps' or 'dr'; got {method!r}.",
+            recovery_hint="Use method='dr' for the doubly robust curve.",
+        )
+    if method == "gps" and treatment_model is None and outcome_model is None:
+        import warnings
+
+        from ..exceptions import StatsPAIWarning
+
+        warnings.warn(
+            StatsPAIWarning(
+                "sp.dose_response with its default gradient-boosting models "
+                "gives a noisy, often non-monotone curve (on a linear "
+                "confounded design with n = 1000 the 25th-75th percentile "
+                "effect had SD 0.43 against a truth of 1.9); treat the curve "
+                "shape with caution.",
+                recovery_hint=(
+                    "Pass treatment_model= / outcome_model= suited to the "
+                    "design, check result.model_info['curve_monotone'], or "
+                    "use sp.dml(model='plr') for an average slope."
+                ),
+                alternative_functions=["sp.dml", "sp.continuous_did"],
+            ),
+            stacklevel=2,
+        )
     est = DoseResponse(
         data=data,
         y=y,
@@ -120,6 +197,9 @@ def dose_response(
         alpha=alpha,
         random_state=random_state,
     )
+    est.method = method
+    est.bandwidth = bandwidth
+    est.n_folds = int(n_folds)
     return est.fit()
 
 
@@ -173,6 +253,11 @@ class DoseResponse:
     [@hirano2004propensity], [@kennedy2017parametric]
     """
 
+    # Set by :func:`dose_response` before ``fit`` (declared for the checker).
+    method: str
+    bandwidth: Optional[float]
+    n_folds: int
+
     def __init__(
         self,
         data: pd.DataFrame,
@@ -195,19 +280,30 @@ class DoseResponse:
         self.covariates = covariates
         self.n_dose_points = n_dose_points
         self.dose_range = dose_range
-        self.treatment_model = treatment_model or GradientBoostingRegressor(
-            n_estimators=200,
-            max_depth=4,
-            learning_rate=0.05,
-            subsample=0.8,
-            random_state=random_state,
+        # method='dr' has its own defaults (linear treatment mean, boosted
+        # outcome); it must see what the user passed, not the GPS defaults.
+        self._user_models = (treatment_model, outcome_model)
+        self.treatment_model = (
+            treatment_model
+            if treatment_model is not None
+            else GradientBoostingRegressor(
+                n_estimators=200,
+                max_depth=4,
+                learning_rate=0.05,
+                subsample=0.8,
+                random_state=random_state,
+            )
         )
-        self.outcome_model = outcome_model or GradientBoostingRegressor(
-            n_estimators=200,
-            max_depth=4,
-            learning_rate=0.05,
-            subsample=0.8,
-            random_state=random_state,
+        self.outcome_model = (
+            outcome_model
+            if outcome_model is not None
+            else GradientBoostingRegressor(
+                n_estimators=200,
+                max_depth=4,
+                learning_rate=0.05,
+                subsample=0.8,
+                random_state=random_state,
+            )
         )
         self.n_bootstrap = n_bootstrap
         self.alpha = alpha
@@ -218,7 +314,14 @@ class DoseResponse:
         cols = [self.y, self.treat] + self.covariates
         missing = [c for c in cols if c not in self.data.columns]
         if missing:
-            raise ValueError(f"Columns not found in data: {missing}")
+            raise ColumnNotFound.from_missing(
+                missing_named_columns(
+                    {"y": self.y, "treat": self.treat, "covariates": self.covariates},
+                    self.data.columns,
+                ),
+                self.data.columns,
+                message=f"Columns not found in data: {missing}",
+            )
 
         clean = self.data[cols].dropna()
         Y = clean[self.y].values.astype(np.float64)
@@ -232,6 +335,9 @@ class DoseResponse:
         else:
             t_lo, t_hi = self.dose_range
         dose_grid = np.linspace(t_lo, t_hi, self.n_dose_points)
+
+        if getattr(self, "method", "gps") == "dr":
+            return self._fit_dr(Y, T, X, dose_grid, t_lo, t_hi)
 
         # Estimate dose-response curve
         dr_curve = self._estimate_curve(Y, T, X, dose_grid, n)
@@ -292,6 +398,9 @@ class DoseResponse:
             "effect_25_to_75": effect_iqr,
             "dose_25": float(dose_grid[idx_25]),
             "dose_75": float(dose_grid[idx_75]),
+            "curve_monotone": bool(
+                np.all(np.diff(dr_curve) > 0) or np.all(np.diff(dr_curve) < 0)
+            ),
         }
 
         return CausalResult(
@@ -305,6 +414,83 @@ class DoseResponse:
             n_obs=n,
             detail=detail,
             model_info=model_info,
+            _citation_key="dose_response",
+        )
+
+    def _fit_dr(
+        self,
+        Y: np.ndarray,
+        T: np.ndarray,
+        X: np.ndarray,
+        dose_grid: np.ndarray,
+        t_lo: float,
+        t_hi: float,
+    ) -> CausalResult:
+        from .dr import dr_curve
+
+        out = dr_curve(
+            Y,
+            T,
+            X,
+            dose_grid,
+            treatment_model=self._user_models[0],
+            outcome_model=self._user_models[1],
+            bandwidth=self.bandwidth,
+            n_folds=self.n_folds,
+            random_state=self.random_state,
+            alpha=self.alpha,
+        )
+        est = out["est"]
+        k = len(dose_grid)
+        i25 = max(0, int(0.25 * k))
+        i75 = min(k - 1, int(0.75 * k))
+        effect = float(est[i75] - est[i25])
+        se_eff = float(
+            np.sqrt(np.sum((out["influence"][i75] - out["influence"][i25]) ** 2))
+        )
+        z = sp_stats.norm.ppf(1 - self.alpha / 2)
+        marg = np.gradient(est, dose_grid) if k >= 2 else np.zeros_like(est)
+        detail = pd.DataFrame(
+            {
+                "dose": dose_grid,
+                "response": est,
+                "se": out["se"],
+                "ci_lower": out["ci_lower"],
+                "ci_upper": out["ci_upper"],
+                "marginal_effect": marg,
+            }
+        )
+        info = {
+            "method": "dr",
+            "dose_range": (float(t_lo), float(t_hi)),
+            "n_dose_points": k,
+            "bandwidth": out["bandwidth"],
+            "bandwidth_risk": out["bw_risk"],
+            "avg_marginal_effect": float(np.mean(marg)),
+            "effect_25_to_75": effect,
+            "dose_25": float(dose_grid[i25]),
+            "dose_75": float(dose_grid[i75]),
+            "curve_monotone": bool(
+                np.all(np.diff(est) > 0) or np.all(np.diff(est) < 0)
+            ),
+            "pseudo_outcomes": out["pseudo_outcomes"],
+        }
+        info.update(out["info"])
+        return CausalResult(
+            method="Dose-Response (doubly robust, Kennedy et al. 2017)",
+            estimand="E[Y(t75)] - E[Y(t25)]",
+            estimate=effect,
+            se=se_eff,
+            pvalue=(
+                float(2 * sp_stats.norm.sf(abs(effect / se_eff)))
+                if se_eff > 0
+                else float("nan")
+            ),
+            ci=(effect - z * se_eff, effect + z * se_eff),
+            alpha=self.alpha,
+            n_obs=len(Y),
+            detail=detail,
+            model_info=info,
             _citation_key="dose_response",
         )
 

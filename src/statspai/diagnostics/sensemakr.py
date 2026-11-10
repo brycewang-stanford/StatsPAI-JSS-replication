@@ -17,14 +17,108 @@ Cinelli, C. and Hazlett, C. (2020).
 *Journal of the Royal Statistical Society: Series B*, 82(1), 39-67. [@cinelli2020making]
 """
 
-from typing import Any, Dict, List, Optional, Tuple
+import warnings
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 import pandas as pd
 from scipy import stats
 
 from .._aliases import accepts_aliases
+from .._result_serialize import ResultProtocolMixin
 from ..core.results import CausalResult
+from ..exceptions import MethodIncompatibility
+
+
+class SensemakrResult(dict, ResultProtocolMixin):
+    """Result of :func:`sensemakr` (Cinelli-Hazlett omitted-variable bias).
+
+    A :class:`dict` subclass, so ``result['rv_q']`` and
+    ``isinstance(result, dict)`` keep working, with attribute access
+    (``result.rv_q``), :meth:`summary` and the shared result protocol
+    (``to_dict`` / ``to_latex`` / ``violations`` / ``cite``).
+
+    Keys: ``beta_treat``, ``se_treat``, ``t_treat``, ``partial_r2_yd``,
+    ``rv_q``, ``rv_qa``, ``robustness``, ``benchmark_table``,
+    ``interpretation``, plus ``treat``, ``alpha``, ``n_obs`` and
+    ``df_resid``.
+
+    Examples
+    --------
+    >>> import statspai as sp
+    >>> df = sp.cps_wage()
+    >>> res = sp.sensemakr(df, y='log_wage', treat='education',
+    ...                    controls=['experience', 'female'])
+    >>> isinstance(res, dict)
+    True
+    >>> res.rv_q == res['rv_q']
+    True
+    """
+
+    _citation_keys = ("cinelli2020making",)
+
+    def __getattr__(self, key: str) -> Any:
+        try:
+            return self[key]
+        except KeyError as exc:
+            raise AttributeError(key) from exc
+
+    @property
+    def estimate(self) -> float:
+        """Treatment coefficient of the full regression."""
+        return float(self["beta_treat"])
+
+    @property
+    def se(self) -> float:
+        """Its conventional (homoskedastic) standard error."""
+        return float(self["se_treat"])
+
+    def summary(self) -> str:
+        """Plain-text report, after R ``summary(sensemakr(...))``."""
+        lines = [
+            "Sensitivity analysis to unobserved confounding "
+            "(Cinelli & Hazlett 2020)",
+            "-" * 64,
+            f"Treatment            : {self.get('treat', '')}",
+            f"Estimate (SE)        : {self['beta_treat']:.4f} "
+            f"({self['se_treat']:.4f}), t = {self['t_treat']:.3f}",
+            f"Partial R2 of D on Y : {self['partial_r2_yd']:.4f}",
+            f"RV_q (q=1)           : {self['rv_q']:.4f}",
+            f"RV_q,alpha           : {self['rv_qa']:.4f} "
+            f"(alpha = {self.get('alpha', float('nan')):g})",
+            f"Verdict              : {self['robustness']}",
+        ]
+        table = self.get("benchmark_table")
+        if isinstance(table, pd.DataFrame) and len(table):
+            cols = [
+                c
+                for c in (
+                    "variable",
+                    "kd",
+                    "ky",
+                    "r2dz_x",
+                    "r2yz_dx",
+                    "adjusted_estimate",
+                    "adjusted_se",
+                    "adjusted_lower_CI",
+                    "adjusted_upper_CI",
+                )
+                if c in table.columns
+            ]
+            lines += [
+                "",
+                "Bounds from observed covariates:",
+                table[cols].round(4).to_string(index=False),
+            ]
+        lines += ["", str(self["interpretation"])]
+        return "\n".join(lines)
+
+    def __repr__(self) -> str:
+        return (
+            f"SensemakrResult(treat={self.get('treat')!r}, "
+            f"estimate={self['beta_treat']:.4g}, rv_q={self['rv_q']:.4g}, "
+            f"rv_qa={self['rv_qa']:.4g}, robustness={self['robustness']!r})"
+        )
 
 
 @accepts_aliases(covariates="controls")
@@ -33,9 +127,11 @@ def sensemakr(
     y: str,
     treat: str,
     controls: List[str],
-    benchmark: Optional[List[str]] = None,
+    benchmark: Optional[Union[List[str], Dict[str, List[str]]]] = None,
     alpha: float = 0.05,
-) -> Dict[str, Any]:
+    kd: Union[float, Sequence[float]] = 1.0,
+    ky: Optional[Union[float, Sequence[float]]] = None,
+) -> SensemakrResult:
     """
     Cinelli & Hazlett (2020) omitted variable bias sensitivity analysis.
 
@@ -47,20 +143,39 @@ def sensemakr(
     treat : str
         Treatment variable of interest.
     controls : list of str
-        Observed control variables (included in the regression).
+        Observed control variables (included in the regression). A
+        string, categorical or boolean column enters as a set of
+        indicators with the first level omitted, like a factor in R.
     benchmark : list of str, optional
         Subset of controls to use as benchmarks — "if the unobserved
         confounder were as strong as [benchmark], would the result
-        survive?" Default: use the strongest control.
+        survive?" Default: every control. A categorical control is
+        benchmarked as a group (all its indicators together). A dict
+        ``{label: [controls]}`` benchmarks several controls jointly under
+        one label, e.g. the indicator columns of a factor that was
+        expanded by hand (Stata ``sensemakr, gbenchmark() gname()``, R
+        ``benchmark_covariates = list(label = c(...))``). A name that is
+        not a control is an error.
     alpha : float, default 0.05
+    kd, ky : float or sequence of float, default 1 and ``kd``
+        How many times as strong as the benchmark the confounder is
+        assumed to be, in explaining the treatment (``kd``) and the
+        outcome (``ky``). ``kd=[1, 2, 3]`` gives one row per multiple
+        for each benchmark, as ``sensemakr(kd = 1:3)`` does in R.
 
     Returns
     -------
-    dict
+    SensemakrResult
+        A ``dict`` subclass (``result['rv_q']`` and ``result.rv_q`` both
+        work) with ``summary()``. Keys:
         ``'rv_q'``: Robustness Value — minimum partial R² to change sign
         ``'rv_qa'``: RV for significance (to make p > alpha)
         ``'adjusted_estimate'``: bias-adjusted β for given confounder
-        ``'benchmark_table'``: DataFrame comparing confounder strengths
+        ``'benchmark_table'``: DataFrame with one row per benchmark and
+        multiple: the implied confounder strengths ``r2dz_x`` and
+        ``r2yz_dx``, and the estimate, standard error, t statistic and
+        confidence interval adjusted for a confounder of that strength
+        pulling the estimate toward zero
         ``'interpretation'``: human-readable summary
 
     Examples
@@ -91,9 +206,12 @@ def sensemakr(
     See Cinelli & Hazlett (2020, *JRSS-B*), Sections 3-4.
     """
     df = data[[y, treat] + controls].dropna()
-    Y = df[y].values
-    D = df[treat].values
-    X = df[controls].values
+    Y = df[y].values.astype(float)
+    D = df[treat].values.astype(float)
+    blocks = {c: _control_columns(df[c]) for c in controls}
+    X = np.empty((len(Y), 0))
+    if controls:
+        X = np.column_stack([blocks[c] for c in controls])
     n = len(Y)
 
     # Full regression: Y ~ D + X
@@ -101,12 +219,20 @@ def sensemakr(
     beta_full = np.linalg.lstsq(Z_full, Y, rcond=None)[0]
     resid_full = Y - Z_full @ beta_full
     rss_full = np.sum(resid_full**2)
-    k_full = Z_full.shape[1]
+    k_full = int(np.linalg.matrix_rank(Z_full))
 
     # Treatment coefficient and SE
-    XtX_inv = np.linalg.pinv(Z_full.T @ Z_full)
     sigma2 = rss_full / (n - k_full)
-    se_treat = float(np.sqrt(sigma2 * XtX_inv[1, 1]))
+    if k_full == Z_full.shape[1]:
+        # (Z'Z)^-1[1, 1] from the QR factor: forming Z'Z squares the
+        # condition number and costs eight digits on unscaled regressors.
+        r_factor = np.linalg.qr(Z_full, mode="r")
+        e1 = np.zeros(k_full)
+        e1[1] = 1.0
+        xtx_inv_dd = float(np.sum(np.linalg.solve(r_factor.T, e1) ** 2))
+    else:
+        xtx_inv_dd = float(np.linalg.pinv(Z_full.T @ Z_full)[1, 1])
+    se_treat = float(np.sqrt(sigma2 * xtx_inv_dd))
     beta_treat = float(beta_full[1])
     t_treat = beta_treat / se_treat
 
@@ -117,32 +243,84 @@ def sensemakr(
     partial_r2_yd = 1 - rss_full / rss_no_d  # partial R² of D on Y|X
 
     # --- Robustness Value ---
-    # Mirrors sensemakr::robustness_value.numeric. ``rv_q`` sets alpha=1
+    # Cinelli and Hazlett (2020) eqs. (18)-(20). ``rv_q`` sets alpha=1
     # (point estimate only); ``rv_qa`` uses the caller's alpha threshold.
     df_resid = n - k_full
     rv_q = _robustness_value(t_treat, df_resid, q=1.0, alpha=1.0)
     rv_qa = _robustness_value(t_treat, df_resid, q=1.0, alpha=alpha)
 
     # --- Benchmark table ---
-    benchmark_vars = benchmark or controls
+    kd_list = [float(k) for k in np.atleast_1d(kd)]
+    ky_list = kd_list if ky is None else [float(k) for k in np.atleast_1d(ky)]
+    if len(ky_list) != len(kd_list):
+        raise MethodIncompatibility(
+            "sensemakr: kd and ky must have the same length.",
+            recovery_hint="Pass one ky per kd, or leave ky unset to use ky = kd.",
+        )
+    if isinstance(benchmark, dict):
+        groups = {str(label): list(members) for label, members in benchmark.items()}
+    else:
+        groups = {var: [var] for var in (benchmark or controls)}
+    unknown = sorted(
+        {m for members in groups.values() for m in members} - set(controls)
+    )
+    if unknown or any(not members for members in groups.values()):
+        raise MethodIncompatibility(
+            (
+                f"sensemakr: benchmark names {unknown} that are not in controls."
+                if unknown
+                else "sensemakr: a benchmark group is empty."
+            ),
+            recovery_hint="A benchmark is one of the controls of the "
+            "regression; add it to controls= or correct the name.",
+            diagnostics={"unknown": unknown, "controls": list(controls)},
+        )
+    # The regression's own residual degrees of freedom (as R sensemakr)
+    t_crit = float(stats.t.ppf(1 - alpha / 2.0, df=df_resid))
     bench_rows = []
-    for var in benchmark_vars:
-        if var not in controls:
-            continue
+    for var, members in groups.items():
         # Raw partial R² of this observed covariate with Y and D. The
         # treatment-side regression must not include D itself on the RHS.
-        r2_yv = _partial_r2_of(Y, var, df, controls, treat=treat)
-        r2_dv = _partial_r2_of(D, var, df, controls, treat=None)
-        r2dz_x, r2yz_dx = _sensemakr_bound_scale(r2_dv, r2_yv)
-        bench_rows.append(
-            {
-                "variable": var,
-                "partial_r2_Y": round(r2_yv, 4),
-                "partial_r2_D": round(r2_dv, 4),
-                "r2dz_x": float(r2dz_x),
-                "r2yz_dx": float(r2yz_dx),
-            }
-        )
+        r2_yv = _partial_r2_of(Y, members, blocks, treat=D)
+        r2_dv = _partial_r2_of(D, members, blocks, treat=None)
+        for kd_j, ky_j in zip(kd_list, ky_list):
+            r2dz_x, r2yz_dx = _sensemakr_bound_scale(r2_dv, r2_yv, kd=kd_j, ky=ky_j)
+            if r2yz_dx >= 1.0:
+                warnings.warn(
+                    f"sensemakr: a confounder {kd_j:g}x/{ky_j:g}x as strong as "
+                    f"{var!r} implies a partial R2 with the outcome above 1; "
+                    "it is set to 1. Try lower kd / ky.",
+                    stacklevel=2,
+                )
+            # Adjusted estimate and SE, Cinelli and Hazlett (2020) eqs.
+            # (12)-(13), bias taken towards zero
+            bias = float(
+                np.sqrt(r2yz_dx * r2dz_x / (1.0 - r2dz_x))
+                * se_treat
+                * np.sqrt(df_resid)
+            )
+            adj_est = float(np.sign(beta_treat) * (abs(beta_treat) - bias))
+            adj_se = float(
+                np.sqrt((1.0 - r2yz_dx) / (1.0 - r2dz_x))
+                * se_treat
+                * np.sqrt(df_resid / (df_resid - 1.0))
+            )
+            bench_rows.append(
+                {
+                    "variable": var,
+                    "kd": kd_j,
+                    "ky": ky_j,
+                    "partial_r2_Y": round(r2_yv, 4),
+                    "partial_r2_D": round(r2_dv, 4),
+                    "r2dz_x": float(r2dz_x),
+                    "r2yz_dx": float(r2yz_dx),
+                    "adjusted_estimate": adj_est,
+                    "adjusted_se": adj_se,
+                    "adjusted_t": adj_est / adj_se if adj_se > 0 else float("nan"),
+                    "adjusted_lower_CI": adj_est - t_crit * adj_se,
+                    "adjusted_upper_CI": adj_est + t_crit * adj_se,
+                }
+            )
 
     bench_df = pd.DataFrame(bench_rows) if bench_rows else pd.DataFrame()
 
@@ -164,41 +342,60 @@ def sensemakr(
         robustness = "FRAGILE"
         detail = "Even a weak confounder could invalidate this result."
 
-    return {
-        "beta_treat": beta_treat,
-        "se_treat": se_treat,
-        "t_treat": float(t_treat),
-        "partial_r2_yd": float(partial_r2_yd),
-        "rv_q": rv_q,
-        "rv_qa": rv_qa,
-        "robustness": robustness,
-        "benchmark_table": bench_df,
-        "interpretation": (
-            f"{robustness}: RV_q = {rv_q:.1%}, " f"RV_{{q,α}} = {rv_qa:.1%}. {detail}"
-        ),
-    }
+    return SensemakrResult(
+        {
+            "beta_treat": beta_treat,
+            "se_treat": se_treat,
+            "t_treat": float(t_treat),
+            "partial_r2_yd": float(partial_r2_yd),
+            "rv_q": rv_q,
+            "rv_qa": rv_qa,
+            "robustness": robustness,
+            "benchmark_table": bench_df,
+            "interpretation": (
+                f"{robustness}: RV_q = {rv_q:.1%}, "
+                f"RV_{{q,α}} = {rv_qa:.1%}. {detail}"
+            ),
+            "treat": treat,
+            "alpha": float(alpha),
+            "n_obs": int(n),
+            "df_resid": int(df_resid),
+        }
+    )
+
+
+def _control_columns(col: pd.Series) -> np.ndarray:
+    """Design columns of one control: itself, or indicators for a factor."""
+    if pd.api.types.is_bool_dtype(col):
+        return col.to_numpy(dtype=float).reshape(-1, 1)
+    if pd.api.types.is_numeric_dtype(col):
+        return col.to_numpy(dtype=float).reshape(-1, 1)
+    dummies = pd.get_dummies(col.astype("category"), drop_first=True)
+    return dummies.to_numpy(dtype=float)
 
 
 def _partial_r2_of(
     Y: np.ndarray,
-    var: str,
-    df: pd.DataFrame,
-    controls: List[str],
-    treat: Optional[str],
+    var: Union[str, Sequence[str]],
+    blocks: Dict[str, np.ndarray],
+    treat: Optional[np.ndarray],
 ) -> float:
-    """Compute partial R² of 'var' with Y controlling for everything else."""
-    other = [c for c in controls if c != var]
-    n = len(df)
-    base = [np.ones(n)]
+    """Partial R² of the control(s) ``var`` (all their columns, jointly)
+    with Y given the rest."""
+    left_out = {var} if isinstance(var, str) else set(var)
+    n = len(Y)
+    base = [np.ones((n, 1))]
     if treat is not None:
-        base.append(df[treat].values)
+        base.append(np.asarray(treat, dtype=float).reshape(-1, 1))
 
     # Full model (with var)
-    Z_full = np.column_stack(base + [df[c].values for c in controls])
+    Z_full = np.column_stack(base + list(blocks.values()))
     rss_full = np.sum((Y - Z_full @ np.linalg.lstsq(Z_full, Y, rcond=None)[0]) ** 2)
 
     # Restricted (without var)
-    Z_restr = np.column_stack(base + [df[c].values for c in other])
+    Z_restr = np.column_stack(
+        base + [b for c, b in blocks.items() if c not in left_out]
+    )
     rss_restr = np.sum((Y - Z_restr @ np.linalg.lstsq(Z_restr, Y, rcond=None)[0]) ** 2)
 
     return float(max(1 - rss_full / rss_restr, 0)) if rss_restr > 0 else 0.0
@@ -211,29 +408,36 @@ def _sensemakr_bound_scale(
     kd: float = 1.0,
     ky: float = 1.0,
 ) -> Tuple[float, float]:
-    """Map raw benchmark partial R² values to sensemakr's bound scale.
+    """Bounds on a confounder ``kd`` / ``ky`` times as strong as a covariate.
 
-    This mirrors ``sensemakr::ovb_partial_r2_bound`` for the default
-    ``kd = ky = 1`` used by :func:`sensemakr` benchmark covariates.
+    Cinelli and Hazlett (2020), eq. (22) and Supplement B, eqs. (73)-(84)
+    [@cinelli2020making]: with ``R2_D = r2dxj_x`` and ``R2_Y = r2yxj_dx`` the
+    benchmark covariate's partial R2 with the treatment and with the
+    outcome,
+
+    * ``R2_{D~Z|X} = kd R2_D / (1 - R2_D)``;
+    * ``R2_{Y~Z|D,X} <= eta^2 R2_Y / (1 - R2_Y)`` with
+      ``eta = (sqrt(ky) + f_KD f_D) / sqrt(1 - f_KD^2 f_D^2)``,
+      ``f_D = R_D / sqrt(1 - R2_D)`` and
+      ``f_KD = sqrt(kd) R_D / sqrt(1 - kd R2_D)``.
+
+    Each bound is capped at 1 (a partial R2); a bound the data rule out
+    (``kd R2_D >= 1``, or a non-real ``eta``) is reported as 1. Clean-room
+    implementation from the paper; R ``sensemakr`` used as a black box.
     """
-    r2dxj_x = float(np.clip(r2dxj_x, 0.0, 1.0 - 1e-15))
-    r2yxj_dx = float(np.clip(r2yxj_dx, 0.0, 1.0 - 1e-15))
-    r2dz_x = kd * (r2dxj_x / (1.0 - r2dxj_x))
-    if r2dz_x >= 1.0:
-        r2dz_x = 1.0
+    r2d, r2y = float(r2dxj_x), float(r2yxj_dx)
+    r2dz_x = kd * r2d / (1.0 - r2d)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        r_d = np.sqrt(r2d)
+        f_d = r_d / np.sqrt(1.0 - r2d)
+        f_kd = np.sqrt(kd) * r_d / np.sqrt(1.0 - kd * r2d)
+        eta = (np.sqrt(ky) + f_kd * f_d) / np.sqrt(1.0 - (f_kd * f_d) ** 2)
+        r2yz_dx = eta**2 * r2y / (1.0 - r2y)
 
-    denom = (1.0 - kd * r2dxj_x) * (1.0 - r2dxj_x)
-    if denom <= 0:
-        r2zxj_xd = 1.0
-    else:
-        r2zxj_xd = kd * (r2dxj_x**2) / denom
-    r2zxj_xd = float(np.clip(r2zxj_xd, 0.0, 1.0 - 1e-15))
+    def _cap(v: float) -> float:
+        return 1.0 if not np.isfinite(v) or v > 1.0 else float(v)
 
-    r2yz_dx = ((np.sqrt(ky) + np.sqrt(r2zxj_xd)) / np.sqrt(1.0 - r2zxj_xd)) ** 2 * (
-        r2yxj_dx / (1.0 - r2yxj_dx)
-    )
-    r2yz_dx = float(np.clip(r2yz_dx, 0.0, 1.0))
-    return float(r2dz_x), r2yz_dx
+    return _cap(r2dz_x), _cap(r2yz_dx)
 
 
 def _robustness_value(
@@ -246,25 +450,82 @@ def _robustness_value(
 ) -> float:
     """Compute the Cinelli-Hazlett robustness value.
 
-    Port of ``sensemakr::robustness_value.numeric`` for the OLS case.
+    Clean-room implementation from the published formula; R sensemakr /
+    mice used only as black boxes (docs/dev/cleanroom/sensemakr_mice_helpers.md).
+
+    The partial Cohen's f of the treatment with the outcome is
+    ``f = |t| / sqrt(dof)`` and ``f_q = q f`` [@cinelli2020making, eqs. 14
+    and 18]. With ``alpha = 1`` the robustness value is
+    ``RV_q = (sqrt(f_q^4 + 4 f_q^2) - f_q^2) / 2`` (eq. 18). With
+    ``alpha < 1`` the critical value enters through
+    ``f* = |t*_{alpha, dof-1}| / sqrt(dof - 1)`` and
+    ``f_{q,alpha} = f_q - f*`` (eq. 19); the robustness value is 0 when
+    ``f_{q,alpha} <= 0``, eq. (20) applied to ``f_{q,alpha}`` otherwise,
+    and ``(f_q^2 - f*^2) / (1 + f_q^2)`` when eq. (20) gives a value at
+    or below ``1 - 1/f_q^2`` (text after eq. 20).
+
+    ``invert=True`` returns the strength of confounding (equal partial
+    R2 with treatment and outcome) needed to make a non-significant
+    estimate significant. The bias algebra of eqs. (12)-(14) gives the
+    same expressions with the roles of ``f_q`` and ``f*`` exchanged:
+    ``f_{q,alpha} = f* - f_q``, eq. (20) on that, and
+    ``(f*^2 - f_q^2) / (1 + f*^2)`` when eq. (20) gives a value at or
+    below ``1 - 1/f*^2``. With ``alpha = 1`` (``f* = 0``) it is 0.
+
+    Parameters
+    ----------
+    t_statistic : float
+        t-value of the treatment coefficient.
+    dof : int
+        Residual degrees of freedom of the regression.
+    q : float, default 1.0
+        Fraction of the estimate to be explained away (``q = 1``: bring
+        it to zero).
+    alpha : float, default 0.05
+        Significance level; ``alpha = 1`` ignores sampling uncertainty.
+    invert : bool, default False
+        Compute the inverted robustness value (is the estimate
+        insignificant?).
+
+    Returns
+    -------
+    float
+        Robustness value in ``[0, 1]``.
+
+    Examples
+    --------
+    >>> from statspai.diagnostics.sensemakr import _robustness_value
+    >>> round(_robustness_value(4.18445, 783, alpha=1.0), 6)
+    0.138776
+
+    References
+    ----------
+    [@cinelli2020making]
     """
-    if dof <= 1:
-        return 0.0
-    fq = q * abs(float(t_statistic) / np.sqrt(dof))
-    f_crit = abs(stats.t.ppf(alpha / 2.0, df=dof - 1)) / np.sqrt(dof - 1)
-    f1, f2 = (f_crit, fq) if invert else (fq, f_crit)
-    fqa = f1 - f2
-    if fqa < 0:
+
+    def _rv_from_f(f: float) -> float:
+        # eq. (18) / (20): positive root of r^2 + f^2 r - f^2 = 0
+        f2 = f * f
+        return float((np.sqrt(f2 * f2 + 4.0 * f2) - f2) / 2.0)
+
+    f_q = float(q) * abs(float(t_statistic)) / np.sqrt(float(dof))
+
+    if alpha >= 1 and not invert:
+        return _rv_from_f(f_q)
+
+    df_crit = float(dof) - 1.0
+    f_crit = abs(float(stats.t.ppf(1.0 - alpha / 2.0, df_crit))) / np.sqrt(df_crit)
+
+    # roles of f_q and f* swap under invert
+    f_big, f_small = (f_crit, f_q) if invert else (f_q, f_crit)
+    f_q_alpha = f_big - f_small
+    if f_q_alpha <= 0:
         return 0.0
 
-    rv_binding = 0.0 if fqa == 0 else 2.0 / (1.0 + np.sqrt(1.0 + 4.0 / (fqa**2)))
-
-    fq2 = fq**2
-    f_crit2 = f_crit**2
-    xf1, xf2 = (f_crit2, fq2) if invert else (fq2, f_crit2)
-    xrv = (xf1 - xf2) / (1.0 + xf1) if xf1 > xf2 else 0.0
-    is_xrv = f2 != 0 and fqa > 0 and f1 > 1.0 / f2
-    return float(xrv if is_xrv else rv_binding)
+    rv = _rv_from_f(f_q_alpha)
+    if rv <= 1.0 - 1.0 / (f_big * f_big):
+        rv = float((f_big * f_big - f_small * f_small) / (1.0 + f_big * f_big))
+    return rv
 
 
 # Citation

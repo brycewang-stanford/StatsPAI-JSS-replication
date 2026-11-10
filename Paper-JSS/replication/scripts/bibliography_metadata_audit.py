@@ -34,9 +34,17 @@ NO_DOI_VERIFICATION = {
         "official JMLR article URL, verified 2026-09-05 against the JMLR "
         "page and the arXiv record 1201.0490 (title, authors, journal_ref)."
     ),
-    "anthropic2024mcp": (
-        "Software/web specification citation; URL and access date are rendered "
-        "from howpublished/note fields."
+    "mcp2026specification": (
+        "Web specification, revision 2026-07-28; URL and access date are "
+        "rendered, verified 2026-11-02 against the specification site."
+    ),
+    "nicholls2020riskbased": (
+        "R Validation Hub white paper with no DOI, verified 2026-11-02 against "
+        "the dated PDF and the project's white-paper page."
+    ),
+    "pymclabs2026causalpy": (
+        "Software with no DOI yet (its README says one is planned), verified "
+        "2026-11-02 against the README and the 0.9.0 wheel metadata."
     ),
     "bach2022doubleml": (
         "JMLR software paper; URL to the official JMLR article page is present, "
@@ -47,23 +55,6 @@ NO_DOI_VERIFICATION = {
         "entry records the official proceedings URL plus the arXiv eprint "
         "(2005.14165) rather than attaching the preprint's DOI to the venue record."
     ),
-    "chen2025efficient": (
-        "arXiv preprint (2506.17729) with no journal publication as of "
-        "verification; the eprint field is the identifier and the note says so."
-    ),
-    "ghanem2026selection": (
-        "arXiv preprint (2203.09001, v15 dated 2026-07-24) with no journal "
-        "publication as of verification; the eprint field is the identifier."
-    ),
-    "liang2023helm": (
-        "Transactions on Machine Learning Research article; TMLR issues no DOI, "
-        "so the entry carries the arXiv eprint (2211.09110) whose journal_ref "
-        "names the TMLR publication."
-    ),
-    "patil2023gorilla": (
-        "arXiv preprint (2305.15334) cited as such; the eprint field is the "
-        "identifier and no DOI is fabricated."
-    ),
     "berge2018efficient": (
         "CREA discussion paper for the fixest implementation lineage; URL to "
         "the institution-hosted PDF is present, and no DOI is recorded."
@@ -71,6 +62,27 @@ NO_DOI_VERIFICATION = {
     "card1995using": (
         "Book-chapter citation; booktitle, editors, publisher, pages, and year "
         "are present, and no DOI is expected."
+    ),
+    "correia2017linear": (
+        "Author-hosted working paper behind the reghdfe command; URL to the "
+        "author's PDF is present, and no DOI is registered."
+    ),
+    "pyfixest2025pyfixest": (
+        "Python package citation in the form its own CITATION.cff requests; "
+        "the repository URL is present, and the package registers no DOI."
+    ),
+    "rcoreteam2025r": (
+        "The citation R itself prints from citation(); organization, address, "
+        "version, and project URL are present, and R registers no DOI."
+    ),
+    "statacorp2023stata": (
+        "Software citation in the form StataCorp's citing FAQ prescribes; "
+        "publisher, address, and URL are present, and no DOI exists."
+    ),
+    "vanrossum2009python": (
+        "Printed reference manual; publisher, address, year, and ISBN are "
+        "present. ACM lists it under its non-resolving 10.5555 prefix, so no "
+        "DOI is attached."
     ),
     "econml": (
         "Software repository citation; URL is rendered from the howpublished "

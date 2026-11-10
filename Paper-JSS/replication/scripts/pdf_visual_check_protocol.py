@@ -34,9 +34,9 @@ EXPECTED_PAGE_MARKERS = {
     "worked_examples": "4. Worked examples",
     "validation_evidence": "5. Numerical parity and statistical validity",
     "performance": "6. Computational performance",
-    "agent_interface_checks": "7. Agent-facing interface checks",
-    "computational_details": "8. Computational details",
-    "discussion": "9. Discussion",
+    "agent_interface_checks": "3.4. Interface checks",
+    "computational_details": "7. Computational details",
+    "discussion": "8. Discussion",
     "references": "References",
 }
 BOUNDARY_PAGE_MARKERS = {

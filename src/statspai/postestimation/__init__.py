@@ -6,22 +6,35 @@ Provides:
 - marginsplot(): Visualize marginal effects
 - test(): Wald / F test for linear restrictions (beta1 = beta2, joint significance)
 - lincom(): Linear combinations of coefficients with inference
+- nlcom(): Nonlinear combinations by the delta method
+- predictions() / comparisons() / slopes() (+ avg_ versions) / hypotheses():
+  marginaleffects-style quantities with delta-method inference
 
 Equivalent to Stata's ``margins``, ``test``, ``lincom`` commands.
 """
 
+from .contract import postestimation_contract, postestimation_report
+from .hypothesis import lincom, test
+from .marginaleffects import (
+    avg_comparisons,
+    avg_predictions,
+    avg_slopes,
+    comparisons,
+    hypotheses,
+    predictions,
+    slopes,
+)
 from .margins import (
-    margins,
-    margins_table,
+    contrast,
     event_study_table,
-    marginsplot,
+    margins,
     margins_at,
     margins_at_plot,
-    contrast,
+    margins_table,
+    marginsplot,
     pwcompare,
 )
-from .hypothesis import test, lincom
-from .contract import postestimation_contract, postestimation_report
+from .nlcom import nlcom
 
 __all__ = [
     "margins",
@@ -34,6 +47,14 @@ __all__ = [
     "pwcompare",
     "test",
     "lincom",
+    "nlcom",
+    "predictions",
+    "avg_predictions",
+    "comparisons",
+    "avg_comparisons",
+    "slopes",
+    "avg_slopes",
+    "hypotheses",
     "postestimation_contract",
     "postestimation_report",
 ]

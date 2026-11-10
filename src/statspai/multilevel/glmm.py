@@ -833,7 +833,9 @@ class MEGLMResult(ResultProtocolMixin):
         lines.append("=" * w)
         return "\n".join(lines)
 
-    def to_markdown(self) -> str:
+    # Own layout without the base class's digits= / fmt= precision options;
+    # passing them raises TypeError rather than being ignored.
+    def to_markdown(self) -> str:  # type: ignore[override]
         rows = []
         for var in self.fixed_effects.index:
             b = self.fixed_effects[var]
@@ -897,7 +899,9 @@ class MEGLMResult(ResultProtocolMixin):
     # LaTeX / plot
     # ------------------------------------------------------------------
 
-    def to_latex(
+    # Own layout without the base class's digits= / fmt= precision options;
+    # passing them raises TypeError rather than being ignored.
+    def to_latex(  # type: ignore[override]
         self,
         *,
         caption: Optional[str] = None,
@@ -1494,13 +1498,25 @@ def _newton_polish(
 
 
 def _numerical_oim_cov(
-    nll: Any, theta: np.ndarray, step: float = 1e-4
+    nll: Any, theta: np.ndarray, step: float = 1e-3
 ) -> Optional[np.ndarray]:
-    """Inverse of the central-difference Hessian of ``nll`` at ``theta``.
+    """Inverse of the observed information of ``nll`` at ``theta``.
+
+    The Hessian is the Richardson extrapolation ``(4 H(h) - H(2h)) / 3`` of
+    two central-difference Hessians. A single stencil at ``h = 1e-4``
+    carries a rounding error of about ``eps * |nll| / h**2`` -- 1e-7
+    relative on a likelihood of order 1e3, and different on every
+    platform's libm -- which put the melogit ICC standard error 7e-7 from
+    Stata on macOS and 1.3e-6 on Windows. Extrapolating at ``h = 1e-3``
+    removes the O(h^2) term and divides the rounding by 100: the same
+    standard error then agrees with Stata to 6e-10.
 
     Returns ``None`` when the Hessian is not positive definite.
     """
-    H = _numerical_hessian(nll, theta, step=step)
+    H = (
+        4.0 * _numerical_hessian(nll, theta, step=step)
+        - _numerical_hessian(nll, theta, step=2.0 * step)
+    ) / 3.0
     k = H.shape[0]
     try:
         L = np.linalg.cholesky(H)

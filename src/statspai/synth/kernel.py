@@ -15,15 +15,21 @@ Two estimators are provided:
 
 Supported kernels: RBF (Gaussian), polynomial, Laplacian.
 
+The constrained estimator follows the kernel-balancing idea of Hazlett
+and Xu's trajectory balancing: reweight the controls so that a kernel
+feature expansion of the pre-treatment outcome trajectory is balanced.
+It is not a port of their ``tjbal``: here there is one treated unit, the
+weights minimise the feature-space distance on the simplex directly, and
+no principal-component truncation of the kernel matrix is used.
+
 References
 ----------
-Scholkopf, B. and Smola, A.J. (2002).
-"Learning with Kernels: Support Vector Machines, Regularization,
-Optimization, and Beyond." MIT Press.
+Trajectory balancing, including kernel balancing of pre-treatment
+outcomes. [@hazlett2018trajectory]
 
-Kloft, M. and Blanchard, G. (2011).
-"The Local Rademacher Complexity of Lp-Norm Multiple Kernel Learning."
-*Advances in Neural Information Processing Systems (NeurIPS)*.
+Kernels and reproducing kernel Hilbert spaces. [@scholkopf2002learning]
+
+Multiple kernel learning. [@kloft2011local]
 """
 
 from __future__ import annotations
@@ -35,7 +41,9 @@ import pandas as pd
 from scipy import optimize
 from scipy import stats as sp_stats
 
+from .._input_validation import check_columns
 from ..core.results import CausalResult
+from ._cite import bib_citation
 from ._core import placebo_rank_pvalue
 
 # ====================================================================== #
@@ -449,7 +457,10 @@ def kernel_synth(
 
     References
     ----------
-    Scholkopf, B. and Smola, A.J. (2002). "Learning with Kernels."
+    Trajectory balancing, including kernel balancing of pre-treatment
+    outcomes. [@hazlett2018trajectory]
+
+    Kernels and reproducing kernel Hilbert spaces. [@scholkopf2002learning]
     """
     if kernel not in _KERNEL_DISPATCH:
         raise ValueError(
@@ -457,6 +468,16 @@ def kernel_synth(
             f"Choose from {list(_KERNEL_DISPATCH.keys())}."
         )
 
+    check_columns(
+        data,
+        {
+            "outcome": outcome,
+            "unit": unit,
+            "time": time,
+            "covariates": covariates,
+        },
+        function="sp.synth(method='kernel')",
+    )
     # --- Reshape panel ---
     Y1_pre, Y1_post, Y0_pre, Y0_post, donors, pre_times, post_times = _reshape_panel(
         data, outcome, unit, time, treated_unit, treatment_time
@@ -527,6 +548,7 @@ def kernel_synth(
 
     return CausalResult(
         method="Kernel Synthetic Control",
+        _citation_key=bib_citation("hazlett2018trajectory", "synth"),
         estimand="ATT",
         estimate=att,
         se=se,
@@ -636,6 +658,16 @@ def kernel_ridge_synth(
     if ridge_lambda <= 0:
         raise ValueError("ridge_lambda must be positive")
 
+    check_columns(
+        data,
+        {
+            "outcome": outcome,
+            "unit": unit,
+            "time": time,
+            "covariates": covariates,
+        },
+        function="sp.synth(method='kernel_ridge')",
+    )
     # --- Reshape panel ---
     Y1_pre, Y1_post, Y0_pre, Y0_post, donors, pre_times, post_times = _reshape_panel(
         data, outcome, unit, time, treated_unit, treatment_time

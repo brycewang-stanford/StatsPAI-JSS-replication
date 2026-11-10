@@ -21,7 +21,7 @@ coefficient name as zero.
 from __future__ import annotations
 
 import re
-from typing import Any, List, Tuple
+from typing import Any, List, Sequence, Tuple, Union
 
 import numpy as np
 import pandas as pd
@@ -33,7 +33,7 @@ from ._covariance import inference_df, require_covariance
 
 def test(
     result: Any,
-    hypothesis: str,
+    hypothesis: Union[str, Sequence[str]],
 ) -> dict[str, Any]:
     """
     Wald test for linear restrictions on coefficients.
@@ -43,15 +43,25 @@ def test(
     result : EconometricResults or CausalResult
         Fitted model with ``.params`` and ``.std_errors``; restrictions that
         involve several coefficients also need its covariance matrix.
-    hypothesis : str
-        Hypothesis specification (Stata ``test`` syntax). Examples:
+    hypothesis : str or list of str
+        Hypothesis specification (Stata ``test`` syntax), or a list of
+        them to be tested jointly (``["x1 = 0", "x2 = 2*x3"]``). A
+        coefficient is named as the result names it, including names such
+        as ``I(exper ** 2)`` or ``np.log(sales)``. Examples:
         - ``"x1 = 0"`` — beta_x1 = 0
         - ``"x1 = x2"`` — beta_x1 = beta_x2
         - ``"x1 = x2 = 0"`` — joint: beta_x1 = beta_x2 and beta_x2 = 0
         - ``"x1 x2"`` — joint: beta_x1 = 0 and beta_x2 = 0
         - ``"(x1 = 0) (x2 + x3 = 1)"`` — grouped restrictions
+        - ``"x1 = 0, x2 + x3 = 1"`` — the same, in the comma-separated
+          spelling of statsmodels' ``f_test``
         - ``"x1 - 2*x2 = 0"`` — linear restriction; ``_cons`` names the
           intercept whatever the estimator calls it.
+        - ``"2.race = 3.race"``, ``"1.union#c.grade"`` — Stata's
+          factor-variable names for the coefficients the formula engine
+          calls ``C(race)[T.2]`` and ``grade:C(union)[T.1]``; ``"i.race"``
+          on its own tests every level of the factor jointly (Stata's
+          ``testparm i.race``).
 
     Returns
     -------
@@ -89,8 +99,21 @@ def test(
     """
     params = _params(result)
     R, r = _parse_hypothesis(hypothesis, params)
-    R, r = _independent_restrictions(R, r, hypothesis)
+    R, r = _independent_restrictions(R, r, str(hypothesis))
     V = require_covariance(result, R, f"test({hypothesis!r})")
+
+    q = R.shape[0]
+    hotelling = (getattr(result, "data_info", None) or {}).get("hotelling_df")
+    if hotelling and float(hotelling) - q + 1 < 1:
+        # Checked before the solve: with B cosine terms the covariance has
+        # rank at most B, so R V R' is singular in exact arithmetic, but
+        # whether np.linalg.solve notices depends on the BLAS's rounding
+        # (it did on Windows CI, not on macOS).
+        raise MethodIncompatibility(
+            f"test({hypothesis!r}): {q} restrictions need more than "
+            f"{int(hotelling)} cosine terms in the EWC covariance.",
+            recovery_hint="Refit with a larger ewc_df, or test fewer restrictions.",
+        )
 
     beta = params.to_numpy(dtype=float)
     diff = R @ beta - r
@@ -104,8 +127,21 @@ def test(
             recovery_hint="Check for coefficients with zero variance.",
         ) from exc
 
-    q = R.shape[0]
     df_resid = inference_df(result)
+    if hotelling:
+        # An orthogonal-series long-run variance with B terms (robust='ewc'):
+        # W is Hotelling T2(q, B), and (B - q + 1) / (B q) * W is
+        # F(q, B - q + 1).
+        df2 = float(hotelling) - q + 1
+        f_stat = wald * df2 / (float(hotelling) * q)
+        return {
+            "statistic": f_stat,
+            "pvalue": float(sp_stats.f.sf(f_stat, q, df2)),
+            "df": (q, _df_out(df2)),
+            "hypothesis": hypothesis,
+            "chi2": wald,
+            "distribution": "F",
+        }
     if np.isfinite(df_resid):
         f_stat = wald / q
         return {
@@ -174,7 +210,7 @@ def lincom(
     True
     """
     params = _params(result)
-    c, constant = _parse_linear(expression, params)
+    c, constant = _parse_linear(*_shield_names(expression, params))
     if not np.any(c):
         raise MethodIncompatibility(
             f"lincom({expression!r}) contains no coefficients.",
@@ -224,6 +260,16 @@ _INTERCEPT_NAMES = ("_cons", "Intercept", "const", "(Intercept)")
 def _params(result: Any) -> pd.Series:
     params = result.params
     if isinstance(params, pd.Series):
+        omitted = (getattr(result, "model_info", None) or {}).get("omitted")
+        if omitted:
+            # a shallow copy carries the dropped terms to _resolve_name
+            # without touching the result's own Series
+            params = params.copy(deep=False)
+            params.attrs["omitted"] = {
+                str(o.get("variable")): str(o.get("reason", ""))
+                for o in omitted
+                if isinstance(o, dict)
+            }
         return params
     values = np.atleast_1d(np.asarray(params, dtype=float))
     return pd.Series(values, index=[f"b{i}" for i in range(values.size)])
@@ -231,6 +277,70 @@ def _params(result: Any) -> pd.Series:
 
 def _df_out(df: float) -> Any:
     return int(df) if float(df).is_integer() else float(df)
+
+
+#: One factor of a Stata factor-variable coefficient name: ``2.race``,
+#: ``1b.union`` (a level), ``c.grade`` (continuous), ``i.race`` (every level).
+_FV_LEVEL = re.compile(r"(-?\d+(?:\.\d+)?)(?:bn|b|o|n)?\.([^\W\d]\w*)")
+_FV_OTHER = re.compile(r"(?:([ci])\.)?([^\W\d]\w*)")
+#: The same level as the formula engine names it: ``C(race)[T.2]``, or
+#: ``C(race)[2]`` when the factor is nested in another and keeps every level.
+_PATSY_LEVEL = re.compile(
+    r"C\(\s*([^\W\d]\w*)\s*(?:,[^()]*(?:\([^()]*\))?[^()]*)?\)\[(?:T\.)?(.+)\]"
+)
+
+
+def _same_level(stata: str, patsy: str) -> bool:
+    try:
+        return float(stata) == float(patsy)
+    except ValueError:
+        return stata == patsy
+
+
+def _factor_matches(name: str, names: List[str]) -> List[int]:
+    """Coefficients a Stata factor-variable name refers to.
+
+    ``2.race`` is ``C(race)[T.2]``; ``1.union#c.grade`` is the interaction
+    of that level with ``grade``, in whichever order the design wrote it;
+    ``i.race`` is every level of ``race``. Returns positions in ``names``.
+    """
+    wanted = []
+    for part in name.split("#"):
+        level = _FV_LEVEL.fullmatch(part)
+        if level is not None:
+            wanted.append(("level", level.group(2), level.group(1)))
+            continue
+        other = _FV_OTHER.fullmatch(part)
+        if other is None:
+            return []
+        kind = "any" if other.group(1) == "i" else "plain"
+        wanted.append((kind, other.group(2), ""))
+    if all(kind == "plain" for kind, _, _ in wanted) and "#" not in name:
+        if not name.startswith("c."):
+            return []  # an ordinary name: not factor-variable notation
+    hits = []
+    for pos, candidate in enumerate(names):
+        pieces = [piece.strip() for piece in str(candidate).split(":")]
+        if len(pieces) != len(wanted):
+            continue
+        left = list(pieces)
+        for kind, var, lev in wanted:
+            found = None
+            for piece in left:
+                m = _PATSY_LEVEL.fullmatch(piece)
+                if kind == "plain" and piece == var:
+                    found = piece
+                elif kind != "plain" and m is not None and m.group(1) == var:
+                    if kind == "any" or _same_level(lev, m.group(2)):
+                        found = piece
+                if found is not None:
+                    break
+            if found is None:
+                break
+            left.remove(found)
+        else:
+            hits.append(pos)
+    return hits
 
 
 def _resolve_name(name: str, params: pd.Series, expression: str) -> int:
@@ -244,9 +354,37 @@ def _resolve_name(name: str, params: pd.Series, expression: str) -> int:
         for alias in _INTERCEPT_NAMES:
             if alias in names:
                 return names.index(alias)
+    shown = [str(n) for n in params.attrs.get("display", names)]
+    hits = _factor_matches(name, shown)
+    if len(hits) == 1:
+        return hits[0]
+    if len(hits) > 1:
+        raise MethodIncompatibility(
+            f"{name!r} in {expression!r} names {len(hits)} coefficients "
+            f"({[shown[h] for h in hits]}); a restriction with '=' or an "
+            "arithmetic expression needs one.",
+            recovery_hint="Name one level (2.race), or list the factor on "
+            "its own for a joint test (sp.test(result, 'i.race')).",
+        )
+    omitted = params.attrs.get("omitted") or {}
+    if name in omitted:
+        # Stata keeps the term at 0 and drops the constraint ("constraint
+        # dropped"); a test of it is not a test of anything identified
+        reason = f" ({omitted[name]})" if omitted[name] else ""
+        raise MethodIncompatibility(
+            f"{name!r} in {expression!r} was omitted from the model{reason}, "
+            "so a restriction on it is not estimable.",
+            recovery_hint="Restate the hypothesis on an identified combination: "
+            "with x2 = c*x1 omitted, the coefficient on x1 is the effect of "
+            "x1 + c*x2.",
+            diagnostics={"omitted": dict(omitted)},
+        )
+    for token, real in zip(names, shown):
+        expression = expression.replace(token, real)
+        name = name.replace(token, real)
     raise MethodIncompatibility(
         f"Unknown coefficient {name!r} in {expression!r}.",
-        recovery_hint=f"Available terms: {names}.",
+        recovery_hint=f"Available terms: {shown}.",
     )
 
 
@@ -289,6 +427,16 @@ def _parse_linear(expression: str, params: pd.Series) -> Tuple[np.ndarray, float
             )
         coef, names = sign, []
         for factor in factors:
+            # `x/5`: division by a number (Stata's `lincom exp + exp2/5`)
+            factor, *divisors = [part.strip() for part in factor.split("/")]
+            if any(not _NUMBER.fullmatch(d) or float(d) == 0 for d in divisors):
+                raise MethodIncompatibility(
+                    f"{term!r} in {expression!r} divides by something other "
+                    "than a non-zero number; test and lincom take linear "
+                    "combinations only (sp.nlcom takes ratios of coefficients)."
+                )
+            for d in divisors:
+                coef /= float(d)
             if _NUMBER.fullmatch(factor):
                 coef *= float(factor)
             else:
@@ -320,8 +468,53 @@ def _parse_equality_chain(
     return rows, values
 
 
+_SIMPLE_NAME = re.compile(r"[A-Za-z_][\w.]*$")
+
+
+def _shield_names(text: str, params: pd.Series) -> Tuple[str, pd.Series]:
+    """Replace coefficient names that hold operators or blanks by tokens.
+
+    ``I(exper ** 2)``, ``np.log(sales)`` and ``C(year)[T.1981]:educ`` are
+    names of coefficients, but read as arithmetic by a parser of linear
+    expressions. Each such name that occurs in ``text`` is swapped for a
+    plain token, longest name first, and the returned parameter vector is
+    indexed by the same tokens; ``attrs['display']`` keeps the real names
+    for error messages.
+    """
+    names = [str(n) for n in params.index]
+    tokens = list(names)
+    order = sorted(
+        (i for i, n in enumerate(names) if not _SIMPLE_NAME.match(n)),
+        key=lambda i: -len(names[i]),
+    )
+    for i in order:
+        # ``I(x**2)`` names the coefficient the design calls ``I(x ** 2)``:
+        # blanks between the pieces of a name do not distinguish names.
+        spellings = [names[i]]
+        if "(" not in names[i] and "[" in names[i]:
+            # IV and panel fits store ``np.log(x)`` as ``np.log[x]``; the
+            # name written as in the formula refers to the same coefficient
+            spellings.append(names[i].replace("[", "(").replace("]", ")"))
+        token = f"spcoef{i}zz"
+        for spelling in spellings:
+            pieces = re.findall(r"\w+|[^\w\s]", spelling)
+            pattern = r"\s*".join(re.escape(piece) for piece in pieces)
+            if not pieces or pieces[0][0].isalnum() or pieces[0][0] == "_":
+                pattern = r"(?<![\w.])" + pattern
+            if pieces and (pieces[-1][-1].isalnum() or pieces[-1][-1] == "_"):
+                pattern += r"(?!\w)"
+            text, hits = re.subn(pattern, token, text)
+            if hits:
+                tokens[i] = token
+    shielded = pd.Series(np.asarray(params, dtype=float), index=tokens)
+    shielded.attrs["display"] = names
+    if params.attrs.get("omitted"):
+        shielded.attrs["omitted"] = params.attrs["omitted"]
+    return text, shielded
+
+
 def _parse_hypothesis(
-    hypothesis: str,
+    hypothesis: Any,
     params: pd.Series,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
@@ -334,13 +527,36 @@ def _parse_hypothesis(
         "x1 x2"           -> rows x1 = 0 and x2 = 0
         "(x1 = 0) (x2 = 1)" -> rows x1 = 0 and x2 = 1
     """
+    if isinstance(hypothesis, (list, tuple)):
+        # a list of restrictions, tested jointly: ["x1 = 0", "x2 = 2*x3"]
+        if not hypothesis or not all(isinstance(h, str) for h in hypothesis):
+            raise MethodIncompatibility(
+                "test() takes a hypothesis string or a list of them, e.g. "
+                "['x1 = 0', 'x2 = x3']."
+            )
+        stacked = [_parse_hypothesis(h, params) for h in hypothesis]
+        return (
+            np.vstack([rows for rows, _ in stacked]),
+            np.concatenate([values for _, values in stacked]),
+        )
+    if not isinstance(hypothesis, str):
+        raise MethodIncompatibility(
+            "test() takes a hypothesis string or a list of them, got "
+            f"{type(hypothesis).__name__}."
+        )
     text = hypothesis.strip()
     if not text:
         raise MethodIncompatibility("test() needs a hypothesis, e.g. 'x1 = 0'.")
+    text, params = _shield_names(text, params)
 
     if text.startswith("("):
         groups = re.findall(r"\(([^()]*)\)", text)
         if not groups or re.sub(r"\(([^()]*)\)", "", text).strip():
+            raise MethodIncompatibility(f"Cannot parse hypothesis {hypothesis!r}.")
+    elif "=" in text and "," in text:
+        # statsmodels / patsy spelling: "x1 = 0, x2 = x3" is a joint test.
+        groups = [g.strip() for g in text.split(",")]
+        if any(not g for g in groups):
             raise MethodIncompatibility(f"Cannot parse hypothesis {hypothesis!r}.")
     else:
         groups = [text]
@@ -354,10 +570,16 @@ def _parse_hypothesis(
             # Stata's `test x1 x2`: every listed coefficient equals zero.
             g_rows, g_values = [], []
             for name in group.replace(",", " ").split():
-                row = np.zeros(len(params), dtype=float)
-                row[_resolve_name(name, params, hypothesis)] = 1.0
-                g_rows.append(row)
-                g_values.append(0.0)
+                # `i.race` (Stata's testparm): every level of the factor
+                shown = params.attrs.get("display", list(params.index))
+                several = _factor_matches(name, [str(n) for n in shown])
+                if len(several) < 2 or name in params.index:
+                    several = [_resolve_name(name, params, hypothesis)]
+                for position in several:
+                    row = np.zeros(len(params), dtype=float)
+                    row[position] = 1.0
+                    g_rows.append(row)
+                    g_values.append(0.0)
         rows.extend(g_rows)
         values.extend(g_values)
     if not rows:

@@ -48,6 +48,8 @@ import numpy as np
 import pandas as pd
 from scipy import stats as sp_stats
 
+from .._aliases import accepts_aliases
+from .._input_validation import check_columns
 from ..core.results import CausalResult
 from ..utils._rng import preserve_global_rng
 
@@ -56,6 +58,7 @@ from ..utils._rng import preserve_global_rng
 # ======================================================================
 
 
+@accepts_aliases(seed="random_state")
 def tarnet(
     data: pd.DataFrame,
     y: str,
@@ -78,6 +81,7 @@ def tarnet(
     verbose: bool = False,
     d: Optional[str] = None,
     x: Optional[List[str]] = None,
+    refit_bootstrap: int = 0,
 ) -> CausalResult:
     """
     Estimate treatment effects using TARNet (Shalit et al. 2017).
@@ -113,7 +117,19 @@ def tarnet(
     alpha : float, default 0.05
         Significance level for confidence intervals.
     n_bootstrap : int, default 500
-        Bootstrap iterations for standard error estimation.
+        Draws for the plug-in dispersion reported as ``se`` when
+        ``refit_bootstrap`` is 0. It resamples the fitted effects with the
+        network held fixed and is not a standard error for the ATE
+        (``model_info['se_valid_for_ate']`` is ``False``). With fewer than
+        two draws ``se``, ``ci`` and ``pvalue`` are NaN.
+    refit_bootstrap : int, default 0
+        Number of bootstrap refits for a standard error that is one. Each
+        refit trains a new network on a resample of the rows from its own
+        initialisation, so the run takes ``refit_bootstrap + 1`` times as
+        long. With it, ``se``, ``ci`` and ``pvalue`` come from the spread
+        of the refits, ``model_info['se_valid_for_ate']`` is ``True`` and
+        the plug-in number moves to ``model_info['se_plugin']``. Must be
+        0 or at least 5; 20 or more is a reasonable choice.
     random_state : int, default 42
         Random seed.
     verbose : bool, default False
@@ -186,9 +202,45 @@ def tarnet(
     # Attach the fitted network so result.effect(X_new) can predict
     # out-of-sample (uniform CATE access across estimators).
     _result._effect_fn = est.effect
+    if refit_bootstrap:
+        from ..core._refit_bootstrap import apply_refit_bootstrap
+
+        def _refit(sample: pd.DataFrame, seed: int) -> CausalResult:
+            return TARNet(
+                data=sample,
+                y=y,
+                treat=treat,
+                covariates=covariates,
+                repr_layers=repr_layers,
+                head_layers=head_layers,
+                epochs=epochs,
+                batch_size=batch_size,
+                learning_rate=learning_rate,
+                weight_decay=weight_decay,
+                dropout=dropout,
+                alpha=alpha,
+                n_bootstrap=2,
+                random_state=seed,
+                validation_fraction=validation_fraction,
+                early_stopping=early_stopping,
+                patience=patience,
+                min_delta=min_delta,
+                verbose=False,
+            ).fit()
+
+        apply_refit_bootstrap(
+            _result,
+            data,
+            _refit,
+            n_refits=int(refit_bootstrap),
+            random_state=random_state,
+            alpha=alpha,
+            label="tarnet",
+        )
     return _result
 
 
+@accepts_aliases(seed="random_state")
 def cfrnet(
     data: pd.DataFrame,
     y: str,
@@ -212,6 +264,7 @@ def cfrnet(
     verbose: bool = False,
     d: Optional[str] = None,
     x: Optional[List[str]] = None,
+    refit_bootstrap: int = 0,
 ) -> CausalResult:
     """
     Estimate treatment effects using CFRNet (Shalit et al. 2017).
@@ -250,7 +303,19 @@ def cfrnet(
     alpha : float, default 0.05
         Significance level for confidence intervals.
     n_bootstrap : int, default 500
-        Bootstrap iterations for standard error estimation.
+        Draws for the plug-in dispersion reported as ``se`` when
+        ``refit_bootstrap`` is 0. It resamples the fitted effects with the
+        network held fixed and is not a standard error for the ATE
+        (``model_info['se_valid_for_ate']`` is ``False``). With fewer than
+        two draws ``se``, ``ci`` and ``pvalue`` are NaN.
+    refit_bootstrap : int, default 0
+        Number of bootstrap refits for a standard error that is one. Each
+        refit trains a new network on a resample of the rows from its own
+        initialisation, so the run takes ``refit_bootstrap + 1`` times as
+        long. With it, ``se``, ``ci`` and ``pvalue`` come from the spread
+        of the refits, ``model_info['se_valid_for_ate']`` is ``True`` and
+        the plug-in number moves to ``model_info['se_plugin']``. Must be
+        0 or at least 5; 20 or more is a reasonable choice.
     random_state : int, default 42
         Random seed.
     verbose : bool, default False
@@ -323,9 +388,46 @@ def cfrnet(
     # Attach the fitted network so result.effect(X_new) can predict
     # out-of-sample (uniform CATE access across estimators).
     _result._effect_fn = est.effect
+    if refit_bootstrap:
+        from ..core._refit_bootstrap import apply_refit_bootstrap
+
+        def _refit(sample: pd.DataFrame, seed: int) -> CausalResult:
+            return CFRNet(
+                data=sample,
+                y=y,
+                treat=treat,
+                covariates=covariates,
+                repr_layers=repr_layers,
+                head_layers=head_layers,
+                ipm_weight=ipm_weight,
+                epochs=epochs,
+                batch_size=batch_size,
+                learning_rate=learning_rate,
+                weight_decay=weight_decay,
+                dropout=dropout,
+                alpha=alpha,
+                n_bootstrap=2,
+                random_state=seed,
+                validation_fraction=validation_fraction,
+                early_stopping=early_stopping,
+                patience=patience,
+                min_delta=min_delta,
+                verbose=False,
+            ).fit()
+
+        apply_refit_bootstrap(
+            _result,
+            data,
+            _refit,
+            n_refits=int(refit_bootstrap),
+            random_state=random_state,
+            alpha=alpha,
+            label="cfrnet",
+        )
     return _result
 
 
+@accepts_aliases(seed="random_state")
 def dragonnet(
     data: pd.DataFrame,
     y: str,
@@ -392,7 +494,8 @@ def dragonnet(
     alpha : float, default 0.05
         Significance level for confidence intervals.
     n_bootstrap : int, default 500
-        Bootstrap iterations for standard error estimation.
+        Not used: the standard error is the AIPW influence-function one.
+        Kept so the three neural estimators share a signature.
     random_state : int, default 42
         Random seed.
     verbose : bool, default False
@@ -491,9 +594,7 @@ def _prepare_data(
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, int]:
     """Validate and extract arrays from DataFrame."""
     cols = [y, treat] + covariates
-    missing = [c for c in cols if c not in data.columns]
-    if missing:
-        raise ValueError(f"Columns not found in data: {missing}")
+    check_columns(data, {"y": y, "treat": treat, "covariates": list(covariates)})
 
     clean = data[cols].dropna()
     Y = clean[y].values.astype(np.float32)
@@ -921,6 +1022,7 @@ class TARNet:
         model_info = self._build_model_info(
             cate, D, n, mu0_orig, mu1_orig, device, history
         )
+        _mark_no_bootstrap(model_info, self.n_bootstrap)
 
         return CausalResult(
             method="TARNet (Shalit et al. 2017)",
@@ -1317,6 +1419,7 @@ class CFRNet:
                 "covariates": self.covariates,
             }
         )
+        _mark_no_bootstrap(model_info, self.n_bootstrap)
 
         return CausalResult(
             method="CFRNet (Shalit et al. 2017)",
@@ -1746,6 +1849,12 @@ class DragonNet:
                 "n_covariates": len(self.covariates),
                 "covariates": self.covariates,
                 "se_method": "AIPW_influence_function",
+                "se_note": (
+                    "se is the standard deviation of the AIPW scores over "
+                    "sqrt(n), with the outcome and propensity heads fitted "
+                    "on the same sample (no cross-fitting); n_bootstrap is "
+                    "not used."
+                ),
                 "ate_plugin": float(np.mean(cate)),
                 "ate_aipw": ate_aipw,
                 "aipw_scores": aipw_scores,
@@ -1920,6 +2029,11 @@ def _bootstrap_ate_se(
     is reported as ``se`` for backward compatibility and flagged in
     ``model_info['se_valid_for_ate'] = False``; see ``_basic_neural_info``.
     """
+    if n_bootstrap < 2:
+        # No draws (or one): there is no dispersion to report. Return NaN
+        # explicitly instead of letting ``np.std(ddof=1)`` warn its way
+        # there; ``_mark_no_bootstrap`` records why in ``model_info``.
+        return float("nan")
     rng = np.random.RandomState(random_state)
     n = len(cate)
     boot_means = np.array(
@@ -1928,12 +2042,29 @@ def _bootstrap_ate_se(
     return float(np.std(boot_means, ddof=1))
 
 
+def _mark_no_bootstrap(model_info: Dict[str, Any], n_bootstrap: int) -> None:
+    """Record in ``model_info`` that no plug-in dispersion was computed."""
+    if n_bootstrap >= 2:
+        return
+    model_info["se_method"] = "none"
+    model_info["se_note"] = (
+        f"n_bootstrap={n_bootstrap}: a dispersion needs at least two "
+        "bootstrap draws, so se, ci and pvalue are NaN. Pass "
+        "n_bootstrap >= 2 for the plug-in dispersion of the fitted "
+        "effects, or refit_bootstrap > 0 for a "
+        "standard error of the ATE."
+    )
+
+
 def _inference(
     estimate: float,
     se: float,
     alpha: float,
 ) -> Tuple[float, Tuple[float, float]]:
     """Compute p-value and confidence interval."""
+    if not np.isfinite(se):
+        nan = float("nan")
+        return nan, (nan, nan)
     if se > 0:
         z_stat = estimate / se
         pvalue = float(2 * sp_stats.norm.sf(abs(z_stat)))

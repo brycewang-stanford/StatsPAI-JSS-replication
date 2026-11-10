@@ -1,8 +1,8 @@
 # StatsPAI
 
 **Validation-tiered Python workflows for causal inference and applied
-econometrics.** One `import statspai as sp` exposes **1,255 registered
-functions** across 87 submodules (live count: `python
+econometrics.** One `import statspai as sp` exposes **1,627 registered
+functions** across 90 submodules (live count: `python
 scripts/registry_stats.py`) spanning classical regression, staggered
 DiD, regression discontinuity,
 synthetic control, decomposition, stochastic frontier, multilevel /
@@ -162,7 +162,7 @@ sp.function_schema('dml')                # JSON schema: args, types, returns
 
 ```bash
 pip install statspai                       # core
-pip install 'statspai[plotting]'           # matplotlib + seaborn
+pip install 'statspai[plotting]'           # seaborn + plotly (matplotlib is core)
 pip install 'statspai[fixest]'             # pyfixest HDFE
 pip install 'statspai[deepiv]'             # PyTorch (Deep IV, TARNet)
 pip install 'statspai[text]'               # sentence-transformers for sbert
@@ -195,7 +195,7 @@ estimator-level reference:
   title   = {StatsPAI: A Unified, Agent-Native Python Toolkit for
              Causal Inference and Applied Econometrics},
   year    = {2026},
-  version = {1.30.1},
+  version = {1.40.2},
   doi     = {10.5281/zenodo.19933900},
   url     = {https://doi.org/10.5281/zenodo.19933900},
   license = {MIT}

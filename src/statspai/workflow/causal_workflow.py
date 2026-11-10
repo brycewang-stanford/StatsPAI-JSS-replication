@@ -14,12 +14,20 @@ or override steps.
 
 Usage
 -----
+>>> import os
+>>> import tempfile
 >>> import statspai as sp
->>> w = sp.causal(df, y='wage', treatment='training',
-...               id='worker', time='year', design='did')
->>> w.report('analysis.html')
->>> w.result      # the fitted CausalResult
->>> w.diagnostics # IdentificationReport
+>>> df = sp.dgp_did(n_units=60, n_periods=6, seed=0)
+>>> w = sp.causal(df, y='y', treatment='treated',
+...               id='unit', time='time', design='did')
+>>> path = os.path.join(tempfile.mkdtemp(), 'analysis.html')
+>>> html = w.report(path)
+>>> os.path.exists(path)
+True
+>>> type(w.result).__name__       # the fitted CausalResult
+'CausalResult'
+>>> type(w.diagnostics).__name__  # IdentificationReport
+'IdentificationReport'
 """
 
 from __future__ import annotations
@@ -396,7 +404,14 @@ class CausalWorkflow:
                 raise RuntimeError(
                     "2x2 DiD fallback requires treatment=... and time=...."
                 )
-            return sp.did(self.data, y=self.y, treat=self.treatment, time=self.time)
+            # crit_dist pinned until the default switch (planned 1.41).
+            return sp.did(
+                self.data,
+                y=self.y,
+                treat=self.treatment,
+                time=self.time,
+                crit_dist="legacy",
+            )
         if d == "rd" and self.running_var:
             return sp.rdrobust(
                 self.data, y=self.y, x=self.running_var, c=self.cutoff or 0.0
@@ -868,7 +883,14 @@ class CausalWorkflow:
             _safe_call(
                 "Sun–Abraham",
                 lambda: sp.sun_abraham(
-                    self.data, y=self.y, g=cohort_col, t=time_col, i=id_col
+                    self.data,
+                    y=self.y,
+                    g=cohort_col,
+                    t=time_col,
+                    i=id_col,
+                    # Pin today's critical values: no FutureWarning users
+                    # cannot act on. Switch with the default (planned 1.41).
+                    crit_dist="normal",
                 ),
             )
             _safe_call(
@@ -897,7 +919,14 @@ class CausalWorkflow:
                 time_col = self.time
                 _safe_call(
                     "2x2 DiD",
-                    lambda: sp.did(self.data, y=self.y, treat=treat_col, time=time_col),
+                    lambda: sp.did(
+                        self.data,
+                        y=self.y,
+                        treat=treat_col,
+                        time=time_col,
+                        # pinned until the crit_dist default switch (1.41)
+                        crit_dist="legacy",
+                    ),
                 )
             else:
                 _row(
@@ -1388,19 +1417,27 @@ def causal(
     --------
     One-call full analysis:
 
+    >>> import os
+    >>> import tempfile
     >>> import statspai as sp
-    >>> w = sp.causal(df, y='wage', treatment='training',
-    ...               id='worker', time='year', design='did')
-    >>> w.report('analysis.html')
+    >>> df = sp.dgp_did(n_units=60, n_periods=6, seed=0)
+    >>> w = sp.causal(df, y='y', treatment='treated',
+    ...               id='unit', time='time', design='did')
+    >>> html = w.report(os.path.join(tempfile.mkdtemp(), 'analysis.html'))
+    >>> html.startswith('<!DOCTYPE html>')
+    True
 
     Fine-grained control:
 
-    >>> w = sp.causal(df, y='y', treatment='d', auto_run=False)
-    >>> w.diagnose()        # -> IdentificationReport
+    >>> obs = sp.dgp_observational(n=300, seed=0)
+    >>> w = sp.causal(obs, y='y', treatment='treatment', auto_run=False)
+    >>> diag = w.diagnose()        # -> IdentificationReport
     >>> if w.diagnostics.verdict == 'BLOCKERS':
     ...     raise SystemExit(1)
-    >>> w.estimate()
-    >>> print(w.report(fmt='markdown'))
+    >>> fit = w.estimate()
+    >>> md = w.report(fmt='markdown')
+    >>> md.splitlines()[0]
+    '# Causal Analysis Report'
     """
     workflow = CausalWorkflow(
         data=data,

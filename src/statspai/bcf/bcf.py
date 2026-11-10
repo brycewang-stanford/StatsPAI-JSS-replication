@@ -1,9 +1,11 @@
 """
-Bayesian Causal Forest (BCF): Warm-start BART for causal inference.
+BCF-style CATE approximation (random forest + gradient boosting).
 
-Since full BART MCMC is complex and typically requires dedicated C/C++
-backends, this implementation provides a practical approximation using
-ensemble methods with Bayesian-inspired regularisation:
+**This is not Bayesian Causal Forest.** It has no BART prior and no MCMC
+posterior. It borrows the structure of Hahn, Murray and Carvalho (2020)
+-- the estimated propensity enters the prognostic model, and the
+prognostic and effect functions are fitted separately -- and fits both
+with ordinary ensembles:
 
 1. Estimate propensity score e(X) = P(D=1|X).
 2. Fit prognostic model: mu(X, e(X)) via ensemble (random forest).
@@ -11,8 +13,10 @@ ensemble methods with Bayesian-inspired regularisation:
    Y - mu(X) on covariates, for treated units only, with shrinkage.
 4. Bootstrap for posterior-like uncertainty quantification.
 
-This captures the key BCF insights (propensity inclusion, separate
-mu/tau, regularization toward homogeneity) without requiring MCMC.
+The intervals are percentiles of a nonparametric bootstrap of this
+procedure (the propensity is not re-estimated inside the bootstrap), not
+posterior credible intervals, and the numbers are not expected to match R
+``bcf``. Every call says so with a ``BCFApproximationWarning``.
 
 References
 ----------
@@ -27,8 +31,17 @@ import numpy as np
 import pandas as pd
 from scipy import stats as sp_stats
 
+from .._aliases import accepts_aliases
+from .._input_validation import check_columns
 from ..core.results import CausalResult
-from ..exceptions import DataInsufficient, MethodIncompatibility
+from ..exceptions import DataInsufficient, MethodIncompatibility, StatsPAIWarning
+
+
+class BCFApproximationWarning(StatsPAIWarning):
+    """``sp.bcf`` is an ensemble approximation, not BART-based BCF."""
+
+    code = "bcf_approximation"
+
 
 # sklearn is imported lazily inside the methods that need it so that
 # ``import statspai`` doesn't pull ~245 sklearn submodules through this
@@ -40,6 +53,7 @@ from ..exceptions import DataInsufficient, MethodIncompatibility
 # ======================================================================
 
 
+@accepts_aliases(seed="random_state")
 def bcf(
     data: pd.DataFrame,
     y: str,
@@ -53,7 +67,23 @@ def bcf(
     random_state: int = 42,
 ) -> CausalResult:
     """
-    Estimate heterogeneous treatment effects using Bayesian Causal Forest.
+    BCF-style CATE approximation (random forest + boosting), not BART/MCMC.
+
+    .. warning::
+       This is **not** Bayesian Causal Forest. ``mu(X, e(X))`` is a random
+       forest fitted on controls, ``tau(X)`` a gradient-boosting model fitted
+       to treated residuals, and the uncertainty is a bootstrap of that
+       procedure. There is no BART prior and no posterior; the estimates are
+       not expected to agree with R ``bcf``. Each call issues a
+       ``BCFApproximationWarning``. The posterior-sampling Bayesian causal
+       forest is ``sp.bart_causal(method='bcf')``. For forest-based CATE
+       with valid inference use ``sp.causal_forest``; for doubly robust
+       ATE use ``sp.dml`` / ``sp.aipw`` / ``sp.tmle``.
+
+    .. deprecated:: 1.40.0
+       ``sp.bcf`` will route to ``sp.bart_causal(method='bcf')`` in a later
+       minor release; every call emits a ``FutureWarning`` until then. The
+       numbers of this release are unchanged.
 
     Parameters
     ----------
@@ -94,9 +124,79 @@ def bcf(
     >>> df["outcome"], df["treatment"] = outcome, treatment
     >>> result = sp.bcf(df, y="outcome", treat="treatment",
     ...                 covariates=["x1", "x2", "x3"], n_bootstrap=10)
-    >>> print(result.summary())
+    >>> type(result).__name__
+    'CausalResult'
+    >>> bool(result.ci[0] < 2.0 < result.ci[1])  # true ATE = 2
+    True
     >>> cate = result.model_info["cate"]        # individual effects
+    >>> cate.shape
+    (400,)
     """
+    import warnings
+
+    warnings.warn(
+        "sp.bcf will route to sp.bart_causal(method='bcf') (the MCMC "
+        "Bayesian causal forest) in a later minor release; its estimates and "
+        "result type will then be those of sp.bart_causal. Call "
+        "sp.bart_causal(method='bcf') to adopt it now. This release returns "
+        "the same numbers as before. See MIGRATION.md.",
+        FutureWarning,
+        stacklevel=2,
+    )
+    return _bcf_fit(
+        data,
+        y,
+        treat,
+        covariates,
+        n_trees_mu=n_trees_mu,
+        n_trees_tau=n_trees_tau,
+        n_bootstrap=n_bootstrap,
+        n_folds=n_folds,
+        alpha=alpha,
+        random_state=random_state,
+    )
+
+
+def _bcf_fit(
+    data: pd.DataFrame,
+    y: str,
+    treat: str,
+    covariates: List[str],
+    n_trees_mu: int = 200,
+    n_trees_tau: int = 50,
+    n_bootstrap: int = 200,
+    n_folds: int = 5,
+    alpha: float = 0.05,
+    random_state: int = 42,
+) -> CausalResult:
+    """The fit behind :func:`bcf`, without its deprecation notice.
+
+    ``sp.bcf_ordinal`` and ``sp.bcf_factor_exposure`` call this, so the
+    planned rerouting of ``sp.bcf`` does not change them.
+    """
+    import warnings
+
+    warnings.warn(
+        BCFApproximationWarning(
+            "sp.bcf is a BCF-style approximation (random-forest prognostic "
+            "model + gradient-boosting effect model, bootstrap intervals), "
+            "not Bayesian Causal Forest: there is no BART prior or MCMC "
+            "posterior and the numbers do not reproduce R bcf.",
+            recovery_hint=(
+                "For the Bayesian causal forest itself (BART priors, MCMC "
+                "posterior) use sp.bart_causal(method='bcf'); for forest "
+                "CATE with valid inference sp.causal_forest; for a doubly "
+                "robust ATE sp.dml / sp.aipw / sp.tmle."
+            ),
+            alternative_functions=[
+                "sp.bart_causal",
+                "sp.causal_forest",
+                "sp.dml",
+                "sp.tmle",
+            ],
+        ),
+        stacklevel=3,
+    )
     est = BayesianCausalForest(
         data=data,
         y=y,
@@ -142,7 +242,7 @@ def bcf(
 
 class BayesianCausalForest:
     """
-    Bayesian Causal Forest estimator.
+    BCF-style CATE approximation (random forest + boosting; not BART).
 
     Lower-level engine behind :func:`sp.bcf`; ``fit()`` returns the same
     :class:`~statspai.core.results.CausalResult`.
@@ -213,9 +313,11 @@ class BayesianCausalForest:
         """Fit BCF and return treatment effect estimates."""
         # Prepare data
         cols = [self.y, self.treat] + self.covariates
-        missing = [c for c in cols if c not in self.data.columns]
-        if missing:
-            raise ValueError(f"Columns not found in data: {missing}")
+        check_columns(
+            self.data,
+            {"y": self.y, "treat": self.treat, "covariates": list(self.covariates)},
+            function="sp.bcf",
+        )
 
         clean = self.data[cols].dropna()
         Y = clean[self.y].values.astype(np.float64)
@@ -331,7 +433,12 @@ class BayesianCausalForest:
         ci = (ate - z_crit * se, ate + z_crit * se)
 
         model_info = {
-            "architecture": "BCF",
+            "architecture": "BCF-style approximation (RF mu + GBM tau)",
+            "posterior": False,
+            "approximation_note": (
+                "Not Bayesian Causal Forest: no BART prior or MCMC "
+                "posterior; intervals are bootstrap percentiles."
+            ),
             "n_trees_mu": self.n_trees_mu,
             "n_trees_tau": self.n_trees_tau,
             "n_bootstrap": self.n_bootstrap,
@@ -354,7 +461,7 @@ class BayesianCausalForest:
 
         self._boot_cate = boot_cate
         result = CausalResult(
-            method="BCF (Hahn, Murray, Carvalho 2020)",
+            method="BCF-style approximation (RF + GBM; not BART)",
             estimand="ATE",
             estimate=ate,
             se=se,

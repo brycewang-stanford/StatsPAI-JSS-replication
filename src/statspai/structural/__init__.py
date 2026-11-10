@@ -1,21 +1,25 @@
 """Structural estimation methods."""
 
-from .blp import blp, BLPResult
+from .blp import BLPResult, blp, blp_instruments
+from .path_analysis import PathAnalysisResult, path_analysis
 from .production import (
-    prod_fn,
-    olley_pakes,
-    opreg,
+    ProductionResult,
+    acf,
+    ackerberg_caves_frazer,
     levinsohn_petrin,
     levpet,
-    ackerberg_caves_frazer,
-    acf,
-    wooldridge_prod,
     markup,
-    ProductionResult,
+    olley_pakes,
+    opreg,
+    prod_fn,
+    wooldridge_prod,
 )
 
 __all__ = [
+    "path_analysis",
+    "PathAnalysisResult",
     "blp",
+    "blp_instruments",
     "BLPResult",
     "prod_fn",
     "olley_pakes",

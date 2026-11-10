@@ -12,10 +12,10 @@ This generated file does not certify that a human visual review has already been
 - Expected archive: `build/statspai-jss-submission.zip`
 - Expected archive manifest: `build/statspai-jss-submission-manifest.md`
 - Packaged PDF member: `Paper-JSS/manuscript/main.pdf`
-- PDF pages: `54`
-- Sampled pages from machine render audit: `1, 2, 27, 54`
+- PDF pages: `48`
+- Sampled pages from machine render audit: `1, 2, 24, 48`
 - Manual visual check status: `PENDING_MANUAL_REVIEW`
-- Full-document machine scan pages: `54`
+- Full-document machine scan pages: `48`
 - Full-document machine scan failures: `0`
 - Full-document machine scan is not human review: `True`
 - Claimed manual acceptance: `False`
@@ -29,10 +29,10 @@ This generated file does not certify that a human visual review has already been
 | Item | Action | Record |
 |---|---|---|
 | `open_packaged_pdf` | Open the packaged manuscript/main.pdf from the final JSS submission archive, not a stale working-tree copy. | viewer, archive filename, and archive timestamp |
-| `page_count_matches_audits` | Confirm that the viewer reports 54 pages and that the count matches pdf_render_audit and jss_full_audit. | observed page count |
+| `page_count_matches_audits` | Confirm that the viewer reports 48 pages and that the count matches pdf_render_audit and jss_full_audit. | observed page count |
 | `archive_manifest_crosscheck` | Before accepting the visual review, confirm that the PDF was opened from `Paper-JSS/manuscript/main.pdf` after extracting `build/statspai-jss-submission.zip`, then compare the archive size and file count with `build/statspai-jss-submission-manifest.md` or the final verifier output. | archive size, file count, PDF member path, and manifest/verifier source |
 | `use_page_inventory` | Use the generated page inventory below to jump to front matter, section starts, tables, figures, references, and boundary-text pages before the full page-by-page scan. | pages checked from inventory plus any mismatch |
-| `all_pages_nonblank` | Inspect pages 1 through 54 for blank pages, missing content, or unexpected dark/empty pages. | first failing page if any |
+| `all_pages_nonblank` | Inspect pages 1 through 48 for blank pages, missing content, or unexpected dark/empty pages. | first failing page if any |
 | `front_matter_and_metadata` | Check title, authors, affiliations, abstract, keywords, date, JSS class styling, and page headers. | front-matter issues if any |
 | `text_and_equation_layout` | Scan every page for clipped text, overlapping lines, broken equations, unreadable code font, or orphaned headings. | page and object for each issue |
 | `tables_figures_captions` | Check that all tables, figures, captions, and legends are readable and not split or clipped in a way that blocks review. | table or figure label for each issue |
@@ -45,76 +45,70 @@ This generated file does not certify that a human visual review has already been
 
 | Page | Text chars | Section markers | Float markers | Boundary markers |
 |---:|---:|---|---|---|
-| 1 | 2221 | front_matter, introduction | -- | validation_tier |
-| 2 | 4094 | -- | Figure 3 | -- |
-| 3 | 3210 | -- | Listing 1 | -- |
-| 4 | 3627 | -- | Figure 4, Table 1 | -- |
-| 5 | 3222 | software_architecture | -- | validation_tier |
-| 6 | 2991 | -- | Listing 2 | validation_tier |
-| 7 | 2997 | agent_registry_api | -- | -- |
-| 8 | 3234 | -- | -- | -- |
-| 9 | 3151 | worked_examples | Table 2 | -- |
-| 10 | 2457 | -- | Listing 1, Listing 3, Table 9 | -- |
-| 11 | 3406 | -- | Listing 1, Listing 4, Table 3, Table 8, Table 9 | -- |
-| 12 | 2040 | -- | Figure 1, Listing 5, Table 3, Table 9 | -- |
-| 13 | 2741 | -- | Listing 5, Listing 6 | -- |
-| 14 | 3790 | -- | Figure 2, Listing 5, Table 18, Table 9 | -- |
-| 15 | 2051 | -- | Figure 2 | -- |
-| 16 | 3266 | -- | Listing 7 | -- |
-| 17 | 3362 | validation_evidence | Table 4 | -- |
-| 18 | 3395 | -- | Figure 3 | -- |
-| 19 | 3117 | -- | Table 5, Table 6 | -- |
-| 20 | 2886 | -- | Table 6, Table 9 | -- |
-| 21 | 2883 | -- | Table 7, Table 8, Table 9 | -- |
-| 22 | 3052 | -- | Table 8, Table 9 | -- |
-| 23 | 3604 | -- | Table 9 | -- |
-| 24 | 3419 | -- | Listing 8, Table 9 | -- |
-| 25 | 3836 | -- | Listing 3, Table 10, Table 5 | -- |
-| 26 | 3245 | -- | Table 10, Table 3 | -- |
-| 27 | 4125 | -- | Table 11 | -- |
-| 28 | 3709 | -- | Table 12 | -- |
-| 29 | 3174 | -- | Table 11 | -- |
-| 30 | 3402 | -- | Table 12, Table 18 | -- |
-| 31 | 3402 | performance | Table 16, Table 6 | source_snapshot |
-| 32 | 3246 | -- | Figure 4, Table 13 | -- |
-| 33 | 3093 | -- | Table 13 | -- |
-| 34 | 1930 | agent_interface_checks | Figure 4, Table 13, Table 14 | -- |
-| 35 | 3096 | -- | Table 14 | -- |
-| 36 | 3003 | computational_details | Table 15 | agent_claim_boundary |
-| 37 | 3592 | -- | Table 16 | -- |
-| 38 | 3039 | discussion | Table 16 | -- |
-| 39 | 4207 | -- | Table 18 | -- |
-| 40 | 2423 | references | -- | agent_claim_boundary |
-| 41 | 2754 | -- | -- | -- |
-| 42 | 2662 | -- | -- | -- |
-| 43 | 2682 | -- | -- | -- |
-| 44 | 2894 | -- | -- | -- |
-| 45 | 2672 | -- | -- | -- |
-| 46 | 2551 | -- | Table 17, Table 8 | -- |
-| 47 | 2021 | -- | Table 17 | -- |
-| 48 | 2308 | -- | Table 17 | -- |
-| 49 | 2275 | -- | Table 17 | -- |
-| 50 | 2111 | -- | Table 17 | -- |
-| 51 | 2195 | -- | Table 17 | -- |
-| 52 | 3251 | -- | Table 10, Table 17, Table 18 | -- |
-| 53 | 4326 | -- | Listing 6, Table 18 | -- |
-| 54 | 795 | -- | -- | -- |
+| 1 | 2236 | front_matter, introduction | -- | validation_tier |
+| 2 | 4107 | -- | Figure 3 | -- |
+| 3 | 3118 | -- | Listing 1 | -- |
+| 4 | 3199 | -- | Table 1 | -- |
+| 5 | 2876 | software_architecture | Listing 2 | validation_tier |
+| 6 | 3147 | -- | Listing 2 | validation_tier |
+| 7 | 2805 | agent_registry_api | Listing 3 | -- |
+| 8 | 3327 | agent_interface_checks | Table 2 | -- |
+| 9 | 2340 | worked_examples | Table 2, Table 3, Table 4 | agent_claim_boundary |
+| 10 | 2997 | -- | Listing 1, Listing 4, Table 4 | -- |
+| 11 | 2440 | -- | Listing 1, Listing 4, Table 11 | -- |
+| 12 | 2709 | -- | Figure 1, Listing 1, Listing 5, Listing 6, Table 5 | -- |
+| 13 | 1649 | -- | Figure 1, Listing 6, Listing 7, Table 11, Table 5 | -- |
+| 14 | 3155 | -- | Listing 7, Table 11, Table 6 | -- |
+| 15 | 2824 | -- | Listing 7, Listing 8, Table 19, Table 6 | -- |
+| 16 | 1828 | -- | Figure 2, Listing 7, Listing 9 | -- |
+| 17 | 2775 | -- | Listing 10, Listing 9 | -- |
+| 18 | 2957 | validation_evidence | Listing 10, Table 7 | -- |
+| 19 | 3588 | -- | Figure 3, Table 7, Table 8, Table 9 | -- |
+| 20 | 3047 | -- | Figure 3 | -- |
+| 21 | 2805 | -- | Table 11, Table 8, Table 9 | -- |
+| 22 | 3091 | -- | Table 10, Table 11 | -- |
+| 23 | 3265 | -- | Table 11 | -- |
+| 24 | 3602 | -- | Listing 11, Listing 4, Table 5 | -- |
+| 25 | 3652 | -- | Table 12, Table 5 | -- |
+| 26 | 3928 | -- | Table 14, Table 5 | -- |
+| 27 | 3339 | -- | Table 13, Table 14, Table 15, Table 19 | -- |
+| 28 | 2929 | -- | Table 14 | -- |
+| 29 | 3281 | -- | Table 15 | -- |
+| 30 | 3654 | -- | Table 19 | -- |
+| 31 | 3087 | performance | -- | -- |
+| 32 | 3278 | -- | Figure 4, Table 16 | -- |
+| 33 | 3190 | computational_details | Table 16 | -- |
+| 34 | 1895 | -- | Figure 4, Table 16 | -- |
+| 35 | 3604 | discussion | Table 17 | -- |
+| 36 | 3518 | -- | Table 17 | -- |
+| 37 | 2258 | references | -- | agent_claim_boundary |
+| 38 | 2624 | -- | -- | -- |
+| 39 | 2649 | -- | -- | -- |
+| 40 | 2677 | -- | -- | -- |
+| 41 | 2654 | -- | -- | -- |
+| 42 | 3019 | -- | -- | -- |
+| 43 | 2668 | -- | -- | -- |
+| 44 | 2731 | -- | -- | -- |
+| 45 | 3131 | -- | Table 18 | -- |
+| 46 | 3716 | -- | Table 18 | -- |
+| 47 | 4280 | -- | Table 19 | -- |
+| 48 | 1917 | -- | Table 19 | -- |
 
 ## Metrics
 
-- `page_count`: `54`
-- `sampled_pages`: `[1, 2, 27, 54]`
+- `page_count`: `48`
+- `sampled_pages`: `[1, 2, 24, 48]`
 - `checklist_item_count`: `12`
 - `pdf_render_status`: `PASS`
 - `pdf_render_failure_count`: `0`
-- `full_document_machine_scan_pages`: `54`
+- `full_document_machine_scan_pages`: `48`
 - `full_document_machine_scan_failures`: `0`
 - `full_document_machine_scan_not_human_review`: `True`
-- `page_inventory_count`: `54`
-- `page_inventory_text_pages`: `54`
-- `page_inventory_min_text_chars`: `795`
+- `page_inventory_count`: `48`
+- `page_inventory_text_pages`: `48`
+- `page_inventory_min_text_chars`: `1649`
 - `page_inventory_section_markers`: `['agent_interface_checks', 'agent_registry_api', 'computational_details', 'discussion', 'front_matter', 'introduction', 'performance', 'references', 'software_architecture', 'validation_evidence', 'worked_examples']`
-- `page_inventory_float_marker_count`: `75`
+- `page_inventory_float_marker_count`: `76`
 - `manual_visual_check_required`: `True`
 - `manual_visual_check_status`: `PENDING_MANUAL_REVIEW`
 - `claimed_manual_acceptance`: `False`

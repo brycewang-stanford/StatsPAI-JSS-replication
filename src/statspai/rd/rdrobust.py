@@ -25,15 +25,33 @@ import pandas as pd
 from scipy import stats
 
 from .._aliases import accepts_aliases
+from .._input_validation import check_columns, missing_named_columns
+from ..core._call_record import records_call
 from ..core.results import CausalResult
 from ..exceptions import (
     AssumptionWarning,
+    ColumnNotFound,
     ConvergenceFailure,
     DataInsufficient,
     MethodIncompatibility,
+    NumericalInstability,
 )
 
 Bandwidth = Union[float, Tuple[float, float]]
+
+
+def _check_rd_columns(
+    data: pd.DataFrame, columns: Dict[str, Any], function: str = "sp.rdrobust"
+) -> None:
+    """Raise ``ColumnNotFound`` (with did-you-mean) for absent columns."""
+    missing = missing_named_columns(columns, data.columns)
+    if missing:
+        raise ColumnNotFound.from_missing(
+            missing,
+            list(data.columns),
+            context=function,
+            extra_diagnostics={"missing_column": next(iter(missing.values()))},
+        )
 
 
 def _require_dataframe(value: Any, name: str) -> pd.DataFrame:
@@ -120,6 +138,26 @@ def _require_positive_float(value: Any, name: str) -> float:
             diagnostics={name: out},
         )
     return out
+
+
+def _require_bandwidth(value: Any, name: str) -> Any:
+    """A positive bandwidth, or a ``(left, right)`` pair of them.
+
+    The signature (and the estimator below) accept asymmetric bandwidths,
+    e.g. ``h`` and ``b`` from ``rdbwselect(bwselect='msetwo')``; the scalar
+    check used to reject every tuple.
+    """
+    if isinstance(value, (tuple, list, np.ndarray)) and not isinstance(value, str):
+        vals = list(np.asarray(value, dtype=object).ravel())
+        if len(vals) != 2:
+            raise MethodIncompatibility(
+                f"`{name}` must be a positive number or a (left, right) pair.",
+                diagnostics={name: repr(value)},
+            )
+        left = _require_positive_float(vals[0], f"{name}[0]")
+        right = _require_positive_float(vals[1], f"{name}[1]")
+        return (left, right)
+    return _require_positive_float(value, name)
 
 
 def _require_int_at_least(value: Any, name: str, minimum: int) -> int:
@@ -276,8 +314,14 @@ def _rdrobust_bayes_engine(
 # ======================================================================
 
 
+@records_call("rdrobust")
 @accepts_aliases(
-    _strict=True, running="x", cutoff="c", covariates="covs", controls="covs"
+    _strict=True,
+    running="x",
+    cutoff="c",
+    covariates="covs",
+    controls="covs",
+    seed="random_state",
 )
 def rdrobust(
     data: pd.DataFrame,
@@ -306,6 +350,8 @@ def rdrobust(
     warn_weak_first_stage: bool = True,
     manipulation_test: bool = True,
     engine: str = "ols",
+    masspoints: str = "adjust",
+    scalepar: float = 1.0,
 ) -> CausalResult:
     """
     Local polynomial RD estimation with robust bias-corrected inference.
@@ -344,10 +390,11 @@ def rdrobust(
         - 'msetwo'   : MSE-optimal, separate left/right
         - 'cerrd'    : CER-optimal, common (Calonico-Cattaneo-Farrell 2020)
         - 'certwo'   : CER-optimal, separate left/right
-        - 'msecomb1' : min of mserd and msetwo
-        - 'msecomb2' : median of mserd, mseleft, mseright
-        - 'cercomb1' : min of cerrd and certwo
-        - 'cercomb2' : median of cerrd, cerleft, cerright
+        - 'msesum'   : MSE-optimal, common, for the sum of the two sides
+        - 'msecomb1' : min(mserd, msesum)
+        - 'msecomb2' : median(msetwo, mserd, msesum), side by side
+        - 'cersum', 'cercomb1', 'cercomb2' : the CER-optimal counterparts
+          (``sp.rdbwselect`` documents the full menu)
         - 'cct'      : delegate to the official ``rdrobust`` Python port
                        (the method authors' code); requires the optional
                        ``statspai[rd-cct]`` extra. The native default
@@ -382,7 +429,7 @@ def rdrobust(
         Cluster variable for standard errors.  Note that clustering is not
         confined to inference: it enters the ``V`` term of the bandwidth
         cascade, so ``h`` and ``b`` move as well.
-    vce : {'nn', 'hc0', 'hc1', 'hc2', 'hc3'}, default 'nn'
+    vce : {'nn', 'hc0', 'hc1', 'hc2', 'hc3', 'cr1', 'cr2', 'cr3'}, default 'nn'
         Variance estimator, matching R ``rdrobust``'s argument of the same
         name.  ``'nn'`` uses nearest-neighbour residuals (``nnmatch=3``);
         the ``hc*`` family uses regression residuals with the usual
@@ -393,7 +440,15 @@ def rdrobust(
         differencing removes exactly the within-cluster correlation a
         clustered variance exists to capture, and pairing the two
         understates the SE by roughly 10x.  This mirrors R, which makes the
-        same substitution silently.
+        same substitution.  With ``cluster``, ``'hc2'`` / ``'hc3'`` are R
+        4.0.0's ``'cr2'`` / ``'cr3'`` (Bell-McCaffrey and jackknife
+        leverage corrections of each cluster's residuals, no small-sample
+        factor; a warning says so), and ``'cr1'`` / ``'cr2'`` / ``'cr3'``
+        may be named directly; without ``cluster`` they fall back to
+        ``'hc1'`` / ``'hc2'`` / ``'hc3'`` with a warning, as in R.
+        Stata's spellings ``'cluster v'`` and ``'nncluster v'`` (also
+        inside ``'vce(...)'``) are read as ``cluster='v'`` with that
+        variance.
     donut : float, default 0
         Donut-hole radius: observations with |x - c| <= donut are
         excluded. Useful when manipulation near the cutoff is suspected.
@@ -425,6 +480,22 @@ def rdrobust(
         If ``True``, emit a ``UserWarning`` when the running variable
         has fewer than 30 distinct values, recommending
         :func:`rd_discrete` (Kolesár & Rothe 2018) for honest inference.
+    masspoints : {'adjust', 'check', 'off'}, default 'adjust'
+        R ``rdrobust(masspoints=)``, for the data-driven bandwidth. When 20%
+        or more of either side's observations are tied, ``'adjust'`` uses
+        the count of unique running-variable values in the reference
+        bandwidth and floors the pilot bandwidth at the 10th unique value
+        from the cutoff; ``'check'`` only warns; ``'off'`` treats the data
+        as continuous. The shares are in ``model_info['masspoints']``.
+    scalepar : float, default 1.0
+        Multiply the estimate, its standard errors and its confidence
+        limits by this constant (``rdrobust``'s ``scalepar``). The use is
+        the sharp regression kink design: with ``deriv=1`` the estimate is
+        the change in the slope of the outcome, and dividing it by the
+        known change in the slope of the policy rule gives the effect of
+        the policy variable, so pass ``scalepar = 1 / (kink in the rule)``.
+        Not available with ``bwselect='cct'``, ``engine='bayes'`` or
+        ``bootstrap=``.
     warn_weak_first_stage : bool, default True
         If ``True`` and ``fuzzy`` is set, emit a ``UserWarning`` when
         the first-stage discontinuity F-statistic is below 10,
@@ -482,8 +553,35 @@ def rdrobust(
     nonparametric confidence intervals for regression-discontinuity designs.
     *Econometrica*. [@calonico2014robust]
     """
+    from ._cct_bandwidth import _split_rd_vce
+
+    vce, cluster = _split_rd_vce(vce, cluster, "rdrobust")
     if engine not in ("ols", "bayes"):
         raise ValueError(f"engine must be 'ols' or 'bayes'; got {engine!r}.")
+
+    try:
+        scalepar = float(scalepar)
+    except (TypeError, ValueError) as exc:
+        raise MethodIncompatibility(
+            f"rdrobust: scalepar must be a number, got {scalepar!r}."
+        ) from exc
+    if not np.isfinite(scalepar) or scalepar == 0:
+        raise MethodIncompatibility(
+            f"rdrobust: scalepar must be finite and non-zero, got {scalepar!r}."
+        )
+    if scalepar != 1.0 and (
+        engine == "bayes" or bwselect == "cct" or bootstrap is not None
+    ):
+        raise MethodIncompatibility(
+            "rdrobust: scalepar is applied by the native estimator only, not "
+            "with engine='bayes', bwselect='cct' or bootstrap=.",
+            recovery_hint="Drop the option and rescale the result yourself.",
+            diagnostics={
+                "engine": engine,
+                "bwselect": bwselect,
+                "bootstrap": bootstrap,
+            },
+        )
     p_given = p is not None
     if engine == "bayes":
         return _rdrobust_bayes_engine(
@@ -542,14 +640,10 @@ def rdrobust(
     covs = _coerce_optional_column_list(covs, "covs")
     if cluster is not None:
         cluster = _require_column_name(cluster, "cluster")
-        if cluster not in data.columns:
-            raise MethodIncompatibility(
-                f"Cluster column '{cluster}' not found in data.",
-                diagnostics={
-                    "missing_column": cluster,
-                    "available_columns": list(data.columns),
-                },
-            )
+        _check_rd_columns(data, {"cluster": cluster})
+    if weights is not None:
+        weights = _require_column_name(weights, "weights")
+        _check_rd_columns(data, {"weights": weights})
     kernel = _require_string_option(kernel, "kernel")
     bwselect = _require_string_option(bwselect, "bwselect")
     deriv = _require_int_at_least(deriv, "deriv", 0)
@@ -563,9 +657,9 @@ def rdrobust(
     alpha = _require_open_unit_float(alpha, "alpha")
     n_boot = _require_int_at_least(n_boot, "n_boot", 0)
     if h is not None:
-        h = _require_positive_float(h, "h")
+        h = _require_bandwidth(h, "h")
     if b is not None:
-        b = _require_positive_float(b, "b")
+        b = _require_bandwidth(b, "b")
     if rho is not None:
         rho = _require_positive_float(rho, "rho")
 
@@ -650,13 +744,6 @@ def rdrobust(
         )
 
     # --- Parse and prepare data ---
-    if weights is not None:
-        weights = _require_column_name(weights, "weights")
-        if weights not in data.columns:
-            raise MethodIncompatibility(
-                f"weights column '{weights}' not found in data.",
-                diagnostics={"missing_column": weights},
-            )
     _extra = [col for col in (cluster, weights) if col is not None]
     Y, X_c, D, Z, _valid = _parse_data(
         data, y, x, c, fuzzy, covs, extra=_extra, return_mask=True
@@ -679,13 +766,19 @@ def rdrobust(
             )
 
     # --- Mass-points diagnostic (Kolesár-Rothe 2018) -----------------
+    from ._cct_bandwidth import masspoint_shares
+
+    mass_info = masspoint_shares(X_c, masspoints, "rdrobust")
     n_unique = int(np.unique(X_c).size)
     if warn_mass_points and n_unique < 30 and len(X_c) >= 100:
         warnings.warn(
             f"rdrobust: running variable has only {n_unique} distinct values. "
             "Local-polynomial inference can have poor coverage when the "
             "running variable is discrete; consider sp.rd.rd_discrete "
-            "(Kolesár & Rothe 2018, AER) for honest CIs in this regime.",
+            "(Kolesár & Rothe 2018, AER) for honest CIs in this regime. In "
+            "tests/reliability/rd_mass_points.py the robust 95% interval "
+            "covered 94% at 10 support points a side (n = 1000 and 4000), but "
+            "at 5 a side 97% of the fits were refused as not identified.",
             UserWarning,
             stacklevel=2,
         )
@@ -734,6 +827,28 @@ def rdrobust(
             },
         )
 
+    # A degree-p polynomial needs p + 1 distinct values of the running
+    # variable on each side. With fewer the design is singular whatever the
+    # sample size, and the fit below would return an arbitrary number.
+    support_left = int(np.unique(X_c[left]).size)
+    support_right = int(np.unique(X_c[right]).size)
+    if support_left < p + 1 or support_right < p + 1:
+        raise DataInsufficient(
+            "The running variable takes too few distinct values next to the "
+            f"cutoff for a local polynomial of order p={p} "
+            f"(left={support_left}, right={support_right}, need >= {p + 1} "
+            "a side).",
+            recovery_hint=(
+                "With a running variable this coarse use sp.rd_discrete, or "
+                "compare the two cells next to the cutoff directly."
+            ),
+            diagnostics={
+                "support_left": support_left,
+                "support_right": support_right,
+                "minimum_support_per_side": p + 1,
+            },
+        )
+
     # --- Bandwidth selection ---
     #
     # h AND b both come from the CCT three-stage cascade (rd/_cct_bandwidth.py).
@@ -745,14 +860,11 @@ def rdrobust(
     # them in `except ValueError` to fall back to the legacy selector on
     # degenerate data, which would turn a typo'd vce into a silent switch
     # to a different variance estimator.
-    from ._cct_bandwidth import _VCE_KINDS
+    from ._cct_bandwidth import _VCE_KINDS, _cluster_vce_note
 
     if str(vce).lower() not in _VCE_KINDS:
-        raise ValueError(
-            f"vce must be one of {sorted(_VCE_KINDS)}, got {vce!r}. "
-            "R's cr1/cr2/cr3 are requested by passing cluster= instead."
-        )
-    vce = str(vce).lower()
+        raise ValueError(f"vce must be one of {sorted(_VCE_KINDS)}, got {vce!r}.")
+    vce = _cluster_vce_note(str(vce).lower(), cluster, "rdrobust")
 
     # --- Cluster values (handle donut filtering) ---
     # Aligned with Y / X_c: the complete-case mask first, then the donut.
@@ -764,6 +876,32 @@ def rdrobust(
             cl_vals_all = cl_vals_all[_donut_keep]
     else:
         cl_vals_all = None
+    if cl_vals_all is not None and len(cl_vals_all) == len(X_c):
+        _per_cluster = pd.Series(X_c).groupby(pd.Series(cl_vals_all).to_numpy())
+        _n_cl = int(_per_cluster.ngroups)
+        if _n_cl < len(X_c) and int(_per_cluster.nunique().max()) == 1:
+            # One cluster per support point of the running variable. In
+            # tests/reliability/rd_mass_points.py the robust interval then
+            # covers 84-86% at 50 support points a side, 61-66% at 20 and
+            # 41-47% at 10, against 93-96% without the clustering.
+            warnings.warn(
+                AssumptionWarning(
+                    f"rdrobust: cluster='{cluster}' has one value of the "
+                    "running variable per cluster. Clustering on the support "
+                    "points of a discrete running variable makes the "
+                    "interval too short, not more honest.",
+                    recovery_hint=(
+                        "Drop cluster= (the heteroskedasticity-robust interval "
+                        "held its coverage down to 10 support points a side), "
+                        "or use sp.rd_discrete for honest intervals with a "
+                        "discrete running variable. See "
+                        "tests/reliability/rd_mass_points_results.json."
+                    ),
+                    diagnostics={"n_clusters": _n_cl, "n_obs": int(len(X_c))},
+                    alternative_functions=["sp.rd_discrete"],
+                ),
+                stacklevel=2,
+            )
 
     # A covariate collinear with the polynomial basis leaves the covariate
     # adjustment unidentified, and NumPy's Cholesky accepts the singular
@@ -774,6 +912,8 @@ def rdrobust(
 
     h_auto = h is None
     _cct: Optional[dict] = None
+    #: steps that fell back to the legacy implementation (warned, recorded)
+    _fallbacks: List[str] = []
     if h_auto:
         try:
             from ._cct_bandwidth import cct_bandwidth
@@ -792,15 +932,34 @@ def rdrobust(
                 cluster=cl_vals_all,
                 fuzzy=D,
                 weights=W_obs,
+                masspoints=masspoints,
             )
-        except (ValueError, IndexError, ZeroDivisionError, np.linalg.LinAlgError):
+        except NumericalInstability:
+            # The selector says the bandwidth is undefined on this sample;
+            # another selector's number would not be rdrobust's.
+            raise
+        except (
+            ValueError,
+            IndexError,
+            ZeroDivisionError,
+            np.linalg.LinAlgError,
+        ) as exc:
             # Degenerate data (empty side, singular design, kernel/bwselect
             # rejected): fall back to the legacy selector rather than failing
             # the whole estimate -- except for a weighted fit, which the
             # legacy selector would silently treat as unweighted.
             if W_obs is not None:
                 raise
+            from ..core._fallback import warn_fallback
+
+            warn_fallback(
+                "rdrobust bandwidth selector",
+                exc,
+                "using the legacy plug-in selector, whose bandwidth is not "
+                "the one R / Stata rdrobust would report",
+            )
             _cct = None
+            _fallbacks.append("bandwidth_selector")
 
     if h is None:
         if _cct is not None:
@@ -846,8 +1005,15 @@ def rdrobust(
             "Insufficient observations inside the bandwidth for the local fit: "
             + ", ".join(f"{k}: {v[0]} (need > {v[1]})" for k, v in _short.items())
             + f". h = {h}, b = {b}.",
-            recovery_hint="Use a larger bandwidth or a lower polynomial order.",
+            recovery_hint=(
+                "Use a larger bandwidth or a lower polynomial order. If the "
+                "running variable takes few distinct values (a bandwidth "
+                "narrower than the spacing of its support points), use a "
+                "method built for a discrete running variable "
+                "(sp.rd_discrete, or local randomization with sp.rdrandinf)."
+            ),
             diagnostics={k: v[0] for k, v in _need.items()},
+            alternative_functions=["sp.rd_discrete", "sp.rdrandinf"],
         )
 
     # --- Conventional estimate: order p, bandwidth h ---
@@ -899,10 +1065,25 @@ def rdrobust(
             )
             # (tau_conv, tau_bc, se_conv, se_robust)
             _tau_bc_cct = _cctvals
-        except (ValueError, IndexError, ZeroDivisionError, np.linalg.LinAlgError):
+        except NumericalInstability:
+            raise
+        except (
+            ValueError,
+            IndexError,
+            ZeroDivisionError,
+            np.linalg.LinAlgError,
+        ) as exc:
             if W_obs is not None:
                 raise
+            from ..core._fallback import warn_fallback
+
+            warn_fallback(
+                "rdrobust bias-corrected fit",
+                exc,
+                "using the legacy local-polynomial estimate and variance",
+            )
             _tau_bc_cct = None
+            _fallbacks.append("bias_corrected_fit")
 
     tau_bc, se_robust, _, _ = _rd_estimate(
         Y,
@@ -1013,6 +1194,29 @@ def rdrobust(
             )
             fs_F = float((fs_c / fs_s) ** 2) if fs_s > 0 else float("inf")
 
+    if scalepar != 1.0:
+        tau_conv, tau_bc = tau_conv * scalepar, tau_bc * scalepar
+        se_conv, se_robust = se_conv * abs(scalepar), se_robust * abs(scalepar)
+
+    if not (np.isfinite(se_conv) and np.isfinite(se_robust)):
+        # A NaN standard error used to be returned with a NaN interval.
+        raise NumericalInstability(
+            "rdrobust: the standard error is not finite on this sample (too "
+            "few distinct values of the running variable inside the "
+            "bandwidth for the polynomial order).",
+            recovery_hint=(
+                "Use a larger bandwidth or a lower polynomial order, or a "
+                "method built for a discrete running variable "
+                "(sp.rd_discrete, sp.rdrandinf)."
+            ),
+            diagnostics={
+                "se_conventional": float(se_conv),
+                "se_robust": float(se_robust),
+                "fallbacks": list(_fallbacks),
+            },
+            alternative_functions=["sp.rd_discrete", "sp.rdrandinf"],
+        )
+
     # --- Inference ---
     z_crit = stats.norm.ppf(1 - alpha / 2)
 
@@ -1059,8 +1263,10 @@ def rdrobust(
         # fed into the next estimate is the F3 defect from
         # sp.rdbwselect, one layer down.
         "bandwidth_h": h,
+        "legacy_fallbacks": list(_fallbacks),
         "bandwidth_b": b,
         "bwselect": bwselect if h_auto else "manual",
+        "masspoints": mass_info,
         "cutoff": c,
         "n_left": n_left_total,
         "n_right": n_right_total,
@@ -1079,6 +1285,7 @@ def rdrobust(
             "ci": ci_robust,
         },
         "rho": float(rho) if rho is not None else None,
+        "scalepar": scalepar,
         "first_stage_F": fs_F,
         "n_unique_running": n_unique,
         # Options that change the computation, recorded for
@@ -1136,41 +1343,61 @@ def rdrobust(
     if rbc is not None:
         model_info["rbc_bootstrap"] = rbc
 
-    # Manipulation (McCrary) check — sorting around the cutoff is the canonical
-    # threat to RD identification. Run the density test best-effort so a
-    # significant discontinuity surfaces loudly here and in
-    # ``result.violations()``; a failure of the *test* never breaks the point
-    # estimate. Skipped by internal callers that loop over placebo cutoffs
+    # Manipulation check — sorting around the cutoff is the canonical threat
+    # to RD identification. Run the density test best-effort so a significant
+    # discontinuity surfaces loudly here and in ``result.violations()``; a
+    # failure of the *test* never breaks the point estimate. Skipped by
+    # internal callers that loop over placebo cutoffs
     # (manipulation_test=False), where a warning would be spurious.
+    #
+    # The test is sp.rddensity (Cattaneo, Jansson and Ma). It used to be
+    # McCrary's binned test, which is not built for a score with mass
+    # points: on the academic-probation data of Lindo, Sanders and
+    # Oreopoulos (429 GPA values) it rejects at 43% of placebo cutoffs where
+    # nothing is manipulated, against 5% for rddensity, and it reported
+    # p = 6e-11 at the true cutoff where rddensity gives 0.082. The key
+    # stays ``model_info['mccrary']`` because the audit rules and agent
+    # summaries read it; ``'test'`` says which test filled it.
     if manipulation_test:
         try:
-            from ..diagnostics.sensitivity import mccrary_test as _mccrary_test
+            from ..diagnostics.rddensity import rddensity as _rddensity
 
-            _mc = _mccrary_test(data, x=x, c=c)
+            _mc = _rddensity(data, x=x, c=c)
             _mc_p = float(_mc.pvalue)
         except (
             DataInsufficient,
             ConvergenceFailure,
+            MethodIncompatibility,
             ValueError,
             RuntimeError,
             np.linalg.LinAlgError,
             ZeroDivisionError,
         ) as _exc:
-            model_info["mccrary"] = {"pvalue": None, "error": type(_exc).__name__}
+            model_info["mccrary"] = {
+                "pvalue": None,
+                "error": type(_exc).__name__,
+                "test": "rddensity",
+            }
         else:
-            model_info["mccrary"] = {"pvalue": _mc_p}
+            model_info["mccrary"] = {"pvalue": _mc_p, "test": "rddensity"}
             if _mc_p < 0.05:
                 warnings.warn(
                     AssumptionWarning(
-                        f"Density manipulation at the cutoff: McCrary test "
-                        f"p = {_mc_p:.3g} < 0.05 — units may be sorting across "
-                        "the threshold, which breaks RD identification.",
+                        f"Density manipulation at the cutoff: the rddensity "
+                        f"test gives p = {_mc_p:.3g} < 0.05 — units may be "
+                        "sorting across the threshold, which breaks RD "
+                        "identification.",
                         recovery_hint=(
                             "Inspect sp.rddensity / sp.rdplotdensity; a donut "
                             "hole (donut=) can probe robustness, but confirmed "
                             "sorting makes the RD estimate suspect."
                         ),
-                        diagnostics={"mccrary_pvalue": _mc_p, "cutoff": c},
+                        diagnostics={
+                            "mccrary_pvalue": _mc_p,
+                            "density_pvalue": _mc_p,
+                            "density_test": "rddensity",
+                            "cutoff": c,
+                        },
                         alternative_functions=[
                             "sp.rddensity",
                             "sp.rdplotdensity",
@@ -1502,6 +1729,7 @@ def rdplot(
     h: Optional[float] = None,
     covs: Optional[List[str]] = None,
     weights: Optional[str] = None,
+    cluster: Optional[str] = None,
     hide_ci: bool = False,
     scatter: bool = True,
     ax: Optional[Any] = None,
@@ -1565,6 +1793,12 @@ def rdplot(
         does.
     weights : str, optional
         Observation weights for the polynomial fit.
+    cluster : str, optional
+        Cluster column: the per-bin intervals become cluster-robust (Stata
+        ``mean y, vce(cluster c)`` within each bin, ``t(G - 1)``), and so does
+        the shaded band around the polynomial (CR1). R ``rdplot`` has no
+        cluster option; without it the intervals assume independent
+        observations.
     hide_ci : bool, default False
         If True, suppress all interval displays.
     scatter : bool, default True
@@ -1608,10 +1842,16 @@ def rdplot(
         raise MethodIncompatibility(
             f"kernel must be 'uniform', 'triangular' or 'epanechnikov'; got {kernel!r}"
         )
+    check_columns(
+        data,
+        {"y": y, "x": x, "covs": covs, "weights": weights, "cluster": cluster},
+        function="sp.rdplot",
+    )
     Y = data[y].to_numpy(dtype=float)
     X = data[x].to_numpy(dtype=float)
     Zc = data[list(covs)].to_numpy(dtype=float) if covs else None
     Wo = data[weights].to_numpy(dtype=float) if weights else None
+    Cl = data[cluster].to_numpy() if cluster else None
 
     res = rdplot_numbers(
         Y,
@@ -1625,6 +1865,7 @@ def rdplot(
         weights=Wo,
         covs=Zc,
         ci=100.0 * ci_level,
+        cluster=Cl,
     )
     vb, vp = res["vars_bins"], res["vars_poly"]
     n_left_bins = int(np.sum(vb["rdplot_mean_bin"] < c))
@@ -1686,11 +1927,25 @@ def rdplot(
         wr = _kweight(X[~left & ok], c, hr, kernel)
         if Wo is not None:
             wl, wr = wl * Wo[left & ok], wr * Wo[~left & ok]
+        if Cl is not None:
+            ok &= ~pd.isna(Cl)
         _, lo_l, hi_l = _weighted_poly_fit_ci(
-            X[left & ok], Y[left & ok], p, grid_l, ci_level, wl
+            X[left & ok],
+            Y[left & ok],
+            p,
+            grid_l,
+            ci_level,
+            wl,
+            None if Cl is None else Cl[left & ok],
         )
         _, lo_r, hi_r = _weighted_poly_fit_ci(
-            X[~left & ok], Y[~left & ok], p, grid_r, ci_level, wr
+            X[~left & ok],
+            Y[~left & ok],
+            p,
+            grid_r,
+            ci_level,
+            wr,
+            None if Cl is None else Cl[~left & ok],
         )
         ax.fill_between(grid_l, lo_l, hi_l, color="#E74C3C", alpha=0.12, zorder=2)
         ax.fill_between(grid_r, lo_r, hi_r, color="#3498DB", alpha=0.12, zorder=2)
@@ -1740,8 +1995,13 @@ def _weighted_poly_fit_ci(
     x_grid: np.ndarray,
     level: float,
     weights: Optional[np.ndarray] = None,
+    cluster: Optional[np.ndarray] = None,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Weighted global polynomial fit with pointwise confidence intervals."""
+    """Weighted global polynomial fit with pointwise confidence intervals.
+
+    With ``cluster`` the coefficient covariance is CR1 (``G/(G-1)
+    (n-1)/(n-k)``), as ``regress [aw=], vce(cluster)``.
+    """
     order = min(order, len(xv) - 1)
     if len(xv) < 3:
         nan_arr = np.full(len(x_grid), np.nan)
@@ -1769,6 +2029,18 @@ def _weighted_poly_fit_ci(
         else:
             sigma2 = np.sum(resid**2) / max(len(xv) - order - 1, 1)
         cov_beta = sigma2 * np.linalg.pinv(Vw.T @ Vw)
+        if cluster is not None:
+            wv = np.ones(len(xv)) if weights is None else w
+            bread = np.linalg.pinv(Vw.T @ Vw)
+            codes = pd.factorize(cluster)[0]
+            G = int(codes.max()) + 1
+            sc = V_data * (wv * resid)[:, None]
+            S = np.zeros((G, sc.shape[1]))
+            np.add.at(S, codes, sc)
+            k = order + 1
+            nn = len(xv)
+            fac = G / max(G - 1, 1) * (nn - 1) / max(nn - k, 1)
+            cov_beta = fac * bread @ (S.T @ S) @ bread
         se = np.sqrt(np.maximum(np.sum((V_grid @ cov_beta) * V_grid, axis=1), 0))
     except (np.linalg.LinAlgError, ValueError):
         fit = np.full(len(x_grid), np.nan)
@@ -1861,6 +2133,7 @@ def rdplotdensity(
         raise ImportError("matplotlib required. Install: pip install matplotlib")
     from ._rdplot_core import lpdensity_numbers
 
+    check_columns(data, {"x": x}, function="sp.rdplotdensity")
     X = data[x].to_numpy(dtype=float)
     X = X[np.isfinite(X)]
     n = len(X)
@@ -1969,24 +2242,25 @@ def _parse_data(
     if fuzzy is not None:
         fuzzy = _require_column_name(fuzzy, "fuzzy")
     covs = _coerce_optional_column_list(covs, "covs")
-    for col in [y, x]:
-        if col not in data.columns:
-            raise MethodIncompatibility(
-                f"Column '{col}' not found in data",
-                diagnostics={
-                    "missing_column": col,
-                    "available_columns": list(data.columns),
-                },
-            )
-    if fuzzy and fuzzy not in data.columns:
-        raise MethodIncompatibility(
-            f"Fuzzy variable '{fuzzy}' not found in data",
-            diagnostics={
-                "missing_column": fuzzy,
-                "available_columns": list(data.columns),
-            },
-        )
+    _check_rd_columns(data, {"y": y, "x": x, "fuzzy": fuzzy or None, "covs": covs})
 
+    # a string or categorical column cannot enter the local regression; say
+    # which one it is (Stata's rdrobust stops with r(2000) on the same input)
+    for role, col in [("outcome", y), ("running variable", x), ("fuzzy", fuzzy)] + [
+        ("covariate", name) for name in (covs or []) if name in data.columns
+    ]:
+        if col and not (
+            pd.api.types.is_numeric_dtype(data[col])
+            or pd.api.types.is_bool_dtype(data[col])
+        ):
+            raise MethodIncompatibility(
+                f"rdrobust: the {role} {col!r} is not numeric "
+                f"(dtype {data[col].dtype}).",
+                recovery_hint="Encode it as numbers first; a categorical "
+                "covariate enters as indicator columns, e.g. "
+                "pd.get_dummies(df[col], drop_first=True, dtype=float).",
+                diagnostics={"column": col, "dtype": str(data[col].dtype)},
+            )
     Y = data[y].values.astype(float)
     X_c = data[x].values.astype(float) - c
     D = data[fuzzy].values.astype(float) if fuzzy else None
@@ -1997,14 +2271,6 @@ def _parse_data(
         valid &= np.isfinite(D)
     if covs:
         for col in covs:
-            if col not in data.columns:
-                raise MethodIncompatibility(
-                    f"Covariate '{col}' not found in data",
-                    diagnostics={
-                        "missing_column": col,
-                        "available_columns": list(data.columns),
-                    },
-                )
             valid &= np.isfinite(data[col].values.astype(float))
     for col in extra or []:
         valid &= data[col].notna().to_numpy()
@@ -2022,8 +2288,13 @@ def _parse_data(
     Z = None
     if covs:
         Z = np.column_stack([data.loc[valid, col].values.astype(float) for col in covs])
-        # Demean covariates for numerical stability
-        Z = Z - Z.mean(axis=0)
+        # Covariates enter on their own scale, as in R / Stata rdrobust. Do
+        # NOT demean them: the fuzzy bandwidth cascade forms its delta-method
+        # weights from each side's *levels* tau_Y / tau_T at the cutoff
+        # (``rdrobust_bw`` at nu = 0), and those levels move with the
+        # covariates' location. Demeaning here (as through 2026-10-18) left
+        # the fuzzy + covs mserd h 4e-3 to 5e-3 (relative) off rdrobust 4.0.0
+        # while b, every sharp bandwidth and every fixed-h estimate matched.
 
     if return_mask:
         return Y, X_c, D, Z, valid
@@ -2260,7 +2531,15 @@ def _local_residual_var(
         beta = np.linalg.lstsq(Xw, yw, rcond=None)[0]
         resid = y_bw - X @ beta
         return float(np.average(resid**2, weights=w_bw))
-    except Exception:
+    except Exception as exc:
+        from ..core._fallback import warn_fallback
+
+        warn_fallback(
+            "rdrobust pilot residual-variance fit",
+            exc,
+            "using the unconditional variance inside the pilot bandwidth,"
+            " so the selected bandwidth may be off",
+        )
         return float(np.var(y_bw))
 
 
@@ -2288,7 +2567,15 @@ def _estimate_second_deriv(
     try:
         beta = np.linalg.lstsq(Xw, yw, rcond=None)[0]
         return float(2 * beta[2])  # m''(0) = 2 * β₂
-    except Exception:
+    except Exception as exc:
+        from ..core._fallback import warn_fallback
+
+        warn_fallback(
+            "rdrobust pilot curvature (local cubic) fit",
+            exc,
+            "treating the second derivative as zero, which keeps the "
+            "pilot bandwidth instead of the MSE-optimal one",
+        )
         return 0.0
 
 
@@ -2345,6 +2632,7 @@ def _rbc_bootstrap(
     delivers shorter intervals than the analytic robust CI without
     sacrificing coverage.
     """
+    se_floor = 1e-10 * float(np.max(np.abs(Y))) if len(Y) else 0.0
     if isinstance(h, tuple):
         h_l, h_r = h
     else:
@@ -2462,7 +2750,10 @@ def _rbc_bootstrap(
         except Exception:
             continue
 
-        if not np.isfinite(sb_bc) or sb_bc <= 0:
+        # A replicate with no residual variation has a standard error of
+        # zero up to rounding (exactly 0 or about 1e-17, depending on the
+        # BLAS); studentising by it gives a meaningless statistic.
+        if not np.isfinite(sb_bc) or sb_bc <= se_floor:
             continue
         t_star[n_ok] = (tb_bc - tau_bc) / sb_bc
         n_ok += 1

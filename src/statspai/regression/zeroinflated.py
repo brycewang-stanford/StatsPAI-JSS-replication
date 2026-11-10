@@ -24,7 +24,8 @@ Vuong, Q.H. (1989).
 *Econometrica*, 57(2), 307-333. [@vuong1989likelihood]
 
 Cameron, A.C. and P.K. Trivedi (2013).
-*Regression Analysis of Count Data*, 2nd ed. Cambridge University Press. [@cameron2013regression]
+*Regression Analysis of Count Data*, 2nd ed. Cambridge University Press.
+[@cameron2013regression]
 
 Mullahy, J. (1986).
 "Specification and Testing of Some Modified Count Data Models."
@@ -38,16 +39,64 @@ import pandas as pd
 from scipy import optimize, special, stats
 
 from .._aliases import accepts_aliases
+from ..core._call_record import records_call
 from ..core._vcov import ml_vcov
 from ..core._vcov_spec import markout_clusters
 from ..core.results import EconometricResults
 from ..core.utils import parse_formula
+from ..exceptions import DataInsufficient, MethodIncompatibility
 from ._optim_helpers import (
     inverse_information,
     ml_newton_polish,
+    require_two_clusters,
     robust_convergence,
     se_from_vcov,
 )
+
+
+class _FittedArraysDict(Dict[str, Any]):
+    """``diagnostics`` of the zero-inflated and hurdle fits.
+
+    Through 1.38 it also held three vectors of fitted values, one entry
+    per observation, which every summary, JSON export and agent payload
+    then carried along. They live in ``data_info`` now. The old keys still
+    answer here, with a ``DeprecationWarning``, but are no longer listed
+    when the dictionary is iterated or printed.
+    """
+
+    def __init__(self, scalars: Dict[str, Any], arrays: Dict[str, Any]):
+        super().__init__(scalars)
+        self._arrays = dict(arrays)
+
+    def _legacy(self, key: Any) -> Any:
+        import warnings
+
+        warnings.warn(
+            f"diagnostics[{key!r}] is deprecated and will be removed in "
+            f"StatsPAI 1.41; read data_info[{key!r}] instead.",
+            DeprecationWarning,
+            stacklevel=3,
+        )
+        return self._arrays[key]
+
+    def __missing__(self, key: Any) -> Any:
+        if key in self._arrays:
+            return self._legacy(key)
+        raise KeyError(key)
+
+    def get(self, key: Any, default: Any = None) -> Any:
+        if dict.__contains__(self, key):
+            return dict.__getitem__(self, key)
+        if key in self._arrays:
+            return self._legacy(key)
+        return default
+
+    def __contains__(self, key: object) -> bool:
+        return dict.__contains__(self, key) or key in self._arrays
+
+    def __reduce__(self) -> Any:
+        return (_FittedArraysDict, (dict(self), self._arrays))
+
 
 # ---------------------------------------------------------------------------
 # Helper utilities
@@ -61,6 +110,91 @@ def _as_float_array(value: Any) -> np.ndarray:
 def _logit(z: np.ndarray) -> np.ndarray:
     """Logistic sigmoid, numerically stable."""
     return _as_float_array(special.expit(z))
+
+
+#: Overdispersion ``alpha * mean(mu)`` below which the NB2 dispersion is
+#: taken to sit at its boundary alpha = 0 (the variance exceeds the Poisson
+#: variance by less than 0.01%). There the information about ln(alpha) is
+#: nil and the log likelihood is evaluated as a difference of log-gamma
+#: values near 1/alpha, so inverting the full Hessian returns rounding noise
+#: whose sign depends on the platform's BLAS: NaN on Linux and macOS, a
+#: finite number on Windows (seen on CI, 2026-10-17).
+_DISPERSION_BOUNDARY = 1e-4
+
+
+def _nb_standard_errors(
+    H: np.ndarray,
+    score_obs: np.ndarray,
+    *,
+    alpha_hat: float,
+    mean_mu: float,
+    robust: str,
+    clusters: Any,
+) -> Tuple[np.ndarray, bool]:
+    """Standard errors of an NB2 model whose last parameter is ln(alpha).
+
+    At the boundary the covariance of the other parameters is taken with
+    alpha held at its estimate (the Poisson limit, so they equal the
+    zero-inflated / hurdle Poisson standard errors) and ln(alpha) gets NaN,
+    which the result reports as a non-finite standard error.
+    """
+    if alpha_hat * mean_mu >= _DISPERSION_BOUNDARY:
+        V = ml_vcov(inverse_information(H), score_obs, kind=robust, clusters=clusters)
+        return se_from_vcov(V), False
+    V = ml_vcov(
+        inverse_information(H[:-1, :-1]),
+        score_obs[:, :-1],
+        kind=robust,
+        clusters=clusters,
+    )
+    return np.append(se_from_vcov(V), np.nan), True
+
+
+def _warn_flat_terms(se: pd.Series, function: str) -> None:
+    """Warn when the likelihood is flat along some coefficient.
+
+    Under quasi-complete separation in the binary part a coefficient runs
+    off towards infinity and its standard error explodes (R ``pscl``
+    prints ~2e4 at its looser stopping rule, the exact optimum gives far
+    more). The other coefficients are unaffected, so the fit is returned,
+    but the term is named rather than left for the reader to spot.
+    """
+    flat = [str(name) for name, v in se.items() if np.isfinite(v) and v > 1e4]
+    if flat:
+        import warnings
+
+        from ..exceptions import ConvergenceWarning
+
+        warnings.warn(
+            f"{function}: the likelihood is flat along {flat} (standard error "
+            "above 1e4), which is what quasi-complete separation in the "
+            "zero / hurdle part looks like. Those coefficients are not "
+            "identified; the remaining estimates and standard errors are "
+            "unaffected. Drop or recode the separating regressor to remove "
+            "the term.",
+            ConvergenceWarning,
+            stacklevel=3,
+        )
+
+
+def _log_expit(z: np.ndarray) -> np.ndarray:
+    """``log(expit(z))`` without overflow; complex-step safe.
+
+    ``1 / (1 + exp(-z))`` overflows once ``-z`` passes ~709, and one
+    overflowing row turns the whole complex-step Hessian into NaN. That
+    happens whenever a binary-part coefficient runs off under
+    quasi-complete separation.
+    """
+    neg = np.real(z) < 0
+    return np.asarray(np.where(neg, z, 0.0) - np.log1p(np.exp(np.where(neg, z, -z))))
+
+
+def _logaddexp(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """``log(exp(a) + exp(b))``; complex-step safe (``np.logaddexp`` is not)."""
+    a_big = np.real(a) >= np.real(b)
+    hi = np.where(a_big, a, b)
+    lo = np.where(a_big, b, a)
+    return np.asarray(hi + np.log1p(np.exp(lo - hi)))
 
 
 def _log_poisson_pmf(y: np.ndarray, mu: np.ndarray) -> np.ndarray:
@@ -88,17 +222,51 @@ def _log_nb2_pmf(y: np.ndarray, mu: np.ndarray, alpha: float) -> np.ndarray:
     return _as_float_array(log_p)
 
 
+def _require_plain_columns(data: pd.DataFrame, names: List[str], function: str) -> None:
+    """Every regressor of this family is a column of ``data``.
+
+    The zero-inflated / hurdle estimators read names as columns; a patsy
+    term (``C(g)``, ``x1:x2``) or a misspelled ``inflate=`` name used to end
+    in a bare pandas ``KeyError``.
+    """
+    missing = [str(v) for v in names if v not in data.columns]
+    if missing:
+        raise MethodIncompatibility(
+            f"{function}: {missing} not found among the columns of data. "
+            "This estimator takes column names only; formula terms such as "
+            "C(g), I(x**2) or x1:x2 are not expanded.",
+            recovery_hint=(
+                "Check the spelling, or build the term as a column first "
+                "(pd.get_dummies for a factor, a product for an interaction)."
+            ),
+            diagnostics={"missing": missing},
+        )
+
+
+def _omit_collinear(
+    X: np.ndarray, names: List[str], function: str
+) -> Tuple[np.ndarray, List[str], List[Dict[str, str]]]:
+    """Drop dependent columns with a note, as the other ML estimators do."""
+    from ..core._collinear import drop_collinear
+
+    X, names, omitted, _ = drop_collinear(X, names, function, stacklevel=5)
+    return X, names, omitted
+
+
 def _build_matrices(
     data: Optional[pd.DataFrame],
     formula: Optional[str],
     y: Optional[str],
     x: Optional[List[str]],
     inflate: Optional[List[str]],
+    function: str = "zip_model",
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, List[str], List[str], str, pd.DataFrame]:
     """
-    Parse inputs and return (Y, X_count, X_inflate, count_names, inflate_names, dep_var).
+    Parse inputs and return
+    (Y, X_count, X_inflate, count_names, inflate_names, dep_var, df).
 
-    X matrices include a constant column.
+    X matrices include a constant column. Collinear regressors are omitted
+    from each equation; the records are left in ``df.attrs['omitted']``.
     """
     if data is None:
         raise ValueError("`data` must be provided.")
@@ -118,6 +286,7 @@ def _build_matrices(
         inflate_vars = list(inflate)
 
     all_vars = list(set([dep_var] + x_vars + inflate_vars))
+    _require_plain_columns(data, [dep_var] + x_vars + inflate_vars, function)
     df = data[all_vars].dropna()
 
     Y = df[dep_var].values.astype(float)
@@ -136,6 +305,12 @@ def _build_matrices(
         [np.ones(len(df))] + [df[v].values.astype(float) for v in inflate_vars]
     )
     inflate_names = ["inflate_const"] + [f"inflate_{v}" for v in inflate_vars]
+
+    # A dependent regressor leaves the likelihood flat in one direction
+    # (a constant column gave offsetting coefficients of order 1e4).
+    X_count, count_names, om_c = _omit_collinear(X_count, count_names, function)
+    X_inflate, inflate_names, om_i = _omit_collinear(X_inflate, inflate_names, function)
+    df.attrs["omitted"] = om_c + om_i
 
     return Y, X_count, X_inflate, count_names, inflate_names, dep_var, df
 
@@ -204,6 +379,7 @@ def _vuong_test(
 # ===================================================================
 
 
+@records_call("zip_model")
 @accepts_aliases(vce="robust")
 @markout_clusters
 def zip_model(
@@ -254,6 +430,11 @@ def zip_model(
     -------
     EconometricResults
         Coefficients for both equations, Vuong test, diagnostics.
+        ``diagnostics['vuong_stat']`` compares the fit with a Poisson
+        regression fitted on its own. Read it as a description of fit,
+        not as a test for zero inflation: the two models are nested on a
+        boundary and the statistic is not standard normal under the null
+        [@wilson2015misuse].
 
     Examples
     --------
@@ -287,7 +468,7 @@ def zip_model(
     """
     robust, cluster = _parse_se(robust, cluster, "zip_model")
     Y, X_count, X_inflate, count_names, inflate_names, dep_var, df = _build_matrices(
-        data, formula, y, x, inflate
+        data, formula, y, x, inflate, "zip_model"
     )
     n = len(Y)
     k_count = X_count.shape[1]
@@ -354,9 +535,10 @@ def zip_model(
     def obs_loglik(theta: np.ndarray) -> np.ndarray:
         """Per-observation ZIP log-likelihood; complex-step safe."""
         mu = np.exp(X_count @ theta[:k_count])
-        pi = 1.0 / (1.0 + np.exp(-(X_inflate @ theta[k_count:])))
-        positive = np.log(1 - pi) + Y * np.log(mu) - mu - special.gammaln(Y + 1)
-        zero = np.log(pi + (1 - pi) * np.exp(-mu))
+        zg = X_inflate @ theta[k_count:]
+        log_pi, log_1mpi = _log_expit(zg), _log_expit(-zg)
+        positive = log_1mpi + Y * np.log(mu) - mu - special.gammaln(Y + 1)
+        zero = _logaddexp(log_pi, log_1mpi - mu)
         return np.where(Y == 0, zero, positive)
 
     # Exact Newton steps from the BFGS solution; the same call returns the
@@ -379,6 +561,7 @@ def zip_model(
             if cluster in df.columns
             else data.loc[df.index, cluster].values
         )
+        require_two_clusters(clusters, "zip_model / zinb / hurdle")
     se = se_from_vcov(
         ml_vcov(inverse_information(H), score_obs, kind=robust, clusters=clusters)
     )
@@ -387,8 +570,15 @@ def zip_model(
     mu_hat = np.exp(np.clip(X_count @ beta_hat, -20, 20))
     pi_hat = _logit(X_inflate @ gamma_hat)
 
-    ll_zip_obs = neg_loglik_obs(theta_hat)
-    ll_poisson_obs = _log_poisson_pmf(Y, mu_hat)
+    # The comparison model is the Poisson regression fitted on its own. Before
+    # 1.39 the Poisson density was evaluated at the ZIP count coefficients,
+    # which is not a maximum of the Poisson likelihood and overstated the
+    # statistic in favour of ZIP.
+    from .count import _poisson_irls
+
+    ll_zip_obs = np.real(obs_loglik(theta_hat))
+    mu_poisson = _poisson_irls(Y, X_count, tol=1e-12)[1]
+    ll_poisson_obs = _log_poisson_pmf(Y, mu_poisson)
     vuong = _vuong_test(ll_zip_obs, ll_poisson_obs)
 
     # --- Predicted values ---
@@ -400,6 +590,7 @@ def zip_model(
     all_names = count_names + inflate_names
     params = pd.Series(theta_hat, index=all_names)
     std_errors = pd.Series(se, index=all_names)
+    _warn_flat_terms(std_errors, "zip_model")
 
     model_info = {
         "model_type": "zip",
@@ -414,10 +605,14 @@ def zip_model(
         "robust": robust if cluster is None else f"cluster({cluster})",
         "n_zeros": int((Y == 0).sum()),
         "pct_zeros": float((Y == 0).mean() * 100),
+        "omitted": list(df.attrs.get("omitted", [])),
     }
 
     data_info = {
         "n_obs": n,
+        "nobs": n,
+        "y": Y,
+        "llobs": ll_zip_obs,
         "dependent_var": dep_var,
         "df_resid": n - k_total,
         # Likelihood-based: z / chi2 inference, as Stata's zip / zinb.
@@ -428,16 +623,26 @@ def zip_model(
         "inflate_names": inflate_names,
     }
 
-    diagnostics = {
+    fitted_arrays = {
         "predicted_structural_zero": pred_structural_zero,
         "predicted_count": pred_count,
         "predicted_overall": pred_overall,
-        "vuong_stat": vuong["vuong_stat"],
-        "vuong_p": vuong["vuong_p"],
-        "ll": ll_zip,
-        "aic": model_info["aic"],
-        "bic": model_info["bic"],
     }
+    data_info.update(fitted_arrays)
+    diagnostics = _FittedArraysDict(
+        {
+            "vuong_stat": vuong["vuong_stat"],
+            "vuong_p": vuong["vuong_p"],
+            "ll": ll_zip,
+            "aic": model_info["aic"],
+            "bic": model_info["bic"],
+            # the same three under the names the other count models use
+            "Log-Likelihood": ll_zip,
+            "AIC": model_info["aic"],
+            "BIC": model_info["bic"],
+        },
+        fitted_arrays,
+    )
 
     model_info["alpha"] = alpha
     return EconometricResults(
@@ -525,6 +730,7 @@ def _compute_zip_score_obs(
 # ===================================================================
 
 
+@records_call("zinb")
 @accepts_aliases(vce="robust")
 @markout_clusters
 def zinb(
@@ -600,7 +806,7 @@ def zinb(
     """
     robust, cluster = _parse_se(robust, cluster, "zinb")
     Y, X_count, X_inflate, count_names, inflate_names, dep_var, df = _build_matrices(
-        data, formula, y, x, inflate
+        data, formula, y, x, inflate, "zinb"
     )
     n = len(Y)
     k_count = X_count.shape[1]
@@ -667,7 +873,8 @@ def zinb(
     def obs_loglik(theta: np.ndarray) -> np.ndarray:
         """Per-observation ZINB (NB2) log-likelihood; complex-step safe."""
         mu = np.exp(X_count @ theta[:k_count])
-        pi = 1.0 / (1.0 + np.exp(-(X_inflate @ theta[k_count : k_count + k_inflate])))
+        zg = X_inflate @ theta[k_count : k_count + k_inflate]
+        log_pi, log_1mpi = _log_expit(zg), _log_expit(-zg)
         m = np.exp(-theta[-1])  # 1 / alpha
         log_nb_zero = m * np.log(m / (m + mu))
         log_nb = (
@@ -677,8 +884,8 @@ def zinb(
             + log_nb_zero
             + Y * np.log(mu / (m + mu))
         )
-        zero = np.log(pi + (1 - pi) * np.exp(log_nb_zero))
-        return np.where(Y == 0, zero, np.log(1 - pi) + log_nb)
+        zero = _logaddexp(log_pi, log_1mpi + log_nb_zero)
+        return np.where(Y == 0, zero, log_1mpi + log_nb)
 
     # Exact Newton steps from the BFGS solution; the same call returns the
     # observed information and per-observation scores by complex-step
@@ -699,14 +906,27 @@ def zinb(
             if cluster in df.columns
             else data.loc[df.index, cluster].values
         )
-    se = se_from_vcov(
-        ml_vcov(inverse_information(H), score_obs, kind=robust, clusters=clusters)
+        require_two_clusters(clusters, "zip_model / zinb / hurdle")
+    mu_hat = np.exp(np.clip(X_count @ beta_hat, -20, 20))
+    se, dispersion_at_boundary = _nb_standard_errors(
+        H,
+        score_obs,
+        alpha_hat=alpha_hat,
+        mean_mu=float(np.mean(mu_hat)),
+        robust=robust,
+        clusters=clusters,
     )
 
     # Vuong test: ZINB vs plain NB
-    mu_hat = np.exp(np.clip(X_count @ beta_hat, -20, 20))
-    ll_zinb_obs = neg_loglik_obs(theta_hat)
-    ll_nb_obs = _log_nb2_pmf(Y, mu_hat, alpha_hat)
+    # The comparison model is the NB2 regression fitted on its own (see
+    # zip_model).
+    from ._negbin import negbin_joint
+    from .count import _nb2_fit
+
+    ll_zinb_obs = np.real(obs_loglik(theta_hat))
+    b_nb, _, a_nb, _, _ = _nb2_fit(Y, X_count)
+    nb = negbin_joint(Y, X_count, None, b_nb, a_nb, nb2=True)
+    ll_nb_obs = _log_nb2_pmf(Y, nb.mu, float(nb.dispersion))
     vuong = _vuong_test(ll_zinb_obs, ll_nb_obs)
 
     # Predicted values
@@ -719,9 +939,13 @@ def zinb(
     all_names = count_names + inflate_names + ["ln_alpha"]
     params = pd.Series(theta_hat, index=all_names)
     std_errors = pd.Series(se, index=all_names)
+    _warn_flat_terms(std_errors, "zinb")
 
     model_info = {
         "model_type": "zinb",
+        # NB2 dispersion at alpha = 0: ln_alpha has no standard error and
+        # the other standard errors hold alpha at its estimate.
+        "dispersion_at_boundary": dispersion_at_boundary,
         "method": "Zero-Inflated Negative Binomial (MLE)",
         "dependent_var": dep_var,
         "ll": ll_zinb,
@@ -734,10 +958,14 @@ def zinb(
         "robust": robust if cluster is None else f"cluster({cluster})",
         "n_zeros": int((Y == 0).sum()),
         "pct_zeros": float((Y == 0).mean() * 100),
+        "omitted": list(df.attrs.get("omitted", [])),
     }
 
     data_info = {
         "n_obs": n,
+        "nobs": n,
+        "y": Y,
+        "llobs": ll_zinb_obs,
         "dependent_var": dep_var,
         "df_resid": n - k_total,
         # Likelihood-based: z / chi2 inference, as Stata's zip / zinb.
@@ -748,17 +976,27 @@ def zinb(
         "inflate_names": inflate_names,
     }
 
-    diagnostics = {
+    fitted_arrays = {
         "predicted_structural_zero": pred_structural_zero,
         "predicted_count": pred_count,
         "predicted_overall": pred_overall,
-        "alpha_dispersion": float(alpha_hat),
-        "vuong_stat": vuong["vuong_stat"],
-        "vuong_p": vuong["vuong_p"],
-        "ll": ll_zinb,
-        "aic": model_info["aic"],
-        "bic": model_info["bic"],
     }
+    data_info.update(fitted_arrays)
+    diagnostics = _FittedArraysDict(
+        {
+            "alpha_dispersion": float(alpha_hat),
+            "vuong_stat": vuong["vuong_stat"],
+            "vuong_p": vuong["vuong_p"],
+            "ll": ll_zinb,
+            "aic": model_info["aic"],
+            "bic": model_info["bic"],
+            # the same three under the names the other count models use
+            "Log-Likelihood": ll_zinb,
+            "AIC": model_info["aic"],
+            "BIC": model_info["bic"],
+        },
+        fitted_arrays,
+    )
 
     model_info["alpha"] = alpha
     return EconometricResults(
@@ -803,6 +1041,7 @@ def _compute_zi_score_obs(
 # ===================================================================
 
 
+@records_call("hurdle")
 @accepts_aliases(vce="robust")
 @markout_clusters
 def hurdle(
@@ -892,7 +1131,15 @@ def hurdle(
         dep_var = y
         x_vars = list(x)
 
+    if str(count_model).lower() not in ("poisson", "negbin", "nb", "nbreg"):
+        raise MethodIncompatibility(
+            f"hurdle: unknown count_model={count_model!r}. Choose 'poisson' "
+            "or 'negbin'.",
+            recovery_hint="Use count_model='poisson' or count_model='negbin'.",
+            diagnostics={"count_model": count_model, "valid": ["poisson", "negbin"]},
+        )
     all_vars = list(set([dep_var] + x_vars))
+    _require_plain_columns(data, [dep_var] + x_vars, "hurdle")
     df = data[all_vars].dropna()
 
     Y = df[dep_var].values.astype(float)
@@ -904,13 +1151,46 @@ def hurdle(
         [np.ones(len(df))] + [df[v].values.astype(float) for v in x_vars]
     )
     var_names = ["const"] + x_vars
-    hurdle_names = ["hurdle_const"] + [f"hurdle_{v}" for v in x_vars]
+    X, var_names, collinear_omitted = _omit_collinear(X, var_names, "hurdle")
+    hurdle_names = ["hurdle_const"] + [f"hurdle_{v}" for v in var_names[1:]]
     n, k = X.shape
 
     zero_mask = Y == 0
     pos_mask = ~zero_mask
     Y_pos = Y[pos_mask]
     X_pos = X[pos_mask]
+    # The count equation is a zero-truncated model on the positive
+    # outcomes only. With none of them it has no data (it used to be
+    # reported as coefficients 0 with standard errors 0), and a regressor
+    # that does not vary independently among them has no coefficient there.
+    if not pos_mask.any():
+        raise DataInsufficient(
+            f"hurdle: the outcome '{dep_var}' has no positive counts, so the "
+            "count equation is not estimable.",
+            recovery_hint=(
+                "Check the outcome; with zeros only there is nothing above "
+                "the hurdle to model."
+            ),
+            diagnostics={"n_obs": int(n), "n_positive": 0},
+        )
+    from ..core._collinear import independent_columns
+
+    _, _pos_dependent = independent_columns(X_pos, var_names)
+    if _pos_dependent:
+        raise DataInsufficient(
+            "hurdle: among the positive outcomes the regressor(s) "
+            f"{[o['variable'] for o in _pos_dependent]} are collinear with "
+            "the others, so their count-equation coefficients are not "
+            "identified.",
+            recovery_hint=(
+                "Drop those regressors, or check that there are more "
+                "positive outcomes than count-equation coefficients."
+            ),
+            diagnostics={
+                "n_positive": int(pos_mask.sum()),
+                "dependent": _pos_dependent,
+            },
+        )
 
     use_negbin = count_model.lower() in ("negbin", "nb", "nbreg")
     # k_hurdle params + k_count params (+ 1 if negbin for log_alpha)
@@ -986,7 +1266,7 @@ def hurdle(
 
     def obs_loglik(theta: np.ndarray) -> np.ndarray:
         """Per-observation hurdle log-likelihood; complex-step safe."""
-        p = 1.0 / (1.0 + np.exp(-(X @ theta[:k_hurdle])))  # P(Y > 0)
+        zd = X @ theta[:k_hurdle]  # index of P(Y > 0)
         mu = np.exp(X @ theta[k_hurdle : k_hurdle + k_count])
         if use_negbin:
             m = np.exp(-theta[-1])  # 1 / alpha
@@ -1002,8 +1282,8 @@ def hurdle(
             log_f0 = -mu
             log_f = Y * np.log(mu) - mu - special.gammaln(Y + 1)
         # Zero-truncated count density f(y) / (1 - f(0)) above the hurdle.
-        positive = np.log(p) + log_f - np.log(-np.expm1(log_f0))
-        return np.where(Y == 0, np.log(1 - p), positive)
+        positive = _log_expit(zd) + log_f - np.log(-np.expm1(log_f0))
+        return np.where(Y == 0, _log_expit(-zd), positive)
 
     # Exact Newton steps from the BFGS solution; the same call returns the
     # observed information and per-observation scores by complex-step
@@ -1021,13 +1301,25 @@ def hurdle(
             if cluster in df.columns
             else data.loc[df.index, cluster].values
         )
-    se = se_from_vcov(
-        ml_vcov(inverse_information(H), score_obs, kind=robust, clusters=clusters)
-    )
-
-    # Predicted values
+        require_two_clusters(clusters, "zip_model / zinb / hurdle")
     p_hat = _logit(X @ delta_hat)
     mu_hat = np.exp(np.clip(X @ beta_hat, -20, 20))
+    dispersion_at_boundary = False
+    if use_negbin:
+        se, dispersion_at_boundary = _nb_standard_errors(
+            H,
+            score_obs,
+            alpha_hat=float(np.exp(theta_hat[-1])),
+            mean_mu=float(np.mean(mu_hat)),
+            robust=robust,
+            clusters=clusters,
+        )
+    else:
+        se = se_from_vcov(
+            ml_vcov(inverse_information(H), score_obs, kind=robust, clusters=clusters)
+        )
+
+    # Predicted values
     if use_negbin:
         alpha_hat = float(np.exp(theta_hat[-1]))
         f0 = np.exp(_log_nb2_pmf(np.zeros(n), mu_hat, alpha_hat))
@@ -1046,9 +1338,13 @@ def hurdle(
 
     params = pd.Series(theta_hat, index=all_names)
     std_errors = pd.Series(se, index=all_names)
+    _warn_flat_terms(std_errors, "hurdle")
 
     model_info = {
         "model_type": "hurdle",
+        # NB2 dispersion at alpha = 0: ln_alpha has no standard error and
+        # the other standard errors hold alpha at its estimate.
+        "dispersion_at_boundary": dispersion_at_boundary,
         "method": f"Hurdle ({count_model.title()}, MLE)",
         "dependent_var": dep_var,
         "count_dist": count_model,
@@ -1059,6 +1355,7 @@ def hurdle(
         "robust": robust if cluster is None else f"cluster({cluster})",
         "n_zeros": int(zero_mask.sum()),
         "pct_zeros": float(zero_mask.mean() * 100),
+        "omitted": collinear_omitted,
     }
     if use_negbin:
         assert alpha_hat is not None
@@ -1066,6 +1363,9 @@ def hurdle(
 
     data_info = {
         "n_obs": n,
+        "nobs": n,
+        "y": Y,
+        "llobs": np.real(obs_loglik(theta_hat)),
         "dependent_var": dep_var,
         "df_resid": n - k_total,
         # Likelihood-based: z / chi2 inference.
@@ -1076,14 +1376,24 @@ def hurdle(
         "count_names": count_names_from_vars(var_names),
     }
 
-    diagnostics = {
+    fitted_arrays = {
         "predicted_hurdle_prob": pred_hurdle_prob,
         "predicted_count_mean": mu_hat,
         "predicted_overall": pred_overall,
-        "ll": ll_hurdle,
-        "aic": model_info["aic"],
-        "bic": model_info["bic"],
     }
+    data_info.update(fitted_arrays)
+    diagnostics = _FittedArraysDict(
+        {
+            "ll": ll_hurdle,
+            "aic": model_info["aic"],
+            "bic": model_info["bic"],
+            # the same three under the names the other count models use
+            "Log-Likelihood": ll_hurdle,
+            "AIC": model_info["aic"],
+            "BIC": model_info["bic"],
+        },
+        fitted_arrays,
+    )
     if use_negbin:
         assert alpha_hat is not None
         diagnostics["alpha_dispersion"] = float(alpha_hat)

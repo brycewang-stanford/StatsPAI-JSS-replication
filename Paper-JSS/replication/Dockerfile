@@ -31,7 +31,6 @@ COPY pyproject.toml README.md CHANGELOG.md LICENSE paper.bib ./
 COPY src ./src
 COPY scripts ./scripts
 COPY tests ./tests
-COPY tools ./tools
 COPY docs ./docs
 COPY Paper-JSS ./Paper-JSS
 RUN python -m pip install --no-cache-dir --no-deps -e .

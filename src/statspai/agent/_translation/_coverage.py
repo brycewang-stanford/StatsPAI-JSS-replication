@@ -36,13 +36,34 @@ LIMITATIONS: List[str] = [
     "the `xtset`/`tsset` declaration is not on the same line — pass id=/time= "
     "explicitly to the resulting sp.* call.",
     "Time-series commands (arima, var, vec, varsoc, granger) are not translated; "
-    "call sp.arima / sp.var / sp.vecm directly.",
+    "call sp.arima / sp.var / sp.vecm directly. Time-series operators (L.x, "
+    "D.x, L(1/4).x) are resolved by sp.stata after `tsset` / `xtset`; "
+    "sp.from_stata, which sees one line and no data, refuses them.",
     "Estimation-table commands (esttab, eststo, outreg2) are not translated; use "
     "sp.regtable on the fitted results.",
     "Dropped Stata `if`/`in` qualifiers and unrecognized options are never "
-    "silently lost — they are surfaced in the per-command `notes` field.",
-    "One command per call: multi-command .do / multi-line R scripts must be "
-    "split by the caller before translation.",
+    "silently lost — sp.from_stata returns them in `unapplied_sample` / "
+    "`untranslated_options` and in the per-command `notes`. sp.stata applies "
+    "an `if`/`in` qualifier with Stata's missing-value rules and refuses to "
+    "run a translation with an untranslated option, or a qualifier it "
+    "cannot evaluate (e(sample), string functions).",
+    "sp.stata runs generate / replace / keep / drop / sort / mvdecode / "
+    "encode / preserve / restore / predict / scalar / display / egen / "
+    "collapse / count / duplicates drop, also by group; loops and "
+    "if-else blocks with their macros; matrices filled cell by cell and "
+    "svmat; save / use / append / merge / reshape and frames on datasets "
+    "held in the session (nothing is read from or written to disk; pass "
+    "other datasets in files=). `use` of a file that was not passed in, "
+    "`syntax` and `mata` are refused.",
+    "sp.from_stata translates one line and does not expand macros. In "
+    "sp.stata, prefixes that change the estimate (by on an estimation "
+    "command, bootstrap, jackknife, permute, svy, rolling, statsby), "
+    "undefined macros and extended macro functions are refused.",
+    "sp.from_stata / sp.from_r take one command per call; sp.stata takes a "
+    "do-file snippet.",
+    "xtqreg is recognised but refused: its quantile-coefficient standard "
+    "errors use a GLS form that is not reproduced. The error names the "
+    "sp.mmqreg call with the same coefficients; mmqreg translates.",
 ]
 
 
@@ -131,7 +152,7 @@ def translation_coverage(*, fmt: str = "dict") -> Any:
     return {"stata": stata, "r": r, "summary": summary, "limitations": LIMITATIONS}
 
 
-def _render_markdown(stata, r, summary) -> str:
+def _render_markdown(stata: Any, r: Any, summary: Any) -> str:
     lines: List[str] = ["## Stata → StatsPAI\n"]
     lines.append("| Stata command | aliases | → StatsPAI |")
     lines.append("| --- | --- | --- |")

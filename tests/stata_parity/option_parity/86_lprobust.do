@@ -22,7 +22,11 @@ version 17
 clear all
 set more off
 
-import delimited "data_86_lprobust.csv", clear
+* Double precision throughout: without `asdouble`, `import delimited`
+* stores the decimals as float and rounds the data in the 8th digit, and
+* generated variables follow `set type` (see 84_bjs_fe_covariates.do).
+set type double
+import delimited "data_86_lprobust.csv", clear asdouble
 * The CSV round-trips through Stata's default float; recast so the
 * comparison measures the estimator rather than single precision.
 recast double d y, force
@@ -55,8 +59,26 @@ foreach k in epanechnikov triangular uniform {
 qui lprobust y d, eval(g0) h(0.8) b(1.2) kernel(epanechnikov)
 _row `fh' "epa_h0.8_b1.2" 0
 
-file write `fh' _n `"  , "_meta": {"cmd": "lprobust", "vce": "nn(3)", "p": 1, "deriv": 0, "stata": "18 MP"}"' _n
+* Bandwidth SELECTION, under a "_"-prefixed key so the per-case loop in
+* the Python test skips it. lprobust runs at rho = 1, so it reports
+* b = h and never shows the selector's own b -- which is why the ported
+* selectors are pinned against R for b and against Stata for h only.
+file write `fh' _n `"  , "_bwselect": {"' _n
+local sfirst 1
+foreach sel in mse-dpi mse-rot {
+    qui lprobust y d, eval(g0) kernel(epa) bwselect(`sel') p(1) deriv(0)
+    matrix S = e(Result)
+    if !`sfirst' file write `fh' "," _n
+    file write `fh' `"    ""' "`sel'" `"": {"h": "' %22.17f (S[1,2]) ///
+        `", "b": "' %22.17f (S[1,3]) `", "N": "' %14.0f (S[1,4]) ///
+        `", "tau_us": "' %22.17f (S[1,5]) `", "se_us": "' %22.17f (S[1,7]) "}"
+    local sfirst 0
+}
+file write `fh' _n "  }" _n
+
+file write `fh' _n `"  , "_meta": {"cmd": "lprobust", "vce": "nn(3)", "p": 1, "deriv": 0, "stata": "18 MP", "precision": "double"}"' _n
 file write `fh' "}" _n
 file close `fh'
 
+set type float
 di as txt "wrote results/86_lprobust_Stata.json"

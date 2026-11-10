@@ -15,6 +15,8 @@ from typing import Optional, Tuple
 import numpy as np
 import pandas as pd
 
+from .._aliases import accepts_aliases
+from .._input_validation import check_columns
 from ._base import (
     BayesianCausalResult,
     _require_pymc,
@@ -23,6 +25,7 @@ from ._base import (
 )
 
 
+@accepts_aliases(seed="random_state")
 def bayes_its(
     data: pd.DataFrame,
     y: str,
@@ -90,12 +93,9 @@ def bayes_its(
     ...                    draws=500, tune=500, chains=2)  # doctest: +SKIP
     >>> res.posterior_mean  # posterior mean level change  # doctest: +SKIP
     """
+    check_columns(data, {"y": y, "time": time}, function="sp.bayes_its")
     pm, _ = _require_pymc()
 
-    if y not in data.columns:
-        raise ValueError(f"Column '{y}' not found in data")
-    if time is not None and time not in data.columns:
-        raise ValueError(f"Column '{time}' not found in data")
     if intervention is None:
         raise ValueError("intervention (integer row position) is required.")
 

@@ -15,8 +15,10 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 
+from .._input_validation import check_columns
+from ..core._call_record import records_call
 from ..core.results import CausalResult
-from ..exceptions import MethodIncompatibility
+from ..exceptions import ColumnNotFound, MethodIncompatibility
 
 
 def cate_summary(result: CausalResult) -> pd.DataFrame:
@@ -136,8 +138,9 @@ def cate_by_group(
         labels = pd.qcut(cate, q=n_groups, labels=False, duplicates="drop")
         group_name = "CATE Quartile"
     else:
-        if by not in data.columns:
-            raise ValueError(f"Column '{by}' not found in data")
+        check_columns(
+            data, {"by": by}, function="sp.cate_by_group", extra_hint="Or by='cate'."
+        )
         col = data[by].values[: len(cate)]
         if pd.api.types.is_numeric_dtype(col) and len(np.unique(col)) > n_groups:
             labels = pd.qcut(col, q=n_groups, labels=False, duplicates="drop")
@@ -360,12 +363,12 @@ def _cddf_inputs(
 
     in_sample = _extract_cate(result)
     n = len(in_sample)
-    for col in [y, treat] + list(covariates):
-        if col not in data.columns:
-            raise MethodIncompatibility(
-                f"Column '{col}' not found in data",
-                recovery_hint="Pass the same data frame used to fit the CATE model.",
-            )
+    check_columns(
+        data,
+        {"y": y, "treat": treat, "covariates": list(covariates)},
+        function="sp." + context.removesuffix("()"),
+        extra_hint="Pass the same data frame used to fit the CATE model.",
+    )
     Y = data[y].to_numpy(dtype=float)[:n]
     D = data[treat].to_numpy(dtype=float)[:n]
     X = data[list(covariates)].to_numpy(dtype=float)[:n]
@@ -404,6 +407,7 @@ def _cddf_inputs(
     return Y, D, p, B, S, p_source, s_source
 
 
+@records_call("blp_test")
 def blp_test(
     result: CausalResult,
     data: pd.DataFrame,
@@ -552,6 +556,7 @@ def blp_test(
     return out
 
 
+@records_call("gate_test")
 def gate_test(
     result: CausalResult,
     data: pd.DataFrame,
@@ -568,6 +573,7 @@ def gate_test(
     vce: str = "HC1",
     n_folds: int = 5,
     seed: int = 42,
+    clan: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """Sorted group average treatment effects (GATES) and heterogeneity tests.
 
@@ -607,6 +613,14 @@ def gate_test(
         Outcome, binary treatment and covariates; required for GATES.
     propensity, baseline, proxy, vce, n_folds, seed
         As in :func:`blp_test`.
+    clan : list of str, optional
+        Classification analysis (CLAN; R ``GenericML::CLAN``): for each of
+        these columns, its mean in every group (standard error
+        ``sd / sqrt(n_k)``) and the difference between the most and the
+        least affected group (Welch standard error), with normal
+        intervals. Returned as ``clan_table``. GATES path only. Equals
+        ``GenericML::CLAN`` given the same groups to 1e-12
+        (``tests/reference_parity/test_clan_genericml_parity.py``).
 
     Returns
     -------
@@ -665,11 +679,9 @@ def gate_test(
         levels = list(range(n_groups))
         group_name = "CATE group"
     else:
-        if by not in data.columns:
-            raise MethodIncompatibility(
-                f"Column '{by}' not found in data",
-                recovery_hint="Pass by='cate' or an existing column name.",
-            )
+        check_columns(
+            data, {"by": by}, function="sp.gate_test", extra_hint="Or by='cate'."
+        )
         col = data[by].to_numpy()[:n]
         if pd.api.types.is_numeric_dtype(col) and len(np.unique(col)) > n_groups:
             labels = _cddf.quantile_groups(col.astype(float), n_groups)
@@ -706,7 +718,14 @@ def gate_test(
     C = np.column_stack([np.ones(K - 1), -np.eye(K - 1)])  # gamma_1 - gamma_k
     cg = C @ g
     wald = float(cg @ np.linalg.solve(C @ Vg @ C.T, cg))
+    extra: Dict[str, Any] = {}
+    if clan is not None:
+        check_columns(data, {"clan": list(clan)}, function="sp.gate_test")
+        extra["clan_table"] = _clan_table(
+            data[list(clan)].to_numpy(dtype=float)[:n], labels, K, list(clan), z
+        )
     return {
+        **extra,
         "gate_table": table,
         "omnibus_stat": wald,
         "omnibus_df": K - 1,
@@ -719,6 +738,30 @@ def gate_test(
         "propensity_source": p_source,
         "vcov_type": vce,
     }
+
+
+def _clan_table(
+    Z: np.ndarray, labels: np.ndarray, K: int, names: List[str], z: float
+) -> pd.DataFrame:
+    """Group means of each column and most-minus-least difference
+    (Welch standard error), normal intervals."""
+    rows = []
+    for j, name in enumerate(names):
+        x = Z[:, j]
+        means, ses = [], []
+        for k in range(K):
+            xk = x[labels == k]
+            means.append(float(xk.mean()))
+            ses.append(
+                float(xk.std(ddof=1) / np.sqrt(len(xk))) if len(xk) > 1 else np.nan
+            )
+            rows.append((name, f"group {k}", means[-1], ses[-1]))
+        diff = means[-1] - means[0]
+        rows.append((name, "most - least", diff, float(np.hypot(ses[-1], ses[0]))))
+    out = pd.DataFrame(rows, columns=["variable", "target", "estimate", "se"])
+    out["ci_lower"] = out["estimate"] - z * out["se"]
+    out["ci_upper"] = out["estimate"] + z * out["se"]
+    return out
 
 
 def _gate_descriptive(
@@ -925,9 +968,22 @@ def predict_cate(
     if covariates is None:
         raise ValueError("Result does not contain covariate names.")
     covariate_names = list(covariates)
-    for c in covariate_names:
-        if c not in new_data.columns:
-            raise ValueError(f"Column '{c}' not found in new_data")
+    # A categorical covariate was fitted as indicator columns; rebuild them
+    # on the new rows with the levels seen at fit time.
+    from ..core._covariates import apply_covariate_expansion
+
+    new_data = apply_covariate_expansion(
+        new_data, result.model_info.get("covariate_expansion")
+    )
+    absent = [c for c in covariate_names if c not in new_data.columns]
+    if absent:
+        raise ColumnNotFound.from_missing(
+            absent,
+            list(new_data.columns),
+            message=f"sp.predict_cate: covariate column(s) {absent} not found "
+            "in new_data.",
+            extra_hint="Pass new_data with the covariates the model was fitted on.",
+        )
 
     X_new = new_data[covariate_names].values.astype(float)
     est = result.model_info["_estimator"]

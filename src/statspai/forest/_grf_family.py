@@ -24,6 +24,7 @@ averages the same way ``sp.causal_forest`` does.
 from __future__ import annotations
 
 import math
+import re
 from dataclasses import dataclass
 from typing import Any, ClassVar, Dict, List, Optional, Sequence, Tuple
 
@@ -31,8 +32,9 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 
+from .._input_validation import missing_named_columns
 from .._result_serialize import ResultProtocolMixin
-from ..exceptions import DataInsufficient, MethodIncompatibility
+from ..exceptions import ColumnNotFound, DataInsufficient, MethodIncompatibility
 from . import _grf_engine as engine
 from ._grf_inference import _clustered_mean_var, _coef_table, cluster_robust_vcov
 
@@ -138,6 +140,82 @@ class ForestOptions:
 # --------------------------------------------------------------------------- #
 
 
+_ONE_HOT_NAME = re.compile(r"^(?P<col>.+)\[(?P<level>.*)\]$")
+
+
+def one_hot_covariates(
+    data: pd.DataFrame, cols: List[str], context: str
+) -> Tuple[pd.DataFrame, List[str]]:
+    """Covariate block with categorical columns as indicator columns.
+
+    A text or ``category`` column, or an entry written ``C(col)``, becomes
+    one 0/1 column per level, named ``col[level]``. Every level gets a
+    column: a tree needs no reference category, and keeping all of them lets
+    prediction tell an unseen level from the omitted one. Numeric columns
+    pass through, and a frame with none to expand is returned as it is.
+    """
+    from ..core._covariates import _factor_column, _is_categorical, _levels
+
+    out: Dict[str, Any] = {}
+    names: List[str] = []
+    expanded = False
+    for i, entry in enumerate(cols):
+        named = _factor_column(entry)
+        col = named if named is not None else entry
+        if col not in data.columns:
+            raise ColumnNotFound.from_missing(
+                {f"covariates[{i}]": col},
+                data.columns,
+                message=f"{context}: Missing columns: {[col]}",
+            )
+        series = data[col]
+        if named is None and not _is_categorical(series):
+            out[col] = series
+            names.append(col)
+            continue
+        expanded = True
+        missing = series.isna()
+        for level in _levels(series):
+            name = f"{col}[{level}]"
+            out[name] = (series == level).astype(float).where(~missing)
+            names.append(name)
+    if not expanded:
+        return data[cols], list(cols)
+    return pd.DataFrame(out, index=data.index), names
+
+
+def one_hot_newdata(newdata: pd.DataFrame, feature_names: List[str]) -> pd.DataFrame:
+    """Rebuild the indicator columns of :func:`one_hot_covariates` on new rows.
+
+    A feature ``col[level]`` that is not a column of ``newdata`` is computed
+    from ``newdata[col]``. A value of ``col`` that matches none of the
+    fitted levels is an error.
+    """
+    wanted: Dict[str, List[Tuple[str, str]]] = {}
+    for name in feature_names:
+        if name in newdata.columns:
+            continue
+        m = _ONE_HOT_NAME.match(name)
+        if m is not None and m.group("col") in newdata.columns:
+            wanted.setdefault(m.group("col"), []).append((name, m.group("level")))
+    if not wanted:
+        return newdata
+    out = newdata.copy()
+    for col, pairs in wanted.items():
+        text = out[col].astype(object).map(lambda v: None if pd.isna(v) else str(v))
+        known = {level for _, level in pairs}
+        unseen = sorted({v for v in text.dropna().unique() if v not in known})
+        if unseen:
+            raise MethodIncompatibility(
+                f"newdata column {col!r} has levels that were not in the "
+                f"fitted data: {unseen[:5]}.",
+                diagnostics={"column": col},
+            )
+        for name, level in pairs:
+            out[name] = (text == level).astype(float).where(text.notna())
+    return out
+
+
 def _column_block(
     data: Optional[pd.DataFrame], spec: Any, name: str, context: str
 ) -> Tuple[np.ndarray, List[str]]:
@@ -157,14 +235,20 @@ def _column_block(
         )
     ):
         cols = [spec] if isinstance(spec, str) else list(spec)
-        missing = [c for c in cols if c not in data.columns]
-        if missing:
-            raise MethodIncompatibility(
-                f"{context}: Missing columns: {missing}",
-                recovery_hint="Pass column names present in the input DataFrame.",
-                diagnostics={"missing_columns": missing},
-            )
-        block = data[cols]
+        if name == "covariates":
+            # Covariates may be categorical (a text / category column, or an
+            # entry written C(col)); outcomes and treatments may not.
+            block, cols = one_hot_covariates(data, cols, context)
+        else:
+            missing = [c for c in cols if c not in data.columns]
+            if missing:
+                labelled = {name: spec} if isinstance(spec, str) else {name: cols}
+                raise ColumnNotFound.from_missing(
+                    missing_named_columns(labelled, data.columns),
+                    data.columns,
+                    message=f"{context}: Missing columns: {missing}",
+                )
+            block = data[cols]
         try:
             arr = block.to_numpy(dtype=float)
         except (TypeError, ValueError) as exc:
@@ -226,10 +310,10 @@ def resolve_inputs(
             continue
         if data is not None and isinstance(spec, str):
             if spec not in data.columns:
-                raise MethodIncompatibility(
-                    f"{context}: Missing columns: {[spec]}",
-                    recovery_hint="Pass column names present in the input DataFrame.",
-                    diagnostics={"missing_columns": [spec]},
+                raise ColumnNotFound.from_missing(
+                    {key: spec},
+                    data.columns,
+                    message=f"{context}: Missing columns: {[spec]}",
                 )
             raw_optional[key] = data[spec].to_numpy()
         else:
@@ -301,15 +385,28 @@ def observation_weights(
     weights: Optional[np.ndarray],
     n: int,
 ) -> np.ndarray:
-    """Weights of the averages (grf ``observation_weights``), summing to 1:
-    sample weights, or ``1 / cluster size`` with equalized clusters."""
+    """Weights of the forest averages (ATE, BLP, calibration), summing to 1.
+
+    The rule documented for R ``grf`` (help page of ``causal_forest``,
+    arguments ``sample.weights`` and ``equalize.cluster.weights``):
+    supplied sample weights are used as given; otherwise, with clusters and
+    ``equalize=True``, "each observation is given weight 1/cluster size, so
+    that the total weight of each cluster is the same"; otherwise every
+    observation has the same weight. Supplied sample weights take
+    precedence over ``equalize``. Written from that documentation;
+    StatsPAI's forest code is not derived from grf's source (see
+    ``_grf_engine``).
+    """
     if weights is not None:
-        raw = np.asarray(weights, dtype=float)
+        raw = np.asarray(weights, dtype=float).reshape(-1)
     elif clusters is not None and equalize:
-        raw = 1.0 / np.bincount(clusters)[clusters]
+        _, code, size = np.unique(
+            np.asarray(clusters).reshape(-1), return_inverse=True, return_counts=True
+        )
+        raw = 1.0 / size[code]
     else:
-        raw = np.ones(n)
-    return np.asarray(raw / raw.sum(), dtype=float)
+        raw = np.ones(int(n), dtype=float)
+    return raw / raw.sum()
 
 
 # --------------------------------------------------------------------------- #
@@ -556,11 +653,17 @@ class GRFFamilyForest(ResultProtocolMixin):
         if newdata is None:
             return self._X
         if isinstance(newdata, pd.DataFrame):
+            newdata = one_hot_newdata(newdata, list(self.feature_names))
             missing = [c for c in self.feature_names if c not in newdata.columns]
             if missing:
-                raise MethodIncompatibility(
-                    f"{self._context}.predict(): newdata lacks columns {missing}.",
-                    recovery_hint="Pass the covariate columns used at fit time.",
+                raise ColumnNotFound.from_missing(
+                    missing,
+                    newdata.columns,
+                    message=(
+                        f"{self._context}.predict(): newdata lacks columns "
+                        f"{missing}."
+                    ),
+                    extra_hint="Pass the covariate columns used at fit time.",
                 )
             arr = newdata[self.feature_names].to_numpy(dtype=float)
         else:
@@ -580,6 +683,19 @@ class GRFFamilyForest(ResultProtocolMixin):
                 recovery_hint="Drop or impute missing covariates first.",
             )
         return np.ascontiguousarray(arr)
+
+    def _require_little_bags(self) -> None:
+        """Refuse a variance request the forest cannot answer.
+
+        Variance estimates compare little bags of trees; with
+        ``ci_group_size=1`` there are none and the engine returns NaN for
+        new rows, which is not an estimate.
+        """
+        if int(self._engine.ci_group_size) < 2:
+            raise MethodIncompatibility(
+                f"{self._context}: variance estimates need ci_group_size >= 2.",
+                recovery_hint="Refit with ci_group_size=2.",
+            )
 
     def split_frequencies(self, max_depth: int = 4) -> pd.DataFrame:
         """Number of splits on each covariate at each depth."""

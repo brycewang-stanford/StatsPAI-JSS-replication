@@ -29,8 +29,10 @@ Public helpers
 
 from __future__ import annotations
 
+import functools
+import inspect
 import warnings
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, TypeVar, cast
 
 import numpy as np
 import pandas as pd
@@ -216,9 +218,60 @@ def influence_function_se(
     return float(se[0]) if scalar else se
 
 
-# ----------------------------------------------------------------------
-# Multiplier bootstrap (Callaway–Sant'Anna / R did::mboot convention)
-# ----------------------------------------------------------------------
+def influence_se_did(
+    psi: np.ndarray,
+    n: int,
+    cluster_ids: Optional[np.ndarray] = None,
+) -> np.ndarray:
+    """R ``did`` / Stata ``csdid`` analytic SE from influence functions.
+
+    Without clusters: ``sqrt(mean(psi^2) / n)`` per column (R ``did``'s
+    ``getSE``).  With ``cluster_ids`` (row-aligned with ``psi``): the
+    cluster sums replace the rows, ``sqrt(sum_c (sum_{i in c} psi_i)^2) /
+    n`` -- no ``G/(G-1)`` factor, which is Stata ``csdid, cluster()``'s
+    analytic variance (and ``csdid2``'s clustering step).  With every row
+    its own cluster the two coincide.
+    """
+    if getattr(cluster_ids, "is_survey_design", False):
+        # design= fits: the survey linearisation variance of psi / n
+        return np.asarray(cluster_ids.se(psi, n))  # type: ignore[union-attr]
+    psi = np.asarray(psi, dtype=float)
+    squeeze = psi.ndim == 1
+    if squeeze:
+        psi = psi[:, None]
+    if cluster_ids is None:
+        out = np.sqrt(np.mean(psi**2, axis=0) / n)
+    else:
+        codes = pd.factorize(np.asarray(cluster_ids))[0]
+        if codes.shape[0] != psi.shape[0]:
+            raise MethodIncompatibility(
+                f"cluster_ids has {codes.shape[0]} entries for {psi.shape[0]} "
+                "influence-function rows."
+            )
+        sums = np.zeros((codes.max() + 1, psi.shape[1]))
+        np.add.at(sums, codes, psi)
+        out = np.sqrt(np.sum(sums**2, axis=0)) / n
+    return np.asarray(out[0] if squeeze else out)
+
+
+# Multiplier bootstrap (Callaway and Sant'Anna 2021, Algorithm 1)
+# ---------------------------------------------------------------------------
+
+#: Two-point multiplier distributions with mean 0 and variance 1.
+#: Mammen (1993): values (1 -+ sqrt 5)/2; the negative value has
+#: probability (sqrt 5 + 1)/(2 sqrt 5) (Callaway and Sant'Anna 2021, Sec. 4).
+_SQRT5 = float(np.sqrt(5.0))
+_MULTIPLIERS = {
+    "rademacher": ((-1.0, 1.0), None),
+    "mammen": (
+        ((1.0 - _SQRT5) / 2.0, (1.0 + _SQRT5) / 2.0),
+        ((_SQRT5 + 1.0) / (2.0 * _SQRT5), 1.0 - (_SQRT5 + 1.0) / (2.0 * _SQRT5)),
+    ),
+}
+
+#: Smallest standard error reported for a column whose bootstrap
+#: distribution has zero spread, so that t statistics stay finite.
+_SE_FLOOR = 1e-12
 
 
 def multiplier_bootstrap(
@@ -231,140 +284,105 @@ def multiplier_bootstrap(
     weight_type: str = "rademacher",
     cluster_ids: Optional[np.ndarray] = None,
 ) -> Tuple[np.ndarray, float]:
-    """Multiplier bootstrap on influence functions, following R ``did::mboot``.
+    """Multiplier-bootstrap standard errors and the sup-t critical value.
+
+    Clean-room implementation of Algorithm 1 of Callaway and Sant'Anna
+    (2021): each draw perturbs the estimated influence functions by iid
+    multipliers ``V`` with mean zero and unit variance,
+    ``R* = sqrt(n) E_n[V psi]``; the standard error of column ``k`` is the
+    bootstrap interquartile range of ``R*_k`` divided by that of the
+    standard normal, over ``sqrt(n)``; the critical value of the
+    simultaneous band is the ``1 - alpha`` sample quantile of
+    ``max_k |R*_k| / sigma_k``. With ``cluster_ids`` one multiplier is
+    drawn per cluster and applied to the cluster's sum of influence
+    functions (Remark 10 of the paper). Specification:
+    ``docs/dev/cleanroom/cs_rcs.md``.
 
     Parameters
     ----------
-    psi : ndarray, shape (n, K)
-        Influence functions of the K estimands, one row per unit
-        (or per observation for repeated cross-sections).
+    psi : ndarray
+        ``(n_rows, K)`` influence functions (a 1-D array is one column),
+        scaled so that ``theta_hat - theta ~ sum(psi) / n_units``.
     n_units : int
-        Number of rows the influence functions are scaled to (the ``n``
-        in ``Var(θ̂) = E[ψ²]/n``). Usually ``psi.shape[0]``.
+        The ``n`` of that scaling.
     alpha : float
-        Nominal level for the uniform (sup-t) critical value.
+        One minus the coverage of the simultaneous band.
     n_boot : int
-        Number of bootstrap replications.
-    random_state : int, optional
-        Seed for the multiplier draws.
+        Number of bootstrap draws.
+    random_state : int or numpy Generator, optional
+        Seed of :func:`numpy.random.default_rng`.
     weight_type : {'rademacher', 'mammen'}, default 'rademacher'
-        Multiplier distribution. ``'rademacher'`` (±1) matches what the
-        R ``did`` package actually draws (``BMisc::multiplier_bootstrap``
-        — its docs cite Mammen 1993, but the implementation is
-        Rademacher; verified empirically against BMisc 1.4.x).
-        ``'mammen'`` is the Mammen (1993) two-point distribution of
-        CS2021 §4.2, available in Stata ``csdid`` via ``wbtype(mammen)``.
-    cluster_ids : ndarray of shape (n,), optional
-        Cluster membership per row. When given, rows are collapsed to
-        cluster **sums** (``rowsum(inf.func, cluster)``) and one multiplier
-        is drawn per cluster, keeping the ``1/n`` scaling of the estimator
-        — the R ``did::mboot`` convention (CS2021, Remark 10).
-
-        .. warning::
-           Collapsing to cluster *means* instead — which StatsPAI did
-           before 1.23.0, mirroring an older R ``did`` — coincides with
-           this only when every cluster has the same size. With unbalanced
-           clusters it silently rescales each cluster's contribution by
-           ``1/|c|`` and can inflate the SEs several-fold.
+        Multiplier distribution.
+    cluster_ids : array-like, optional
+        Row-aligned cluster labels; multipliers are drawn per cluster.
 
     Returns
     -------
-    se : ndarray of shape (K,)
-        Pointwise bootstrap standard errors (IQR-rescaled, robust to
-        heavy-tailed multiplier draws — same rescaling as R ``did``).
-    crit_unif : float
-        Uniform (sup-t) critical value at level ``1 - alpha``. Never
-        smaller than the pointwise Normal quantile.
+    se : ndarray
+        ``(K,)`` bootstrap standard errors (``1e-12`` for a column whose
+        bootstrap draws have no spread).
+    crit : float
+        Critical value of the uniform band, never below the pointwise
+        normal value ``z_{1 - alpha/2}``.
+
+    Notes
+    -----
+    Conventions kept so that seeded results are reproducible across
+    versions: the contributions being perturbed (rows, or cluster sums
+    ordered by sorted cluster label) are centred at their mean before the
+    draws; the multipliers are one ``(n_boot, m)`` draw of
+    ``Generator.choice`` over the two support points; sample quantiles are
+    the inverse of the empirical distribution function (the smallest draw
+    whose empirical CDF reaches ``p``). Columns with zero bootstrap spread
+    are left out of the sup-t statistic; a non-finite influence function
+    makes the critical value non-finite.
 
     References
     ----------
-    Callaway, B. and Sant'Anna, P.H.C. (2021). "Difference-in-Differences
-    with Multiple Time Periods." *Journal of Econometrics*, 225(2),
-    200-230, Section 4.2. [@callaway2021difference]
-
-    Mammen, E. (1993). "Bootstrap and Wild Bootstrap for High Dimensional
-    Linear Models." *Annals of Statistics*, 21(1), 255-285.
-    [@mammen1993bootstrap]
+    [@callaway2021difference]
     """
-    psi = np.asarray(psi, dtype=float)
-    if psi.ndim == 1:
-        psi = psi[:, None]
-    if weight_type not in ("mammen", "rademacher"):
+    if weight_type not in _MULTIPLIERS:
         raise ValueError(
-            f"weight_type must be 'mammen' or 'rademacher', got {weight_type!r}"
+            f"weight_type must be one of {sorted(_MULTIPLIERS)}, got {weight_type!r}"
         )
-
-    # Collapse to cluster *sums* (R did::mboot: `rowsum(inf.func, cluster)`)
-    # so the bootstrap resamples clusters, not units.
-    #
-    # The divisor stays `n` (rows), not `n_clusters`: the estimator is the
-    # 1/n empirical average of ψ, so the bootstrap analogue of θ̂ − θ is
-    # (1/n) Σ_c V_c Σ_{i∈c} ψ_i.  R writes the same thing as
-    # `bres = sqrt(n_clusters) * mean_c(V_c · S_c)` rescaled by
-    # `sqrt(n_clusters)/n`, which reduces to dividing the cluster-sum
-    # bootstrap draws by n.  Collapsing to cluster means and dividing by
-    # n_clusters instead — the pre-1.23.0 path — only agrees when all
-    # clusters are the same size; with unbalanced clusters (the usual case,
-    # e.g. counties within states) it reweights each cluster by 1/|c| and
-    # blows the SEs up.
+    contrib = np.asarray(psi, dtype=float)
+    if contrib.ndim == 1:
+        contrib = contrib[:, None]
     if cluster_ids is not None:
-        cluster_ids = np.asarray(cluster_ids)
-        if cluster_ids.shape[0] != psi.shape[0]:
+        labels = np.asarray(cluster_ids)
+        if labels.shape[0] != contrib.shape[0]:
             raise ValueError(
-                f"cluster_ids length {cluster_ids.shape[0]} ≠ psi rows "
-                f"{psi.shape[0]}"
+                f"cluster_ids has length {labels.shape[0]}, expected "
+                f"{contrib.shape[0]} (one label per row of psi)"
             )
-        codes, uniq = pd.factorize(cluster_ids, sort=True)
-        n_clusters = len(uniq)
-        sums = np.zeros((n_clusters, psi.shape[1]))
-        np.add.at(sums, codes, psi)
-        psi_boot = sums
-        n_eff = int(n_units)
-    else:
-        psi_boot = psi
-        n_eff = int(n_units)
+        _, code = np.unique(labels, return_inverse=True)
+        sums = np.zeros((int(code.max()) + 1, contrib.shape[1]))
+        np.add.at(sums, code.ravel(), contrib)
+        contrib = sums
+    contrib = contrib - contrib.mean(axis=0)
 
+    support, probs = _MULTIPLIERS[weight_type]
     rng = np.random.default_rng(random_state)
-    n_rows = psi_boot.shape[0]
+    v = rng.choice(np.asarray(support), size=(int(n_boot), contrib.shape[0]), p=probs)
 
-    if weight_type == "mammen":
-        # Two-point Mammen weights with mean 0, variance 1.
-        # P(V = (1-√5)/2) = (√5+1)/(2√5); P(V = (1+√5)/2) = (√5-1)/(2√5).
-        sqrt5 = np.sqrt(5.0)
-        a, b = (1 - sqrt5) / 2.0, (1 + sqrt5) / 2.0
-        pa = (sqrt5 + 1.0) / (2.0 * sqrt5)
-        u = rng.random((n_boot, n_rows))
-        V = np.where(u < pa, a, b)
-    else:  # rademacher
-        V = rng.integers(0, 2, size=(n_boot, n_rows)) * 2.0 - 1.0
+    root_n = np.sqrt(float(n_units))
+    draws = root_n * (v @ contrib) / float(n_units)
+    q25, q75 = np.quantile(draws, [0.25, 0.75], axis=0, method="inverted_cdf")
+    sigma = (q75 - q25) / (stats.norm.ppf(0.75) - stats.norm.ppf(0.25))
 
-    # Bootstrap draws of the K linear combinations, centered under
-    # H0: θ_true = θ̂ (influence functions are asymptotically mean-zero;
-    # centering removes the finite-sample mean).
-    psi_centered = psi_boot - psi_boot.mean(axis=0, keepdims=True)
-    boot = V @ psi_centered / n_eff
+    spread = ~(sigma == 0.0)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        sup_t = np.max(np.abs(draws[:, spread]) / sigma[spread], axis=1)
+    if sup_t.size and spread.any():
+        crit = float(np.quantile(sup_t, 1.0 - alpha, method="inverted_cdf"))
+    else:
+        crit = float("nan") if not np.all(np.isfinite(sigma)) else -np.inf
+    z_point = float(stats.norm.ppf(1.0 - alpha / 2.0))
+    crit = crit if np.isnan(crit) else max(crit, z_point)
 
-    # Pointwise SEs from bootstrap, IQR-rescaled (R did convention —
-    # robust to heavy tails in multiplier weights compared to raw std).
-    # method='inverted_cdf' matches R's quantile(type = 1): with few
-    # clusters the multiplier distribution is discrete and the quantile
-    # convention shifts SEs by several percent — parity requires R's.
-    q75 = np.quantile(boot, 0.75, axis=0, method="inverted_cdf")
-    q25 = np.quantile(boot, 0.25, axis=0, method="inverted_cdf")
-    iqr_norm = stats.norm.ppf(0.75) - stats.norm.ppf(0.25)
-    se = (q75 - q25) / iqr_norm
-    # Guard against degenerate columns (e.g. a singleton cell).
-    fallback_std = boot.std(axis=0, ddof=1)
-    se = np.where(se > 0, se, fallback_std)
-    se = np.where(se > 0, se, 1e-12)
-
-    # Uniform (sup-t) critical value (R: quantile type = 1).
-    max_t = np.max(np.abs(boot) / se, axis=1)
-    crit_unif = float(np.quantile(max_t, 1 - alpha, method="inverted_cdf"))
-    # Never shrink below the pointwise Normal quantile.
-    crit_unif = max(crit_unif, float(stats.norm.ppf(1 - alpha / 2)))
-
-    return np.asarray(se, dtype=float), crit_unif
+    se = sigma / root_n
+    se = np.where(se > _SE_FLOOR, se, np.where(np.isnan(se), np.nan, _SE_FLOOR))
+    return se, crit
 
 
 # ----------------------------------------------------------------------
@@ -437,6 +455,207 @@ def joint_wald(
 def sorted_periods(time: pd.Series) -> List[Any]:
     """Sorted unique period values; hoisted so estimators share one idiom."""
     return sorted(pd.Series(time).dropna().unique())
+
+
+_F = TypeVar("_F", bound=Callable[..., Any])
+
+
+def _is_calendar(col: pd.Series) -> bool:
+    return bool(
+        pd.api.types.is_datetime64_any_dtype(col.dtype)
+        or isinstance(col.dtype, pd.PeriodDtype)
+    )
+
+
+def index_calendar_time(
+    data: pd.DataFrame,
+    time: str,
+    cohort: Optional[str] = None,
+    *,
+    function: str,
+) -> Tuple[pd.DataFrame, Optional[Dict[str, Any]]]:
+    """Replace a date-typed time column (and cohort column) by period numbers.
+
+    The staggered estimators count periods: event time is ``t - g`` and a
+    never-treated unit has ``g = 0``. A ``datetime64`` or ``Period`` column
+    has neither property, and daily or weekly panels keep their dates in
+    exactly that form. When ``time`` is date-typed the observed dates are
+    numbered ``1, ..., P`` in order, and a date-typed ``cohort`` becomes the
+    number of the first observed period on or after it. A missing cohort
+    date, or one after the last observed period (the ``2100-01-01`` habit),
+    is never treated in the sample and becomes ``0``.
+
+    A numeric ``time`` is returned untouched with ``info = None``, so the
+    numeric code paths do not change.
+
+    Returns
+    -------
+    data : pd.DataFrame
+        The input frame, or a copy with the two columns replaced.
+    info : dict or None
+        ``{'periods': [...], 'time': name, 'cohort': name, 'regular': bool}``;
+        ``periods[k - 1]`` is the date of period ``k``.
+    """
+    if time not in data.columns or not _is_calendar(data[time]):
+        if (
+            cohort is not None
+            and cohort in data.columns
+            and time in data.columns
+            and _is_calendar(data[cohort])
+        ):
+            raise MethodIncompatibility(
+                f"{function}: {cohort!r} holds dates but {time!r} does not, so "
+                "the two cannot be compared.",
+                recovery_hint=(
+                    f"Give {time!r} and {cohort!r} the same type: both dates, "
+                    "or both period numbers."
+                ),
+            )
+        return data, None
+
+    periods = pd.Index(sorted(data[time].dropna().unique()))
+    out = data.copy()
+    t_idx = pd.Series(periods.get_indexer(out[time]) + 1, index=out.index)
+    out[time] = t_idx.where(out[time].notna())
+
+    if cohort is not None and cohort in out.columns:
+        g_raw = out[cohort]
+        if not _is_calendar(g_raw):
+            if pd.api.types.is_numeric_dtype(g_raw.dtype) and bool(
+                (g_raw.fillna(0) == 0).all()
+            ):
+                out[cohort] = 0
+            else:
+                raise MethodIncompatibility(
+                    f"{function}: {time!r} holds dates but {cohort!r} does "
+                    "not, so the two cannot be compared.",
+                    recovery_hint=(
+                        f"Store the first treated date in {cohort!r} (missing "
+                        "for never-treated units)."
+                    ),
+                )
+        else:
+            # Look up only the dated cohorts. numpy carries its search bounds
+            # from one key to the next, and a missing Period compares False
+            # with everything, so a NaT among the keys misplaces later ones.
+            missing = g_raw.isna().to_numpy()
+            g_pos = np.full(len(g_raw), len(periods) + 1, dtype=int)
+            if not missing.all():
+                g_pos[~missing] = (
+                    np.searchsorted(
+                        periods.values, g_raw.to_numpy()[~missing], side="left"
+                    )
+                    + 1
+                )
+            never = missing | (g_pos > len(periods))
+            out[cohort] = np.where(never, 0, g_pos).astype(int)
+
+    regular = True
+    if len(periods) > 2:
+        steps = np.diff(periods.values.astype("datetime64[ns]").astype("int64"))
+        if isinstance(data[time].dtype, pd.PeriodDtype):
+            steps = np.diff(np.asarray([p.ordinal for p in periods]))
+        # Calendar months and quarters differ in length by a few days; a gap
+        # is a step at least half again as long as the usual one.
+        regular = bool(steps.max() < 1.5 * np.median(steps))
+    if not regular:
+        warnings.warn(
+            f"{function}: the dates in {time!r} are not evenly spaced. "
+            "Periods are numbered in the order they are observed, so event "
+            "time counts observed periods, not calendar time.",
+            UserWarning,
+            stacklevel=3,
+        )
+    info = {
+        "periods": list(periods),
+        "time": time,
+        "cohort": cohort,
+        "regular": regular,
+    }
+    return out, info
+
+
+def index_gapped_integer_time(
+    data: pd.DataFrame,
+    time: str,
+    cohort: Optional[str] = None,
+    *,
+    function: str,
+) -> Tuple[pd.DataFrame, Optional[Dict[str, Any]]]:
+    """Number the periods of a numeric time column that is not consecutive.
+
+    Estimators that write event time as ``t - g`` and omit relative time
+    ``-1`` assume neighbouring periods differ by one. A biennial panel
+    (``2001, 2003, ...``) has no relative time ``-1``, so nothing is omitted
+    and the fit is not the event study the caller asked for. When the
+    observed values of a numeric ``time`` are not consecutive they are
+    numbered ``1, ..., P`` in order, exactly as :func:`index_calendar_time`
+    numbers dates, and a positive finite ``cohort`` becomes the number of the
+    first observed period on or after it (``P + 1`` when it is later than
+    every period). Missing, infinite and non-positive cohort values are left
+    to the estimator, except that missing and infinite ones become ``0``.
+
+    A consecutive grid, a non-numeric column and a single period are returned
+    untouched with ``info = None``, so those code paths do not change.
+    """
+    if time not in data.columns:
+        return data, None
+    col = data[time]
+    if not pd.api.types.is_numeric_dtype(col.dtype) or pd.api.types.is_bool_dtype(
+        col.dtype
+    ):
+        return data, None
+    raw = col.dropna().unique()
+    try:
+        vals = np.sort(np.asarray(raw, dtype=float))
+    except (TypeError, ValueError):
+        return data, None
+    vals = vals[np.isfinite(vals)]
+    if vals.size < 2:
+        return data, None
+    steps = np.diff(vals)
+    if bool(np.all(steps == 1.0)):
+        return data, None
+
+    out = data.copy()
+    t_raw = pd.to_numeric(out[time], errors="coerce").to_numpy(dtype=float)
+    pos = np.searchsorted(vals, t_raw, side="left")
+    ok = np.isfinite(t_raw)
+    t_new = np.where(ok, pos + 1, np.nan)
+    out[time] = t_new.astype(int) if ok.all() else t_new
+
+    if cohort is not None and cohort in out.columns:
+        g_col = out[cohort]
+        if pd.api.types.is_numeric_dtype(g_col.dtype):
+            g_raw = g_col.to_numpy(dtype=float)
+            never = ~np.isfinite(g_raw)
+            keep = ~never & (g_raw <= 0)
+            g_new = np.zeros(len(g_raw))
+            g_new[keep] = g_raw[keep]
+            dated = ~never & ~keep
+            g_new[dated] = np.searchsorted(vals, g_raw[dated], side="left") + 1
+            out[cohort] = (
+                g_new.astype(int) if bool(np.all(g_new == np.round(g_new))) else g_new
+            )
+
+    regular = bool(steps.max() < 1.5 * np.median(steps))
+    if not regular:
+        warnings.warn(
+            f"{function}: the periods in {time!r} are not evenly spaced. "
+            "Periods are numbered in the order they are observed, so event "
+            "time counts observed periods, not calendar time.",
+            UserWarning,
+            stacklevel=3,
+        )
+    periods = [int(v) if float(v).is_integer() else float(v) for v in vals]
+    info = {
+        "periods": periods,
+        "time": time,
+        "cohort": cohort,
+        "regular": regular,
+        "source": "numeric_gaps",
+    }
+    return out, info
 
 
 def long_difference(
@@ -579,10 +798,9 @@ def cohort_share_context(
     """Build ``(pg, ind)`` for a vector of per-cell cohort labels.
 
     ``pg[k]`` is the share of **all** units (never-treated included) whose
-    cohort equals cell ``k``'s group, matching R ``did``'s
-    ``pg <- mean(weights * (G == g))``.  ``ind[i, k]`` is
-    ``ω_i · 1{G_i == g_k}``, matching ``did:::wif``'s
-    ``weights.ind * 1*(glist == group[k])``.
+    cohort equals cell ``k``'s group, ``pg[k] = mean(ω · 1{G == g_k})``,
+    and ``ind[i, k] = ω_i · 1{G_i == g_k}``: the inputs of
+    :func:`weight_influence`.
 
     Parameters
     ----------
@@ -608,37 +826,42 @@ def cohort_share_context(
 def weight_influence(pg: "np.ndarray", ind: "np.ndarray") -> "np.ndarray":
     """Influence function of the *estimated* aggregation weights.
 
-    Port of R ``did:::wif``.  Callaway-Sant'Anna aggregations weight each
-    cell by its cohort share ``pg[k] = P(G = g_k)``, which is itself
-    estimated.  Treating those weights as fixed drops a term from the
-    variance and makes the reported standard error too small
-    (anti-conservative).
+    The Callaway-Sant'Anna aggregates weight cell ``k`` by
+    ``w_k = p_k / S`` with ``p_k = E_n[ind_k]`` the (weighted) share of the
+    cell's cohort and ``S = sum_j p_j``. Those shares are estimated, so by
+    the delta method each weight contributes
+
+        IF(w_k)_i = (ind_ik - p_k) / S - p_k * sum_j (ind_ij - p_j) / S**2
+
+    to the aggregate's influence function through ``IF(w) @ ATT``. Rows
+    sum to zero across cells (the weights always sum to one) and columns
+    average to zero; cells of one cohort give identically zero. Clean-room
+    implementation from Callaway and Sant'Anna (2021); specification in
+    ``docs/dev/cleanroom/did_drdid.md``.
 
     Parameters
     ----------
-    pg : ndarray, shape (K,)
-        Estimated cohort share behind each kept cell.
-    ind : ndarray, shape (n_units, K)
-        ``1{G_i == g_k}`` membership indicators.
+    pg : ndarray of shape (K,)
+        Cohort shares ``p_k`` (see :func:`cohort_share_context`).
+    ind : ndarray of shape (n, K)
+        Per-unit indicators ``omega_i 1{G_i = g_k}``.
 
     Returns
     -------
-    ndarray, shape (n_units, K)
-        Multiply by the cell ATTs and add to ``Psi[:, keep] @ w``.
+    ndarray of shape (n, K)
+        Zero when the cells carry no cohort mass.
 
-    Notes
-    -----
-    When every kept cell comes from the same cohort the ``pg`` factors
-    cancel and this is identically zero — which is why single-cohort
-    aggregates were never affected by the omission.
+    References
+    ----------
+    [@callaway2021difference]
     """
-    total = float(np.sum(pg))
-    if total <= 0:
-        return np.zeros_like(ind, dtype=float)
-    centered = ind - pg[None, :]
-    if1 = centered / total
-    if2 = np.outer(centered.sum(axis=1), pg / (total**2))
-    return np.asarray(if1 - if2, dtype=float)
+    pg = np.asarray(pg, dtype=float)
+    ind = np.asarray(ind, dtype=float)
+    total = float(pg.sum())
+    if total <= 0.0:
+        return np.zeros_like(ind)
+    dev = ind - pg[None, :]
+    return dev / total - np.outer(dev.sum(axis=1), pg) / total**2
 
 
 # ======================================================================
@@ -984,8 +1207,19 @@ def covariates_from_formula(
             diagnostics={"formula": formula},
         ) from exc
 
+    from ..core.utils import _coerce_string_extension_dtypes
+
     try:
-        design = patsy.dmatrix(rhs, data, return_type="dataframe", NA_action="drop")
+        from ..core.utils import formula_eval_env, r_formula_idioms
+
+        design = patsy.dmatrix(
+            r_formula_idioms(rhs),
+            # integer columns wrap around inside I(x**2)
+            _coerce_string_extension_dtypes(data, r_formula_idioms(rhs)),
+            eval_env=formula_eval_env(),
+            return_type="dataframe",
+            NA_action="drop",
+        )
     except Exception as exc:
         raise MethodIncompatibility(
             f"{function}: could not evaluate the covariate formula "
@@ -1038,3 +1272,60 @@ def covariates_from_formula(
             diagnostics={"formula": formula, "clashes": clashes},
         )
     return out, cols
+
+
+def calendar_time_aware(
+    *, time: str, cohort: Optional[str] = None, numeric_gaps: bool = False
+) -> Callable[[_F], _F]:
+    """Let an estimator take date-typed time and cohort columns.
+
+    ``time`` and ``cohort`` name the estimator's parameters that hold the
+    two column names. When the time column is date-typed the call is made
+    on the period-numbered copy from :func:`index_calendar_time`, and the
+    numbering is stored in ``result.model_info['calendar_time']``. Any other
+    call passes straight through.
+
+    ``numeric_gaps=True`` is for estimators that hard-code relative time
+    ``-1`` as the reference: a numeric time column whose observed values are
+    not consecutive is numbered the same way
+    (:func:`index_gapped_integer_time`).
+    """
+
+    def decorate(fn: _F) -> _F:
+        sig = inspect.signature(fn)
+
+        @functools.wraps(fn)
+        def wrapper(*args: Any, **kwargs: Any) -> Any:
+            try:
+                bound = sig.bind(*args, **kwargs)
+            except TypeError:
+                return fn(*args, **kwargs)
+            a = bound.arguments
+            data = a.get("data")
+            t_col = a.get(time)
+            g_col = a.get(cohort) if cohort is not None else None
+            if not isinstance(data, pd.DataFrame) or not isinstance(t_col, str):
+                return fn(*args, **kwargs)
+            cols = [c for c in (t_col, g_col) if isinstance(c, str)]
+            g_name = g_col if isinstance(g_col, str) else None
+            if any(c in data.columns and _is_calendar(data[c]) for c in cols):
+                a["data"], info = index_calendar_time(
+                    data, t_col, g_name, function=fn.__name__
+                )
+            elif numeric_gaps:
+                a["data"], info = index_gapped_integer_time(
+                    data, t_col, g_name, function=fn.__name__
+                )
+                if info is None:
+                    return fn(*args, **kwargs)
+            else:
+                return fn(*args, **kwargs)
+            result = fn(*bound.args, **bound.kwargs)
+            model_info = getattr(result, "model_info", None)
+            if info is not None and isinstance(model_info, dict):
+                model_info["calendar_time"] = info
+            return result
+
+        return cast(_F, wrapper)
+
+    return decorate

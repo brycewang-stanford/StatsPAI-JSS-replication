@@ -67,12 +67,13 @@ Epidemiology*, 168(6), 656-664. [@cole2008constructing]
 """
 
 import warnings
-from typing import Any, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
 from scipy import stats
 
+from .._input_validation import check_columns
 from ..core.results import CausalResult
 from ..exceptions import MethodIncompatibility
 
@@ -87,11 +88,15 @@ def msm(
     baseline: Optional[List[str]] = None,
     exposure: str = "cumulative",
     treat_type: str = "auto",
-    trim: float = 0.01,
+    trim: float = 0.0,
     trim_per_period: bool = False,
     alpha: float = 0.05,
     family: str = "gaussian",
     density_sd: str = "unbiased",
+    outcome_rows: str = "all",
+    censor: Optional[str] = None,
+    censor_covariates: Optional[List[str]] = None,
+    design: Optional[Any] = None,
 ) -> CausalResult:
     """
     Estimate a Marginal Structural Model via stabilized IPTW.
@@ -102,7 +107,8 @@ def msm(
         Long-format panel data, one row per (unit, period).
     y : str
         Outcome column. Can be constant within unit (end-of-follow-up
-        outcome repeated) or time-varying.
+        outcome repeated) or time-varying; see ``outcome_rows`` for the
+        first case.
     treat : str
         Treatment column. Binary (0/1) or continuous.
     id : str
@@ -123,9 +129,21 @@ def msm(
         - ``'ever'``: 1 if any A_s=1 for s ≤ t (binary, A binary only)
     treat_type : {'auto', 'binary', 'continuous'}, default 'auto'
         Treatment type for weight construction. 'auto' detects from data.
-    trim : float, default 0.01
-        Truncation quantile applied to weights (symmetric: trims extreme
-        weights at ``trim`` and ``1 - trim``). Set to 0 to disable.
+    trim : float, default 0.0
+        Truncation quantile applied to weights (symmetric: clips the
+        weights at their ``trim`` and ``1 - trim`` quantiles). The default
+        is no truncation, as in R ``ipw::ipwtm`` (``trunc = NULL``).
+        Truncation trades bias for variance: it changes the estimand's
+        pseudo-population, so a truncated estimate is not consistent for
+        the MSM parameter. With strong time-varying confounding
+        ``trim=0.01`` moved a true slope of 1.0 to 1.15 on average (20
+        replications, the untruncated mean was 0.99). When ``trim > 0`` the
+        untruncated fit is computed as well, reported in
+        ``model_info['truncation']``, and a warning is raised when the two
+        differ by more than a quarter of the standard error.
+
+        .. versionchanged:: 1.40
+           The default was 0.01 (silent 1%/99% truncation).
     trim_per_period : bool, default False
         When True, apply ``trim`` at each period's per-period ratio
         *before* taking the cumulative product. This is a more
@@ -142,6 +160,46 @@ def msm(
     density_sd : {'unbiased', 'ml'}, default 'unbiased'
         Residual-SD convention for continuous-treatment density weights;
         see :func:`stabilized_weights`.
+    outcome_rows : {'all', 'last'}, default 'all'
+        Rows the outcome model is fitted on. ``'all'`` pools every
+        unit-period row, which is right for an outcome measured each
+        period and is what a weighted ``lm`` / ``regress`` on the long
+        panel does (the R ``ipw`` and Stata references are pinned in this
+        form). ``'last'`` uses each unit's last row, where the cumulative
+        weight and the exposure summary cover the whole follow-up. Use it
+        for an outcome measured once, at the end: such an outcome arrives
+        repeated on every row, and pooling pairs it with the exposure
+        received so far, so the slope is not the effect of a unit of
+        exposure (2.6 to 2.75 against a true 3.0 per visit in a two-visit
+        design, 2.97 to 3.04 with ``'last'``). The default warns when the
+        outcome is constant within every unit.
+    censor : str, optional
+        0/1 column, 1 on the period in which the unit is censored (its
+        outcome, and possibly its treatment, unobserved there; it must be
+        the unit's last row) and 0 elsewhere. The MSM is then fitted on the
+        uncensored rows with the product of the treatment weights and
+        stabilized inverse-probability-of-censoring weights,
+        ``prod_{s<=t} P(C_s = 0 | A_{s-1}, V) / P(C_s = 0 | A_{s-1}, V,
+        L_s)`` from pooled logistic models over every row at risk, which
+        is R ``ipw::ipwtm(exposure = censor, family = "binomial", type =
+        "first")``. This removes the selection of informative dropout that
+        depends on the measured history. ``trim`` applies to the combined
+        weight.
+    censor_covariates : list of str, optional
+        The time-varying ``L`` of the censoring model's denominator
+        (default: ``time_varying``). They must be present on the censored
+        rows.
+    design : SurveyDesign, optional
+        A complex survey design from :func:`sp.svydesign` declared on the
+        long ``data`` (same rows), with the unit as the sampled element:
+        its weight, stratum and PSU are the same on all its rows. The
+        outcome model is weighted by the design weight times the
+        stabilized weight, and its covariance is the survey linearisation
+        sandwich over strata, PSUs and the fpc, holding the IP weights
+        fixed -- R ``ipw::ipwtm`` + ``survey::svyglm(design =
+        svydesign(ids = ~psu, strata = ~stratum, weights = ~ w * ipw))``,
+        with t inference on the design degrees of freedom. The treatment
+        (and censoring) models stay unweighted, as in that recipe.
 
     Returns
     -------
@@ -195,11 +253,55 @@ def msm(
 
     baseline = list(baseline or [])
     required = [y, treat, id, time] + time_varying + baseline
-    missing = [c for c in required if c not in data.columns]
-    if missing:
-        raise ValueError(f"Columns not found in data: {missing}")
+    svy: Any = None
+    if design is not None:
+        from ..survey.linearization import check_design, unit_design_rows
 
-    df = data[required].dropna().sort_values([id, time]).reset_index(drop=True)
+        svy = check_design(design, data, function="sp.msm", allow_calibrated=False)
+        check_columns(data, {"id": id}, function="sp.msm")
+        # the unit must be the sampled element (raises otherwise)
+        unit_design_rows(svy, data, id, list(pd.unique(data[id])), function="sp.msm")
+        data = data.assign(__svy_row__=np.arange(len(data)), __svy_weight__=svy.weights)
+        required = required + ["__svy_row__", "__svy_weight__"]
+    cens_diag: Optional[Dict[str, Any]] = None
+    cw_all = None
+    data_fit = data
+    if censor is not None:
+        from ._censoring import censoring_weights
+
+        c_cov = list(time_varying if censor_covariates is None else censor_covariates)
+        check_columns(
+            data,
+            {"censor": censor, "censor_covariates": c_cov},
+            function="sp.msm",
+        )
+        # unique row labels: the weights are matched back by label
+        data_c = data.reset_index(drop=True)
+        cw_all, cens_diag = censoring_weights(
+            data_c, censor, treat, id, time, baseline, c_cov
+        )
+        data_fit = data_c.loc[data_c[censor].to_numpy(dtype=float) == 0]
+    elif censor_covariates is not None:
+        raise MethodIncompatibility(
+            "sp.msm: censor_covariates= needs censor= (the censoring column).",
+            recovery_hint="Pass censor='<0/1 column>' or drop censor_covariates=.",
+        )
+    check_columns(
+        data,
+        {
+            "y": y,
+            "treat": treat,
+            "id": id,
+            "time": time,
+            "time_varying": list(time_varying),
+            "baseline": baseline,
+        },
+        function="sp.msm",
+    )
+
+    df = data_fit[required].dropna().sort_values([id, time])
+    cw_rows = cw_all.loc[df.index].to_numpy(dtype=float) if cw_all is not None else None
+    df = df.reset_index(drop=True)
     if df.empty:
         raise ValueError("No rows remain after dropping missing values.")
 
@@ -225,6 +327,8 @@ def msm(
         trim_per_period=(trim if (trim_per_period and trim and trim > 0) else 0.0),
         density_sd=density_sd,
     )
+    if cw_rows is not None:
+        sw = sw * cw_rows
 
     # Post-cumulative trimming (the conventional default — once on the
     # final cumulative weight). Only applied when trim_per_period=False,
@@ -248,24 +352,111 @@ def msm(
         df["_exposure"] = (grouped.cummax() > 0).astype(float).values
         exposure_label = f"ever_{treat}"
 
+    if outcome_rows not in ("all", "last"):
+        raise MethodIncompatibility(
+            f"outcome_rows must be 'all' or 'last', got {outcome_rows!r}"
+        )
+    n_periods_max = int(df.groupby(id, sort=False)[time].size().max())
+    end_of_follow_up = bool(
+        n_periods_max > 1
+        and int(df.groupby(id, sort=False)[y].nunique(dropna=False).max()) == 1
+    )
+    if outcome_rows == "last":
+        rows = (~df.duplicated(subset=[id], keep="last")).to_numpy()
+    else:
+        rows = np.ones(len(df), dtype=bool)
+        if end_of_follow_up:
+            from ..exceptions import AssumptionWarning
+
+            warnings.warn(
+                f"sp.msm: {y!r} is constant within every unit, so it looks "
+                "like an outcome measured once at the end of follow-up, and "
+                "it is being fitted on every unit-period row. The earlier "
+                "rows pair the final outcome with the exposure received so "
+                "far, and the pooled coefficient is then not the effect of "
+                "a unit of exposure. Pass outcome_rows='last' to fit the "
+                "outcome model on each unit's last row; pass "
+                "outcome_rows='all' with a time-varying outcome to keep "
+                "pooling.",
+                AssumptionWarning,
+                stacklevel=2,
+            )
+
     # Pooled weighted regression of Y on exposure + baseline
     feat = ["_exposure"] + baseline
-    X_mat = np.column_stack([np.ones(len(df)), df[feat].values.astype(float)])
-    y_vec = df[y].values.astype(float)
-    cluster_ids = df[id].values
+    X_mat = np.column_stack([np.ones(len(df)), df[feat].values.astype(float)])[rows]
+    y_vec = df[y].values.astype(float)[rows]
+    cluster_ids = df[id].values[rows]
+    svy_rows: Optional[np.ndarray] = None
+    svy_w: Optional[np.ndarray] = None
+    if svy is not None:
+        svy_rows = df["__svy_row__"].to_numpy()[rows]
+        svy_w = df["__svy_weight__"].to_numpy(dtype=float)[rows]
 
-    if family == "gaussian":
-        beta, se = _wls_cluster(X_mat, y_vec, w, cluster_ids)
-    else:
-        beta, se = _weighted_logit_cluster(X_mat, y_vec, w, cluster_ids)
+    def _outcome_fit(weights_rows: np.ndarray):
+        if svy is not None:
+            assert svy_rows is not None and svy_w is not None
+            return _design_outcome_fit(
+                X_mat, y_vec, svy_w * weights_rows, family, svy, svy_rows
+            )
+        if family == "gaussian":
+            return _wls_cluster(X_mat, y_vec, weights_rows, cluster_ids)
+        return _weighted_logit_cluster(X_mat, y_vec, weights_rows, cluster_ids)
+
+    beta, se = _outcome_fit(w[rows])
 
     # Coefficient of interest is position 1 (after constant)
     coef = float(beta[1])
     se_coef = float(se[1])
+
+    # Truncation changes the pseudo-population, so the truncated slope is
+    # not the MSM parameter. Report how far it moved the answer.
+    truncation: Dict[str, Any] = {"trim": float(trim or 0.0), "applied": False}
+    if trim and trim > 0:
+        sw_rows = sw[rows]
+        beta_u, se_u = _outcome_fit(sw_rows)
+        shift = coef - float(beta_u[1])
+        truncation = {
+            "trim": float(trim),
+            "applied": True,
+            "per_period": bool(trim_per_period),
+            "n_weights_changed": int(np.sum(~np.isclose(w, sw, rtol=0, atol=0))),
+            "estimate_untruncated": float(beta_u[1]),
+            "se_untruncated": float(se_u[1]),
+            "shift": float(shift),
+            "shift_in_se": float(abs(shift) / se_coef) if se_coef > 0 else float("inf"),
+        }
+        if se_coef > 0 and abs(shift) > 0.25 * se_coef:
+            from ..exceptions import AssumptionWarning
+
+            warnings.warn(
+                AssumptionWarning(
+                    f"sp.msm: truncating the weights at the {trim:g} / "
+                    f"{1 - trim:g} quantiles moved the estimate from "
+                    f"{beta_u[1]:.4g} (untruncated) to {coef:.4g}, "
+                    f"{abs(shift) / se_coef:.2f} standard errors. Truncation "
+                    "changes the pseudo-population, so the truncated slope "
+                    "is not the marginal structural parameter.",
+                    recovery_hint=(
+                        "Report the untruncated estimate (trim=0, the "
+                        "default) as the primary result and the truncated "
+                        "one as a bias-variance sensitivity check; see "
+                        "model_info['truncation']."
+                    ),
+                    diagnostics=truncation,
+                ),
+                stacklevel=2,
+            )
     z = coef / se_coef if se_coef > 0 else 0.0
     pvalue = float(2 * stats.norm.sf(abs(z)))
     z_crit = stats.norm.ppf(1 - alpha / 2)
     ci = (coef - z_crit * se_coef, coef + z_crit * se_coef)
+    svy_df: Optional[float] = None
+    if svy is not None:
+        from ..survey.linearization import design_df, design_inference
+
+        svy_df = design_df(svy, svy_rows)
+        ci, pvalue = design_inference(coef, se_coef, svy_df, alpha)
 
     # Coefficient table (detail)
     param_names = ["const", exposure_label] + baseline
@@ -291,9 +482,21 @@ def msm(
         "sw_min": float(np.min(sw)),
         "sw_trimmed": bool(trim and trim > 0),
         "trim_per_period": bool(trim_per_period),
+        "truncation": truncation,
         "coef_table": detail.copy(),
         "cluster_var": id,
+        "outcome_rows": outcome_rows,
+        "outcome_constant_within_unit": end_of_follow_up,
+        "n_outcome_rows": int(rows.sum()),
+        "censoring": cens_diag,
     }
+    if svy is not None:
+        from ..survey.linearization import design_info
+
+        assert svy_df is not None
+        model_info["cluster_var"] = None
+        model_info["se_method"] = "survey_linearization"
+        model_info["survey_design"] = design_info(svy, svy_df)
 
     _result = CausalResult(
         method="Marginal Structural Model (IPTW)",
@@ -328,6 +531,10 @@ def msm(
                 "alpha": alpha,
                 "family": family,
                 "density_sd": density_sd,
+                "outcome_rows": outcome_rows,
+                "censor": censor,
+                "censor_covariates": censor_covariates,
+                "design": None if design is None else repr(design),
             },
             data=data,
             overwrite=False,
@@ -477,6 +684,17 @@ def stabilized_weights(
             f"density_sd must be 'unbiased' or 'ml', got {density_sd!r}"
         )
     baseline = list(baseline or [])
+    check_columns(
+        data,
+        {
+            "treat": treat,
+            "id": id,
+            "time": time,
+            "time_varying": list(time_varying or []),
+            "baseline": baseline,
+        },
+        function="sp.stabilized_weights",
+    )
     df = data.sort_values([id, time]).reset_index(drop=True)
 
     if treat_type == "auto":
@@ -582,13 +800,52 @@ def _gauss_density(X: np.ndarray, y: np.ndarray, ml: bool = False) -> np.ndarray
         sigma = max(sigma, 1e-6)
         dens = stats.norm.pdf(y, loc=fitted, scale=sigma)
         return np.asarray(np.clip(dens, 1e-12, None), dtype=float)
-    except Exception:
+    except Exception as exc:
+        from ..core._fallback import warn_fallback
+
+        warn_fallback(
+            "MSM Gaussian treatment-density model",
+            exc,
+            "using the marginal density of the treatment, which drops the"
+            " confounding adjustment from this weight term",
+        )
         mean = float(np.mean(y))
         sigma = max(float(np.std(y, ddof=1)), 1e-6)
         return np.asarray(
             np.clip(stats.norm.pdf(y, loc=mean, scale=sigma), 1e-12, None),
             dtype=float,
         )
+
+
+def _design_outcome_fit(
+    X: np.ndarray,
+    y: np.ndarray,
+    w: np.ndarray,
+    family: str,
+    design: Any,
+    rows: np.ndarray,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Weighted outcome model with the survey linearisation covariance.
+
+    ``w`` is the design weight times the IP weight. Coefficients as in
+    :func:`_wls_cluster` / :func:`_weighted_logit_cluster`; the covariance
+    is ``B M B`` with ``M`` the design covariance of the score rows
+    ``w_i (y_i - mu_i) x_i`` (R ``svyglm``).
+    """
+    from ..survey.linearization import design_vcov
+
+    if family == "gaussian":
+        beta = _wls_cluster(X, y, w, np.zeros(len(y)))[0]
+        mu = X @ beta
+        h = w
+    else:
+        beta = _weighted_logit_cluster(X, y, w, np.zeros(len(y)))[0]
+        mu = 1 / (1 + np.exp(-np.clip(X @ beta, -30, 30)))
+        h = w * mu * (1 - mu)
+    bread = np.linalg.pinv((X * h[:, None]).T @ X)
+    scores = (w * (y - mu))[:, None] * X
+    vcov = bread @ design_vcov(scores, design, rows) @ bread
+    return beta, np.sqrt(np.maximum(np.diag(vcov), 0.0))
 
 
 def _wls_cluster(

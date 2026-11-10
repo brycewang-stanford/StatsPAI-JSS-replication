@@ -47,10 +47,10 @@ COVERAGE_NAMES = {
         r"\code{sp.sdid} (placebo SE)",
         "factor-model panel, 1 treated",
     ),
-    "sp.ebalance (CIA, ATT)": (r"\code{sp.ebalance}", "CIA, ATT (M-estimation SE)"),
+    "sp.ebalance (CIA, ATT)": (r"\code{sp.ebalance}", "unconfoundedness, ATT (M-estimation SE)"),
     "sp.causal_question(design='dml') IRM ATE": (
         r"\code{sp.dml} (IRM)",
-        r"binary-\(D\) CIA, IRM ATE",
+        r"binary-\(D\) unconfounded, IRM ATE",
     ),
     "sp.dml(model='plr') theta": (
         r"\code{sp.dml} (PLR)",
@@ -58,7 +58,7 @@ COVERAGE_NAMES = {
     ),
     "sp.causal_question(design='causal_forest') AIPW ATE": (
         r"\code{sp.causal\_forest} (AIPW)",
-        r"binary-\(D\) CIA, population ATE",
+        r"binary-\(D\) unconfounded, population ATE",
     ),
 }
 
@@ -86,7 +86,7 @@ ROBUST_NAMES = {
     "sp.causal_forest AIPW under overlap loss": (
         r"\code{sp.causal\_forest}",
         "severe overlap loss",
-        "Under-covers as propensities approach 0 and 1; audit flags overlap before interpretation.",
+        r"Under-covers as propensities approach 0 and 1; \code{sp.audit} has no overlap check for this class.",
     ),
 }
 

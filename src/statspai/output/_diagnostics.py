@@ -125,11 +125,34 @@ def _fe_cell(result: Any) -> str:
 
 
 def _fe_raw(result: Any) -> Any:
-    """Return the raw ``fixed_effects`` metadata for the result, if any."""
-    if _is_causal(result):
-        return None
+    """Return the raw ``fixed_effects`` metadata for the result, if any.
+
+    A causal result is read only from the explicit ``fixed_effects`` key
+    (``sp.etwfe`` writes it): its ``fe`` / ``absorbed_fe`` entries, when
+    present, describe estimator options rather than absorbed variables.
+    """
     mi = _model_info(result)
-    return mi.get("fixed_effects") or mi.get("absorbed_fe") or mi.get("fe")
+    if _is_causal(result):
+        return mi.get("fixed_effects")
+    fe = mi.get("fixed_effects") or mi.get("absorbed_fe") or mi.get("fe")
+    if not fe and getattr(result, "absorber", None) is not None:
+        # ``FEOLSResult`` (sp.hdfe_ols) has no model_info; its absorbed
+        # effects are the second part of ``formula`` ("y ~ x | firm + year").
+        # The table printed "Firm FE  No" for it.
+        formula = getattr(result, "formula", None)
+        if isinstance(formula, str) and "|" in formula:
+            fe = formula.split("|")[1].strip() or None
+    return fe
+
+
+def _fe_unknown(result: Any) -> bool:
+    """True for a causal result that does not declare its fixed effects.
+
+    Its FE cells are left blank: writing ``No`` would assert that the
+    estimator absorbs nothing, which the table does not know (an ETWFE or
+    imputation estimator absorbs unit and period effects).
+    """
+    return _is_causal(result) and _fe_raw(result) in (None, "")
 
 
 def _parse_fe_tokens(fe_value: Any) -> List[str]:
@@ -189,7 +212,20 @@ def _cluster_cell(result: Any) -> str:
     results — the metadata shape is identical.
     """
     mi = _model_info(result)
-    cl = mi.get("cluster") or mi.get("cluster_var")
+    # ``cluster`` / ``cluster_var``: regress, ivreg, logit, panel, did ...;
+    # ``clustervar``: the fixest family (feols / fepois / feglm), whether the
+    # clustering came from ``cluster=`` or ``vcov={"CRV1": ...}``. Reading
+    # only the first two printed "Cluster SE  No" for every clustered
+    # feols column. ``FEOLSResult`` (sp.hdfe_ols) keeps it in
+    # ``cluster_info``.
+    declared = ("cluster", "cluster_var", "clustervar")
+    cl = mi.get("cluster") or mi.get("cluster_var") or mi.get("clustervar")
+    if not cl:
+        info = getattr(result, "cluster_info", None)
+        if isinstance(info, dict) and info.get("cluster"):
+            cl = info.get("cluster")
+    if not cl and _is_causal(result) and not any(k in mi for k in declared):
+        return ""  # undeclared: blank, not a claim that SEs are unclustered
     if cl in (None, "", "None", "none", False):
         return "No"
     if isinstance(cl, (list, tuple, set)):
@@ -394,9 +430,11 @@ def extract_fe_cluster_indicators(
                 union_tokens.append(t)
 
     if union_tokens:
+        unknown = [_fe_unknown(r) for r in results]
         for tok in union_tokens:
             rows[_fe_token_label(tok)] = [
-                "Yes" if tok in tokens else "No" for tokens in per_col_tokens
+                "" if unk else ("Yes" if tok in tokens else "No")
+                for tokens, unk in zip(per_col_tokens, unknown)
             ]
     else:
         # Metadata exists but unparseable (truthy non-string) → single row

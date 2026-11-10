@@ -22,6 +22,7 @@ import numpy as np
 
 from ..exceptions import DataInsufficient, MethodIncompatibility
 from . import _grf_engine as engine
+from ._grf_family import observation_weights as _family_observation_weights
 from ._grf_family import with_stream
 
 
@@ -79,13 +80,13 @@ def _validate_clusters(clusters: Any, n: int) -> Optional[np.ndarray]:
 def observation_weights(
     clusters: Optional[np.ndarray], equalize_cluster_weights: bool, n: int
 ) -> np.ndarray:
-    """``grf:::observation_weights`` (no sample weights), normalised to 1."""
-    if clusters is None or not equalize_cluster_weights:
-        raw = np.ones(n)
-    else:
-        counts = np.bincount(clusters)
-        raw = 1.0 / counts[clusters]
-    return np.asarray(raw / raw.sum(), dtype=float)
+    """Observation weights of the averages without sample weights, summing to 1.
+
+    The documented grf rule (see
+    :func:`statspai.forest._grf_family.observation_weights`): ``1 / cluster
+    size`` with equalized clusters, equal weights otherwise.
+    """
+    return _family_observation_weights(clusters, equalize_cluster_weights, None, n)
 
 
 def _crossfit(
@@ -112,13 +113,12 @@ def _crossfit(
     for train_idx, test_idx in split_iter:
         fitted = clone(model).fit(features[train_idx], target[train_idx])
         if proba:
-            probs = fitted.predict_proba(features[test_idx])
-            classes = list(getattr(fitted, "classes_", [0, 1]))
-            if 1 in classes or 1.0 in classes:
-                col = classes.index(1) if 1 in classes else classes.index(1.0)
-                out[test_idx] = probs[:, col]
-            else:  # the training fold held no treated rows
-                out[test_idx] = 0.0
+            from ..core._learners import positive_class_proba
+
+            # (n,) or (n, 2) by classes_; 0 when the fold held no treated rows
+            out[test_idx] = positive_class_proba(
+                fitted, features[test_idx], context="causal_forest model_t"
+            )
         else:
             out[test_idx] = np.asarray(fitted.predict(features[test_idx])).ravel()
     return out

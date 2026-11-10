@@ -12,6 +12,8 @@ from typing import Optional, Tuple
 import numpy as np
 import pandas as pd
 
+from .._aliases import accepts_aliases
+from .._input_validation import check_columns
 from ._base import (
     BayesianCausalResult,
     _require_pymc,
@@ -41,6 +43,7 @@ def _local_polynomial_design(
     return np.column_stack(cols)
 
 
+@accepts_aliases(seed="random_state")
 def bayes_rd(
     data: pd.DataFrame,
     y: str,
@@ -113,11 +116,9 @@ def bayes_rd(
     >>> print(res.summary())  # doctest: +SKIP
     >>> res.posterior_mean, (res.hdi_lower, res.hdi_upper)  # doctest: +SKIP
     """
+    check_columns(data, {"y": y, "running": running}, function="sp.bayes_rd")
     pm, _ = _require_pymc()
 
-    for c in (y, running):
-        if c not in data.columns:
-            raise ValueError(f"Column '{c}' not found in data")
     if poly < 1:
         raise ValueError(f"poly must be >= 1, got {poly}")
 

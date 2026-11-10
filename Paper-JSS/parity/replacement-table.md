@@ -62,7 +62,7 @@ a known truth on a controlled DGP is the only evidence that can exist.
 
 - Rows: 149
 - Relationship: 130 equivalent; 1 subset; 5 superset; 7 partial; 6 new
-- Evidence tier: 121 bit-exact; 16 aligned; 7 test-covered, not tier-graded; 5 analytical
+- Evidence tier: 125 bit-exact; 13 aligned; 7 analytical; 3 test-covered, not tier-graded; 1 published
 
 ## Table
 
@@ -115,8 +115,8 @@ a known truth on a controlled DGP is the only evidence that can exist.
 | **DiD: continuous treatment** | `contdid::cont_did` | --- (no Stata package) | `sp.continuous_did`, `sp.cgs_continuous_did` | equivalent | **bit-exact** — vs `fixest::feols(y ~ dose:post | id + time) (method='twfe')` — `tests/reference_parity/test_did_synth_didvar_parity.py` |
 | **DiD: changes-in-changes** | `qte::CiC` | `cic` | `sp.cic` | equivalent | **aligned** — vs `qte::CiC` — `tests/r_parity/74_cic.py` documented inverse-CDF tie-break gap on the median and the ATT |
 | **DiD: Honest** | `HonestDiD::createSensitivityResults_*` | `honestdid` | `sp.honest_did` | equivalent | **bit-exact** — vs `HonestDiD::createSensitivityResults (exact quantile) + closed form at M = 0` — `tests/r_parity/10_honest_did.py` |
-| **DiD: pretrends power** | `pretrends::pretrends` | `pretrends` | `sp.pretrends_power`, `sp.pretrends_slope_for_power`, `sp.pretrends_test` | equivalent | **aligned** — vs `pretrends::pretrends / pretrends::slope_for_power (GitHub, not CRAN)` — `tests/r_parity/76_pretrends.py` |
-| **DiD: functional-form test** | `didFF::didFF` | --- (no Stata package) | `sp.functional_form_test` | equivalent | **aligned** — vs `didFF::didFF` — `tests/r_parity/79_didff.py` |
+| **DiD: pretrends power** | `pretrends::pretrends` | `pretrends` | `sp.pretrends_power`, `sp.pretrends_slope_for_power`, `sp.pretrends_test` | equivalent | **bit-exact** — vs `pretrends::pretrends / pretrends::slope_for_power (GitHub, not CRAN)` — `tests/r_parity/76_pretrends.py` |
+| **DiD: functional-form test** | `didFF::didFF` | --- (no Stata package) | `sp.functional_form_test` | equivalent | **bit-exact** — vs `didFF::didFF` — `tests/r_parity/79_didff.py` |
 | **DiD: Bacon decomposition** | `bacondecomp::bacon` | `bacondecomp` | `sp.bacon_decomposition` | equivalent | **bit-exact** — vs `bacondecomp::bacon` — `tests/r_parity/20_bacon.py` |
 | **DiD: local projections** | `lpirfs`-style LP-DiD | `lpdid` | `sp.lp_did` | equivalent | **bit-exact** — vs `direct transcription (no LP-DiD R package installed); Stata side uses the authors' lpdid` — `tests/r_parity/83_lpdid.py` |
 | **RD: bias-corrected robust** | `rdrobust::rdrobust` | `rdrobust` | `sp.rdrobust` | equivalent | **bit-exact** — vs `rdrobust::rdrobust` — `tests/r_parity/06_rd.py` |
@@ -133,9 +133,9 @@ a known truth on a controlled DGP is the only evidence that can exist.
 | **Synth: augmented SCM** | `augsynth::augsynth` | `allsynth` (different convention) | `sp.augsynth` | equivalent | **aligned** — vs `augsynth::augsynth` — `tests/r_parity/18_augsynth.py` |
 | **Synth: generalised SCM** | `gsynth::gsynth` | `fect_stata` (different convention) | `sp.gsynth` | equivalent | **bit-exact** — vs `gsynth::gsynth` — `tests/r_parity/19_gsynth.py` |
 | **Synth: SCPI inference** | `scpi::scpi` | `scpi` | `sp.scpi`, `sp.scest`, `sp.scdata` | equivalent | **bit-exact** — vs `R scpi::scdata (features = outcome, no cov.adj, constant = FALSE)` — `tests/reference_parity/test_did_synth_scpi_parity.py` |
-| **Synth: BSTS / CausalImpact** | `CausalImpact::CausalImpact` | --- | `sp.causal_impact` | equivalent | **analytical** — `tests/reference_parity/test_did_synth_misc_parity.py` |
+| **Synth: BSTS / CausalImpact** | `CausalImpact::CausalImpact` | --- | `sp.causal_impact` | equivalent | **analytical** — `tests/reference_parity/test_causal_impact_uncertainty.py` |
 | **Synth: matrix completion** | `MCPanel::*` | --- | `sp.matrix_completion`, `sp.mc_panel` | partial | **bit-exact** — vs `MCPanel::mcnnm_fit (Athey, Bayati, Doudchenko, Imbens & Khosravi; github.com/susanathey/MCPanel) and fect::fect(method = "mc")` — `tests/reference_parity/test_did_synth_mc_parity.py` |
-| **Synth: workflow** | `Synth::synth_runner` | `synth_runner` | `sp.synth_compare`, `sp.synth_recommend`, `sp.synth_sensitivity`, `sp.synth_report` | superset | test-covered, not tier-graded — `tests/test_cov95_synth_r2_exports.py` |
+| **Synth: workflow** | `Synth::synth_runner` | `synth_runner` | `sp.synth_compare`, `sp.synth_recommend`, `sp.synth_sensitivity`, `sp.synth_report` | superset | **analytical** — `tests/reference_parity/test_oct2026_fifth_pass.py` |
 | **DML: PLR** | `DoubleML::DoubleMLPLR` | `ddml` | `sp.dml(model="plr")` | equivalent | **bit-exact** — vs `DoubleML::DoubleMLPLR` — `tests/r_parity/08_dml.py` |
 | **DML: PLIV** | `DoubleML::DoubleMLPLIV` | `ddml init iv` | `sp.dml(model="pliv")` | equivalent | **bit-exact** — vs `DoubleML::DoubleMLPLR` — `tests/r_parity/08_dml.py` |
 | **DML: IRM** | `DoubleML::DoubleMLIRM` | `ddml init interactive` | `sp.dml(model="irm")` | equivalent | **bit-exact** — vs `DoubleML::DoubleMLPLR` — `tests/r_parity/08_dml.py` |
@@ -148,8 +148,8 @@ a known truth on a controlled DGP is the only evidence that can exist.
 | **BCF** | `bcf::bcf` | --- | `sp.bcf`, `sp.did_bcf` | equivalent | **analytical** — `tests/reference_parity/test_bcf_parity.py` |
 | **Conformal causal inference** | `cfcausal::*` | --- | `sp.conformal_ite`, `sp.conformal_cate`, `sp.conformal_synth` | partial | **bit-exact** — vs `scinference (Chernozhukov-Wuthrich-Zhu authors' package, GitHub kwuthrich/scinference 567c688): estimation_method='sc', permutation_method='mb'` — `tests/reference_parity/test_synth_rest_R_parity.py` |
 | **Rank-weighted ATE / RATE** | `grf::rank_average_treatment_effect` | --- | `sp.rate` | equivalent | **aligned** — vs `grf::rank_average_treatment_effect and rank_average_treatment_effect.fit 2.6.1 (AUTOC, QINI, TOC), forest outputs held fixed` — `tests/reference_parity/test_ml_causal_R_parity.py` |
-| **Neural causal** | user `keras` code | --- | `sp.tarnet`, `sp.cfrnet`, `sp.dragonnet`, `sp.deepiv` | new | test-covered, not tier-graded — `tests/test_neural_causal.py` |
-| **Causal discovery** | `pcalg::pc`, `bnlearn`, `pcalg::ges` | --- | `sp.pc_algorithm`, `sp.lingam`, `sp.notears`, `sp.ges`, `sp.fci` | partial | **analytical** — `tests/reference_parity/test_causal_discovery_parity.py` |
+| **Neural causal** | user `keras` code | --- | `sp.tarnet`, `sp.cfrnet`, `sp.dragonnet`, `sp.deepiv` | new | **analytical** — `tests/reference_parity/test_oct2026_fourth_pass.py` |
+| **Causal discovery** | `pcalg::pc`, `bnlearn`, `pcalg::ges` | --- | `sp.pc_algorithm`, `sp.lingam`, `sp.notears`, `sp.ges`, `sp.fci` | partial | **bit-exact** — vs `pcalg::pc(skel.method = 'stable') with gaussCItest, and with bnlearn::ci.test(test = 'x2-adf') as its independence test` — `tests/reference_parity/test_ness_causal_ai_parity.py` |
 | **Matching: PSM 1:1** | `MatchIt::matchit(method="nearest")` | `psmatch2`, `teffects psmatch` | `sp.psm`, `sp.psmatch2` | equivalent | **bit-exact** — vs `MatchIt::matchit` — `tests/r_parity/11_psm.py` |
 | **Matching: optimal / cardinality** | `MatchIt::matchit(method="optimal")` | `cem` (different method) | `sp.optimal_match`, `sp.cardinality_match` | partial | **aligned** — vs `optmatch::pairmatch 0.10.8 on a logit propensity score` — `tests/reference_parity/test_matching_r_parity.py` |
 | **Matching: genetic** | `Matching::GenMatch` | --- | `sp.genmatch` | equivalent | **aligned** — vs `Matching::Match 4.10-15 (Weight = 3, Weight.matrix)` — `tests/reference_parity/test_matching_r_parity.py` |
@@ -159,7 +159,7 @@ a known truth on a controlled DGP is the only evidence that can exist.
 | **Weighting: overlap** | `PSweight::*` | --- | `sp.overlap_weights`, `sp.trimming` | equivalent | **bit-exact** — vs `WeightIt::weightit 1.7.0 (method='glm'), R 4.5.2` — `tests/reference_parity/test_overlap_weights_r_parity.py` |
 | **IPW** | `WeightIt::weightit` | `teffects ipw` | `sp.ipw` | equivalent | **bit-exact** — vs `base R stats::glm(binomial) + hand-rolled Hajek weighted means` — `tests/reference_parity/test_ipw_parity.py` |
 | **AIPW / doubly robust** | `AIPW::AIPW` | `teffects aipw`, `teffects ipwra` | `sp.aipw`, `sp.doubly_robust` | equivalent | **bit-exact** — vs `Stata teffects aipw (ATE, POmeans); R AIPW::AIPW 0.6.9.3 stratified_fit(k_split = 1)` — `tests/reference_parity/test_teffects_R_parity.py` |
-| **Balance diagnostics** | `cobalt::bal.tab` | `pstest` | `sp.balance_diagnostics`, `sp.love_plot`, `sp.ps_balance` | equivalent | test-covered, not tier-graded — `tests/test_notebook_11_1_fixes.py` |
+| **Balance diagnostics** | `cobalt::bal.tab` | `pstest` | `sp.balance_diagnostics`, `sp.love_plot`, `sp.ps_balance` | equivalent | **published** — vs `published reference values (tests/external_parity/PUBLISHED_REFERENCE_VALUES.md)` — `tests/external_parity/test_barrett_causal_inference_in_r.py` |
 | **Decomposition: Oaxaca** | `oaxaca::oaxaca`, `ddecompose::oaxaca_blinder_decomposition` | `oaxaca` | `sp.decompose(method="oaxaca")`, `sp.oaxaca` | superset | **bit-exact** — vs `oaxaca::oaxaca` — `tests/r_parity/30_oaxaca.py` five reference conventions |
 | **Decomposition: RIF** | `dineq::rif`, `rifreg` | `rifhdreg` | `sp.rifreg`, `sp.rif_decomposition` | equivalent | **bit-exact** — vs `R rifreg::rifreg (variance, quantiles) and dineq::rif + lm (Gini)` — `tests/reference_parity/test_decomp_R_parity.py` |
 | **Decomposition: DFL** | `ddecompose` | `dfl` (user-contrib) | `sp.dfl_decompose` | equivalent | **bit-exact** — vs `ddecompose::dfl_decompose` — `tests/r_parity/31_dfl.py` |
@@ -193,7 +193,7 @@ a known truth on a controlled DGP is the only evidence that can exist.
 | **Time series: structural break** | `strucchange::breakpoints` | `estat sbsingle` | `sp.structural_break`, `sp.cusum_test` | equivalent | **bit-exact** — vs `strucchange::Fstats + sctest(type = 'supF') / breakpoints; mbreaks::dosequa (Bai-Perron sequential); Stata estat sbsingle` — `tests/reference_parity/test_r2_ts_parity.py` |
 | **Time series: causal impact / ITS** | `CausalImpact` | `itsa` (user-contrib) | `sp.its` | equivalent | **bit-exact** — vs `lm + sandwich::NeweyWest 3.1.1; Stata 18 newey; itsa 1.0.0 (SSC)` — `tests/reference_parity/test_timeseries_R_parity.py` |
 | **Survival: Cox** | `survival::coxph` | `stcox` | `sp.cox`, `sp.cox_frailty` | equivalent | **bit-exact** — vs `survival::coxph` — `tests/r_parity/24_coxph.py` |
-| **Survival: AFT** | `survival::survreg` | `streg` | `sp.aft`, `sp.survreg` | equivalent | **aligned** — vs `survival::survreg (Weibull AFT)` — `tests/reference_parity/test_aft_parity.py` |
+| **Survival: AFT** | `survival::survreg` | `streg` | `sp.aft`, `sp.survreg` | equivalent | **bit-exact** — vs `Stata 18 MP `streg ..., time` (four distributions, vce(oim), vce(robust), vce(cluster), frailty(gamma)); survival::survreg (Weibull AFT)` — `tests/reference_parity/test_survreg_streg_stata_parity.py` |
 | **Survival: Kaplan--Meier** | `survival::survfit` | `sts graph` | `sp.kaplan_meier`, `sp.logrank_test` | equivalent | **bit-exact** — vs `survival::survfit` — `tests/reference_parity/test_survival_km_parity.py` |
 | **Survival: competing risks** | `cmprsk::cuminc`, `crr` | `stcrreg` | `sp.cuminc`, `sp.finegray` | equivalent | **bit-exact** — vs `R cmprsk::cuminc (estimate, var, Tests); Stata stcompet (ci, se, hi, lo)` — `tests/reference_parity/test_survival_epi_R_parity.py` |
 | **Epi: Mendelian randomisation** | `MendelianRandomization::*` | `mrrobust` | `sp.mr`, `sp.mendelian` | equivalent | **bit-exact** — vs `R MendelianRandomization::mr_ivw through the sp.mr dispatcher` — `tests/reference_parity/test_mr_R_parity.py` |
@@ -211,11 +211,11 @@ a known truth on a controlled DGP is the only evidence that can exist.
 | **Sensitivity: Oster** | `robomit::*` | `psacalc` | `sp.oster_bounds`, `sp.oster_delta` | equivalent | **bit-exact** — vs `Stata psacalc (Oster); R robomit::o_delta / o_beta` — `tests/reference_parity/test_inference_sens_R_parity.py` |
 | **Sensitivity: sensemakr** | `sensemakr::sensemakr` | `sensemakr` | `sp.sensemakr` | equivalent | **bit-exact** — vs `sensemakr::sensemakr` — `tests/r_parity/22_sensemakr.py` |
 | **Sensitivity: Rosenbaum bounds** | `rbounds::*` | `rbounds` | `sp.rosenbaum_bounds`, `sp.rosenbaum_gamma` | equivalent | **bit-exact** — vs `R DOS2::senWilcox (Rosenbaum); Stata rbounds; R stats::binom.test (sign test); R rbounds::psens (zero_method='wilcox', 4-dp)` — `tests/reference_parity/test_inference_sens_R_parity.py` |
-| **Sensitivity: specification curve** | `specr::specr` | --- | `sp.spec_curve` | equivalent | test-covered, not tier-graded — `tests/test_mixtape_ch09_guide.py` |
+| **Sensitivity: specification curve** | `specr::specr` | --- | `sp.spec_curve` | equivalent | **analytical** — `tests/reference_parity/test_spec_curve_fe_Stata_parity.py` |
 | **Sensitivity: breakdown frontier** | `breakdown`-style | --- | `sp.breakdown_frontier`, `sp.breakdown_m` | equivalent | **aligned** — vs `HonestDiD::findOptimalFLCI 0.2.8 (Rambachan & Roth), breakdown by uniroot on the bound facing zero` — `tests/reference_parity/test_did_synth_R_parity.py` |
-| **Output: regression tables** | `modelsummary::msummary`, `stargazer`, `texreg` | `esttab`, `outreg2` | `sp.modelsummary`, `sp.etable`, `sp.regtable` | superset | test-covered, not tier-graded — `tests/test_regtable_fmt_auto.py` |
+| **Output: regression tables** | `modelsummary::msummary`, `stargazer`, `texreg` | `esttab`, `outreg2` | `sp.modelsummary`, `sp.etable`, `sp.regtable` | superset | test-covered, not tier-graded — `tests/test_export_input_contract.py` |
 | **Output: marginal effects** | `marginaleffects::*` | `margins` | `sp.margins`, `sp.margins_at`, `sp.marginsplot` | equivalent | **bit-exact** — vs `Stata 18 margins, at(...); R marginaleffects::avg_predictions` — `tests/reference_parity/test_r2_postest_parity.py` |
-| **Agent surface** | --- | --- | `sp.list_functions`, `sp.describe_function`, `sp.function_schema`, `sp.recommend` | new | test-covered, not tier-graded — `tests/test_agent_schema.py` |
+| **Agent surface** | --- | --- | `sp.list_functions`, `sp.describe_function`, `sp.function_schema`, `sp.recommend` | new | test-covered, not tier-graded — `tests/reference_parity/test_vcov_refit_identity.py` |
 | **Workflow / paper assistant** | --- | --- | `sp.paper`, `sp.causal_question`, `sp.methods_appendix` | new | test-covered, not tier-graded — `tests/test_docs_call_signatures.py` |
 
 ## Scope boundaries

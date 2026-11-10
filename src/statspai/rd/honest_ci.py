@@ -15,310 +15,28 @@ Armstrong, T. B., & Kolesár, M. (2020). Simple and honest confidence
     intervals in nonparametric regression. Quantitative Economics, 11(1), 1-39. [@armstrong2018optimal]
 """
 
-from typing import Optional, Tuple
+from typing import Optional
 
 import numpy as np
 import pandas as pd
-from scipy import optimize, stats
+from scipy import stats
 
+from .._input_validation import check_columns
+from ..core._call_record import records_call
+from ..core._vcov_spec import accepts_vce
 from ..core.results import CausalResult
-from ._core import _kernel_fn
 
 # --------------------------------------------------------------------------- #
-# Kernel helpers
+# Kernels
 # --------------------------------------------------------------------------- #
 
-# Kernel-specific bias constant C_kernel for local linear estimator:
-#   |bias| <= h^2 * M * C_kernel
-# C_kernel = (1/2) * int u^2 K(u) du / int K(u) du  (for local linear at boundary)
-# These are the standard values for one-sided kernels at the boundary.
+# The kernels rd_honest accepts. Only the keys are used: the worst-case bias
+# is computed in rd/_rdhonest.py from the realised kernel weights.
 _KERNEL_BIAS_CONSTANTS = {
     "triangular": 1.0 / 6.0,
     "epanechnikov": 1.0 / 5.0,
     "uniform": 1.0 / 3.0,
 }
-
-
-def _kernel_weights(x: np.ndarray, c: float, h: float, kernel: str) -> np.ndarray:
-    """Return kernel weights for observations *x* within bandwidth *h* of *c*."""
-    return _kernel_fn((x - c) / h, kernel)
-
-
-# --------------------------------------------------------------------------- #
-# Local polynomial helpers
-# --------------------------------------------------------------------------- #
-
-
-def _local_linear(
-    y: np.ndarray,
-    x: np.ndarray,
-    c: float,
-    h: float,
-    kernel: str,
-    side: str,
-) -> Tuple[float, float, np.ndarray, int]:
-    """
-    Fit local linear regression on one side of the cutoff.
-
-    Returns (intercept, slope, residuals, effective_n).
-    """
-    if side == "left":
-        mask = (x < c) & (x >= c - h)
-    else:
-        mask = (x >= c) & (x <= c + h)
-
-    xs = x[mask]
-    ys = y[mask]
-
-    if len(xs) < 3:
-        return np.nan, np.nan, np.array([]), 0  # pragma: no cover
-
-    w = _kernel_weights(xs, c, h, kernel)
-    X_mat = np.column_stack([np.ones(len(xs)), xs - c])
-    try:
-        beta = np.linalg.solve(
-            (X_mat * w[:, None]).T @ X_mat, (X_mat * w[:, None]).T @ ys
-        )
-    except np.linalg.LinAlgError:  # pragma: no cover
-        return np.nan, np.nan, np.array([]), 0  # pragma: no cover
-
-    resid = ys - X_mat @ beta
-    eff_n = int(np.sum(w > 0))
-    return float(beta[0]), float(beta[1]), resid, eff_n
-
-
-def _local_quadratic(
-    y: np.ndarray,
-    x: np.ndarray,
-    c: float,
-    h: float,
-    kernel: str,
-    side: str,
-) -> Tuple[np.ndarray, np.ndarray]:
-    """
-    Fit local quadratic regression on one side of the cutoff.
-
-    Returns (coefficients, residuals) where coefficients = [intercept, slope, curvature].
-    """
-    if side == "left":
-        mask = (x < c) & (x >= c - h)
-    else:
-        mask = (x >= c) & (x <= c + h)
-
-    xs = x[mask]
-    ys = y[mask]
-
-    if len(xs) < 5:
-        return np.full(3, np.nan), np.array([])
-
-    w = _kernel_weights(xs, c, h, kernel)
-    dx = xs - c
-    X_mat = np.column_stack([np.ones(len(xs)), dx, dx**2])
-    try:
-        beta = np.linalg.solve(
-            (X_mat * w[:, None]).T @ X_mat, (X_mat * w[:, None]).T @ ys
-        )
-    except np.linalg.LinAlgError:  # pragma: no cover
-        return np.full(3, np.nan), np.array([])
-
-    resid = ys - X_mat @ beta
-    return beta, resid
-
-
-# --------------------------------------------------------------------------- #
-# Bandwidth selectors
-# --------------------------------------------------------------------------- #
-
-
-def _ik_bandwidth(y: np.ndarray, x: np.ndarray, c: float, kernel: str) -> float:
-    """
-    Simple rule-of-thumb bandwidth selector (Imbens & Kalyanaraman 2012 style).
-
-    Uses the Silverman pilot bandwidth scaled by the sample size.
-    """
-    n = len(x)
-    iqr_x = np.subtract(*np.percentile(x, [75, 25]))
-    h_rot = 1.06 * min(np.std(x), iqr_x / 1.349) * n ** (-1.0 / 5.0)
-    # scale for RD (local linear, one-sided)
-    h_rd = h_rot * 2.0
-    return float(h_rd)
-
-
-# --------------------------------------------------------------------------- #
-# Estimate M (bound on second derivative)
-# --------------------------------------------------------------------------- #
-
-
-def _estimate_M(
-    y: np.ndarray,
-    x: np.ndarray,
-    c: float,
-    h: float,
-    kernel: str,
-) -> float:
-    """
-    Estimate the bound on the second derivative |f''(c)| from local quadratic fits.
-
-    Uses the larger bandwidth (1.5 * h) for the quadratic fit as recommended.
-    """
-    h_q = 1.5 * h
-    beta_l, _ = _local_quadratic(y, x, c, h_q, kernel, "left")
-    beta_r, _ = _local_quadratic(y, x, c, h_q, kernel, "right")
-
-    # curvature at the cutoff from each side: 2 * beta[2]
-    curv_l = 2.0 * beta_l[2] if not np.isnan(beta_l[2]) else 0.0
-    curv_r = 2.0 * beta_r[2] if not np.isnan(beta_r[2]) else 0.0
-
-    M = max(abs(curv_l), abs(curv_r))
-    # Floor to avoid pathologically small M
-    if M < 1e-10:
-        M = 1e-10
-    return float(M)
-
-
-# --------------------------------------------------------------------------- #
-# Armstrong-Kolesár critical value
-# --------------------------------------------------------------------------- #
-
-
-def _ak_critical_value(b: float, alpha: float = 0.05) -> float:
-    """
-    Compute the Armstrong-Kolesár critical value cv_alpha that solves:
-
-        E[max(|Z + b| - cv, 0)] = alpha * E[max(|Z| - cv, 0)]
-
-    where Z ~ N(0,1) and b = bias / se is the bias-to-noise ratio.
-
-    When b == 0 this reduces to the standard normal critical value.
-    """
-    z_alpha = float(stats.norm.ppf(1.0 - alpha / 2.0))
-
-    if abs(b) < 1e-12:
-        return z_alpha
-
-    def _truncated_mean(cv: float, shift: float) -> float:
-        """E[max(|Z + shift| - cv, 0)] via numerical integration."""
-        # = E[(|Z+shift| - cv) * 1{|Z+shift| > cv}]
-        from scipy.integrate import quad
-
-        def integrand(z: float) -> float:
-            val = abs(z + shift) - cv
-            return float(max(val, 0.0) * stats.norm.pdf(z))
-
-        result, _ = quad(integrand, -8.0, 8.0, limit=200)
-        return float(result)
-
-    def equation(cv: float) -> float:
-        lhs = _truncated_mean(cv, b)
-        rhs = alpha * _truncated_mean(cv, 0.0)
-        return lhs - rhs
-
-    # Bracket: cv must lie between z_alpha and z_alpha + |b|
-    lo = max(z_alpha * 0.5, 0.01)
-    hi = z_alpha + abs(b) + 2.0
-
-    try:
-        sol = optimize.brentq(equation, lo, hi, xtol=1e-8)
-    except ValueError:
-        # Fallback: use conservative value
-        sol = z_alpha + abs(b)
-
-    return float(sol)
-
-
-# --------------------------------------------------------------------------- #
-# Standard error of local linear estimator at cutoff
-# --------------------------------------------------------------------------- #
-
-
-def _rd_se(
-    y: np.ndarray,
-    x: np.ndarray,
-    c: float,
-    h: float,
-    kernel: str,
-) -> float:
-    """
-    HC1 standard error of the local-linear RD estimator tau_hat = mu_+(c) - mu_-(c).
-    """
-    _, _, resid_l, n_l = _local_linear(y, x, c, h, kernel, "left")
-    _, _, resid_r, n_r = _local_linear(y, x, c, h, kernel, "right")
-
-    if n_l < 3 or n_r < 3:
-        return np.nan  # pragma: no cover
-
-    # HC1 variance on each side (at the boundary point)
-    mask_l = (x < c) & (x >= c - h)
-    mask_r = (x >= c) & (x <= c + h)
-
-    def _var_at_boundary(
-        xs: np.ndarray,
-        ys: np.ndarray,
-        resid: np.ndarray,
-        mask: np.ndarray,
-        side: str,
-    ) -> float:
-        w = _kernel_weights(xs[mask], c, h, kernel)
-        dx = xs[mask] - c
-        X_mat = np.column_stack([np.ones(len(dx)), dx])
-        e1 = np.array([1.0, 0.0])
-        try:
-            XWX_inv = np.linalg.inv((X_mat * w[:, None]).T @ X_mat)
-        except np.linalg.LinAlgError:  # pragma: no cover
-            return np.nan  # pragma: no cover
-        # HC1
-        Sigma = (X_mat * (w**2 * resid**2)[:, None]).T @ X_mat
-        V = XWX_inv @ Sigma @ XWX_inv
-        return float(e1 @ V @ e1)
-
-    v_l = _var_at_boundary(x, y, resid_l, mask_l, "left")
-    v_r = _var_at_boundary(x, y, resid_r, mask_r, "right")
-
-    if np.isnan(v_l) or np.isnan(v_r):
-        return np.nan  # pragma: no cover
-
-    return float(np.sqrt(v_l + v_r))
-
-
-# --------------------------------------------------------------------------- #
-# Optimal bandwidth for honest CI (FLCI criterion)
-# --------------------------------------------------------------------------- #
-
-
-def _flci_bandwidth(
-    y: np.ndarray,
-    x: np.ndarray,
-    c: float,
-    M: float,
-    kernel: str,
-    alpha: float,
-) -> float:
-    """
-    Bandwidth that minimises the length of the feasible honest CI.
-
-    Searches over a grid: CI_length(h) = 2 * (cv_alpha(h) * se(h) + h^2 * M * C_kernel).
-    """
-    C_k = _KERNEL_BIAS_CONSTANTS[kernel]
-
-    h_pilot = _ik_bandwidth(y, x, c, kernel)
-    h_grid = np.linspace(h_pilot * 0.3, h_pilot * 3.0, 50)
-
-    best_h = h_pilot
-    best_len = np.inf
-
-    for h_try in h_grid:
-        se = _rd_se(y, x, c, h_try, kernel)
-        if np.isnan(se) or se <= 0:
-            continue  # pragma: no cover
-        bias_bound = h_try**2 * M * C_k
-        b = bias_bound / se
-        cv = _ak_critical_value(b, alpha)
-        ci_len = 2.0 * (cv * se + bias_bound)
-        if ci_len < best_len:
-            best_len = ci_len
-            best_h = h_try
-
-    return float(best_h)
 
 
 # --------------------------------------------------------------------------- #
@@ -350,6 +68,8 @@ def _honest_pvalue(tau: float, se: float, bias: float) -> float:
     return float(0.5 * (lo + hi))
 
 
+@records_call("rd_honest")
+@accepts_vce(default=None)
 def rd_honest(
     data: pd.DataFrame,
     y: str,
@@ -361,6 +81,7 @@ def rd_honest(
     alpha: float = 0.05,
     opt_criterion: str = "mse",
     sclass: str = "H",
+    cluster: Optional[str] = None,
 ) -> CausalResult:
     """
     Honest confidence intervals for regression discontinuity designs.
@@ -403,6 +124,10 @@ def rd_honest(
         requires ``|f(x) - f(0) - f'(0)x| <= M x^2 / 2`` on each side, which
         permits no cancellation, so its worst-case bias — and hence the
         interval — is always at least as wide for the same *M*.
+    cluster : str, optional
+        Cluster column, as ``RDHonest(clusterid=)``: the standard error sums
+        ``w_i e_i`` within clusters, and the bandwidth search uses the
+        preliminary variance plus a Moulton within-cluster correlation.
 
     Returns
     -------
@@ -453,12 +178,19 @@ def rd_honest(
     if str(sclass).upper() not in ("H", "T", "HOLDER", "TAYLOR"):
         raise ValueError(f"sclass must be 'H' (Holder) or 'T' (Taylor), got {sclass!r}")
 
-    df = data.dropna(subset=[y, x])
+    check_columns(
+        data,
+        {"y": y, "x": x, "cluster": cluster or None},
+        function="sp.rd_honest",
+    )
+    df = data.dropna(subset=[y, x] + ([cluster] if cluster else []))
     y_arr = df[y].values.astype(float)
     x_arr = df[x].values.astype(float)
+    cl_arr = df[cluster].to_numpy() if cluster else None
     n_obs = len(y_arr)
 
-    # Everything below delegates to rd/_rdhonest.py, a port of R RDHonest.
+    # Everything below delegates to rd/_rdhonest.py (clean-room; R RDHonest
+    # used only as a black-box acceptance target).
     # The previous implementation got the point estimate right but built the
     # interval from two approximations that are not Armstrong-Kolesar's:
     #
@@ -484,6 +216,7 @@ def rd_honest(
         alpha=alpha,
         opt_criterion=opt_criterion.upper(),
         sclass=sclass_code,
+        cluster=cl_arr,
     )
     tau_hat = fit["estimate"]
     se = fit["se"]
@@ -519,9 +252,11 @@ def rd_honest(
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         f"  RD estimate:          {tau_hat:.4f}\n"
         f"  Standard SE:          {se:.4f}\n"
-        f"  Naive {int((1 - alpha) * 100)}% CI:        [{naive_ci[0]:.4f}, {naive_ci[1]:.4f}]\n"
+        f"  Naive {int((1 - alpha) * 100)}% CI:        [{naive_ci[0]:.4f}, "
+        f"{naive_ci[1]:.4f}]\n"
         f"\n"
-        f"  Honest {int((1 - alpha) * 100)}% CI:       [{honest_ci[0]:.4f}, {honest_ci[1]:.4f}]\n"
+        f"  Honest {int((1 - alpha) * 100)}% CI:       [{honest_ci[0]:.4f}, "
+        f"{honest_ci[1]:.4f}]\n"
         f"  Smoothness bound M:   {M_label}\n"
         f"  Bias bound:           {bias_bound:.4f}\n"
         f"  Bandwidth:            {h_value:.4f}\n"
@@ -552,6 +287,8 @@ def rd_honest(
             "ak_critical_value": cv,
             "bias_noise_ratio": b,
             "sclass": sclass_code,
+            "cluster": cluster,
+            "n_clusters": None if cluster is None else int(pd.unique(cl_arr).size),
             "eff_obs": fit["eff_obs"],
             "reference_backend": "RDHonest",
             "validation_tier": "T2_native_reference_parity",

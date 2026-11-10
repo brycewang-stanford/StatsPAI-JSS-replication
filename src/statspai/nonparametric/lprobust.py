@@ -1,48 +1,41 @@
 """Local polynomial regression with robust bias-corrected inference.
 
-Reproduces ``nprobust``'s ``lprobust`` (Calonico, Cattaneo & Farrell
-2019, JSS 91(8)) at a supplied evaluation point: the conventional local
-polynomial fit, the bias-corrected fit, and the robust bias-corrected
-standard error of Calonico, Cattaneo & Farrell (2018).
+Clean-room rewrite; the reference (R ``nprobust`` 1.0.0, GPL-3) was used as
+a black box only. The specification, with the black-box evidence for each
+convention that the papers leave open, is ``docs/dev/cleanroom/lprobust.md``.
 
-Why this exists separately from :func:`statspai.lpoly`
-------------------------------------------------------
-``lpoly`` fits a smooth curve over a grid for description. This answers a
-different question: what is the regression function *at one point*, with
-an interval whose coverage survives the bias that smoothing introduces?
-Undersmoothing is the usual fix and it wastes data; bias correction plus
-the matching variance is the CCF alternative, and it is what
-``sp.did_had`` needs at dose zero.
+What it computes
+----------------
+At one evaluation point ``x0``, the local polynomial estimate of
+``m^(nu)(x0)``, the bias-corrected estimate and the two standard errors of
+Calonico, Cattaneo and Farrell (2018, 2019): the conventional one and the
+robust one that also carries the variance of the estimated bias.
 
-The estimator
--------------
-With ``R_p`` the polynomial basis in ``x - x0``, ``W_h`` the kernel
-weights at bandwidth ``h``, and ``G_p = R_p' W_h R_p``:
+With ``R_p`` the polynomial basis in ``(x - x0) / h``, ``W_h`` the kernel
+weights at ``h`` and ``Gamma_p = R_p' W_h R_p``:
 
-    beta_p  = G_p^-1 R_p' W_h Y                       conventional
-    Q       = R_p' W_h - h^(p+1) (L e') (G_q^-1 R_q')' W_b
-    beta_bc = G_p^-1 Q Y                              bias-corrected
+    beta_p   = Gamma_p^-1 R_p' W_h Y                         conventional
+    Xi       = R_p' W_h - rho^(p+1) Lambda_p e_(p+1)' Gamma_q^-1 R_q' W_b
+    beta_bc  = Gamma_p^-1 Xi Y                                bias-corrected
 
-where the second term estimates the leading bias with a ``q = p+1`` order
-fit at bandwidth ``b``. Both are linear in ``Y``, so each gets a sandwich
-variance built from its own weights — the robust interval uses ``Q``, not
-``R_p' W_h``, which is precisely what makes it robust to the bias
-correction rather than merely centred by it.
+with ``q = p + 1``, ``rho = h / b`` and ``Lambda_p = R_p' W_h ((x-x0)/h)^(p+1)``
+(Calonico, Cattaneo and Farrell 2019, Section 2.5). Both are linear in ``Y``,
+so each standard error is the sandwich of its own weights with a
+nearest-neighbour estimate of ``Var(Y_i | X_i)``.
 
-Residuals default to the heteroskedasticity-robust nearest-neighbour
-estimator (``nprobust``'s ``vce(nn)`` with 3 neighbours), which needs no
-variance model.
+Why it exists separately from :func:`statspai.lpoly`: ``lpoly`` draws a
+curve; this answers "what is the regression function at one point, with an
+interval whose coverage survives smoothing bias". It is what
+:func:`statspai.did_had` needs at dose zero.
+
+The five bandwidth selectors (``mse-dpi``, ``mse-rot``, ``imse-dpi``,
+``imse-rot``, ``ce-rot``) follow Section 2.3 and 2.6 of Calonico,
+Cattaneo and Farrell (2019); their building blocks are in
+:mod:`statspai.nonparametric._lprobust_bw`.
 
 References
 ----------
-- Calonico, S., Cattaneo, M. D. and Farrell, M. H. (2019). "nprobust:
-  Nonparametric Kernel-Based Estimation and Robust Bias-Corrected
-  Inference." *Journal of Statistical Software*, 91(8), 1-33.
-  [@calonico2019nprobust]
-- Calonico, S., Cattaneo, M. D. and Farrell, M. H. (2018). "On the Effect
-  of Bias Estimation on Coverage Accuracy in Nonparametric Inference."
-  *Journal of the American Statistical Association*, 113(522), 767-779.
-  [@calonico2018effect]
+[@calonico2019nprobust], [@calonico2018effect], [@calonico2014robust]
 """
 
 from __future__ import annotations
@@ -53,18 +46,47 @@ from typing import Dict, Optional
 
 import numpy as np
 
-__all__ = ["LProbustPoint", "lprobust_at_point", "lpbwselect_mse_dpi"]
+from ..exceptions import DataInsufficient, MethodIncompatibility, NumericalInstability
+from . import _lprobust_bw as _bw
+from . import _lprobust_select as _sel
+from ._lprobust_select import (  # noqa: F401  (private name kept)
+    kernel_moment_constants as _kernel_moment_constants,
+)
 
-_KERNELS = ("epanechnikov", "triangular", "uniform", "gaussian")
+__all__ = [
+    "LProbustPoint",
+    "lprobust_at_point",
+    "lpbwselect_mse_dpi",
+    "lpbwselect_mse_rot",
+    "lpbwselect_imse_dpi",
+    "lpbwselect_imse_rot",
+    "lpbwselect_ce_rot",
+]
+
+_KERNELS = _bw.KERNELS
 
 
 @dataclass
 class LProbustPoint:
     """One evaluation point of :func:`lprobust_at_point`.
 
-    Attributes mirror ``lprobust``'s ``e(Result)`` columns so a reader can
-    line the two up: ``tau_us`` is column 5, ``tau_bc`` column 6,
-    ``se_us`` column 7, ``se_rb`` column 8.
+    Attributes
+    ----------
+    eval_point : float
+        The evaluation point ``x0``.
+    h, b : float
+        Main and bias bandwidths.
+    n_eff : int
+        Observations with positive kernel weight in the ``h`` window or the
+        ``b`` window (the rows that enter either fit).
+    tau_us : float
+        Conventional estimate of ``m^(deriv)(x0)``.
+    tau_bc : float
+        Bias-corrected estimate.
+    se_us : float
+        Standard error of ``tau_us``.
+    se_rb : float
+        Robust standard error of ``tau_bc``.
 
     Examples
     --------
@@ -97,88 +119,13 @@ class LProbustPoint:
 
     @property
     def bias(self) -> float:
-        """Estimated leading bias, ``tau_us - tau_bc``.
-
-        ``did_had`` uses this directly rather than the conventional
-        standard error when forming its interval.
-        """
+        """Estimated bias of the conventional estimate, ``tau_us - tau_bc``."""
         return self.tau_us - self.tau_bc
 
 
-def _kernel_weights(u: np.ndarray, kernel: str) -> np.ndarray:
-    """Kernel weights on the scaled distance ``u = (x - x0) / h``.
-
-    Compact kernels return exactly zero outside ``|u| <= 1``; the caller
-    relies on that to define the effective window, so the boundary must
-    not leak small positive weights.
-    """
-    a = np.abs(u)
-    if kernel == "epanechnikov":
-        return np.where(a <= 1.0, 0.75 * (1.0 - u**2), 0.0)
-    if kernel == "triangular":
-        return np.where(a <= 1.0, 1.0 - a, 0.0)
-    if kernel == "uniform":
-        return np.where(a <= 1.0, 0.5, 0.0)
-    if kernel == "gaussian":
-        return np.exp(-0.5 * u**2) / np.sqrt(2.0 * np.pi)
-    raise ValueError(f"kernel must be one of {_KERNELS}, got {kernel!r}")
-
-
-def _nn_residuals(x: np.ndarray, y: np.ndarray, n_neighbors: int) -> np.ndarray:
-    """Abadie-Imbens nearest-neighbour residuals, ties consumed whole.
-
-    ``r_i = sqrt(J/(J+1)) * (y_i - mean of y over i's J nearest x)``,
-    estimating the conditional variance without fitting a mean function
-    so the variance does not inherit the smoothing bias it describes.
-
-    **Tied x values are not a corner case here.** In a
-    heterogeneous-adoption design the true stayers all sit at dose
-    exactly 0, so the mass point at the evaluation point is typically the
-    largest group in the sample. A plain k-NN search picks an arbitrary
-    ``J`` of them and gets a different variance than the reference: on
-    the ``did_had`` fixture, 25 tied groups out of 300 moved the standard
-    error by 3-6% while the point estimate was still exact to 2e-9.
-
-    ``rdrobust``/``nprobust`` instead consume a whole tie group at a
-    time. That algorithm already lives in ``rd/_cct_bandwidth.py``, is
-    pinned against ``rdrobust`` there, and is reused rather than
-    reimplemented (CLAUDE.md §4).
-    """
-    n = len(x)
-    if min(n_neighbors, n - 1) < 1:
-        raise ValueError(
-            "nearest-neighbour residuals need at least two observations "
-            f"inside the bandwidth; got {n}."
-        )
-    from ..rd._cct_bandwidth import _nn_residuals as _rd_nn_residuals
-
-    order = np.argsort(x, kind="mergesort")
-    xs, ys = x[order], y[order]
-
-    # Run lengths of tied x, and the 1-based position within each run --
-    # the two arrays rdrobust's residual walker needs.
-    dups = np.empty(n, dtype=int)
-    dupsid = np.empty(n, dtype=int)
-    i = 0
-    while i < n:
-        j = i
-        while j + 1 < n and xs[j + 1] == xs[i]:
-            j += 1
-        run = j - i + 1
-        dups[i : j + 1] = run
-        dupsid[i : j + 1] = np.arange(1, run + 1)
-        i = j + 1
-
-    res_sorted = _rd_nn_residuals(xs, ys, dups, dupsid, n_neighbors)
-    out = np.empty(n, dtype=float)
-    out[order] = res_sorted
-    return out
-
-
-def _meat(weights: np.ndarray, resid: np.ndarray) -> np.ndarray:
-    """Sandwich meat ``sum_i (w_i r_i)(w_i r_i)'``."""
-    m = weights * resid[:, None]
-    return m.T @ m
+# ----------------------------------------------------------------------
+# Estimation at a supplied bandwidth
+# ----------------------------------------------------------------------
 
 
 def lprobust_at_point(
@@ -195,241 +142,148 @@ def lprobust_at_point(
 ) -> LProbustPoint:
     """Local polynomial fit at ``eval_point`` with robust bias correction.
 
+    Estimates ``m^(deriv)(eval_point)`` with an order-``p`` local polynomial
+    at bandwidth ``h``, removes the estimated leading bias with an
+    order-``p+1`` fit at bandwidth ``b``, and reports both standard errors
+    of Calonico, Cattaneo and Farrell (2018). Rows with positive kernel
+    weight in either window form the estimation sample; the
+    nearest-neighbour variance estimate is computed within that sample.
+
+    No minimum window size is imposed: the bandwidths are used as given.
+
     Parameters
     ----------
-    x, y : ndarray
-        Running variable and outcome, same length.
+    x : array-like
+        Running variable (the regressor).
+    y : array-like
+        Outcome, same length as ``x``. Rows where either is non-finite are
+        dropped.
     eval_point : float
-        Where to evaluate the regression function.
+        Point at which the regression function (or its derivative) is
+        estimated.
     h : float
-        Main bandwidth, for the order-``p`` fit.
+        Main bandwidth, a positive finite number.
     b : float, optional
         Bias bandwidth, for the order-``p+1`` fit that estimates the
-        leading bias. Defaults to ``h`` (``rho = 1``), which is
-        ``lprobust``'s behaviour when only ``h`` is supplied.
+        leading bias. Defaults to ``h`` (``rho = 1``), the reference's
+        behaviour when only ``h`` is supplied.
     kernel : {'epanechnikov', 'triangular', 'uniform', 'gaussian'}
-        Default epanechnikov, matching ``lprobust``.
-    p : int, default 1
-        Polynomial order — 1 is local linear.
-    deriv : int, default 0
-        Order of the derivative to report; 0 is the level.
-    n_neighbors : int, default 3
-        Neighbours for the nearest-neighbour variance, matching
-        ``lprobust``'s ``vce(nn)`` default of 3.
+        Kernel function. Default epanechnikov, as in the reference.
+    p : int
+        Order of the local polynomial for the point estimate. Default 1.
+    deriv : int
+        Order of the derivative estimated, ``0 <= deriv <= p``. Default 0.
+    n_neighbors : int
+        Minimum number of nearest neighbours in the variance estimate;
+        ties with the last neighbour are all included. Default 3.
 
     Returns
     -------
     LProbustPoint
+        Bandwidths, effective sample size, the two estimates and the two
+        standard errors.
 
-    Notes
-    -----
-    The fit uses the **union** of the ``h`` and ``b`` windows, so
-    observations only reachable by the larger bandwidth still enter the
-    bias-correction step. Restricting to the ``h`` window alone silently
-    drops them and moves ``tau_bc`` whenever ``b > h``.
+    Raises
+    ------
+    MethodIncompatibility
+        For an invalid bandwidth, kernel or order, or when the window holds
+        too few distinct values of ``x`` for the polynomial fits.
+    DataInsufficient
+        When ``p + 2`` or fewer observations fall inside the bandwidths.
 
     Examples
     --------
-    >>> import numpy as np, statspai as sp
-    >>> rng = np.random.default_rng(0)
-    >>> x = np.abs(rng.gamma(1.4, 0.6, 400))
-    >>> y = 0.8 + 1.3 * x + rng.normal(0, 0.5, 400)
-    >>> fit = sp.lprobust_at_point(x, y, 0.0, h=0.8)
-    >>> bool(fit.se_rb > fit.se_us)  # robust interval is wider
+    >>> import numpy as np
+    >>> import statspai as sp
+    >>> rng = np.random.default_rng(1)
+    >>> x = rng.uniform(0, 2, 800)
+    >>> y = 1 + x - 0.5 * x**2 + rng.normal(0, 0.2, 800)
+    >>> fit = sp.lprobust_at_point(x, y, eval_point=0.0, h=0.6)
+    >>> bool(abs(fit.tau_bc - 1.0) < 3 * fit.se_rb)
     True
 
     References
     ----------
-    calonico2019nprobust, calonico2018effect
+    [@calonico2018effect], [@calonico2019nprobust]
     """
-    x = np.asarray(x, dtype=float).ravel()
-    y = np.asarray(y, dtype=float).ravel()
-    if x.shape != y.shape:
-        raise ValueError(
-            f"x and y must have the same length, got {x.shape} and {y.shape}"
-        )
-    if kernel not in _KERNELS:
-        raise ValueError(f"kernel must be one of {_KERNELS}, got {kernel!r}")
-    if p < 0 or deriv < 0 or deriv > p:
-        raise ValueError(f"need 0 <= deriv <= p, got deriv={deriv}, p={p}")
-    if not np.isfinite(h) or h <= 0:
-        raise ValueError(f"h must be a positive finite bandwidth, got {h}")
-    b = float(h) if b is None else float(b)
-    if not np.isfinite(b) or b <= 0:
-        raise ValueError(f"b must be a positive finite bandwidth, got {b}")
-
-    finite = np.isfinite(x) & np.isfinite(y)
-    x, y = x[finite], y[finite]
-
+    x0 = float(eval_point)
+    b_val = h if b is None else b
+    for name, val in (("h", h), ("b", b_val)):
+        if not (
+            isinstance(val, (int, float, np.floating, np.integer))
+            and np.isfinite(val)
+            and val > 0
+        ):
+            raise MethodIncompatibility(
+                f"{name} must be a positive finite bandwidth; got {val!r}.",
+                recovery_hint="Pass a bandwidth on the scale of x, or select "
+                "one with sp.lpbwselect_mse_dpi.",
+            )
+    h_val, b_val = float(h), float(b_val)
+    xs, ys = _bw.check_point_inputs(x, y, kernel, p, deriv, n_neighbors)
     q = p + 1
-    w_h_all = _kernel_weights((x - eval_point) / h, kernel)
-    w_b_all = _kernel_weights((x - eval_point) / b, kernel)
-    # Union of the two windows -- see Notes.
-    inside = (w_h_all > 0) | (w_b_all > 0)
-    n_eff = int(inside.sum())
+
+    u_h = (xs - x0) / h_val
+    u_b = (xs - x0) / b_val
+    w_h = _bw.kernel_weights(u_h, kernel) / h_val
+    w_b = _bw.kernel_weights(u_b, kernel) / b_val
+    window = (w_h > 0) | (w_b > 0)
+    n_eff = int(window.sum())
     if n_eff <= q + 1:
-        raise ValueError(
+        raise DataInsufficient(
             f"only {n_eff} observations fall inside the bandwidth at "
-            f"eval_point={eval_point}; a p={p} fit with bias correction "
-            f"needs more than {q + 1}. Widen h/b or lower p."
+            f"eval_point={x0!r}; a p={p} fit with bias correction needs more "
+            f"than {q + 1}.",
+            recovery_hint="Widen h/b or lower p.",
+            diagnostics={"n_eff": n_eff, "p": int(p)},
+        )
+    distinct_h = np.unique(xs[w_h > 0]).size
+    distinct_b = np.unique(xs[w_b > 0]).size
+    if distinct_h < p + 1 or distinct_b < q + 1:
+        raise MethodIncompatibility(
+            f"the local polynomial design is singular at eval_point={x0!r}: "
+            f"{distinct_h} distinct x values in the h window (order {p} needs "
+            f"{p + 1}) and {distinct_b} in the b window (order {q} needs "
+            f"{q + 1}).",
+            recovery_hint="Widen h/b or lower p; the running variable has too "
+            "little variation inside the bandwidth.",
+            diagnostics={"distinct_h": int(distinct_h), "distinct_b": int(distinct_b)},
         )
 
-    ex, ey = x[inside], y[inside]
-    w_h, w_b = w_h_all[inside], w_b_all[inside]
-    dx = ex - eval_point
-
-    r_q = np.column_stack([dx**j for j in range(q + 1)])
-    r_p = r_q[:, : p + 1]
-
-    g_p = r_p.T @ (r_p * w_h[:, None])
-    g_q = r_q.T @ (r_q * w_b[:, None])
+    xw, yw = xs[window], ys[window]
+    u_h, u_b, w_h, w_b = u_h[window], u_b[window], w_h[window], w_b[window]
     try:
-        inv_g_p = np.linalg.inv(g_p)
-        inv_g_q = np.linalg.inv(g_q)
+        op_p = _bw.wls_operator(u_h, w_h, p)
+        op_q = _bw.wls_operator(u_b, w_b, q)
     except np.linalg.LinAlgError as exc:
-        raise ValueError(
-            "the local polynomial design is singular at "
-            f"eval_point={eval_point} -- the running variable has too "
-            "little variation inside the bandwidth."
+        raise NumericalInstability(
+            f"the local polynomial design is numerically singular at "
+            f"eval_point={x0!r}.",
+            recovery_hint="Widen h/b or lower p.",
         ) from exc
+    rho = h_val / b_val
+    # Gamma_p^-1 Lambda_p, the coefficient-space image of the (p+1)-th power.
+    lam = op_p @ u_h ** (p + 1)
+    op_bc = op_p - rho ** (p + 1) * np.outer(lam, op_q[p + 1])
 
-    u = dx / h
-    lvec = (r_p * w_h[:, None]).T @ (u ** (p + 1))
-    e_p1 = np.zeros(q + 1)
-    e_p1[p + 1] = 1.0
-
-    rx_h = r_p * w_h[:, None]
-    correction = np.outer(lvec, e_p1) @ ((inv_g_q @ r_q.T).T * w_b[:, None]).T
-    q_mat = (rx_h.T - h ** (p + 1) * correction).T
-
-    beta_p = inv_g_p @ (rx_h.T @ ey)
-    beta_bc = inv_g_p @ (q_mat.T @ ey)
-
-    scale = float(factorial(deriv))
-    tau_us = scale * beta_p[deriv]
-    tau_bc = scale * beta_bc[deriv]
-
-    resid = _nn_residuals(ex, ey, n_neighbors)
-    v_us = inv_g_p @ _meat(rx_h, resid) @ inv_g_p
-    v_rb = inv_g_p @ _meat(q_mat, resid) @ inv_g_p
-
+    scale = factorial(deriv) / h_val**deriv
+    row_us, row_bc = op_p[deriv], op_bc[deriv]
+    sigma2 = _bw.nn_variance(xw, yw, int(n_neighbors))
     return LProbustPoint(
-        eval_point=float(eval_point),
-        h=float(h),
-        b=float(b),
-        # The UNION window, matching lprobust's e(Result)[1,4]. With b > h
-        # this exceeds the h-window count (317 vs 241 on the parity
-        # fixture), because the bias step genuinely uses those rows.
+        eval_point=x0,
+        h=h_val,
+        b=b_val,
         n_eff=n_eff,
-        tau_us=float(tau_us),
-        tau_bc=float(tau_bc),
-        se_us=float(scale * np.sqrt(max(v_us[deriv, deriv], 0.0))),
-        se_rb=float(scale * np.sqrt(max(v_rb[deriv, deriv], 0.0))),
+        tau_us=scale * float(row_us @ yw),
+        tau_bc=scale * float(row_bc @ yw),
+        se_us=scale * float(np.sqrt(np.sum(row_us**2 * sigma2))),
+        se_rb=scale * float(np.sqrt(np.sum(row_bc**2 * sigma2))),
     )
 
 
-# ======================================================================
-# MSE-optimal bandwidth selection (direct plug-in)
-# ======================================================================
-
-#: Rule-of-thumb pilot constant per kernel, from ``nprobust``'s
-#: ``lpbwselect.mse.dpi``. Stata's ``lpbwselect.ado`` carries the same
-#: four numbers.
-_PILOT_CONST = {
-    "epanechnikov": 2.34,
-    "uniform": 1.843,
-    "triangular": 2.576,
-    "gaussian": 1.06,
-}
-
-
-def _bw_pieces(
-    x: np.ndarray,
-    y: np.ndarray,
-    eval_point: float,
-    *,
-    o: int,
-    nu: int,
-    o_b: int,
-    h_v: float,
-    h_b1: float,
-    h_b2: float,
-    scale: float,
-    kernel: str,
-    n_neighbors: int,
-) -> Dict[str, float]:
-    """Port of ``nprobust``'s ``lprobust.bw``.
-
-    Returns the variance constant ``V``, the two bias constants ``B1``
-    and ``B2``, the regularization term ``R``, and the bandwidth ``bw``
-    they imply. Three separate fits are involved and they do NOT share a
-    bandwidth: ``h_v`` drives the variance, ``h_b1``/``h_b2`` the two
-    bias terms.
-
-    Note the variance fit divides its kernel weights by ``h_v`` while the
-    bias fits do not — that scaling is what makes ``V`` comparable across
-    bandwidths, and dropping it silently rescales every selected value.
-    """
-    n = len(x)
-
-    # --- variance piece, weights scaled by 1/h_v ---
-    w = _kernel_weights((x - eval_point) / h_v, kernel) / h_v
-    ind = w > 0
-    ex, ey, ew = x[ind], y[ind], w[ind]
-    dx = ex - eval_point
-    r_v = np.column_stack([dx**j for j in range(o + 1)])
-    inv_g_v = np.linalg.inv(r_v.T @ (r_v * ew[:, None]))
-
-    res_v = _nn_residuals(ex, ey, n_neighbors)
-    rx = r_v * ew[:, None]
-    v_v = (inv_g_v @ _meat(rx, res_v) @ inv_g_v)[nu, nu]
-
-    hp = np.array([h_v**j for j in range(o + 1)])
-    u = dx / h_v
-    v1 = rx.T @ (u ** (o + 1))
-    v2 = rx.T @ (u ** (o + 2))
-    bconst1 = float((hp * (inv_g_v @ v1))[nu])
-    bconst2 = float((hp * (inv_g_v @ v2))[nu])
-
-    # --- first bias piece, unscaled weights ---
-    w = _kernel_weights((x - eval_point) / h_b1, kernel)
-    ind = w > 0
-    ex, ey, ew = x[ind], y[ind], w[ind]
-    dx = ex - eval_point
-    r_b1 = np.column_stack([dx**j for j in range(o_b + 1)])
-    inv_g_b1 = np.linalg.inv(r_b1.T @ (r_b1 * ew[:, None]))
-    beta_b1 = inv_g_b1 @ ((r_b1 * ew[:, None]).T @ ey)
-
-    bwreg = 0.0
-    if scale > 0:
-        res_b = _nn_residuals(ex, ey, n_neighbors)
-        v_b = (inv_g_b1 @ _meat(r_b1 * ew[:, None], res_b) @ inv_g_b1)[o + 1, o + 1]
-        bwreg = 3.0 * bconst1**2 * v_b
-
-    # --- second bias piece ---
-    w = _kernel_weights((x - eval_point) / h_b2, kernel)
-    ind = w > 0
-    ex, ey, ew = x[ind], y[ind], w[ind]
-    dx = ex - eval_point
-    r_b2 = np.column_stack([dx**j for j in range(o_b + 2)])
-    inv_g_b2 = np.linalg.inv(r_b2.T @ (r_b2 * ew[:, None]))
-    beta_b2 = inv_g_b2 @ ((r_b2 * ew[:, None]).T @ ey)
-
-    b1 = bconst1 * beta_b1[o + 1]
-    b2 = bconst2 * beta_b2[o + 2]
-    v = n * h_v ** (2 * nu + 1) * v_v
-    r_exp = 1.0 / (2 * o + 3)
-    r_b = 2 * (o + 1 - nu)
-    r_v_pow = 2 * nu + 1
-    denom = n * r_b * (b1**2 + scale * bwreg)
-    bw = float(((r_v_pow * v) / denom) ** r_exp) if denom > 0 else np.inf
-    return {
-        "V": float(v),
-        "B1": float(b1),
-        "B2": float(b2),
-        "R": float(bwreg),
-        "bw": bw,
-    }
+# ----------------------------------------------------------------------
+# Bandwidth selection
+# ----------------------------------------------------------------------
 
 
 def lpbwselect_mse_dpi(
@@ -446,131 +300,431 @@ def lpbwselect_mse_dpi(
 ) -> Dict[str, float]:
     """MSE-optimal direct-plug-in bandwidths, as ``bwselect('mse-dpi')``.
 
-    Port of ``nprobust``'s ``lpbwselect.mse.dpi``. Returns ``{'h', 'b'}``
-    — the main and bias bandwidths that :func:`lprobust_at_point` takes.
+    Three closed-form stages (Calonico, Cattaneo and Farrell 2019,
+    Section 2.3, case ``p - deriv`` odd), all with variance and bias
+    constants evaluated at a normal-reference pilot bandwidth:
 
-    The selector is a ladder: two pilot fits at increasing polynomial
-    order give the bandwidths that a third fit uses to estimate the bias
-    of the fourth, which is the one you asked for. Each rung is clamped
-    into ``[bw_min, bw_max]``, where ``bw_min`` is the distance to the
-    ``bwcheck``-th nearest observation — without it the ladder can select
-    a bandwidth containing too few points to fit.
+    1. a bandwidth for ``m^(p+2)`` (order-``p+2`` fit), whose bias uses an
+       order-``p+3`` fit over the whole sample;
+    2. ``b``, the MSE-optimal bandwidth for ``m^(p+1)`` with an
+       order-``p+1`` fit, its bias derivative estimated at stage 1;
+    3. ``h``, the MSE-optimal bandwidth for ``m^(deriv)`` with an
+       order-``p`` fit, its bias derivative estimated at ``b``.
 
-    Only implemented for the ``(p - deriv)`` odd case, which covers the
-    default local-linear level fit (``p=1, deriv=0``) and everything
-    ``sp.did_had`` needs. The even case additionally requires a 1-D
-    numerical optimization of the MSE expansion, and is rejected rather
-    than approximated.
+    Stages 2 and 3 add ``bwregul`` times three times the variance of the
+    estimated bias to the squared bias. Every bandwidth is capped at the
+    largest distance from ``eval_point`` to the data and floored at the
+    distance to the ``bwcheck``-th nearest observation.
+
+    Parameters
+    ----------
+    x, y : array-like
+        Running variable and outcome; rows with a non-finite value are
+        dropped.
+    eval_point : float
+        Evaluation point.
+    kernel : {'epanechnikov', 'triangular', 'uniform', 'gaussian'}
+        Kernel function. Default epanechnikov.
+    p : int
+        Order of the local polynomial for the point estimate. Default 1.
+    deriv : int
+        Derivative order; ``p - deriv`` must be odd. Default 0.
+    n_neighbors : int
+        Nearest neighbours in the variance estimates. Default 3.
+    bwcheck : int
+        Minimum number of observations every window must contain. Default
+        21. ``1`` imposes no minimum.
+    bwregul : float
+        Scale of the regularization term; ``0`` removes it. Default 1.
+
+    Returns
+    -------
+    dict
+        ``h`` and ``b``, plus the pieces of the closed forms in coefficient
+        units: ``V_h`` / ``B_h`` (stage 3) and ``V_b`` / ``B_b`` (stage 2),
+        where ``bw^(2 order + 3) = V / (n (B + regularization))``.
+
+    Raises
+    ------
+    MethodIncompatibility
+        For ``p - deriv`` even or invalid options.
+    DataInsufficient
+        When fewer than ``bwcheck`` rows are available.
+    NumericalInstability
+        When a pilot fit is singular.
 
     Examples
     --------
-    >>> import numpy as np, statspai as sp
+    >>> import numpy as np
+    >>> import statspai as sp
     >>> rng = np.random.default_rng(0)
-    >>> x = np.abs(rng.gamma(1.4, 0.6, 400))
-    >>> y = 0.8 + 1.3 * x + rng.normal(0, 0.5, 400)
-    >>> bw = sp.lpbwselect_mse_dpi(x, y, 0.0)
-    >>> bw['h'] > 0 and bw['b'] > 0
+    >>> x = rng.uniform(0, 2, 400)
+    >>> y = np.sin(2 * x) + rng.normal(0, 0.3, 400)
+    >>> bw = sp.lpbwselect_mse_dpi(x, y, eval_point=1.0)
+    >>> bool(0 < bw["h"] <= 1.0 + 1e-12)
     True
 
     References
     ----------
-    calonico2019nprobust, calonico2018effect
+    [@calonico2019nprobust], [@calonico2014robust]
     """
-    x = np.asarray(x, dtype=float).ravel()
-    y = np.asarray(y, dtype=float).ravel()
-    finite = np.isfinite(x) & np.isfinite(y)
-    x, y = x[finite], y[finite]
+    _bw.check_kernel(kernel)
+    xs, ys = _sel.selector_inputs(x, y, kernel, p, deriv, n_neighbors, "mse-dpi")
+    _bw.check_bwcheck(xs.size, bwcheck)
+    res = _sel.run_plug_in(
+        xs,
+        ys,
+        float(eval_point),
+        p=p,
+        deriv=deriv,
+        kernel=kernel,
+        n_neighbors=int(n_neighbors),
+        bwcheck=int(bwcheck),
+        bwregul=float(bwregul),
+    )
+    v_h, b_h = _sel.coefficient_units(res["stage_h"], deriv, p)
+    v_b, b_b = _sel.coefficient_units(res["stage_b"], p + 1, p + 1)
+    return {
+        "h": res["h"],
+        "b": res["b"],
+        "V_h": v_h,
+        "B_h": b_h,
+        "V_b": v_b,
+        "B_b": b_b,
+    }
 
-    if kernel not in _PILOT_CONST:
-        raise ValueError(f"kernel must be one of {tuple(_PILOT_CONST)}, got {kernel!r}")
-    if (p - deriv) % 2 == 0:
-        raise NotImplementedError(
-            f"mse-dpi is implemented for odd (p - deriv); got p={p}, "
-            f"deriv={deriv}. The even case needs a numerical optimization "
-            "of the MSE expansion that is not ported yet, and is rejected "
-            "rather than approximated."
+
+def lpbwselect_mse_rot(
+    x: np.ndarray,
+    y: np.ndarray,
+    eval_point: float,
+    *,
+    kernel: str = "epanechnikov",
+    p: int = 1,
+    deriv: int = 0,
+) -> Dict[str, float]:
+    """MSE-optimal rule-of-thumb bandwidth, as ``bwselect('mse-rot')``.
+
+    ``h = ((1 + 2 deriv) V / (2 (p + 1 - deriv) n B^2))^(1 / (2p + 3))``
+    with ``B = C1 * m^(p+1)(x0) / (p+1)!`` and ``V = C2 * sigma^2 / f(x0)``:
+    ``C1``, ``C2`` are the equivalent-kernel bias and variance constants on
+    ``[0, 1]``; the derivative comes from an order-``p+3`` kernel-weighted
+    polynomial fit over the whole sample; ``sigma^2`` is the residual
+    variance of a global polynomial of degree ``p + 3``; ``f`` is a
+    uniform-kernel density estimate at the normal-reference pilot
+    bandwidth. No cap or ``bwcheck`` floor is applied.
+
+    Parameters
+    ----------
+    x, y : array-like
+        Running variable and outcome; rows with a non-finite value are
+        dropped.
+    eval_point : float
+        Evaluation point.
+    kernel : {'epanechnikov', 'triangular', 'uniform'}
+        Kernel function (compact kernels only). Default epanechnikov.
+    p : int
+        Polynomial order. Default 1.
+    deriv : int
+        Derivative order; ``p - deriv`` must be odd. Default 0.
+
+    Returns
+    -------
+    dict
+        ``h`` and the pieces ``B``, ``V``, ``C1``, ``C2``. The selector's
+        bias bandwidth is not reported (it would need the ``p - deriv``
+        even branch); consumers that run ``rho = 1`` use ``h`` for both.
+
+    Raises
+    ------
+    MethodIncompatibility
+        For the gaussian kernel, ``p - deriv`` even or invalid options.
+    DataInsufficient
+        When the global polynomial has too few observations.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> import statspai as sp
+    >>> rng = np.random.default_rng(0)
+    >>> x = rng.uniform(0, 2, 400)
+    >>> y = np.sin(2 * x) + rng.normal(0, 0.3, 400)
+    >>> bool(sp.lpbwselect_mse_rot(x, y, eval_point=1.0)["h"] > 0)
+    True
+
+    References
+    ----------
+    [@calonico2019nprobust]
+    """
+    xs, ys, consts, sigma2 = _sel.rot_inputs(x, y, kernel, p, deriv, "mse-rot")
+    b_val, v_val = _bw.rot_point_terms(
+        xs,
+        ys,
+        float(eval_point),
+        p=p,
+        deriv=deriv,
+        kernel=kernel,
+        sigma2=sigma2,
+        constants=consts,
+    )
+    h = _sel.rot_bandwidth(v_val, b_val**2, xs.size, p, deriv)
+    return {"h": h, "B": b_val, "V": v_val, "C1": consts[0], "C2": consts[1]}
+
+
+def lpbwselect_imse_rot(
+    x: np.ndarray,
+    y: np.ndarray,
+    *,
+    kernel: str = "epanechnikov",
+    p: int = 1,
+    deriv: int = 0,
+) -> Dict[str, float]:
+    """IMSE-optimal rule-of-thumb bandwidth, as ``bwselect('imse-rot')``.
+
+    The pointwise ``mse-rot`` constants ``V`` and ``B^2`` are averaged over
+    the ``x`` quantiles at probabilities ``0.05, 0.075, ..., 0.95`` and put
+    into the same closed form. The result is global, so there is no
+    evaluation point.
+
+    Parameters
+    ----------
+    x, y : array-like
+        Running variable and outcome; rows with a non-finite value are
+        dropped.
+    kernel : {'epanechnikov', 'triangular', 'uniform'}
+        Kernel function (compact kernels only). Default epanechnikov.
+    p : int
+        Polynomial order. Default 1.
+    deriv : int
+        Derivative order; ``p - deriv`` must be odd. Default 0.
+
+    Returns
+    -------
+    dict
+        ``h``. The bias bandwidth is not reported, as for ``mse-rot``.
+
+    Raises
+    ------
+    MethodIncompatibility
+        For the gaussian kernel, ``p - deriv`` even or invalid options.
+    DataInsufficient
+        When the global polynomial has too few observations.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> import statspai as sp
+    >>> rng = np.random.default_rng(0)
+    >>> x = rng.uniform(0, 2, 400)
+    >>> y = np.sin(2 * x) + rng.normal(0, 0.3, 400)
+    >>> bool(sp.lpbwselect_imse_rot(x, y)["h"] > 0)
+    True
+
+    References
+    ----------
+    [@calonico2019nprobust]
+    """
+    xs, ys, consts, sigma2 = _sel.rot_inputs(x, y, kernel, p, deriv, "imse-rot")
+    grid = np.quantile(xs, _sel.IMSE_ROT_PROBS)
+    terms = [
+        _bw.rot_point_terms(
+            xs,
+            ys,
+            float(g),
+            p=p,
+            deriv=deriv,
+            kernel=kernel,
+            sigma2=sigma2,
+            constants=consts,
         )
+        for g in grid
+    ]
+    v_mean = float(np.mean([v for _, v in terms]))
+    b_mean = float(np.mean([b**2 for b, _ in terms]))
+    return {"h": _sel.rot_bandwidth(v_mean, b_mean, xs.size, p, deriv)}
 
-    n = len(x)
-    q = p + 1
-    x_iqr = float(np.quantile(x, 0.75) - np.quantile(x, 0.25))
-    rng_x = float(x.max() - x.min())
-    bw_max = float(max(abs(eval_point - x.min()), abs(eval_point - x.max())))
 
-    c_bw = _PILOT_CONST[kernel] * min(float(np.std(x, ddof=1)), x_iqr / 1.349)
-    c_bw = min(c_bw * n ** (-1 / 5), bw_max)
+def lpbwselect_imse_dpi(
+    x: np.ndarray,
+    y: np.ndarray,
+    *,
+    kernel: str = "epanechnikov",
+    p: int = 1,
+    deriv: int = 0,
+    imsegrid: int = 30,
+    n_neighbors: int = 3,
+    bwcheck: int = 21,
+    bwregul: float = 1.0,
+) -> Dict[str, float]:
+    """IMSE-optimal direct-plug-in bandwidths, as ``bwselect('imse-dpi')``.
 
-    bw_min = None
-    if bwcheck is not None:
-        if n < bwcheck:
-            raise ValueError(
-                f"bwcheck={bwcheck} needs at least that many observations, " f"got {n}."
-            )
-        bw_min = float(np.sort(np.abs(x - eval_point))[bwcheck - 1])
-        c_bw = max(c_bw, bw_min)
+    On ``imsegrid`` equally spaced points from ``min(x)`` to ``max(x)``:
 
-    def _clamp(v: float) -> float:
-        v = min(v, bw_max)
-        return max(v, bw_min) if bw_min is not None else v
+    * ``b`` puts the grid averages of the stage-2 variance constant and
+      unregularized squared bias of :func:`lpbwselect_mse_dpi` into the
+      stage-2 closed form;
+    * ``h`` does the same with stage 3, where the bias derivative at each
+      grid point is estimated at that point's own ``mse-dpi`` ``b``
+      (regularized by ``bwregul``) and the squared bias is unregularized.
 
-    common = dict(kernel=kernel, n_neighbors=n_neighbors)
-    d1 = _bw_pieces(
+    No cap or floor is applied to the two averages; ``bwcheck`` acts on the
+    pointwise pilots.
+
+    Parameters
+    ----------
+    x, y : array-like
+        Running variable and outcome; rows with a non-finite value are
+        dropped.
+    kernel : {'epanechnikov', 'triangular', 'uniform', 'gaussian'}
+        Kernel function. Default epanechnikov.
+    p : int
+        Polynomial order. Default 1.
+    deriv : int
+        Derivative order; ``p - deriv`` must be odd. Default 0.
+    imsegrid : int
+        Number of grid points, at least 2. Default 30.
+    n_neighbors : int
+        Nearest neighbours in the variance estimates. Default 3.
+    bwcheck : int
+        Minimum number of observations in every pilot window. Default 21.
+    bwregul : float
+        Scale of the regularization term of the pointwise ``b``. Default 1.
+
+    Returns
+    -------
+    dict
+        ``h`` and ``b``.
+
+    Raises
+    ------
+    MethodIncompatibility
+        For ``p - deriv`` even or invalid options.
+    DataInsufficient
+        When fewer than ``bwcheck`` rows are available.
+    NumericalInstability
+        When a pilot fit at a grid point is singular.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> import statspai as sp
+    >>> rng = np.random.default_rng(0)
+    >>> x = rng.uniform(0, 2, 400)
+    >>> y = np.sin(2 * x) + rng.normal(0, 0.3, 400)
+    >>> bw = sp.lpbwselect_imse_dpi(x, y)
+    >>> bool(bw["h"] > 0 and bw["b"] > 0)
+    True
+
+    References
+    ----------
+    [@calonico2019nprobust]
+    """
+    if int(imsegrid) != imsegrid or imsegrid < 2:
+        raise MethodIncompatibility(
+            f"imsegrid must be an integer of at least 2; got {imsegrid!r}.",
+            recovery_hint="The reference default is 30.",
+        )
+    _bw.check_kernel(kernel)
+    xs, ys = _sel.selector_inputs(x, y, kernel, p, deriv, n_neighbors, "imse-dpi")
+    _bw.check_bwcheck(xs.size, bwcheck)
+    return _sel.imse_dpi(
+        xs,
+        ys,
+        p=p,
+        deriv=deriv,
+        kernel=kernel,
+        imsegrid=int(imsegrid),
+        n_neighbors=int(n_neighbors),
+        bwcheck=int(bwcheck),
+        bwregul=float(bwregul),
+    )
+
+
+def lpbwselect_ce_rot(
+    x: np.ndarray,
+    y: np.ndarray,
+    eval_point: float,
+    *,
+    kernel: str = "epanechnikov",
+    p: int = 1,
+    deriv: int = 0,
+    n_neighbors: int = 3,
+    bwcheck: int = 21,
+    bwregul: float = 1.0,
+) -> Dict[str, float]:
+    """Coverage-error-optimal rule of thumb, as ``bwselect('ce-rot')``.
+
+    The :func:`lpbwselect_mse_dpi` bandwidths shrunk by the sample-size
+    factors of Calonico, Cattaneo and Farrell (2019, Section 2.6):
+    ``h * n^(-p/((2p+3)(p+3)))`` and ``b * n^(-(q+2)/((2q+5)(q+3)))`` with
+    ``q = p + 1`` (``b`` estimates ``m^(p+1)`` with an order-``q`` fit, an
+    even case). ``n`` counts the rows actually used. The floor ``bwcheck``
+    acts before the rescaling, not after.
+
+    Parameters
+    ----------
+    x, y : array-like
+        Running variable and outcome; rows with a non-finite value are
+        dropped.
+    eval_point : float
+        Evaluation point.
+    kernel : {'epanechnikov', 'triangular', 'uniform', 'gaussian'}
+        Kernel function. Default epanechnikov.
+    p : int
+        Polynomial order. Default 1.
+    deriv : int
+        Derivative order; ``p - deriv`` must be odd. Default 0.
+    n_neighbors : int
+        Nearest neighbours in the variance estimates. Default 3.
+    bwcheck : int
+        Minimum number of observations in every window. Default 21.
+    bwregul : float
+        Scale of the regularization term. Default 1.
+
+    Returns
+    -------
+    dict
+        ``h`` and ``b``.
+
+    Raises
+    ------
+    MethodIncompatibility
+        For ``p - deriv`` even or invalid options.
+    DataInsufficient
+        When fewer than ``bwcheck`` rows are available.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> import statspai as sp
+    >>> rng = np.random.default_rng(0)
+    >>> x = rng.uniform(0, 2, 400)
+    >>> y = np.sin(2 * x) + rng.normal(0, 0.3, 400)
+    >>> ce = sp.lpbwselect_ce_rot(x, y, eval_point=1.0)
+    >>> mse = sp.lpbwselect_mse_dpi(x, y, eval_point=1.0)
+    >>> bool(ce["h"] < mse["h"])
+    True
+
+    References
+    ----------
+    [@calonico2019nprobust], [@calonico2018effect]
+    """
+    _bw.check_kernel(kernel)
+    _bw.check_orders(p, deriv, odd_only="ce-rot")
+    xs, _ = _bw.clean_xy(x, y)
+    mse = lpbwselect_mse_dpi(
         x,
         y,
         eval_point,
-        o=q + 1,
-        nu=q + 1,
-        o_b=q + 2,
-        h_v=c_bw,
-        h_b1=rng_x,
-        h_b2=rng_x,
-        scale=0.0,
-        **common,
+        kernel=kernel,
+        p=p,
+        deriv=deriv,
+        n_neighbors=n_neighbors,
+        bwcheck=bwcheck,
+        bwregul=bwregul,
     )
-    bw_mp2 = _clamp(d1["bw"])
-    d2 = _bw_pieces(
-        x,
-        y,
-        eval_point,
-        o=q + 2,
-        nu=q + 2,
-        o_b=q + 3,
-        h_v=c_bw,
-        h_b1=rng_x,
-        h_b2=rng_x,
-        scale=0.0,
-        **common,
-    )
-    bw_mp3 = _clamp(d2["bw"])
-
-    cb = _bw_pieces(
-        x,
-        y,
-        eval_point,
-        o=q,
-        nu=p + 1,
-        o_b=q + 1,
-        h_v=c_bw,
-        h_b1=bw_mp2,
-        h_b2=bw_mp3,
-        scale=bwregul,
-        **common,
-    )
-    b_mse = _clamp(cb["bw"])
-
-    ch = _bw_pieces(
-        x,
-        y,
-        eval_point,
-        o=p,
-        nu=deriv,
-        o_b=q,
-        h_v=c_bw,
-        h_b1=b_mse,
-        h_b2=bw_mp2,
-        scale=bwregul,
-        **common,
-    )
-    h_mse = _clamp(ch["bw"])
-
-    return {"h": float(h_mse), "b": float(b_mse)}
+    n = xs.size
+    return {
+        "h": mse["h"] * _sel.ce_rescale(p, deriv, n),
+        "b": mse["b"] * _sel.ce_rescale(p + 1, p + 1, n),
+    }

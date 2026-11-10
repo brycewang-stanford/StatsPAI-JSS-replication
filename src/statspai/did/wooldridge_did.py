@@ -37,17 +37,39 @@ de Chaisemartin, C. and D'Haultfoeuille, X. (2020).
 """
 
 import warnings
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Literal, Optional, Tuple
 
 import numpy as np
 import pandas as pd
-from scipy import optimize, stats
+from scipy import stats
 
 from .._aliases import accepts_aliases
+from .._deprecated_keywords import deprecated_keywords as _deprecated_keywords
+from .._input_validation import check_columns, missing_named_columns
+from ..core._call_record import records_call
+from ..core._covariates import expands_categorical_covariates as _expands_categorical
+from ..core._vcov_spec import accepts_vce
 from ..core.results import CausalResult
-from ..exceptions import ConvergenceFailure, DataInsufficient, MethodIncompatibility
+from ..exceptions import (
+    ColumnNotFound,
+    ConvergenceWarning,
+    DataInsufficient,
+    MethodIncompatibility,
+)
+from ._arg_roles import check_binary_treatment as _check_binary_treatment
+from ._arg_roles import check_unit_is_not_treatment as _check_unit_is_not_treatment
+from ._core import calendar_time_aware as _calendar_time_aware
 from ._core import drop_unusable_rows as _drop_unusable_rows
 from ._core import fe_dof_not_nested as _fe_dof_not_nested
+from ._etwfe_glm_design import normalise_hettype as _normalise_hettype
+from ._etwfe_nonlinear import _ETWFE_GLM_FAMILIES
+from ._etwfe_nonlinear import etwfe_glm as _etwfe_glm_impl
+from ._etwfe_nonlinear import etwfe_glm_emfx as _etwfe_glm_emfx_impl
+from ._etwfe_nonlinear import normalise_scale as _normalise_etwfe_scale
+from ._validate import drop_always_treated as _drop_always_treated
+from ._validate import duplicate_unit_period_rows as _duplicate_unit_period_rows
+from ._validate import require_constant_cohort as _require_constant_cohort
+from ._validate import warn_few_treated_clusters as _warn_few_treated_clusters
 
 # ═══════════════════════════════════════════════════════════════════════
 #  Helper: cluster-robust OLS
@@ -158,10 +180,12 @@ def _validate_etwfe_weights(data: pd.DataFrame, weights: str) -> pd.DataFrame:
     same observations as the references.
     """
     if weights not in data.columns:
-        raise MethodIncompatibility(
-            f"weights column {weights!r} is not in the data.",
-            recovery_hint="Pass the name of an existing numeric column.",
-            diagnostics={"weights": weights},
+        raise ColumnNotFound.from_missing(
+            {"weights": weights},
+            list(data.columns),
+            message=f"weights column {weights!r} is not in the data.",
+            extra_hint="Pass the name of an existing numeric column.",
+            extra_diagnostics={"weights": weights},
         )
     w = pd.to_numeric(data[weights], errors="coerce").to_numpy(dtype=float)
     if not np.all(np.isfinite(w)):
@@ -331,7 +355,18 @@ def _cohort_atts_from_cells(
     return detail, cohort_vcov, att_overall, att_se, p_overall, ci
 
 
-@accepts_aliases(_strict=True, id="group", unit="group", covariates="controls")
+@records_call("wooldridge_did")
+@accepts_aliases(
+    _strict=True,
+    id="group",
+    unit="group",
+    covariates="controls",
+    cohort="first_treat",
+    g="first_treat",
+)
+@accepts_vce(default="cluster")
+@_expands_categorical("controls")
+@_calendar_time_aware(time="time", cohort="first_treat")
 def wooldridge_did(
     data: pd.DataFrame,
     y: str,
@@ -416,6 +451,28 @@ def wooldridge_did(
     >>> bool(result.detail is not None)  # cohort-specific ATTs
     True
     """
+    check_columns(
+        data,
+        {
+            "y": y,
+            "group": group,
+            "time": time,
+            "first_treat": first_treat,
+            "controls": controls,
+            "cluster": cluster,
+        },
+        function="sp.wooldridge_did",
+    )
+    # group= is the unit id: a 0/1 treatment column passed there is refused
+    # when its cohort varies within it (no unit has two first-treatment
+    # dates) and flagged when it repeats rows within a period.
+    _check_unit_is_not_treatment(
+        data.dropna(subset=[group, time]),
+        unit=group,
+        time=time,
+        cohort=first_treat,
+        function="wooldridge_did",
+    )
     df = data.copy()
 
     # ── Normalise first_treat ────────────────────────────────────────
@@ -665,16 +722,6 @@ def wooldridge_did(
     return _result
 
 
-#: Non-identity families supported by ``sp.etwfe(family=...)``, mapped to
-#: their ``statsmodels`` family constructor.  ``None``/``'gaussian'`` keeps
-#: the historical linear OLS path untouched.
-_ETWFE_GLM_FAMILIES = {
-    "poisson": "Poisson",
-    "logit": "Binomial",
-    "binomial": "Binomial",
-}
-
-
 def _etwfe_glm(
     data: pd.DataFrame,
     y: str,
@@ -685,275 +732,47 @@ def _etwfe_glm(
     controls: Optional[List[str]] = None,
     cluster: Optional[str] = None,
     alpha: float = 0.05,
+    cgroup: str = "notyet",
+    fe: Optional[str] = None,
+    scale: str = "response",
+    hettype: Optional[str] = None,
+    xvar: Optional[Any] = None,
+    separated: str = "keep",
+    response_se: str = "profile",
 ) -> CausalResult:
-    """Nonlinear ETWFE — Wooldridge (2023) staggered DiD with a link function.
-
-    Fits the saturated Wooldridge/Mundlak design
-
-    .. math::
-
-        h(E[Y_{it}]) = \\alpha + \\sum_g \\gamma_g 1\\{G_i = g\\}
-                       + \\sum_t \\delta_t 1\\{T = t\\}
-                       + \\sum_{g}\\sum_{t \\ge g}
-                         \\beta_{gt} 1\\{G_i = g, T = t\\}
-
-    by maximum likelihood, then reports the **average marginal effect on the
-    response scale** over treated post-treatment observations:
-
-    .. math::
-
-        \\widehat{ATT} = \\frac{1}{N_1}\\sum_{i,t \\in \\text{treated}}
-            \\left[ h^{-1}(\\hat\\eta_{it})
-                  - h^{-1}(\\hat\\eta_{it} - \\hat\\beta_{g(i)t}) \\right]
-
-    with a delta-method standard error from the cluster-robust coefficient
-    covariance.  This is the estimand R ``etwfe::emfx(type='simple')``
-    reports, so a Poisson fit returns an effect in *counts*, not log points.
-
-    Verified against R ``etwfe`` 0.6.2 (``family='poisson'``) on a simulated
-    count panel: simple AME matches to 1e-10 and every event-time AME to
-    1e-6; see ``tests/reference_parity/test_etwfe_glm_parity.py``.
-    """
-    try:
-        import statsmodels.api as sm
-    except ImportError as exc:  # pragma: no cover - statsmodels is a core dep
-        raise MethodIncompatibility(
-            "etwfe(family=...) requires statsmodels.",
-            recovery_hint="pip install statsmodels",
-            diagnostics={"family": family},
-        ) from exc
-
-    fam_key = str(family).strip().lower()
-    if fam_key not in _ETWFE_GLM_FAMILIES:
-        raise MethodIncompatibility(
-            f"family={family!r} is not supported; use one of "
-            f"{sorted(set(_ETWFE_GLM_FAMILIES) | {'gaussian'})}.",
-            recovery_hint="Pass family='poisson', 'logit', or 'gaussian'.",
-            diagnostics={"family": family},
-        )
-
-    df = data.copy()
-    df["_ft"] = df[first_treat].replace(0, np.nan)
-    df["_y"] = df[y].astype(float)
-
-    periods = sorted(df[time].unique())
-    cohorts = sorted(df.loc[df["_ft"].notna(), "_ft"].unique())
-    if not cohorts:
-        raise DataInsufficient(
-            "No treated cohorts found. Check 'first_treat' column.",
-            recovery_hint="Ensure first_treat holds the first treated period "
-            "(0 or NaN for never-treated).",
-            diagnostics={"first_treat": first_treat},
-        )
-
-    if fam_key in {"logit", "binomial"}:
-        bad = ~df["_y"].isin([0.0, 1.0])
-        if bad.any():
-            raise MethodIncompatibility(
-                f"family={family!r} needs a 0/1 outcome; column {y!r} has "
-                f"{int(bad.sum())} value(s) outside {{0, 1}}.",
-                recovery_hint="Recode the outcome to 0/1 or use "
-                "family='poisson'/'gaussian'.",
-                diagnostics={"family": family, "n_invalid": int(bad.sum())},
-            )
-    elif (df["_y"] < 0).any():
-        raise MethodIncompatibility(
-            f"family='poisson' needs a non-negative outcome; column {y!r} "
-            "contains negative values.",
-            recovery_hint="Use family='gaussian' for outcomes that can be "
-            "negative (e.g. logged or differenced variables).",
-            diagnostics={"family": family},
-        )
-
-    # Design: intercept + cohort dummies (never-treated omitted) + period
-    # dummies (first period omitted) + saturated post-treatment cohort x
-    # period interactions.  Mirrors R etwfe's
-    #   ~ .Dtreat:i(gvar, i.tvar, ref=0, ref2=<first>) + i(gvar, ref=0)
-    #     + i(tvar, ref=<first>)
-    cols = [np.ones(len(df))]
-    names = ["const"]
-    for g_val in cohorts:
-        cols.append((df["_ft"] == g_val).to_numpy(dtype=float))
-        names.append(f"cohort[{int(g_val)}]")
-    for t_val in periods[1:]:
-        cols.append((df[time] == t_val).to_numpy(dtype=float))
-        names.append(f"period[{int(t_val)}]")
-
-    interaction_idx: List[int] = []
-    interaction_cell: List[Tuple[int, int]] = []
-    for g_val in cohorts:
-        for t_val in periods:
-            if t_val < g_val:
-                continue
-            col = ((df["_ft"] == g_val) & (df[time] == t_val)).to_numpy(dtype=float)
-            if col.sum() <= 0:
-                continue
-            cols.append(col)
-            names.append(f"treat[{int(g_val)},{int(t_val)}]")
-            interaction_idx.append(len(names) - 1)
-            interaction_cell.append((int(g_val), int(t_val)))
-
-    if not interaction_idx:
-        raise DataInsufficient(
-            "No post-treatment cohort x period cells — nothing to estimate.",
-            recovery_hint="Check that treated cohorts have observed periods "
-            "at or after their first_treat value.",
-            diagnostics={"cohorts": [int(c) for c in cohorts]},
-        )
-
-    ctrl_names: List[str] = []
-    for c in controls or []:
-        cols.append(df[c].astype(float).to_numpy())
-        names.append(f"control[{c}]")
-        ctrl_names.append(c)
-
-    X = np.column_stack(cols)
-    y_vec = df["_y"].to_numpy(dtype=float)
-
-    keep = np.isfinite(X).all(axis=1) & np.isfinite(y_vec)
-    X, y_vec = X[keep], y_vec[keep]
-    df_keep = df.loc[keep].reset_index(drop=True)
-
-    cluster_col = cluster or group
-    cl = df_keep[cluster_col].to_numpy()
-
-    sm_family = getattr(sm.families, _ETWFE_GLM_FAMILIES[fam_key])()
-    model = sm.GLM(y_vec, X, family=sm_family)
-    try:
-        fit = model.fit(cov_type="cluster", cov_kwds={"groups": cl})
-    except Exception as exc:
-        raise ConvergenceFailure(
-            f"etwfe(family={family!r}) failed to converge: {exc}",
-            recovery_hint="Check for separation / collinear cohort-period "
-            "cells, or fall back to family='gaussian'.",
-            diagnostics={"family": family, "n_obs": int(len(y_vec))},
-        ) from exc
-
-    beta = np.asarray(fit.params, dtype=float)
-    vcov = np.asarray(fit.cov_params(), dtype=float)
-
-    # Counterfactual design: switch every treatment interaction off, which is
-    # what marginaleffects does for .Dtreat = FALSE.
-    X0 = X.copy()
-    X0[:, interaction_idx] = 0.0
-    link = sm_family.link
-    mu1 = np.asarray(link.inverse(X @ beta), dtype=float)
-    mu0 = np.asarray(link.inverse(X0 @ beta), dtype=float)
-
-    treated = X[:, interaction_idx].sum(axis=1) > 0
-    if not treated.any():  # pragma: no cover - guarded by interaction_idx above
-        raise DataInsufficient(
-            "No treated observations after dropping missing rows.",
-            recovery_hint="Check the outcome and control columns for NaNs.",
-            diagnostics={"family": family},
-        )
-
-    # d/dbeta of (mu1 - mu0) is X * mu1' - X0 * mu0' under a canonical link;
-    # use the link derivative generally so logit/Poisson share one path.
-    dmu1 = np.asarray(link.inverse_deriv(X @ beta), dtype=float)
-    dmu0 = np.asarray(link.inverse_deriv(X0 @ beta), dtype=float)
-
-    def _ame(mask: np.ndarray) -> Tuple[float, float]:
-        n_sel = int(mask.sum())
-        est = float(np.mean((mu1 - mu0)[mask]))
-        grad = (X[mask] * dmu1[mask, None] - X0[mask] * dmu0[mask, None]).sum(
-            axis=0
-        ) / n_sel
-        var = float(grad @ vcov @ grad)
-        return est, float(np.sqrt(max(var, 0.0)))
-
-    att, se_att = _ame(treated)
-
-    # Event-study AMEs by relative time e = t - g.
-    rel = df_keep[time].to_numpy(dtype=float) - df_keep["_ft"].to_numpy(dtype=float)
-    rows = []
-    for e_val in sorted({int(v) for v in rel[treated] if np.isfinite(v)}):
-        mask = treated & (rel == e_val)
-        if not mask.any():
-            continue
-        est_e, se_e = _ame(mask)
-        z_e = est_e / se_e if se_e > 0 else 0.0
-        rows.append(
-            {
-                "relative_time": e_val,
-                "att": est_e,
-                "se": se_e,
-                "pvalue": float(2 * stats.norm.sf(abs(z_e))),
-                "n_treated": int(mask.sum()),
-            }
-        )
-    event_study = pd.DataFrame(rows)
-
-    # Cohort-level AMEs.
-    cohort_rows = []
-    ft_arr = df_keep["_ft"].to_numpy(dtype=float)
-    for g_val in cohorts:
-        mask = treated & (ft_arr == g_val)
-        if not mask.any():
-            continue
-        est_g, se_g = _ame(mask)
-        cohort_rows.append(
-            {
-                "cohort": int(g_val),
-                "att": est_g,
-                "se": se_g,
-                "n_treated": int(mask.sum()),
-            }
-        )
-
-    # Calendar-time AMEs: the same response-scale contrast, grouped by the
-    # period rather than by cohort or event time.
-    calendar_rows = []
-    period_arr = df_keep[time].to_numpy(dtype=float)
-    for t_val in sorted({float(v) for v in period_arr[treated]}):
-        mask = treated & (period_arr == t_val)
-        if not mask.any():
-            continue
-        est_t, se_t = _ame(mask)
-        calendar_rows.append(
-            {
-                "period": int(t_val),
-                "att": est_t,
-                "se": se_t,
-                "n_treated": int(mask.sum()),
-            }
-        )
-
-    z_crit = float(stats.norm.ppf(1 - alpha / 2))
-    z_stat = att / se_att if se_att > 0 else 0.0
-
-    return CausalResult(
-        method=f"Wooldridge (2023) nonlinear ETWFE — family={fam_key}",
-        estimand="ATT (average marginal effect, response scale)",
-        estimate=att,
-        se=se_att,
-        pvalue=float(2 * stats.norm.sf(abs(z_stat))),
-        ci=(att - z_crit * se_att, att + z_crit * se_att),
+    """Nonlinear ETWFE; implementation in :mod:`._etwfe_nonlinear`."""
+    return _etwfe_glm_impl(
+        data=data,
+        y=y,
+        group=group,
+        time=time,
+        first_treat=first_treat,
+        family=family,
+        controls=controls,
+        cluster=cluster,
         alpha=alpha,
-        n_obs=int(len(y_vec)),
-        detail=pd.DataFrame(cohort_rows),
-        model_info={
-            "estimator": "etwfe_glm",
-            "family": fam_key,
-            "link": type(link).__name__,
-            "cgroup": "notyet",
-            "event_study": event_study,
-            "calendar": pd.DataFrame(calendar_rows),
-            "coef_names": names,
-            "coefficients": beta,
-            "vcov": vcov,
-            "interaction_cells": interaction_cell,
-            "n_treated_obs": int(treated.sum()),
-            "n_clusters": int(pd.unique(cl).size),
-            "se_type": f"cluster-robust on {cluster_col}",
-            "controls": ctrl_names,
-            "converged": bool(getattr(fit, "converged", True)),
-        },
-        _citation_key="wooldridge2021two",
+        cgroup=cgroup,
+        fe=fe,
+        scale=scale,
+        hettype=hettype,
+        xvar=xvar,
+        separated=separated,
+        response_se=response_se,
     )
 
 
-@accepts_aliases(_strict=True, id="group", unit="group", covariates="controls")
+@records_call("etwfe")
+@accepts_aliases(
+    _strict=True,
+    id="group",
+    unit="group",
+    covariates="controls",
+    cohort="first_treat",
+    g="first_treat",
+)
+@accepts_vce(default="cluster")
+@_calendar_time_aware(time="time", cohort="first_treat")
+@_expands_categorical("controls")
 def etwfe(
     data: pd.DataFrame,
     y: str,
@@ -969,6 +788,11 @@ def etwfe(
     family: Optional[str] = None,
     weights: Optional[str] = None,
     agg_weights: str = "estimation",
+    fe: Optional[str] = None,
+    scale: str = "response",
+    hettype: Optional[str] = None,
+    separated: str = "keep",
+    response_se: str = "profile",
 ) -> CausalResult:
     """Public ``sp.etwfe`` entry point — see ``_dispatch_etwfe_impl`` for
     the full docstring on options and behaviour.
@@ -990,9 +814,92 @@ def etwfe(
     ``'logit'`` fit Wooldridge (2023) nonlinear ETWFE by maximum likelihood
     and report the **average marginal effect on the response scale**,
     matching R ``etwfe::emfx(type='simple')`` — so a Poisson fit returns an
-    effect in counts, not log points. The nonlinear branch uses
-    not-yet-treated identification and does not currently accept ``xvar``,
-    ``panel=False``, or ``cgroup='nevertreated'``.
+    effect in counts, not log points. The nonlinear branch supports
+    ``cgroup='notyet'`` and ``cgroup='nevertreated'`` (the latter also
+    estimates the pre-treatment cells, i.e. event-study leads, relative to
+    ``g - 1``); it does not currently accept ``panel=False`` or
+    ``weights``.  Its ``controls`` enter additively without interactions
+    (Stata ``jwdid``'s ``exovar()``).  With ``fe='unit'`` its ``xvar``
+    follows Stata ``jwdid y x``: each treatment effect is moderated by the
+    covariate demeaned within the ``hettype`` cells, with
+    covariate-by-period (and, when the covariate varies within units,
+    covariate-by-cohort) terms.  With ``fe='cohort'`` it is R ``etwfe``'s
+    design: the covariate demeaned within cohort x period cells,
+    interacted with the cells and with the periods (one period slope per
+    level of a categorical covariate, where ``etwfe`` 0.6.2 fits a single
+    summed slope).  A categorical column (pandas ``category`` /
+    ``object`` / ``bool``) enters as level dummies, and
+    ``sp.etwfe_emfx(..., by_xvar=True)`` reports the ATT per level
+    (``estat ..., over()``).
+
+    ``hettype`` pools the cohort x period cells as Stata ``jwdid,
+    hettype()``: ``'timecohort'`` (default, saturated), ``'time'`` (one
+    effect per calendar period), ``'cohort'`` (one per cohort), ``'event'``
+    (one per event time) or ``'twfe'`` (a single effect).  The restricted
+    designs are the robustness checks of an ETWFE table, not
+    heterogeneity-robust estimators themselves.  On the linear model a
+    non-default ``hettype`` -- or ``fe='unit'`` -- fits Stata ``jwdid``
+    without ``method()``: ``reghdfe`` with unit and period effects,
+    clustered on the unit with its small-sample factor, ``jwdid``'s
+    covariate design for ``xvar``, and the aggregations of the nonlinear
+    branch (``scale='link'``; ``panel=True`` and no ``weights``).
+
+    ``separated`` (``family='poisson', fe='unit'``) decides what happens to
+    separated rows (all-zero units, perfectly predicted zeros) after they
+    leave IRLS.  ``'keep'`` (default) keeps them in ``N``, the cluster
+    count and the aggregation weights: the ATT averages over every treated
+    observation, and a separated row enters with its exact-zero marginal
+    effect.  ``'drop'`` removes them from all three, which is what Stata
+    ``jwdid`` reports whenever ``ppmlhdfe`` flags the separation (its
+    ``estat`` averages over ``e(sample)``); ``ppmlhdfe`` does not always
+    flag it on large panels, and then ``'keep'`` is the matching choice.
+
+    ``response_se`` (nonlinear families) picks the delta-method convention
+    for response-scale standard errors; it matters only for
+    ``family='poisson', fe='unit'``, where the unit effects are absorbed.
+    ``'profile'`` (default) profiles the unit effect out -- the Poisson
+    first-order condition ties each unit's fitted total to its observed
+    total -- and differentiates through it.  ``'margins'`` reproduces
+    Stata ``jwdid ..., method(ppmlhdfe)`` + ``estat``: ``margins`` holds the
+    absorbed effects fixed and differentiates through ``ppmlhdfe``'s
+    ``_cons``, i.e. around the sample-weighted mean of the regressors
+    instead of each unit's own.  Point estimates and link-scale SEs do
+    not depend on it; with cohort dummies (``fe='cohort'``) or the linear
+    model the two conventions coincide.  ``'unconditional'`` (nonlinear
+    families, either ``fe``) targets the population ATT, as Stata
+    ``margins, vce(unconditional)``: it adds the sampling variability of
+    the units averaged over to the delta-method term through the
+    aggregates' influence function, and agrees with the delete-one-unit
+    jackknife.  Use it when the estimand is the population ATT rather than
+    the ATT of the sample's own units; it is well above ``'profile'``
+    under ``fe='unit'`` when unit effects are heterogeneous.
+    ``model_info['response_se']`` records the choice.
+
+    ``scale`` (nonlinear families only) picks the headline scale:
+    ``'response'`` (default) is the average marginal effect above;
+    ``'link'`` is the treated-observation-weighted average of the
+    cohort x period coefficients, :math:`\\sum N_{gt}\\hat\\beta_{gt} /
+    \\sum N_{gt}` -- log points for Poisson -- which is what Stata
+    ``jwdid ..., method(ppmlhdfe)`` followed by ``estat simple,
+    predict(xb)`` prints.  Both scales are always computed and stored in
+    ``model_info['aggregations']``; ``sp.etwfe_emfx(res, type=...,
+    scale=...)`` serves either.
+
+    ``fe`` (linear model and ``family='poisson'``) picks the heterogeneity
+    control: ``'cohort'`` (default) is R ``etwfe``'s cohort-dummy (Mundlak)
+    design; ``'unit'`` absorbs unit fixed effects like Stata ``jwdid``
+    (``reghdfe`` / ``ppmlhdfe``).  On a balanced panel the two give identical
+    coefficients; on an unbalanced one they do not, and ``fe='cohort'``
+    warns.  With ``fe='unit'`` units whose outcome is always zero are
+    separated (their fitted mean is exactly zero) and are left out of
+    IRLS, but stay in ``N`` and in the cluster count as ``jwdid`` reports
+    them; ``model_info['n_separated']`` records how many rows that was.
+
+    ``controls`` and ``xvar`` also take Stata factor-variable terms:
+    ``controls=["i.year#i.nodecity"]`` adds the year-by-node-city dummies
+    (base levels omitted), i.e. Stata ``jwdid ..., exovar(i.year#i.nodecity)``;
+    ``xvar="i.region"`` treats ``region`` as categorical (``jwdid y
+    i.region``).  :func:`sp.jwdid` takes Stata's option names directly.
 
     Thin wrapper around the 4-branch dispatcher (panel-with-xvar /
     panel-never-only / panel-notyet / repeated-cross-section) that
@@ -1026,6 +933,27 @@ def etwfe(
         ``sp.etwfe(cgroup='nevertreated')`` — same comparison group, different
         weights — is still 10.5% from it. Pick the one your write-up claims.
     """
+    # Stata factor terms (``controls=["i.year#i.nodecity"]``,
+    # ``xvar="i.region"``) become columns first; plain column names pass
+    # through untouched.
+    from ._factor_terms import expand_factor_terms, factor_xvar
+
+    data, controls = expand_factor_terms(data, controls, context="etwfe")
+    data, xvar = factor_xvar(data, xvar, context="etwfe")
+    check_columns(
+        data,
+        {
+            "y": y,
+            "group": group,
+            "time": time,
+            "first_treat": first_treat,
+            "controls": controls,
+            "cluster": cluster,
+            "xvar": [xvar] if isinstance(xvar, str) else xvar,
+        },
+        function="sp.etwfe",
+    )
+
     # Drop rows no branch can use before dispatch, so a wiped outcome surfaces
     # as an error rather than an ATT of exactly 0.0 (or a raw ValueError out of
     # an empty-array reduction further down).
@@ -1051,9 +979,45 @@ def etwfe(
     if weights is not None:
         data = _validate_etwfe_weights(data, weights)
 
+    # A first-treatment period of +/-inf, or one after the last observed
+    # period (the 9999 habit), is never treated in the sample, as in
+    # did_imputation and gardner_did. Left alone when no cohort is treated
+    # inside the sample, so that case keeps its own error below.
+    if pd.api.types.is_numeric_dtype(data[first_treat].dtype) and len(data):
+        _g_raw = data[first_treat].astype(float)
+        _t_last = float(pd.to_numeric(data[time], errors="coerce").max())
+        _late = np.isinf(_g_raw) | (_g_raw > _t_last)
+        if bool(_late.any()) and bool(((_g_raw > 0) & ~_late).any()):
+            data = data.copy()
+            data[first_treat] = _g_raw.where(~_late, 0.0)
+
+    # One cohort per unit, one row per (unit, period) unless the unit is a
+    # group, and no cohort without an untreated period (shared DiD checks).
+    if panel:
+        # group= is the unit id: a 0/1 treatment column passed there is
+        # refused (cohort varies within it) or flagged.
+        _check_unit_is_not_treatment(
+            data, unit=group, time=time, cohort=first_treat, function="etwfe"
+        )
+        _require_constant_cohort(data, unit=group, cohort=first_treat, function="etwfe")
+        _duplicate_unit_period_rows(data, unit=group, time=time, function="etwfe")
+    data, _always_treated = _drop_always_treated(
+        data,
+        unit=group if panel else None,
+        time=time,
+        cohort=first_treat,
+        function="etwfe",
+    )
     _ft = data[first_treat].replace(0, np.nan)
     _cohorts = sorted(_ft.dropna().unique().tolist())
     _n_treated_post = int((_ft.notna() & (data[time] >= _ft)).sum())
+    if _n_treated_post:
+        _warn_few_treated_clusters(
+            data,
+            treated_rows=(_ft.notna() & (data[time] >= _ft)).to_numpy(),
+            cluster=cluster or group,
+            function="etwfe",
+        )
     if _cohorts and _n_treated_post == 0:
         raise DataInsufficient(
             "No treated post-treatment observations: every unit is either "
@@ -1071,15 +1035,17 @@ def etwfe(
             },
         )
 
+    data, _last_cohort_ref = _trim_to_notyet_support(
+        data, time=time, first_treat=first_treat, cgroup=cgroup
+    )
+
     fam_key = None if family is None else str(family).strip().lower()
     if fam_key in _ETWFE_GLM_FAMILIES:
         # Fail loudly rather than silently ignoring an option the nonlinear
         # branch does not implement — a quietly-dropped xvar/cgroup would
         # change the estimand without telling anyone.
         for arg_name, arg_val, bad in (
-            ("xvar", xvar, xvar is not None),
             ("panel", panel, not panel),
-            ("cgroup", cgroup, cgroup not in {"notyet", "notyettreated"}),
             ("weights", weights, weights is not None),
         ):
             if bad:
@@ -1102,6 +1068,13 @@ def etwfe(
             controls=controls,
             cluster=cluster,
             alpha=alpha,
+            cgroup=cgroup,
+            fe=fe,
+            scale=scale,
+            hettype=hettype,
+            xvar=xvar,
+            separated=separated,
+            response_se=response_se,
         )
     elif fam_key not in (None, "gaussian", "normal"):
         raise MethodIncompatibility(
@@ -1111,21 +1084,97 @@ def etwfe(
             diagnostics={"family": family},
         )
     else:
-        _result = _dispatch_etwfe_impl(
-            data=data,
-            y=y,
-            group=group,
-            time=time,
-            first_treat=first_treat,
-            controls=controls,
-            cluster=cluster,
-            alpha=alpha,
-            xvar=xvar,
-            panel=panel,
-            cgroup=cgroup,
-            weights=weights,
-            agg_weights=agg_weights,
+        # The linear model has a single scale.
+        _normalise_etwfe_scale(scale)
+        if str(response_se).strip().lower() not in {"profile", "margins"}:
+            raise MethodIncompatibility(
+                f"etwfe(response_se={response_se!r}) applies to the "
+                "nonlinear families (family='poisson' / 'logit'); the linear "
+                "ETWFE accepts only 'profile' or 'margins', which coincide "
+                "on it.",
+                recovery_hint="Drop response_se=; the linear ETWFE has one " "scale.",
+                diagnostics={"response_se": response_se, "family": family},
+            )
+        if str(separated).strip().lower() != "keep":
+            raise MethodIncompatibility(
+                f"etwfe(separated={separated!r}) applies to family='poisson' "
+                "with fe='unit'.",
+                recovery_hint="Drop separated= for the linear ETWFE.",
+                diagnostics={"separated": separated, "family": family},
+            )
+        fe_key = None if fe is None else str(fe).strip().lower()
+        if fe_key not in (None, "cohort", "unit", "ivar", "id", "individual"):
+            raise MethodIncompatibility(
+                f"etwfe(fe={fe!r}) is not recognised; use 'cohort' or 'unit'.",
+                recovery_hint="Drop fe= for R etwfe's linear design.",
+                diagnostics={"fe": fe, "family": family},
+            )
+        jwdid_linear = _normalise_hettype(hettype) != "timecohort" or fe_key in (
+            "unit",
+            "ivar",
+            "id",
+            "individual",
         )
+        if jwdid_linear:
+            # Stata jwdid without method(): reghdfe with unit and period
+            # effects, any hettype, jwdid's covariate design -- served by
+            # the design / aggregation code of the nonlinear branch.
+            if fe_key == "cohort":
+                raise MethodIncompatibility(
+                    f"etwfe(hettype={hettype!r}) on the linear model absorbs "
+                    "unit fixed effects (Stata jwdid); fe='cohort' is only "
+                    "available with the saturated default design.",
+                    recovery_hint="Drop fe= (or pass fe='unit') with hettype=.",
+                    diagnostics={"fe": fe, "hettype": hettype},
+                )
+            for arg_name, arg_val, bad in (
+                ("panel", panel, not panel),
+                ("weights", weights, weights is not None),
+            ):
+                if bad:
+                    raise MethodIncompatibility(
+                        "etwfe(hettype= / fe='unit') on the linear model does "
+                        f"not support {arg_name}={arg_val!r} yet.",
+                        recovery_hint="Drop the option, or use the saturated "
+                        "default design (no hettype=, no fe=).",
+                        diagnostics={arg_name: arg_val, "hettype": hettype},
+                    )
+            _result = _etwfe_glm(
+                data=data,
+                y=y,
+                group=group,
+                time=time,
+                first_treat=first_treat,
+                family="gaussian",
+                controls=controls,
+                cluster=cluster,
+                alpha=alpha,
+                cgroup=cgroup,
+                fe="unit",
+                scale="link",
+                hettype=hettype,
+                xvar=xvar,
+            )
+        else:
+            _result = _dispatch_etwfe_impl(
+                data=data,
+                y=y,
+                group=group,
+                time=time,
+                first_treat=first_treat,
+                controls=controls,
+                cluster=cluster,
+                alpha=alpha,
+                xvar=xvar,
+                panel=panel,
+                cgroup=cgroup,
+                weights=weights,
+                agg_weights=agg_weights,
+            )
+    if _last_cohort_ref is not None:
+        _result.model_info["last_cohort_reference"] = _last_cohort_ref
+    if _always_treated is not None:
+        _result.model_info["dropped_always_treated"] = _always_treated
     try:
         from ..output._lineage import attach_provenance as _attach_prov
 
@@ -1145,6 +1194,11 @@ def etwfe(
                 "cgroup": cgroup,
                 "weights": weights,
                 "agg_weights": agg_weights,
+                "fe": fe,
+                "scale": scale,
+                "hettype": hettype,
+                "separated": separated,
+                "response_se": response_se,
             },
             data=data,
             overwrite=False,
@@ -1152,6 +1206,79 @@ def etwfe(
     except Exception:  # pragma: no cover
         pass
     return _result
+
+
+def _trim_to_notyet_support(
+    data: pd.DataFrame,
+    *,
+    time: str,
+    first_treat: str,
+    cgroup: str,
+) -> Tuple[pd.DataFrame, Optional[Dict[str, Any]]]:
+    """Restrict a panel in which every unit is eventually treated to the
+    periods that still have a not-yet-treated comparison.
+
+    With no never-treated unit and no cohort adopting after the last observed
+    period, nothing is untreated from the last cohort's adoption date on, so
+    the period effects of those dates are not identified: the saturated
+    design is rank-deficient there and ``pinv`` returns arbitrary numbers
+    (observed: an overall ATT of 4.7e11 on a panel whose true ATT is 68).
+    R ``etwfe`` handles the case by taking the last cohort as the reference
+    group and dropping the periods from its adoption onwards
+    (``.Dtreat = NA`` for ``t >= gref``); the same sample is what
+    ``did_imputation, autosample`` and Callaway-Sant'Anna's not-yet-treated
+    comparison keep. This does that, and says so.
+
+    Returns the (possibly trimmed) data and, when it trimmed, a record for
+    ``model_info['last_cohort_reference']``.
+    """
+    if cgroup != "notyet" or data.empty:
+        return data, None
+    ft = data[first_treat].replace(0, np.nan)
+    max_time = data[time].max()
+    # A never-treated unit, or a cohort adopting after the panel ends, is an
+    # untreated comparison in every observed period: nothing to trim.
+    if ft.isna().any() or (ft > max_time).any():
+        return data, None
+    cohorts = sorted(ft.unique().tolist())
+    g_ref = cohorts[-1]
+    keep = (data[time] < g_ref).to_numpy()
+    trimmed = data.loc[keep].copy()
+    # Inside the retained window the last cohort is never treated.
+    trimmed[first_treat] = trimmed[first_treat].where(ft.loc[keep] != g_ref, np.nan)
+    n_dropped = int((~keep).sum())
+    ft_kept = trimmed[first_treat].replace(0, np.nan)
+    if not (ft_kept.notna() & (trimmed[time] >= ft_kept)).any():
+        raise DataInsufficient(
+            "Every unit is eventually treated and no treated observation has "
+            "a not-yet-treated comparison: once the periods from the last "
+            f"cohort's adoption ({g_ref}) are set aside, no cohort × post "
+            "cell is left to identify an ATT from.",
+            recovery_hint=(
+                "A single adoption date with no untreated group identifies "
+                "nothing by difference-in-differences; add never-treated "
+                "units or a later-treated cohort."
+            ),
+            diagnostics={
+                "function": "etwfe",
+                "cohorts": cohorts,
+                "reference_cohort": g_ref,
+            },
+        )
+    warnings.warn(
+        "etwfe: every unit is eventually treated, so no untreated comparison "
+        f"exists from period {g_ref} on. The last cohort ({g_ref}) is used as "
+        f"the not-yet-treated reference and the {n_dropped} observation(s) "
+        f"with {time} >= {g_ref} are dropped, as R etwfe does; effects for "
+        "that cohort and those periods are not identified.",
+        UserWarning,
+        stacklevel=3,
+    )
+    return trimmed, {
+        "reference_cohort": g_ref,
+        "n_obs_dropped": n_dropped,
+        "last_period_kept": trimmed[time].max(),
+    }
 
 
 def _etwfe_with_simple_headline(
@@ -1189,6 +1316,8 @@ def _etwfe_with_simple_headline(
             "headline_aggregation": "emfx_simple",
             "headline_weighting": "treated_observations",
             "headline_source_branch": source_branch,
+            # Recorded for sp.validation_scope; the GLM branch writes its own.
+            "family": "linear",
         }
     )
     return CausalResult(
@@ -1244,11 +1373,28 @@ def _dispatch_etwfe_impl(
     first_treat : str
         Column with first-treatment period; NaN or 0 for never-treated.
     controls : list of str, optional
-        Time-varying covariates.
+        Time-varying covariates, entering additively (Stata ``jwdid``'s
+        ``exovar()``; R ``etwfe`` interacts demeaned controls with the
+        treatment cells instead, a different model). With ``fe='unit'``
+        the fit reproduces ``jwdid, exovar()``. The default design uses
+        cohort rather than unit effects, which gives the same cell
+        coefficients without controls but not with a time-varying one,
+        and has no external reference in that case.
     cluster : str, optional
         Cluster variable for SE (defaults to ``group``).
     alpha : float, default 0.05
         Significance level.
+    xvar : str or list of str, optional
+        Moderators of the treatment effect, R ``etwfe``'s ``xvar``: each is
+        demeaned within cohort x period cells and interacted with every
+        treatment cell and every period but the first.  The aggregates are
+        R ``emfx(by_xvar = FALSE)``'s (the effects at the cell means of the
+        moderators) and ``detail`` adds each cohort's moderator slope
+        (``slope_<x>``).  A categorical column (category / object / string
+        / bool, or ``'i.v'``) enters as level dummies ``v[level]`` with the
+        first level as base, one period slope per level (R ``etwfe`` 0.6.2
+        fits a single summed period slope for a factor).  Either control
+        group.
     weights : str, optional
         Column of non-negative observation weights.  The cohort-by-period
         regression is then weighted least squares with R ``fixest``
@@ -1315,10 +1461,12 @@ def _dispatch_etwfe_impl(
     Examples
     --------
     >>> import statspai as sp
-    >>> df = sp.dgp_did(n_units=200, n_periods=10, staggered=True)
+    >>> df = sp.dgp_did(n_units=200, n_periods=10, staggered=True, seed=0)
     >>> res = sp.etwfe(df, y='y', group='unit',
-    ...                time='period', first_treat='first_treat')
-    >>> res.summary()
+    ...                time='time', first_treat='first_treat')
+    >>> type(res).__name__
+    'CausalResult'
+    >>> text = res.summary()
 
     See Also
     --------
@@ -1338,18 +1486,48 @@ def _dispatch_etwfe_impl(
     if xvar is not None:
         xvar_list = [xvar] if isinstance(xvar, str) else list(xvar)
         if weights is not None:
-            # The covariate-moderated branch runs on a two-way within
-            # transformation that has no weighted closed form; refuse rather
-            # than silently fit an unweighted regression.
+            # The moderator is demeaned within cells without weights (R
+            # etwfe); under estimation weights the cell coefficients stop
+            # being the cells' average effects.  Refuse rather than report
+            # something else.
             raise MethodIncompatibility(
                 "etwfe(weights=...) is not yet supported together with xvar.",
                 recovery_hint="Drop weights, or drop xvar and use controls=.",
                 diagnostics={"weights": weights, "xvar": xvar_list},
             )
-        # C1/C2: fail fast on missing or constant xvars
+        # A categorical moderator (category / object / string / bool, or
+        # Stata's i.v) enters as level dummies, the first level the base:
+        # one cell slope and one period slope per level.  (R etwfe 0.6.2
+        # writes the period term of a factor as a single summed slope; the
+        # per-level design is the one the nonlinear branch fits too.)
+        from ._etwfe_glm_design import is_categorical
+
+        expanded: List[str] = []
         for xv in xvar_list:
             if xv not in data.columns:
-                raise KeyError(f"xvar {xv!r} not found in data.columns")
+                raise ColumnNotFound.from_missing(
+                    {"xvar": xv}, list(data.columns), context="sp.etwfe"
+                )
+            if not is_categorical(data[xv]):
+                expanded.append(xv)
+                continue
+            cat = pd.Categorical(data[xv])
+            levels = list(cat.categories)
+            if len(levels) < 2:
+                raise DataInsufficient(
+                    f"xvar {xv!r} has a single level; no heterogeneity to model.",
+                    recovery_hint="Drop it from xvar.",
+                    diagnostics={"xvar": xv},
+                )
+            data = data.copy()
+            codes = np.asarray(cat.codes)
+            for k, lev in enumerate(levels[1:], start=1):
+                name = f"{xv}[{lev}]"
+                data[name] = np.where(codes < 0, np.nan, (codes == k).astype(float))
+                expanded.append(name)
+        xvar_list = expanded
+        # C1/C2: fail fast on missing or constant xvars
+        for xv in xvar_list:
             col = pd.to_numeric(data[xv], errors="coerce")
             finite = col.dropna()
             if len(finite) < 2:
@@ -1410,32 +1588,19 @@ def _dispatch_etwfe_impl(
         # period fixed-effect basis as the not-yet-treated branch below, so
         # the two control groups differ only in their cells and every
         # `etwfe_emfx` aggregation honours the control group automatically.
-        if xvar_list is not None:
-            base = _etwfe_with_xvar(
-                data=data,
-                y=y,
-                group=group,
-                time=time,
-                first_treat=first_treat,
-                xvar=xvar_list,
-                controls=controls,
-                cluster=cluster,
-                alpha=alpha,
-            )
-        else:
-            base = _etwfe_repeated_cs(
-                data=data,
-                y=y,
-                time=time,
-                first_treat=first_treat,
-                xvar=None,
-                controls=controls,
-                cluster=cluster or group,
-                alpha=alpha,
-                cgroup="never",
-                weights=weights,
-                agg_weights=agg_weights,
-            )
+        base = _etwfe_repeated_cs(
+            data=data,
+            y=y,
+            time=time,
+            first_treat=first_treat,
+            xvar=xvar_list,
+            controls=controls,
+            cluster=cluster or group,
+            alpha=alpha,
+            cgroup="never",
+            weights=weights,
+            agg_weights=agg_weights,
+        )
         return _etwfe_with_simple_headline(
             base,
             cgroup="nevertreated",
@@ -1445,47 +1610,24 @@ def _dispatch_etwfe_impl(
             source_branch="never_treated_event_cells",
             agg_weights=agg_weights,
         )
-    if xvar_list is None:
-        # R etwfe's default cgroup='notyet' and Stata jwdid identify the
-        # simple marginal effect from cohort-time event cells, with treated
-        # observations as aggregation weights.  The repeated-CS design branch
-        # implements that event-cell basis; for panel calls, default inference
-        # still clusters on the unit id unless the user supplied cluster=.
-        base = _etwfe_repeated_cs(
-            data=data,
-            y=y,
-            time=time,
-            first_treat=first_treat,
-            xvar=None,
-            controls=controls,
-            cluster=cluster or group,
-            alpha=alpha,
-            cgroup="notyet",
-            weights=weights,
-            agg_weights=agg_weights,
-        )
-        return _etwfe_with_simple_headline(
-            base,
-            cgroup="notyet",
-            panel=True,
-            alpha=alpha,
-            method="Wooldridge (2021) ETWFE — not-yet-treated control",
-            source_branch="notyet_event_cells",
-            agg_weights=agg_weights,
-        )
-    # Covariate-moderated ETWFE preserves the historical xvar branch (including
-    # slope columns in result.detail), then reports the same treated-observation
-    # weighted simple headline as R emfx.
-    base = _etwfe_with_xvar(
+    # R etwfe's default cgroup='notyet' and Stata jwdid identify the simple
+    # marginal effect from cohort-time event cells, with treated observations
+    # as aggregation weights.  The repeated-CS design branch implements that
+    # event-cell basis (with R etwfe's covariate-moderated cells when xvar is
+    # given); for panel calls, default inference still clusters on the unit
+    # id unless the user supplied cluster=.
+    base = _etwfe_repeated_cs(
         data=data,
         y=y,
-        group=group,
         time=time,
         first_treat=first_treat,
         xvar=xvar_list,
         controls=controls,
-        cluster=cluster,
+        cluster=cluster or group,
         alpha=alpha,
+        cgroup="notyet",
+        weights=weights,
+        agg_weights=agg_weights,
     )
     return _etwfe_with_simple_headline(
         base,
@@ -1493,193 +1635,8 @@ def _dispatch_etwfe_impl(
         panel=True,
         alpha=alpha,
         method="Wooldridge (2021) ETWFE — not-yet-treated control",
-        source_branch="notyet_covariate_branch",
+        source_branch="notyet_event_cells",
         agg_weights=agg_weights,
-    )
-
-
-def _etwfe_with_xvar(
-    data: pd.DataFrame,
-    y: str,
-    group: str,
-    time: str,
-    first_treat: str,
-    xvar: List[str],
-    controls: Optional[List[str]] = None,
-    cluster: Optional[str] = None,
-    alpha: float = 0.05,
-) -> CausalResult:
-    """ETWFE with covariate-moderated heterogeneity (R etwfe's ``xvar``).
-
-    Supports single or multiple covariates. For each cohort ``g`` and
-    each xvar ``x_j``, adds an interaction between the cohort × post
-    dummy and ``(x_j - mean(x_j))``. The main cohort coefficient is
-    ATT(g) evaluated at the sample mean of every xvar; each slope
-    measures how ATT(g) shifts per unit of ``x_j``.
-    """
-    df = data.copy()
-    ft = df[first_treat].replace(0, np.nan)
-    df["_ft"] = ft
-
-    periods = sorted(df[time].unique())
-    cohorts = sorted(df.loc[df["_ft"].notna(), "_ft"].unique())
-    if len(cohorts) == 0:
-        raise DataInsufficient("No treated cohorts found. Check 'first_treat' column.")
-
-    # Demean outcome
-    df["_y"] = df[y].astype(float)
-    unit_mean = df.groupby(group)["_y"].transform("mean")
-    time_mean = df.groupby(time)["_y"].transform("mean")
-    grand_mean = df["_y"].mean()
-    df["_y_dm"] = df["_y"] - unit_mean - time_mean + grand_mean
-
-    # Center every xvar by its grand mean so baseline ATT is evaluated
-    # at (x1=mean, x2=mean, …).
-    xc_cols: List[str] = []
-    x_centers: Dict[str, float] = {}
-    for x in xvar:
-        raw = df[x].astype(float)
-        ctr = float(raw.mean())
-        x_centers[x] = ctr
-        df[f"_xc_{x}"] = raw - ctr
-        xc_cols.append(f"_xc_{x}")
-
-    # Build cohort × post dummies AND cohort × post × xc_j interactions.
-    base_cols: List[str] = []
-    slope_cols_by_cohort: Dict[int, List[str]] = {}
-    for g in cohorts:
-        mask_post = (df["_ft"] == g) & (df[time] >= g)
-        b = f"_coh{int(g)}_post"
-        df[b] = mask_post.astype(float)
-        base_cols.append(b)
-        slope_cols_by_cohort[int(g)] = []
-        for x in xvar:
-            s = f"_coh{int(g)}_post_x_{x}"
-            df[s] = df[b] * df[f"_xc_{x}"]
-            slope_cols_by_cohort[int(g)].append(s)
-
-    all_slope = [c for v in slope_cols_by_cohort.values() for c in v]
-    all_inter = base_cols + all_slope
-
-    # H4 fix: explicit name-to-index map so slope lookups never rely on
-    # implicit ordering. Column 0 is the constant; columns [1:] are
-    # X_cols = [f"{c}_dm" for c in all_inter] + ctrl_dm_cols in order.
-    coef_index: Dict[str, int] = {"_const": 0}
-    for i, col in enumerate(all_inter, start=1):
-        coef_index[col] = i
-
-    # Demean interactions via FE projection
-    for col in all_inter:
-        u_m = df.groupby(group)[col].transform("mean")
-        t_m = df.groupby(time)[col].transform("mean")
-        g_m = df[col].mean()
-        df[f"{col}_dm"] = df[col] - u_m - t_m + g_m
-
-    # Demean controls
-    ctrl_dm_cols: List[str] = []
-    if controls:
-        for c in controls:
-            df[f"_ctrl_{c}"] = df[c].astype(float)
-            u_m = df.groupby(group)[f"_ctrl_{c}"].transform("mean")
-            t_m = df.groupby(time)[f"_ctrl_{c}"].transform("mean")
-            g_m = df[f"_ctrl_{c}"].mean()
-            df[f"_ctrl_{c}_dm"] = df[f"_ctrl_{c}"] - u_m - t_m + g_m
-            ctrl_dm_cols.append(f"_ctrl_{c}_dm")
-
-    keep = ["_y_dm"] + [f"{c}_dm" for c in all_inter] + ctrl_dm_cols
-    valid = df[keep].notna().all(axis=1)
-    dfv = df.loc[valid].reset_index(drop=True)
-
-    y_vec = dfv["_y_dm"].values
-    X_cols = [f"{c}_dm" for c in all_inter] + ctrl_dm_cols
-    X = dfv[X_cols].values
-    X = np.column_stack([np.ones(len(y_vec)), X])
-
-    cl_arr = dfv[cluster].values if cluster else dfv[group].values
-    beta, se, vcov = _ols_fit(X, y_vec, cluster=cl_arr)
-    n_obs = len(y_vec)
-    df_resid = max(n_obs - X.shape[1], 1)
-
-    k = len(cohorts)
-    p_x = len(xvar)  # retained for the single-xvar backward-compat block
-
-    cohort_results = []
-    for g in cohorts:
-        # H4 fix: look up baseline and slope indices by coefficient name
-        # rather than by arithmetic position, so future column-order
-        # changes cannot silently mis-attribute.
-        b_idx = coef_index[f"_coh{int(g)}_post"]
-        att = float(beta[b_idx])
-        att_se = float(se[b_idx])
-        p = float(2 * stats.t.sf(abs(att / att_se) if att_se > 0 else 0, df_resid))
-        row: Dict[str, Any] = {
-            "cohort": int(g),
-            "att_at_xmean": att,
-            "att_se": att_se,
-            "att_pvalue": p,
-        }
-        for x in xvar:
-            s_idx = coef_index[f"_coh{int(g)}_post_x_{x}"]
-            slope = float(beta[s_idx])
-            slope_se = float(se[s_idx])
-            p_s = float(
-                2 * (stats.t.sf(abs(slope / slope_se) if slope_se > 0 else 0, df_resid))
-            )
-            row[f"slope_{x}"] = slope
-            row[f"slope_{x}_se"] = slope_se
-            row[f"slope_{x}_pvalue"] = p_s
-        # Backward-compat: if exactly one xvar, alias to the older name
-        if p_x == 1:
-            only = xvar[0]
-            row["slope_wrt_x"] = row[f"slope_{only}"]
-            row["slope_se"] = row[f"slope_{only}_se"]
-            row["slope_pvalue"] = row[f"slope_{only}_pvalue"]
-        row["n_obs"] = int((dfv["_ft"] == g).sum())
-        row["n_treated_obs"] = int(((dfv["_ft"] == g) & (dfv[time] >= g)).sum())
-        cohort_results.append(row)
-
-    detail = pd.DataFrame(cohort_results)
-    sizes = detail["n_obs"].values.astype(float)
-    weights_vec = sizes / sizes.sum() if sizes.sum() > 0 else np.ones(k) / k
-    att_overall = float(weights_vec @ detail["att_at_xmean"].values)
-    # H4 fix: extract baseline-coefficient vcov by explicit index lookup
-    base_idx = np.array([coef_index[f"_coh{int(g)}_post"] for g in cohorts])
-    base_vcov = vcov[np.ix_(base_idx, base_idx)]
-    att_se_overall = float(np.sqrt(weights_vec @ base_vcov @ weights_vec))
-    t_stat = att_overall / att_se_overall if att_se_overall > 0 else np.nan
-    p_overall = float(2 * stats.t.sf(abs(t_stat), df_resid))
-    t_crit = stats.t.ppf(1 - alpha / 2, df_resid)
-    ci = (att_overall - t_crit * att_se_overall, att_overall + t_crit * att_se_overall)
-
-    model_info = {
-        "n_cohorts": k,
-        "cohorts": [int(g) for g in cohorts],
-        "n_periods": len(periods),
-        "n_units": df[group].nunique(),
-        "controls": controls or [],
-        "cluster_var": cluster or group,
-        "xvar": list(xvar),
-        "xvar_means": x_centers,
-        "heterogeneity": (
-            "ATT(g) = baseline(g) + Σ_j slope_j(g) * " "(x_j - mean(x_j))"
-        ),
-        "cohort_weighting": "cohort",
-        "cohort_vcov": base_vcov,
-    }
-
-    x_label = ", ".join(f"{x}={x_centers[x]:.4g}" for x in xvar)
-    return CausalResult(
-        method="Wooldridge (2021) ETWFE with covariate heterogeneity",
-        estimand=f"ATT at [{x_label}] (sample means)",
-        estimate=att_overall,
-        se=att_se_overall,
-        pvalue=p_overall,
-        ci=ci,
-        alpha=alpha,
-        n_obs=n_obs,
-        detail=detail,
-        model_info=model_info,
-        _citation_key="wooldridge_twfe",
     )
 
 
@@ -1796,8 +1753,8 @@ def _etwfe_repeated_cs(
     cohort dummies, period dummies and cohort-by-period treatment cells, with
     fixest's default small-sample factor ``(n - 1) / (n - K)`` counting every
     column of that design (``K`` = cells + cohort levels + period levels - 1
-    + constant).  It serves ``panel=False`` and, without ``xvar``, the panel
-    entry points too: in a balanced panel the cell coefficients equal those
+    + constant).  It serves ``panel=False`` and the panel entry points
+    too: in a balanced panel the cell coefficients equal those
     of the unit-fixed-effects regression and the cluster-robust "meat" is
     identical, so only ``K`` separates it from Stata ``jwdid`` (see
     :func:`etwfe_emfx` Notes).
@@ -1816,8 +1773,19 @@ def _etwfe_repeated_cs(
     averages of the post-treatment cells weighted by their observation
     counts, with delta-method standard errors -- and
     ``model_info['event_study']`` / ``['event_vcov']`` hold the cells and
-    their covariance for :func:`etwfe_emfx`.  With ``xvar`` the historical
-    pooled cohort x post design with centred slopes is kept (no cells).
+    their covariance for :func:`etwfe_emfx`.
+
+    ``xvar`` is R ``etwfe``'s covariate-moderated design: each moderator is
+    demeaned within cohort x period cells over the estimation sample and
+    enters interacted with every treatment cell and with every period but
+    the first (``.Dtreat : i(g, i.t) / x_dm + i(t, x_dm, ref = tref)``).
+    The interactions are orthogonal to the cell dummies, so the cell
+    coefficients stay the cells' average effects and the aggregates are R
+    ``emfx(by_xvar = FALSE)``'s; ``detail`` adds each cohort's moderator
+    slope (``slope_<x>``, the post-cell slopes averaged like the ATT).
+    Through 1.39.6 the linear ``xvar`` fit was a different, pooled cohort x
+    post model with grand-mean-centred slopes and unit effects, and it
+    ignored ``cgroup='nevertreated'``.
 
     ``weights`` turns the fit into weighted least squares (fixest
     ``weights=`` / reghdfe ``[pw=]``).  Every cell then carries both its
@@ -1870,113 +1838,16 @@ def _etwfe_repeated_cs(
             df[f"_ctrl_{c}"] = df[c].astype(float)
             ctrl_cols.append(f"_ctrl_{c}")
 
-    xvar = xvar or []
-    if xvar:
-        if cgroup == "never":
-            raise MethodIncompatibility(
-                "xvar with cgroup='nevertreated' is not available in the "
-                "cohort/period fixed-effect design.",
-                recovery_hint="Use panel=True (unit fixed effects) or drop xvar.",
-            )
-        if weights is not None:
-            raise MethodIncompatibility(
-                "etwfe(weights=...) is not yet supported together with xvar.",
-                recovery_hint="Drop weights, or drop xvar and use controls=.",
-                diagnostics={"weights": weights, "xvar": list(xvar)},
-            )
-        # ── historical covariate-moderated design: cohort × post + slopes ──
-        base_cols: List[str] = []
-        for g in cohorts:
-            col = f"_coh{int(g)}_post"
-            df[col] = ((df["_ft"] == g) & (df[time] >= g)).astype(float)
-            base_cols.append(col)
-        slope_cols: List[str] = []
-        x_centers: Dict[str, float] = {}
-        for x in xvar:
-            raw = df[x].astype(float)
-            ctr = float(raw.mean())
-            x_centers[x] = ctr
-            df[f"_xc_{x}"] = raw - ctr
-        for g in cohorts:
-            for x in xvar:
-                col = f"_coh{int(g)}_post_x_{x}"
-                df[col] = df[f"_coh{int(g)}_post"] * df[f"_xc_{x}"]
-                slope_cols.append(col)
-
-        design_cols = coh_dummies + time_dummies + base_cols + slope_cols + ctrl_cols
-        keep = ["_y"] + design_cols
-        valid = df[keep].notna().all(axis=1)
-        dfv = df.loc[valid].reset_index(drop=True)
-
-        y_vec = dfv["_y"].values
-        X = np.column_stack(
-            [np.ones(len(y_vec))] + [dfv[c].values for c in design_cols]
-        )
-        cl_arr = dfv[cluster].values if cluster else None
-        _warn_if_rank_deficient(X)
-        beta, se, vcov = _ols_fit(X, y_vec, cluster=cl_arr)
-        n_obs = len(y_vec)
-        df_resid = max(n_obs - X.shape[1], 1)
-
-        # ATT(g) coefficients — their index in X:
-        # 0: const, [cohort dummies], [time dummies], [base cols], [slopes], [ctrl]
-        base_start = 1 + len(coh_dummies) + len(time_dummies)
-        k = len(cohorts)
-        cohort_rows = []
-        for i, g in enumerate(cohorts):
-            idx = base_start + i
-            att = float(beta[idx])
-            s_ = float(se[idx])
-            p = float(2 * stats.t.sf(abs(att / s_) if s_ > 0 else 0, df_resid))
-            n_g = int((dfv["_ft"] == g).sum())
-            n_treated_g = int(((dfv["_ft"] == g) & (dfv[time] >= g)).sum())
-            cohort_rows.append(
-                {
-                    "cohort": int(g),
-                    "att": att,
-                    "se": s_,
-                    "tstat": att / s_ if s_ > 0 else np.nan,
-                    "pvalue": p,
-                    "n_obs": n_g,
-                    "n_treated_obs": n_treated_g,
-                }
-            )
-        detail = pd.DataFrame(cohort_rows)
-        sizes = detail["n_obs"].values.astype(float)
-        w = sizes / sizes.sum() if sizes.sum() > 0 else np.ones(k) / k
-        att_overall = float(w @ detail["att"].values)
-        base_vcov = vcov[base_start : base_start + k, base_start : base_start + k]
-        att_se = float(np.sqrt(w @ base_vcov @ w))
-        t_stat = att_overall / att_se if att_se > 0 else np.nan
-        p_overall = float(2 * stats.t.sf(abs(t_stat), df_resid))
-        t_crit = stats.t.ppf(1 - alpha / 2, df_resid)
-        ci = (att_overall - t_crit * att_se, att_overall + t_crit * att_se)
-
-        return CausalResult(
-            method="Wooldridge (2021) ETWFE — repeated cross-section",
-            estimand="Overall ATT (no unit FE)",
-            estimate=att_overall,
-            se=att_se,
-            pvalue=p_overall,
-            ci=ci,
-            alpha=alpha,
-            n_obs=n_obs,
-            detail=detail,
-            model_info={
-                "n_cohorts": k,
-                "cohorts": [int(g) for g in cohorts],
-                "n_periods": len(periods),
-                "panel": False,
-                "controls": controls or [],
-                "xvar": list(xvar),
-                "xvar_means": x_centers,
-                "cgroup": cgroup,
-                "cohort_weighting": "cohort",
-                "cohort_vcov": base_vcov,
-                "event_study": None,
-                "event_vcov": None,
-            },
-            _citation_key="wooldridge_twfe",
+    xvar = list(xvar or [])
+    if xvar and weights is not None:
+        # The moderator is demeaned within cohort x period cells without
+        # weights (R etwfe); under estimation weights a cell's weighted mean
+        # of it is not zero and the cell coefficient stops being the cell's
+        # average effect.  Refuse rather than report something else.
+        raise MethodIncompatibility(
+            "etwfe(weights=...) is not yet supported together with xvar.",
+            recovery_hint="Drop weights, or drop xvar and use controls=.",
+            diagnostics={"weights": weights, "xvar": list(xvar)},
         )
 
     # ── cohort-by-period cells: R etwfe's `.Dtreat : i(gvar, i.tvar)` ──
@@ -2013,9 +1884,38 @@ def _etwfe_repeated_cs(
         raise DataInsufficient("No cohort × period cells could be created.")
 
     design_cols = coh_dummies + time_dummies + event_cols + ctrl_cols
-    keep = ["_y"] + design_cols + (["_w"] if weights is not None else [])
+    keep = ["_y"] + design_cols + (["_w"] if weights is not None else []) + xvar
     valid = df[keep].notna().all(axis=1)
     dfv = df.loc[valid].reset_index(drop=True)
+
+    # ── xvar: R etwfe's covariate-moderated design ──
+    # Each moderator is demeaned within cohort x period cells (never-treated
+    # units form their own cohort) over the estimation sample, then enters
+    # interacted with every treatment cell (`.Dtreat : i(g, i.t) / x_dm`)
+    # and with every period but the first (`i(t, x_dm, ref = tref)`).  The
+    # interactions are orthogonal to the cell dummies, so the cell
+    # coefficients are the cells' average effects (R emfx's AME) and every
+    # aggregation below is unchanged; only the residuals, and hence the
+    # covariance, move.
+    slope_cols: Dict[str, List[str]] = {}
+    x_centers: Dict[str, float] = {}
+    if xvar:
+        cell_key = [dfv["_ft"].fillna(-1.0), dfv[time]]
+        for x in xvar:
+            raw = dfv[x].astype(float)
+            x_centers[x] = float(raw.mean())
+            x_dm = raw - raw.groupby(cell_key).transform("mean")
+            cols_x: List[str] = []
+            for col in event_cols:
+                name = f"{col}_x_{x}"
+                dfv[name] = dfv[col] * x_dm
+                cols_x.append(name)
+            for tt in periods[1:]:
+                name = f"_T_{int(tt)}_x_{x}"
+                dfv[name] = (dfv[time] == tt).astype(float) * x_dm
+                cols_x.append(name)
+            slope_cols[x] = cols_x
+        design_cols = design_cols + [c for x in xvar for c in slope_cols[x]]
 
     y_vec = dfv["_y"].values
     X = np.column_stack([np.ones(len(y_vec))] + [dfv[c].values for c in design_cols])
@@ -2107,6 +2007,42 @@ def _etwfe_repeated_cs(
             }
         )
     detail = pd.DataFrame(cohort_rows)
+    if xvar:
+        # Moderator slopes per cohort: the cell slopes of `.Dtreat : i(g,
+        # i.t) / x_dm`, averaged over the cohort's post cells with the same
+        # cell totals as its ATT, with delta-method SEs.  `att_at_xmean` is
+        # the cohort ATT (the effect at the cell means of the moderators).
+        col_index = {c: i + 1 for i, c in enumerate(design_cols)}
+        detail["att_at_xmean"] = detail["att"]
+        detail["att_se"] = detail["se"]
+        detail["att_pvalue"] = detail["pvalue"]
+        for x in xvar:
+            slopes, slope_ses = [], []
+            for g_val in detail["cohort"]:
+                cells = post.loc[post["cohort"] == g_val]
+                cw = cells[cell_weight_col].to_numpy(dtype=float)
+                cw = cw / cw.sum()
+                idx = np.array(
+                    [
+                        col_index[f"{event_cols[int(j) - 1]}_x_{x}"]
+                        for j in cells["_vcov_idx"]
+                    ]
+                )
+                slopes.append(float(cw @ beta[idx]))
+                slope_ses.append(
+                    float(np.sqrt(max(cw @ vcov[np.ix_(idx, idx)] @ cw, 0.0)))
+                )
+            sl, sl_se = np.array(slopes), np.array(slope_ses)
+            with np.errstate(divide="ignore", invalid="ignore"):
+                z = np.where(sl_se > 0, sl / sl_se, np.nan)
+            detail[f"slope_{x}"] = sl
+            detail[f"slope_{x}_se"] = sl_se
+            detail[f"slope_{x}_pvalue"] = 2 * stats.t.sf(np.abs(z), df_resid)
+        if len(xvar) == 1:
+            only = xvar[0]
+            detail["slope_wrt_x"] = detail[f"slope_{only}"]
+            detail["slope_se"] = detail[f"slope_{only}_se"]
+            detail["slope_pvalue"] = detail[f"slope_{only}_pvalue"]
     k = len(detail)
     sizes = detail["n_obs"].values.astype(float)
     w = sizes / sizes.sum() if sizes.sum() > 0 else np.ones(k) / k
@@ -2136,8 +2072,16 @@ def _etwfe_repeated_cs(
             "n_periods": len(periods),
             "panel": False,
             "controls": controls or [],
-            "xvar": [],
-            "xvar_means": {},
+            "xvar": list(xvar),
+            "xvar_means": x_centers,
+            **(
+                {
+                    "xvar_centering": "cohort x period cell means (R etwfe)",
+                    "heterogeneity": "ATT(g,t) + slope(g,t) * (x - mean_gt(x))",
+                }
+                if xvar
+                else {}
+            ),
             "cgroup": cgroup,
             "cohort_weighting": "cohort",
             "cohort_vcov": base_vcov,
@@ -2220,16 +2164,16 @@ def _etwfe_never_only(
         keep = np.concatenate([coh_ids, never_ids])
         sub = df.loc[df[group].isin(keep)].copy()
         if xvar:
-            r = _etwfe_with_xvar(
+            r = _etwfe_repeated_cs(
                 sub,
                 y=y,
-                group=group,
                 time=time,
                 first_treat=first_treat,
-                xvar=xvar,
+                xvar=list(xvar),
                 controls=controls,
-                cluster=cluster,
+                cluster=cluster or group,
                 alpha=alpha,
+                cgroup="never",
             )
         else:
             r = wooldridge_did(
@@ -2302,11 +2246,87 @@ def _etwfe_never_only(
 # ═══════════════════════════════════════════════════════════════════════
 
 
-@accepts_aliases(_strict=True, unit="id", treat="group", controls="covariates")
+#: Stata ``drdid, all`` on a panel and on repeated cross-sections: the row
+#: label and the ``sp.drdid`` arguments that give it. ``sipwra``, which
+#: Stata adds on a panel, has no counterpart here and is left out.
+_DRDID_ALL_PANEL: Tuple[Tuple[str, Dict[str, Any]], ...] = (
+    ("dripw", {"est_method": "dr", "method": "trad"}),
+    ("drimp", {"est_method": "dr", "method": "imp"}),
+    ("reg", {"est_method": "reg"}),
+    ("ipw", {"est_method": "ipw", "normalized": False}),
+    ("stdipw", {"est_method": "ipw", "normalized": True}),
+)
+_DRDID_ALL_RC: Tuple[Tuple[str, Dict[str, Any]], ...] = (
+    ("dripw", {"est_method": "dr", "method": "trad"}),
+    (
+        "dripw_rc1",
+        {"est_method": "dr", "method": "trad", "locally_efficient": False},
+    ),
+    ("drimp", {"est_method": "dr", "method": "imp"}),
+    (
+        "drimp_rc1",
+        {"est_method": "dr", "method": "imp", "locally_efficient": False},
+    ),
+    ("reg", {"est_method": "reg"}),
+    ("ipw", {"est_method": "ipw", "normalized": False}),
+    ("stdipw", {"est_method": "ipw", "normalized": True}),
+)
+
+
+def _drdid_all(data: pd.DataFrame, **common: Any) -> CausalResult:
+    """``sp.drdid(est_method='all')``: every estimator on one sample."""
+    specs = _DRDID_ALL_PANEL if common.get("id") is not None else _DRDID_ALL_RC
+    alpha = float(common["alpha"])
+    z_crit = float(stats.norm.ppf(1.0 - alpha / 2.0))
+    rows = []
+    headline: Optional[CausalResult] = None
+    for label, kwargs in specs:
+        call = dict(common)
+        if kwargs.get("method") != "trad":
+            call.pop("variance_convention", None)
+        fit = drdid(data, **call, **kwargs)
+        est, se = float(fit.estimate), float(fit.se)
+        rows.append(
+            {
+                "estimator": label,
+                "att": est,
+                "se": se,
+                "ci_lower": est - z_crit * se,
+                "ci_upper": est + z_crit * se,
+                "pvalue": (
+                    float(2 * stats.norm.sf(abs(est / se))) if se > 0 else np.nan
+                ),
+            }
+        )
+        if label == "drimp":
+            headline = fit
+    assert headline is not None
+    headline.detail = pd.DataFrame(rows)
+    info = dict(headline.model_info or {})
+    info["estimators"] = [label for label, _ in specs]
+    info["headline_estimator"] = "drimp"
+    headline.model_info = info
+    return headline
+
+
+@_deprecated_keywords(removed_in="1.42", group="treat")
+@accepts_aliases(
+    _strict=True,
+    unit="id",
+    controls="covariates",
+    # R DRDID::drdid spellings.
+    yname="y",
+    tname="time",
+    idname="id",
+    dname="treat",
+    estMethod="method",
+    weightsname="weights",
+)
+@_expands_categorical("covariates")
 def drdid(
     data: pd.DataFrame,
     y: str,
-    group: str,
+    treat: str,
     time: str,
     covariates: Optional[List[str]] = None,
     method: str = "imp",
@@ -2321,6 +2341,7 @@ def drdid(
     locally_efficient: bool = True,
     weights: Optional[str] = None,
     trim_level: float = 0.995,
+    variance_convention: Literal["delta", "reference"] = "delta",
 ) -> CausalResult:
     """
     Doubly Robust Difference-in-Differences (Sant'Anna & Zhao 2020).
@@ -2335,8 +2356,19 @@ def drdid(
         Dataset with one row per unit-period in 2x2 design.
     y : str
         Outcome variable.
-    group : str
-        Binary treatment-group indicator (1 = treated, 0 = control).
+    treat : str
+        Binary treatment-group indicator (1 = treated, 0 = control),
+        constant within a unit. It is **not** the unit identifier, which
+        goes in ``id=``. A column that does not take exactly two values is
+        refused; a two-valued column not coded 0/1 runs with an
+        ``ArgumentRoleWarning`` naming the value taken as treated (the
+        larger one).
+
+        .. deprecated:: 1.41
+           The keyword spelling ``group=`` still works but warns
+           (``DeprecationWarning``) and will be removed no earlier than
+           1.42. Everywhere else in the DiD family ``group`` is the unit
+           id. A positional third argument is unaffected.
     time : str
         Binary time indicator (1 = post, 0 = pre).
     covariates : list of str, optional
@@ -2376,6 +2408,17 @@ def drdid(
         with covariates it is exactly the specification Sant'Anna & Zhao
         (2020) and Caetano & Callaway (2024) warn about.
 
+        ``'all'`` fits the doubly robust, outcome-regression and weighting
+        estimators on the same sample and lists them in ``.detail``, one
+        row each, as Stata ``drdid, all`` does: ``dripw``, ``drimp``,
+        ``reg``, ``ipw``, ``stdipw`` on a panel, with the ``rc1`` variants
+        of the two doubly robust ones on repeated cross-sections. The
+        result itself is the improved doubly robust fit (``drimp``).
+        ``method``, ``normalized`` and ``locally_efficient`` are not
+        consulted. Reading the table is a comparison of estimators under
+        different assumptions, not a menu: choosing the row after seeing
+        the numbers invalidates its standard error.
+
         .. versionadded:: 1.23.0
     normalized : bool, default True
         Only for ``est_method='ipw'``. ``True`` gives the Hájek-normalised
@@ -2403,12 +2446,28 @@ def drdid(
         disable.
 
         .. versionadded:: 1.23.0
+    variance_convention : {'delta', 'reference'}, default 'delta'
+        Only for ``est_method='dr', method='trad'`` on repeated
+        cross-sections. ``'delta'`` is the influence function of Sant'Anna
+        and Zhao (2020, Appendix B). ``'reference'`` reproduces R
+        ``DRDID::drdid_rc`` / ``drdid_rc1``, which carry the estimation
+        effect of the pre-period comparison regression with the opposite
+        sign; that standard error is too small when the propensity model
+        is misspecified (Monte Carlo coverage of a 95% interval 0.81,
+        against 0.95 for ``'delta'``). The point estimate is the same.
+
+        .. versionchanged:: 1.40.0
+           ⚠️ The default was the R convention (``'reference'``).
     alpha : float, default 0.05
         Significance level.
     n_boot : int, default 500
-        Number of bootstrap replications for inference.
-    random_state : int, optional
-        Seed for bootstrap reproducibility.
+        Not used. Standard errors come from the Sant'Anna-Zhao influence
+        function on every path; nothing is resampled. A value other than
+        the default triggers a warning.
+    random_state, seed : int, optional
+        Not used (no step draws random numbers); recorded in the
+        provenance only. ``seed`` is the canonical spelling. Passing both
+        with different values raises.
     id : str, optional
         Unit identifier for a true two-period panel. When supplied, the
         improved estimator uses the Sant'Anna-Zhao panel formula with
@@ -2432,11 +2491,47 @@ def drdid(
     >>> x = rng.normal(0, 1, n)
     >>> y_val = 1 + 0.5*x + 2*G + 3*T + 4*G*T + rng.normal(0, 1, n)
     >>> df = pd.DataFrame({'y': y_val, 'treated': G, 'post': T, 'x': x})
-    >>> result = sp.drdid(df, y='y', group='treated', time='post',
+    >>> result = sp.drdid(df, y='y', treat='treated', time='post',
     ...                   covariates=['x'])
     >>> abs(result.estimate - 4.0) < 1.0
     True
     """
+    # The body predates the rename and calls the column `group`.
+    group = treat
+    if variance_convention not in ("delta", "reference"):
+        raise MethodIncompatibility(
+            "variance_convention must be 'delta' or 'reference'; got "
+            f"{variance_convention!r}.",
+            recovery_hint="Use 'delta' (the paper's influence function) or "
+            "'reference' (R DRDID's standard error).",
+            diagnostics={"variance_convention": variance_convention},
+        )
+    if seed is not None and random_state is not None and seed != random_state:
+        raise MethodIncompatibility(
+            f"drdid: seed={seed!r} and random_state={random_state!r} disagree.",
+            recovery_hint="Pass only seed= (the canonical spelling).",
+            diagnostics={"seed": seed, "random_state": random_state},
+        )
+    if n_boot != 500 or seed is not None or random_state is not None:
+        warnings.warn(
+            "drdid: n_boot, seed and random_state have no effect. Standard "
+            "errors come from the influence function; nothing is resampled.",
+            UserWarning,
+            stacklevel=2,
+        )
+    if est_method == "all":
+        return _drdid_all(
+            data,
+            y=y,
+            treat=group,
+            time=time,
+            covariates=covariates,
+            alpha=alpha,
+            id=id,
+            weights=weights,
+            trim_level=trim_level,
+            variance_convention=variance_convention,
+        )
     df = data.copy()
 
     # R-style covariate formula (DRDID::drdid(xformla = ~ x1 + I(x1**2))).
@@ -2446,6 +2541,18 @@ def drdid(
         df, covariates = _covariates_from_formula(df, covariates, function="drdid")
         covariates = covariates or None
         data = df
+    # y / group / time up front (they are read before anything else); the
+    # panel path (id=) and weights= keep their own, more specific checks.
+    check_columns(
+        df,
+        {
+            "y": y,
+            "treat": group,
+            "time": time,
+            "covariates": covariates if id is None else None,
+        },
+        function="sp.drdid",
+    )
 
     # ── Validate method ─────────────────────────────────────────────
     # Only the improved (locally-efficient) and traditional DR-DID
@@ -2458,7 +2565,8 @@ def drdid(
         )
     if est_method not in ("dr", "ipw", "reg", "twfe"):
         raise MethodIncompatibility(
-            f"est_method must be 'dr', 'ipw', 'reg' or 'twfe'; got " f"{est_method!r}."
+            "est_method must be 'dr', 'ipw', 'reg', 'twfe' or 'all'; got "
+            f"{est_method!r}."
         )
     if not (0.0 < float(trim_level) <= 1.0):
         raise MethodIncompatibility(
@@ -2475,6 +2583,16 @@ def drdid(
             UserWarning,
             stacklevel=2,
         )
+    if variance_convention != "delta" and not (
+        est_method == "dr" and method == "trad" and id is None
+    ):
+        warnings.warn(
+            "drdid: variance_convention only affects est_method='dr', "
+            "method='trad' on repeated cross-sections (id=None); it has no "
+            "effect here.",
+            UserWarning,
+            stacklevel=2,
+        )
     if est_method != "dr" and not locally_efficient:
         warnings.warn(
             f"drdid: locally_efficient=False only affects est_method='dr', "
@@ -2487,10 +2605,12 @@ def drdid(
     # ── Observation weights (DRDID's i.weights) ─────────────────────
     if weights is not None:
         if weights not in df.columns:
-            raise MethodIncompatibility(
-                f"weights column {weights!r} is not in data.",
-                recovery_hint="Pass an existing column name, or weights=None.",
-                diagnostics={"weights": weights},
+            raise ColumnNotFound.from_missing(
+                {"weights": weights},
+                list(df.columns),
+                message=f"weights column {weights!r} is not in data.",
+                extra_hint="Pass an existing column name, or weights=None.",
+                extra_diagnostics={"weights": weights},
             )
         if (df[weights] < 0).any():
             raise MethodIncompatibility(
@@ -2500,25 +2620,48 @@ def drdid(
             )
 
     # ── Validate 2×2 design ─────────────────────────────────────────
-    g_vals = sorted(df[group].dropna().unique())
+    # group= is the 0/1 treatment group here but the unit id in
+    # sp.did_imputation: refuse a non-binary column, flag odd codings.
+    g_vals = _check_binary_treatment(df, group, function="sp.drdid", id=id)
     t_vals = sorted(df[time].dropna().unique())
-    if len(g_vals) != 2:
-        raise MethodIncompatibility(f"'{group}' must be binary, got values: {g_vals}")
     if len(t_vals) != 2:
         raise MethodIncompatibility(f"'{time}' must be binary, got values: {t_vals}")
 
     if id is not None:
         if id not in df.columns:
-            raise MethodIncompatibility(f"'{id}' must be a column in data")
+            raise ColumnNotFound.from_missing(
+                {"id": id},
+                list(df.columns),
+                message=f"'{id}' must be a column in data",
+            )
         covariates_list = covariates or []
         needed = [id, y, group, time] + covariates_list
         if weights is not None:
             needed.append(weights)
         missing = [col for col in needed if col not in df.columns]
         if missing:
-            raise MethodIncompatibility(f"Missing columns for panel DR-DID: {missing}")
+            raise ColumnNotFound.from_missing(
+                missing_named_columns(
+                    {
+                        "id": id,
+                        "y": y,
+                        "treat": group,
+                        "time": time,
+                        "covariates": covariates_list,
+                        "weights": weights,
+                    },
+                    df.columns,
+                ),
+                list(df.columns),
+                message=f"Missing columns for panel DR-DID: {missing}",
+            )
         panel_df = df[needed].dropna().copy()
-        pre_df = panel_df[panel_df[time] == t_vals[0]][[id, y, group] + covariates_list]
+        # The weight is read from the pre-period row, as DRDID does for
+        # panel data (one weight per unit).
+        pre_cols = [id, y, group] + covariates_list
+        if weights is not None:
+            pre_cols.append(weights)
+        pre_df = panel_df[panel_df[time] == t_vals[0]][pre_cols]
         post_df = panel_df[panel_df[time] == t_vals[1]][[id, y, group]]
         if pre_df[id].duplicated().any() or post_df[id].duplicated().any():
             raise MethodIncompatibility(
@@ -2543,22 +2686,35 @@ def drdid(
         else:
             X_panel = np.ones((len(wide), 1))
 
-        w_panel = (
-            wide[weights].astype(float).to_numpy()
-            if weights is not None and weights in wide.columns
-            else np.ones(len(wide), dtype=float)
-        )
+        if weights is not None:
+            w_panel = wide[weights].astype(float).to_numpy()
+            if np.any(w_panel < 0) or not np.any(w_panel > 0):
+                raise MethodIncompatibility(
+                    f"weights column '{weights}' must be non-negative with "
+                    "at least one positive value."
+                )
+        else:
+            w_panel = np.ones(len(wide), dtype=float)
         w_panel = w_panel / w_panel.mean()
 
+        _require_panel_arms(D_panel, w_panel, X_panel.shape[1], est_method)
         z_crit_panel = stats.norm.ppf(1 - alpha / 2)
         if est_method == "dr" and method == "imp":
-            att_hat, att_se, ci, ps_fit, ps_flag = _drdid_imp_panel_core(
+            # The improved estimator is the one callaway_santanna runs per
+            # cell: inverse probability tilting and odds-weighted least
+            # squares, both with the (normalised) unit weights.
+            from .callaway_santanna import _dr_imp_att
+
+            att_hat, att_se, _inf = _dr_imp_att(
                 delta_y,
                 D_panel,
-                X_panel,
-                alpha=alpha,
-                trim_level=trim_level,
+                X_panel[:, 1:] if X_panel.shape[1] > 1 else None,
+                trim_level,
+                w_panel,
             )
+            ci = (att_hat - z_crit_panel * att_se, att_hat + z_crit_panel * att_se)
+            ps_fit = _pscore_diagnostic(X_panel, D_panel, w_panel, tilting=True)
+            ps_flag = 0
             engine_name = "drdid_imp_panel"
         else:
             # The remaining panel estimators are exactly the 2x2 engines
@@ -2603,7 +2759,7 @@ def drdid(
                 att_hat, att_se = float(_res.att), float(_res.se)
                 engine_name = "twfe_did_panel"
             ci = (att_hat - z_crit_panel * att_se, att_hat + z_crit_panel * att_se)
-            ps_fit = _logistic_fit(X_panel, D_panel)
+            ps_fit = _pscore_diagnostic(X_panel, D_panel)
             ps_flag = 0
 
         t_stat = att_hat / att_se if att_se > 0 else np.nan
@@ -2663,7 +2819,7 @@ def drdid(
                 function="sp.did.drdid",
                 params={
                     "y": y,
-                    "group": group,
+                    "treat": group,
                     "time": time,
                     "id": id,
                     "covariates": covariates,
@@ -2704,106 +2860,6 @@ def drdid(
     G, T, Y, X, w_vec = G[valid], T[valid], Y[valid], X[valid], w_vec[valid]
     n = len(Y)
 
-    def _estimate_att(
-        G_b: np.ndarray,
-        T_b: np.ndarray,
-        Y_b: np.ndarray,
-        X_b: np.ndarray,
-    ) -> float:
-        """Core DR-DID estimator for one sample."""
-        # Share treated
-        p_hat = G_b.mean()
-        if p_hat <= 0 or p_hat >= 1:
-            return np.nan
-
-        # ── Propensity score: P(G=1 | X) via logistic regression ────
-        # Use IRLS for logistic regression (no sklearn dependency)
-        ps = _logistic_fit(X_b, G_b)
-        ps = np.clip(ps, 1e-6, 1 - 1e-6)
-
-        # ── Outcome regression for controls: E[DeltaY | X, G=0] ────
-        # Compute DeltaY for each unit that appears in both periods
-        # In repeated cross-section / 2×2 stacked data, compute change
-        # We treat the data as pooled; for controls in post vs pre:
-        ctrl_post = (G_b == 0) & (T_b == 1)
-        ctrl_pre = (G_b == 0) & (T_b == 0)
-
-        # For the outcome model, regress Y on X separately for
-        # control-post and control-pre
-        if ctrl_post.sum() < X_b.shape[1] or ctrl_pre.sum() < X_b.shape[1]:
-            # Not enough data; fall back to simple DID
-            return float(
-                (
-                    Y_b[(G_b == 1) & (T_b == 1)].mean()
-                    - Y_b[(G_b == 1) & (T_b == 0)].mean()
-                    - Y_b[(G_b == 0) & (T_b == 1)].mean()
-                    + Y_b[(G_b == 0) & (T_b == 0)].mean()
-                )
-            )
-
-        # OLS for E[Y|X, G=0, T=1]
-        try:
-            beta_post = np.linalg.lstsq(X_b[ctrl_post], Y_b[ctrl_post], rcond=None)[0]
-        except np.linalg.LinAlgError:
-            beta_post = np.linalg.pinv(X_b[ctrl_post]) @ Y_b[ctrl_post]
-
-        # OLS for E[Y|X, G=0, T=0]
-        try:
-            beta_pre = np.linalg.lstsq(X_b[ctrl_pre], Y_b[ctrl_pre], rcond=None)[0]
-        except np.linalg.LinAlgError:
-            beta_pre = np.linalg.pinv(X_b[ctrl_pre]) @ Y_b[ctrl_pre]
-
-        m1_x = X_b @ beta_post  # predicted E[Y|X, G=0, T=1]
-        m0_x = X_b @ beta_pre  # predicted E[Y|X, G=0, T=0]
-        # ── DR-DID estimator ────────────────────────────────────────
-        if method == "imp":
-            # Improved (locally efficient) DR-DID
-            # Weight construction
-            w_treat_post = G_b * T_b
-            w_treat_pre = G_b * (1 - T_b)
-            w_ctrl_post = ps / (1 - ps) * (1 - G_b) * T_b
-            w_ctrl_pre = ps / (1 - ps) * (1 - G_b) * (1 - T_b)
-
-            # Normalise weights
-            eta_1 = w_treat_post.mean()
-            eta_0 = w_treat_pre.mean()
-            if eta_1 == 0 or eta_0 == 0:
-                return np.nan
-
-            att = (
-                (w_treat_post * (Y_b - m1_x)).sum() / (w_treat_post.sum() + 1e-10)
-                - (w_treat_pre * (Y_b - m0_x)).sum() / (w_treat_pre.sum() + 1e-10)
-                - (w_ctrl_post * (Y_b - m1_x)).sum() / (w_ctrl_post.sum() + 1e-10)
-                + (w_ctrl_pre * (Y_b - m0_x)).sum() / (w_ctrl_pre.sum() + 1e-10)
-            )
-        else:
-            # Traditional DR-DID (Sant'Anna & Zhao 2020), repeated-cross-
-            # section form. Each of the four cell terms is a *weighted
-            # average* of the outcome-regression residual over the units
-            # selected by its weight, so it must be normalised by that
-            # weight's total mass — NOT by the full sample size ``n_b``.
-            # ⚠️ correctness fix (2026-06-05): the previous code divided
-            # every term by ``n_b``, which multiplied each term by the
-            # cell's sample share (~0.25 per cell on a balanced 2×2) and
-            # so biased the ATT toward zero by roughly 50%. method='imp'
-            # was unaffected (it already normalised by the weight mass).
-            w1 = G_b / p_hat
-            w0 = ps * (1 - G_b) / ((1 - ps) * p_hat)
-
-            w_tp = w1 * T_b  # treated, post
-            w_t0 = w1 * (1 - T_b)  # treated, pre
-            w_cp = w0 * T_b  # control, post (ps-reweighted)
-            w_c0 = w0 * (1 - T_b)  # control, pre  (ps-reweighted)
-
-            att_1 = (w_tp * (Y_b - m1_x)).sum() / (w_tp.sum() + 1e-10)
-            att_0 = (w_t0 * (Y_b - m0_x)).sum() / (w_t0.sum() + 1e-10)
-            ctrl_1 = (w_cp * (Y_b - m1_x)).sum() / (w_cp.sum() + 1e-10)
-            ctrl_0 = (w_c0 * (Y_b - m0_x)).sum() / (w_c0.sum() + 1e-10)
-
-            att = (att_1 - att_0) - (ctrl_1 - ctrl_0)
-
-        return float(att)
-
     # ── Estimation ──────────────────────────────────────────────────
     #
     # ⚠️ correctness fix. This branch used to run a bespoke DR estimator
@@ -2833,16 +2889,27 @@ def drdid(
 
     x_rc = X[:, 1:] if X.shape[1] > 1 else None
     if est_method == "dr":
-        engine = _drdid_imp_rc if method == "imp" else _drdid_rc
-        res = engine(
-            Y,
-            T,
-            G,
-            x_rc,
-            weights=w_vec,
-            trim_level=trim_level,
-            locally_efficient=locally_efficient,
-        )
+        if method == "imp":
+            res = _drdid_imp_rc(
+                Y,
+                T,
+                G,
+                x_rc,
+                weights=w_vec,
+                trim_level=trim_level,
+                locally_efficient=locally_efficient,
+            )
+        else:
+            res = _drdid_rc(
+                Y,
+                T,
+                G,
+                x_rc,
+                weights=w_vec,
+                trim_level=trim_level,
+                locally_efficient=locally_efficient,
+                variance_convention=variance_convention,
+            )
         _eff = "" if locally_efficient else "1"
         engine_name = f"drdid_imp_rc{_eff}" if method == "imp" else f"drdid_rc{_eff}"
     elif est_method == "ipw":
@@ -2881,7 +2948,7 @@ def drdid(
     )
 
     # ── Diagnostics ─────────────────────────────────────────────────
-    ps_full = _logistic_fit(X, G)
+    ps_full = _pscore_diagnostic(X, G)
     n_treated = int(G.sum())
     n_control = int((1 - G).sum())
 
@@ -2899,6 +2966,9 @@ def drdid(
         "ps_mean_treated": float(ps_full[G == 1].mean()),
         "ps_mean_control": float(ps_full[G == 0].mean()),
         "covariates": covariates or [],
+        "variance_convention": (
+            variance_convention if (est_method == "dr" and method == "trad") else None
+        ),
     }
 
     _result = CausalResult(
@@ -2926,7 +2996,7 @@ def drdid(
             function="sp.did.drdid",
             params={
                 "y": y,
-                "group": group,
+                "treat": group,
                 "time": time,
                 "covariates": covariates,
                 "method": method,
@@ -2943,175 +3013,73 @@ def drdid(
     return _result
 
 
-def _logistic_coefficients(
-    X: np.ndarray,
-    y: np.ndarray,
-    max_iter: int = 50,
-) -> np.ndarray:
-    """Fit logistic regression via IRLS, return coefficients."""
-    n, k = X.shape
-    beta = np.zeros(k)
-    for _ in range(max_iter):
-        z = X @ beta
-        z = np.clip(z, -20, 20)
-        mu = 1.0 / (1.0 + np.exp(-z))
-        mu = np.clip(mu, 1e-8, 1 - 1e-8)
-        w = mu * (1 - mu)
-        Xw = X * w[:, np.newaxis]
-        try:
-            H = np.linalg.inv(Xw.T @ X)
-        except np.linalg.LinAlgError:
-            H = np.linalg.pinv(Xw.T @ X)
-        grad = X.T @ (y - mu)
-        delta = H @ grad
-        beta += delta
-        if np.max(np.abs(delta)) < 1e-8:
-            break
-    return beta
+def _require_panel_arms(
+    d: np.ndarray, w: np.ndarray, n_regressors: int, est_method: str
+) -> None:
+    """Refuse a two-period panel the 2x2 estimators cannot identify.
 
-
-def _logistic_fit(X: np.ndarray, y: np.ndarray, max_iter: int = 50) -> np.ndarray:
-    """Fit logistic regression via IRLS, return predicted probabilities."""
-    beta = _logistic_coefficients(X, y, max_iter=max_iter)
-    z = X @ beta
-    z = np.clip(z, -20, 20)
-    return np.asarray(1.0 / (1.0 + np.exp(-z)), dtype=float)
-
-
-def _weighted_lstsq(X: np.ndarray, y: np.ndarray, weights: np.ndarray) -> np.ndarray:
-    """Weighted least-squares coefficients using the same objective as R lm."""
-    weights = np.asarray(weights, dtype=float)
-    sw = np.sqrt(np.clip(weights, 0.0, np.inf))
-    try:
-        return np.asarray(
-            np.linalg.lstsq(X * sw[:, None], y * sw, rcond=None)[0],
-            dtype=float,
-        )
-    except np.linalg.LinAlgError:
-        return np.asarray(np.linalg.pinv(X * sw[:, None]) @ (y * sw), dtype=float)
-
-
-def _calibrated_pscore(
-    X: np.ndarray,
-    D: np.ndarray,
-    i_weights: Optional[np.ndarray] = None,
-) -> tuple[np.ndarray, int]:
-    """DRDID::pscore.cal translation for the improved panel estimator."""
-    n = len(D)
-    iw: np.ndarray
-    if i_weights is None:
-        iw = np.ones(n, dtype=float)
-    else:
-        iw = np.asarray(i_weights, dtype=float)
-        if np.any(iw < 0):
-            raise MethodIncompatibility("i_weights must be non-negative")
-        iw = iw / iw.mean()
-
-    init = _logistic_coefficients(X, D, max_iter=100)
-
-    def _eta(gamma: np.ndarray) -> np.ndarray:
-        return np.asarray(np.clip(X @ gamma, -700, 700), dtype=float)
-
-    def objective(gamma: np.ndarray) -> float:
-        eta = _eta(gamma)
-        return float(np.mean(iw * ((1.0 - D) * np.exp(eta) - D * eta)))
-
-    def gradient(gamma: np.ndarray) -> np.ndarray:
-        eta = _eta(gamma)
-        return np.asarray((iw * ((1.0 - D) * np.exp(eta) - D)) @ X / n, dtype=float)
-
-    opt = optimize.minimize(
-        objective,
-        init,
-        jac=gradient,
-        method="BFGS",
-        options={"gtol": 1e-10, "maxiter": 1000},
-    )
-    gamma = opt.x if opt.success else init
-    flag = 0 if opt.success else 2
-
-    # Newton refinement. The tilting loss is convex with a closed-form
-    # Hessian, and R's `pscore.cal` solves it with a trust-region Newton
-    # method; quasi-Newton stops a few orders of magnitude short of that.
-    #
-    # The extra precision is not cosmetic. Inverse probability tilting
-    # earns its name by making the covariate-balance conditions hold
-    # *exactly* at the optimum, which is what kills the first-order
-    # nuisance terms in the improved DR estimators. A γ that is merely
-    # close leaves those terms alive: a 1.5e-9 discrepancy in p̂(X) moved
-    # `drdid_imp_rc` by 7e-4 in the ATT and 2.9% in the SE — five orders
-    # of magnitude of amplification, because the odds weights p/(1-p)
-    # multiply the imbalance back in.
-    def _hessian(g: np.ndarray) -> np.ndarray:
-        eta = _eta(g)
-        h_w = iw * (1.0 - D) * np.exp(eta)
-        return np.asarray((X.T * h_w) @ X / n, dtype=float)
-
-    for _ in range(50):
-        grad = gradient(gamma)
-        if not np.all(np.isfinite(grad)) or np.max(np.abs(grad)) < 1e-13:
-            break
-        hess = _hessian(gamma)
-        try:
-            step = np.linalg.solve(hess, grad)
-        except np.linalg.LinAlgError:
-            break
-        if not np.all(np.isfinite(step)):
-            break
-        candidate = gamma - step
-        # Convex problem, but guard the step anyway: a bad Hessian near a
-        # boundary should not move us to a worse point.
-        if objective(candidate) > objective(gamma):
-            break
-        gamma = candidate
-
-    ps = 1.0 / (1.0 + np.exp(-np.clip(X @ gamma, -700, 700)))
-    return np.minimum(ps, 1.0 - 1e-6), flag
-
-
-def _drdid_imp_panel_core(
-    delta_y: np.ndarray,
-    D: np.ndarray,
-    X: np.ndarray,
-    *,
-    alpha: float = 0.05,
-    trim_level: float = 0.995,
-) -> tuple[float, float, tuple[float, float], np.ndarray, int]:
-    """Sant'Anna-Zhao improved panel DR-DID core matching DRDID::drdid_imp_panel."""
-    n = len(D)
-    if n == 0:
-        raise DataInsufficient("panel DR-DID requires at least one complete unit")
-    p_treat = D.mean()
-    if p_treat <= 0 or p_treat >= 1:
-        raise DataInsufficient("panel DR-DID requires treated and control units")
-
-    ps, ps_flag = _calibrated_pscore(X, D)
-    trim_ps = np.ones(n, dtype=float)
-    trim_ps[D == 0] = (ps[D == 0] < trim_level).astype(float)
-
-    control = D == 0
-    if control.sum() < X.shape[1]:
+    Both arms need positive weight; estimators with a comparison-group
+    outcome regression (``'dr'``, ``'reg'``) also need at least as many
+    comparison units as regressors. Without this the engines return an
+    infinite standard error, or a minimum-norm regression fit.
+    """
+    n_treated = int(np.sum((d == 1) & (w > 0)))
+    n_control = int(np.sum((d == 0) & (w > 0)))
+    if n_treated == 0 or n_control == 0:
         raise DataInsufficient(
-            "Not enough control units for panel DR-DID outcome regression"
+            "Panel DR-DID needs both treated and control units with complete "
+            f"pre/post pairs; found {n_treated} treated and {n_control} "
+            "control units.",
+            recovery_hint=(
+                "Check the group coding and that both groups are observed in "
+                "both periods."
+            ),
+            diagnostics={"n_treated": n_treated, "n_control": n_control},
         )
-    odds = ps / (1.0 - ps)
-    beta = _weighted_lstsq(X[control], delta_y[control], odds[control])
-    out_delta = X @ beta
-
-    summand = trim_ps * (1.0 - (1.0 - D) / (1.0 - ps)) * (delta_y - out_delta)
-    att = float(np.mean(summand) / p_treat)
-    inf_func = trim_ps * (summand - D * att) / p_treat
-    se = float(np.std(inf_func, ddof=1) * np.sqrt(n - 1) / n)
-    z_crit = stats.norm.ppf(1.0 - alpha / 2.0)
-    ci = (att - z_crit * se, att + z_crit * se)
-    return att, se, (float(ci[0]), float(ci[1])), ps, ps_flag
+    if est_method in ("dr", "reg") and n_control < n_regressors:
+        raise DataInsufficient(
+            f"Not enough control units ({n_control}) for the comparison-group "
+            f"outcome regression on {n_regressors} regressors (intercept "
+            "included).",
+            recovery_hint="Use fewer covariates, or est_method='ipw'.",
+            diagnostics={"n_control": n_control, "n_regressors": n_regressors},
+        )
 
 
-# ═══════════════════════════════════════════════════════════════════════
-#  3. Enhanced TWFE Decomposition (Bacon + dCDH weights)
-# ═══════════════════════════════════════════════════════════════════════
+def _pscore_diagnostic(
+    X: np.ndarray,
+    d: np.ndarray,
+    w: Optional[np.ndarray] = None,
+    *,
+    tilting: bool = False,
+) -> np.ndarray:
+    """Propensity scores for the ``ps_mean_*`` diagnostics of ``sp.drdid``.
+
+    Logit maximum likelihood, or inverse probability tilting for the
+    improved estimator (the score that estimator weights by). Reported in
+    ``model_info`` only. Returns NaNs when the fit fails (singular design).
+    """
+    from ._dr_common import ipt_fit, logit_fit
+
+    w_arr = np.ones(len(d)) if w is None else np.asarray(w, dtype=float)
+    fit = ipt_fit if tilting else logit_fit
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", ConvergenceWarning)
+            _, p = fit(np.asarray(d, float), X, w_arr)
+    except np.linalg.LinAlgError:
+        return np.full(len(d), np.nan)
+    return np.asarray(p, dtype=float)
 
 
+@accepts_aliases(
+    _strict=True,
+    id="group",
+    unit="group",
+    cohort="first_treat",
+    g="first_treat",
+)
+@_calendar_time_aware(time="time", cohort="first_treat")
 def twfe_decomposition(
     data: pd.DataFrame,
     y: str,
@@ -3123,10 +3091,14 @@ def twfe_decomposition(
     """
     TWFE decomposition: Goodman-Bacon (2021) + de Chaisemartin–D'Haultfoeuille weights.
 
-    Decomposes the standard two-way fixed effects estimator into all
-    pairwise 2×2 DID comparisons, showing the weight and estimate for
-    each.  Also computes de Chaisemartin–D'Haultfoeuille (2020) weights
-    to diagnose whether *negative weights* are present.
+    The coefficient of the two-way fixed effects regression of ``y`` on a
+    treatment indicator, taken apart two ways. ``detail`` holds the
+    Goodman-Bacon decomposition: every 2×2 difference in differences
+    between timing groups with its weight, which sum to the coefficient
+    exactly (the same rows as :func:`statspai.bacon_decomposition`).
+    ``model_info['dcdh_weights']`` holds the de Chaisemartin–D'Haultfoeuille
+    (2020) weights the coefficient puts on the treated cells, some of which
+    can be negative.
 
     Parameters
     ----------
@@ -3146,9 +3118,29 @@ def twfe_decomposition(
     Returns
     -------
     CausalResult
-        ``detail`` DataFrame has columns: ``type``, ``treated_cohort``,
-        ``control_cohort``, ``estimate``, ``weight``, ``weighted_est``.
-        ``model_info`` includes summary statistics and dCDH weights.
+        ``estimate`` is the TWFE coefficient and ``se`` its standard error
+        clustered by unit (the small-sample factor of Stata ``xtreg, fe
+        vce(cluster)``). ``detail`` has columns ``type``,
+        ``treated_cohort``, ``control_cohort``, ``estimate``, ``weight``,
+        ``weighted_est``. ``model_info`` has ``twfe_beta``, ``bacon_att``
+        (the weighted sum of the 2×2 estimates), ``dcdh_weights`` (one row
+        per cohort and treated period: the sum of the unit-level weights,
+        the number of units and how many of their weights are negative),
+        ``n_negative_weights_dcdh`` and ``sum_negative_weights_dcdh``
+        (counted over unit × period cells, as R ``twowayfeweights``
+        does).
+
+    Notes
+    -----
+    The Goodman-Bacon theorem needs a balanced panel. On an unbalanced one
+    the coefficient and the dCDH weights are still reported, ``detail`` is
+    empty and a warning says so.
+
+    This function is for a binary treatment that turns on once. For any
+    other treatment (non-binary, or one that can turn off), for a
+    regression with controls or other treatments, for the first-difference
+    regression and for the cell-level weights themselves, use
+    :func:`statspai.twowayfeweights`.
 
     Examples
     --------
@@ -3159,222 +3151,189 @@ def twfe_decomposition(
     ...                                first_treat='first_treat')
     >>> bool('weight' in result.detail.columns)  # 2x2 decomposition weights
     True
+    >>> bool(abs(result.detail['weighted_est'].sum() - result.estimate) < 1e-8)
+    True
     """
-    df = data.copy()
+    from ._twfe_weights import _ZERO_BELOW, _two_way_residual
+    from .bacon import bacon_decomposition
 
-    ft = df[first_treat].copy()
-    ft = ft.replace(0, np.nan)
-    df["_ft"] = ft
+    missing = [c for c in (y, group, time, first_treat) if c not in data.columns]
+    if missing:
+        labelled = {
+            label: col
+            for label, col in zip(
+                ("y", "group", "time", "first_treat"), (y, group, time, first_treat)
+            )
+            if col in missing
+        }
+        raise ColumnNotFound.from_missing(
+            labelled,
+            list(data.columns),
+            message=f"twfe_decomposition: columns not found in data: {missing}",
+            extra_diagnostics={"missing": missing},
+        )
+    df = data[[y, group, time, first_treat]].copy()
+    df["_ft"] = df[first_treat].replace(0, np.nan)
+    df = df.dropna(subset=[y, group, time]).reset_index(drop=True)
 
     periods = sorted(df[time].unique())
     n_periods = len(periods)
     cohorts = sorted(df.loc[df["_ft"].notna(), "_ft"].unique())
-    has_never = df["_ft"].isna().any()
-
-    # ── Standard TWFE estimate ──────────────────────────────────────
-    # Unit and time demeaning, then regress on treatment indicator
-    df["_treated"] = ((df["_ft"].notna()) & (df[time] >= df["_ft"])).astype(float)
-    df["_y"] = df[y].astype(float)
-
-    u_m = df.groupby(group)["_y"].transform("mean")
-    t_m = df.groupby(time)["_y"].transform("mean")
-    g_m = df["_y"].mean()
-    y_dm = (df["_y"] - u_m - t_m + g_m).values
-
-    u_m_d = df.groupby(group)["_treated"].transform("mean")
-    t_m_d = df.groupby(time)["_treated"].transform("mean")
-    g_m_d = df["_treated"].mean()
-    d_dm = (df["_treated"] - u_m_d - t_m_d + g_m_d).values
-
-    denom = d_dm @ d_dm
-    twfe_beta = float(d_dm @ y_dm / denom) if denom > 0 else np.nan
-
-    # ── Bacon decomposition ─────────────────────────────────────────
-    # Enumerate all 2×2 comparisons
-    comparisons: List[Dict[str, Any]] = []
-
-    def _did_2x2_simple(
-        df_sub: pd.DataFrame,
-        unit_col: str,
-        time_col: str,
-        y_col: str,
-        g1_units: List[Any],
-        g2_units: List[Any],
-    ) -> Tuple[float, float]:
-        """Simple 2x2 DID between two groups over their overlapping periods."""
-        sub = df_sub[df_sub[unit_col].isin(set(g1_units) | set(g2_units))].copy()
-        if len(sub) == 0:
-            return np.nan, 0.0
-        treat_mask = sub[unit_col].isin(set(g1_units))
-        sub["_g"] = treat_mask.astype(float)
-        # post = time >= treatment time of g1
-        g1_ft = sub.loc[treat_mask, "_ft"].iloc[0] if treat_mask.any() else np.nan
-        if np.isnan(g1_ft):
-            return np.nan, 0.0
-        sub["_post"] = (sub[time_col] >= g1_ft).astype(float)
-        # Simple 2x2 DID
-        yt = sub.groupby(["_g", "_post"])[y_col].mean()
-        try:
-            est = (yt[(1.0, 1.0)] - yt[(1.0, 0.0)]) - (yt[(0.0, 1.0)] - yt[(0.0, 0.0)])
-        except KeyError:
-            return np.nan, 0.0
-        n_comp = len(sub[unit_col].unique())
-        return float(est), n_comp
-
-    # Type 1: Earlier vs Later treated
-    for i, g_early in enumerate(cohorts):
-        for g_late in cohorts[i + 1 :]:
-            early_units = df.loc[df["_ft"] == g_early, group].unique()
-            late_units = df.loc[df["_ft"] == g_late, group].unique()
-            est, n_comp = _did_2x2_simple(
-                df, group, time, "_y", early_units, late_units
-            )
-            if not np.isnan(est):
-                comparisons.append(
-                    {
-                        "type": "Earlier vs Later",
-                        "treated_cohort": int(g_early),
-                        "control_cohort": int(g_late),
-                        "estimate": est,
-                        "n_units": n_comp,
-                    }
-                )
-
-    # Type 2: Later vs Earlier (forbidden — uses already-treated as control)
-    for i, g_late in enumerate(cohorts):
-        for g_early in cohorts[:i]:
-            late_units = df.loc[df["_ft"] == g_late, group].unique()
-            early_units = df.loc[df["_ft"] == g_early, group].unique()
-            est, n_comp = _did_2x2_simple(
-                df, group, time, "_y", late_units, early_units
-            )
-            if not np.isnan(est):
-                comparisons.append(
-                    {
-                        "type": "Later vs Earlier",
-                        "treated_cohort": int(g_late),
-                        "control_cohort": int(g_early),
-                        "estimate": est,
-                        "n_units": n_comp,
-                    }
-                )
-
-    # Type 3: Treated vs Never-treated
-    if has_never:
-        never_units = df.loc[df["_ft"].isna(), group].unique()
-        for g in cohorts:
-            g_units = df.loc[df["_ft"] == g, group].unique()
-            est, n_comp = _did_2x2_simple(df, group, time, "_y", g_units, never_units)
-            if not np.isnan(est):
-                comparisons.append(
-                    {
-                        "type": "Treated vs Never",
-                        "treated_cohort": int(g),
-                        "control_cohort": "Never",
-                        "estimate": est,
-                        "n_units": n_comp,
-                    }
-                )
-
-    if len(comparisons) == 0:
+    has_never = bool(df["_ft"].isna().any())
+    if not cohorts:
         raise DataInsufficient("No valid 2×2 comparisons found. Check data structure.")
 
-    comp_df = pd.DataFrame(comparisons)
+    df["_treated"] = ((df["_ft"].notna()) & (df[time] >= df["_ft"])).astype(float)
+    df["_y"] = df[y].astype(float)
+    n = len(df)
+    gi = pd.factorize(df[group], sort=True)[0]
+    ti = pd.factorize(df[time], sort=True)[0]
+    n_units = int(gi.max() + 1)
+    counts = np.bincount(gi * n_periods + ti, minlength=n_units * n_periods)
+    balanced = bool(np.all(counts == 1))
+    if not balanced and counts.max() > 1:
+        raise MethodIncompatibility(
+            "twfe_decomposition: more than one row for a unit in a period.",
+            recovery_hint="Aggregate to one row per unit and period first.",
+        )
 
-    # Compute weights proportional to n_units × variance-of-treatment
-    # Simplified: proportional to n_units (sample share)
-    total_n = comp_df["n_units"].sum()
-    comp_df["weight"] = comp_df["n_units"] / total_n
-    # Re-normalise to sum to 1
-    comp_df["weight"] = comp_df["weight"] / comp_df["weight"].sum()
-    comp_df["weighted_est"] = comp_df["weight"] * comp_df["estimate"]
+    def _residual(v: np.ndarray) -> np.ndarray:
+        if balanced:
+            # exact on a balanced panel: v - unit mean - period mean + mean
+            unit_mean = np.bincount(gi, weights=v) / n_periods
+            time_mean = np.bincount(ti, weights=v) / n_units
+            return np.asarray(v - unit_mean[gi] - time_mean[ti] + v.mean())
+        if n_units + n_periods > 5000:
+            raise MethodIncompatibility(
+                "twfe_decomposition: the panel is unbalanced and too large "
+                "for the exact two-way projection used here.",
+                recovery_hint="Balance the panel (keep the units observed in "
+                "every period) and run it again.",
+            )
+        return _two_way_residual(v, gi, ti, np.ones(n))
+
+    D = df["_treated"].to_numpy(dtype=float)
+    eps = _residual(D)
+    y_res = _residual(df["_y"].to_numpy(dtype=float))
+    denom = float(eps @ eps)
+    if not denom > 0:
+        raise DataInsufficient(
+            "twfe_decomposition: treatment does not vary within units and "
+            "periods, so the TWFE coefficient is not identified."
+        )
+    twfe_beta = float(eps @ y_res / denom)
+
+    # ── standard error of the coefficient, clustered by unit ────────
+    resid = y_res - twfe_beta * eps
+    score = np.bincount(gi, weights=eps * resid, minlength=n_units)
+    k_slopes = n_periods + 1  # treatment, period dummies, constant
+    if n_units > 1 and n > k_slopes:
+        factor = (n_units / (n_units - 1)) * ((n - 1) / (n - k_slopes))
+        att_se = float(np.sqrt(factor * float(score @ score)) / denom)
+    else:
+        att_se = float("nan")
+
+    # ── Goodman-Bacon decomposition ─────────────────────────────────
+    detail_cols = [
+        "type", "treated_cohort", "control_cohort", "estimate", "weight",
+        "weighted_est",
+    ]  # fmt: skip
+    comp_df = pd.DataFrame(columns=detail_cols)
+    bacon_att = float("nan")
+    if balanced:
+        bacon = bacon_decomposition(
+            df, y="_y", treat="_treated", time=time, id=group, alpha=alpha
+        )
+        rows = bacon["decomposition"]
+        labels = {
+            "Earlier vs Later Treated": "Earlier vs Later",
+            "Later vs Earlier Treated": "Later vs Earlier",
+            "Treated vs Untreated": "Treated vs Never",
+        }
+
+        def _cohort(value: Any) -> Any:
+            try:
+                number = float(value)
+            except (TypeError, ValueError):
+                return value
+            return int(number) if number == int(number) else number
+
+        comp_df = pd.DataFrame(
+            {
+                "type": [labels.get(t, t) for t in rows["type"]],
+                "treated_cohort": [_cohort(v) for v in rows["treated"]],
+                "control_cohort": [_cohort(v) for v in rows["control"]],
+                "estimate": rows["estimate"].to_numpy(dtype=float),
+                "weight": rows["weight"].to_numpy(dtype=float),
+            }
+        )
+        comp_df["weighted_est"] = comp_df["weight"] * comp_df["estimate"]
+        bacon_att = float(comp_df["weighted_est"].sum())
+    else:
+        warnings.warn(
+            "twfe_decomposition: the panel is unbalanced, so the "
+            "Goodman-Bacon decomposition (which holds for a balanced panel) "
+            "is not computed; the TWFE coefficient and the dCDH weights are.",
+            UserWarning,
+            stacklevel=2,
+        )
 
     # ── de Chaisemartin–D'Haultfoeuille weights ─────────────────────
-    # Compute weights on each (g, t) cell in the TWFE regression.
-    # dCDH show: beta_TWFE = sum_{g,t} w_{g,t} * ATT_{g,t}
-    # where some w_{g,t} can be NEGATIVE.
-    dcdh_rows: List[Dict[str, Any]] = []
-    n_total = len(df)
-    for g in cohorts:
-        g_mask = df["_ft"] == g
-        for t_val in periods:
-            if t_val < g:
-                continue  # only post-treatment cells
-            t_mask = df[time] == t_val
-            n_gt = (g_mask & t_mask).sum()
-            if n_gt == 0:
-                continue
-            # Variance of treatment status in period t
-            d_t = df.loc[t_mask, "_treated"].values
-            var_d_t = np.var(d_t, ddof=0)
-            if var_d_t == 0:
-                continue
-            # dCDH weight ∝ (n_gt / n_total) * (E[D|t] - E[D|g,t]) / Var(D|t)
-            # Simplified formula
-            e_d_t = d_t.mean()
-            e_d_gt = df.loc[g_mask & t_mask, "_treated"].mean()
-            w_gt = (n_gt / n_total) * (e_d_gt - e_d_t) / var_d_t
-            dcdh_rows.append(
-                {
-                    "cohort": int(g),
-                    "period": (
-                        int(t_val) if isinstance(t_val, (int, np.integer)) else t_val
-                    ),
-                    "dcdh_weight": float(w_gt),
-                    "n_cell": int(n_gt),
-                }
-            )
-
-    dcdh_df = pd.DataFrame(dcdh_rows) if dcdh_rows else pd.DataFrame()
-
-    n_negative = int((comp_df["weight"] < -1e-10).sum())
-    bacon_att = float(comp_df["weighted_est"].sum())
-    n_negative_dcdh = (
-        int((dcdh_df["dcdh_weight"] < -1e-10).sum()) if len(dcdh_df) > 0 else 0
+    # beta_TWFE = sum over treated cells of w_gt * ATT_gt with
+    # w_gt = D_gt eps_gt / sum(D eps); here a cell is a unit in a period.
+    weight = D * eps / float(D @ eps)
+    weight = np.where(np.abs(weight) < _ZERO_BELOW, 0.0, weight)
+    treated_rows = D > 0
+    cells = pd.DataFrame(
+        {
+            "cohort": df.loc[treated_rows, "_ft"].to_numpy(),
+            "period": df.loc[treated_rows, time].to_numpy(),
+            "w": weight[treated_rows],
+        }
     )
+    dcdh_df = (
+        cells.groupby(["cohort", "period"], sort=True)["w"]
+        .agg(dcdh_weight="sum", n_cell="size", n_negative=lambda v: int((v < 0).sum()))
+        .reset_index()
+    )
+    dcdh_df["cohort"] = [int(c) if float(c) == int(c) else c for c in dcdh_df["cohort"]]
+    n_negative_dcdh = int((cells["w"] < 0).sum())
 
     model_info: Dict[str, Any] = {
         "twfe_beta": twfe_beta,
         "bacon_att": bacon_att,
+        "balanced": balanced,
         "n_comparisons": len(comp_df),
-        "n_negative_weights_bacon": n_negative,
+        "n_negative_weights_bacon": int((comp_df["weight"] < -1e-10).sum()),
         "n_negative_weights_dcdh": n_negative_dcdh,
+        "sum_negative_weights_dcdh": float(cells.loc[cells["w"] < 0, "w"].sum()),
         "n_cohorts": len(cohorts),
-        "cohorts": [int(g) for g in cohorts],
-        "has_never_treated": bool(has_never),
-        "n_units": df[group].nunique(),
+        "cohorts": [int(g) if float(g) == int(g) else g for g in cohorts],
+        "has_never_treated": has_never,
+        "n_units": n_units,
         "n_periods": n_periods,
+        "se_type": "cluster (unit)",
+        "dcdh_weights": dcdh_df,
     }
-    if len(dcdh_df) > 0:
-        model_info["dcdh_weights"] = dcdh_df
 
-    # SE via simple approach: variation across comparisons
-    if len(comp_df) > 1:
-        att_se = float(
-            np.sqrt(
-                (comp_df["weight"] ** 2 * (comp_df["estimate"] - bacon_att) ** 2).sum()
-            )
-        )
-    else:
-        att_se = 0.0
-
-    pvalue = float(2 * stats.norm.sf(abs(bacon_att / att_se))) if att_se > 0 else np.nan
+    usable = np.isfinite(att_se) and att_se > 0
+    pvalue = float(2 * stats.norm.sf(abs(twfe_beta / att_se))) if usable else np.nan
     z_crit = stats.norm.ppf(1 - alpha / 2)
     ci = (
-        (bacon_att - z_crit * att_se, bacon_att + z_crit * att_se)
-        if att_se > 0
+        (twfe_beta - z_crit * att_se, twfe_beta + z_crit * att_se)
+        if usable
         else (np.nan, np.nan)
     )
 
     return CausalResult(
         method="TWFE Decomposition (Bacon 2021 + dCDH 2020)",
         estimand="ATT (TWFE composite)",
-        estimate=bacon_att,
+        estimate=twfe_beta,
         se=att_se,
         pvalue=pvalue,
         ci=ci,
         alpha=alpha,
-        n_obs=len(df),
+        n_obs=n,
         detail=comp_df,
         model_info=model_info,
         _citation_key="twfe_decomposition",
@@ -3390,64 +3349,18 @@ def _etwfe_glm_emfx(
     result: CausalResult,
     type: str,
     alpha: float,
+    scale: Optional[str] = None,
+    include_leads: bool = False,
+    by_xvar: bool = False,
 ) -> CausalResult:
-    """Serve the aggregations a nonlinear ``sp.etwfe`` fit already computed.
-
-    ``_etwfe_glm`` evaluates the response-scale average marginal effects for
-    the overall, event-time and cohort views while it still holds the design
-    matrix and coefficient covariance, so this is a lookup rather than a
-    re-estimation. ``type='calendar'`` is not available because the GLM
-    branch does not retain the period index needed for it.
-    """
-    mi = result.model_info or {}
-    if type == "simple":
-        return result
-
-    if type == "event":
-        frame = mi.get("event_study")
-        label = "relative_time"
-    elif type == "group":
-        frame = result.detail
-        label = "cohort"
-    else:  # calendar
-        frame = mi.get("calendar")
-        label = "period"
-
-    if not isinstance(frame, pd.DataFrame) or frame.empty:
-        raise DataInsufficient(
-            f"etwfe_emfx(type={type!r}) has no cells to report.",
-            recovery_hint="Check the treated cohorts and event window.",
-            diagnostics={"type": type},
-        )
-
-    z_crit = float(stats.norm.ppf(1 - alpha / 2))
-    est = float(np.average(frame["att"].to_numpy(dtype=float)))
-    # Cells are correlated (they share coefficients), so an average of the
-    # per-cell SEs would understate.  Report the overall AME's own SE, which
-    # _etwfe_glm computed from the full delta-method gradient.
-    se = float(result.se)
-    z_stat = est / se if se > 0 else 0.0
-
-    return CausalResult(
-        method=f"{result.method} — emfx[{type}]",
-        estimand=result.estimand,
-        estimate=est if type != "simple" else float(result.estimate),
-        se=se,
-        pvalue=float(2 * stats.norm.sf(abs(z_stat))),
-        ci=(est - z_crit * se, est + z_crit * se),
+    """Nonlinear-fit aggregations; implementation in :mod:`._etwfe_nonlinear`."""
+    return _etwfe_glm_emfx_impl(
+        result,
+        type=type,
         alpha=alpha,
-        n_obs=result.n_obs,
-        detail=frame.copy(),
-        model_info={
-            **mi,
-            "emfx_type": type,
-            "emfx_label": label,
-            "emfx_note": (
-                "estimate is the unweighted mean of the reported cells; "
-                "se is the overall delta-method SE from the fit"
-            ),
-        },
-        _citation_key="wooldridge2021two",
+        scale=scale,
+        include_leads=include_leads,
+        by_xvar=by_xvar,
     )
 
 
@@ -3458,6 +3371,8 @@ def etwfe_emfx(
     include_leads: bool = False,
     weighting: str = "treated",
     agg_weights: Optional[str] = None,
+    scale: Optional[str] = None,
+    by_xvar: bool = False,
 ) -> CausalResult:
     """
     R ``etwfe::emfx``-style aggregated marginal effects for an ETWFE fit.
@@ -3508,6 +3423,18 @@ def etwfe_emfx(
         ``None`` (default) reuses the rule the fit was called with
         (``result.model_info['agg_weights']``).  Ignored for unweighted
         fits, where the two rules coincide.
+    scale : {'response', 'link'}, optional
+        Nonlinear (``family='poisson'``/``'logit'``) fits only: aggregate
+        the average marginal effects (``'response'``, R ``emfx`` default)
+        or the cohort x period coefficients themselves (``'link'``, Stata
+        ``estat ..., predict(xb)`` / R ``emfx(predict='link')``).
+        ``None`` (default) keeps the scale the fit was reported on.  The
+        linear model has one scale and accepts either value.
+    by_xvar : bool, default False
+        Nonlinear fits with one categorical ``xvar``: report the
+        aggregation per level of the covariate (R ``emfx(by_xvar =
+        TRUE)``, Stata ``estat ..., over()``); ``detail`` gains a
+        ``level`` column.
 
     Returns
     -------
@@ -3557,12 +3484,15 @@ def etwfe_emfx(
     Examples
     --------
     >>> import statspai as sp
-    >>> df = sp.dgp_did(n_units=200, n_periods=10, staggered=True)
+    >>> df = sp.dgp_did(n_units=200, n_periods=10, staggered=True, seed=0)
     >>> fit = sp.etwfe(df, y='y', time='time',
     ...                first_treat='first_treat', group='unit')
     >>> evt = sp.etwfe_emfx(fit, type='event')
-    >>> print(evt.detail)   # ATT by event time
+    >>> evt.detail["event_time"].tolist()   # ATT by event time
+    [0, 1, 2, 3, 4, 5]
     >>> grp = sp.etwfe_emfx(fit, type='group')
+    >>> list(grp.detail.columns[:3])
+    ['cohort', 'estimate', 'se']
     >>> cal = sp.etwfe_emfx(fit, type='calendar')
     """
     valid = {"simple", "group", "event", "calendar"}
@@ -3581,7 +3511,25 @@ def etwfe_emfx(
         isinstance(result.model_info, dict)
         and result.model_info.get("estimator") == "etwfe_glm"
     ):
-        return _etwfe_glm_emfx(result, type=type, alpha=alpha)
+        return _etwfe_glm_emfx(
+            result,
+            type=type,
+            alpha=alpha,
+            scale=scale,
+            include_leads=include_leads,
+            by_xvar=by_xvar,
+        )
+    if by_xvar:
+        raise MethodIncompatibility(
+            "etwfe_emfx(by_xvar=True) is implemented for nonlinear "
+            "(family='poisson' / 'logit') fits with a categorical xvar.",
+            recovery_hint="Refit with family='poisson' and a categorical "
+            "xvar, or read the moderator slopes from model_info for the "
+            "linear fit.",
+            diagnostics={"by_xvar": by_xvar},
+        )
+    if scale is not None:
+        _normalise_etwfe_scale(scale)
 
     if not isinstance(result.model_info, dict) or "cohorts" not in result.model_info:
         raise MethodIncompatibility(

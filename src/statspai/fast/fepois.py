@@ -2,11 +2,14 @@
 
 Implements the PPML-HDFE algorithm (Correia, Guimarães, Zylkin 2020,
 "Fast Poisson estimation with high-dimensional fixed effects", Stata
-Journal 20(1)). Python IRLS outer loop that delegates the within-
-transformation to ``sp.fast.demean`` (unweighted) and to the Phase A
-Rust kernel ``statspai_hdfe.demean_2d_weighted`` (weighted, used by
-the IRLS-internal demean) when the compiled extension is available;
-falls back to a pure-NumPy ``np.bincount`` weighted path otherwise.
+Journal 20(1)).
+
+With the optional Rust kernels (``statspai_hdfe``, kernel API 2) the
+whole IRLS loop runs natively in one call (``fepois_irls``): the FE
+structure is built once, each iteration re-weights it and restarts every
+column from its previous FE coefficients. Without them a Python IRLS loop
+runs, warm-started the same way, with the weighted NumPy / Numba
+residualisation.
 
 Goals
 -----
@@ -20,19 +23,14 @@ Goals
 
 What it does NOT (yet) do
 -------------------------
-- Anderson(m) acceleration on the IRLS outer loop. Phase 2 ships with
-  step-halving only; Anderson is a v1.7.1 tracked item.
-- Cluster-robust standard errors. The IID and HC1 sandwiches ship; CR1
-  arrives in Phase 4 alongside wild bootstrap.
+- Anderson(m) acceleration on the IRLS outer loop (step-halving only).
 - Negative-Binomial / Logit / Gaussian families. Poisson only here;
   ``feglm`` is a follow-up that swaps the family object.
-- Native Rust IRLS. Producing one is a multi-week task and was
-  intentionally split off the Phase 2 critical path. The Phase 1 demean
-  kernel is exposed so a future Rust IRLS can call it.
 """
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple, cast
 
@@ -40,24 +38,24 @@ import numpy as np
 import pandas as pd
 
 from .._result_serialize import ResultProtocolMixin
-from ..exceptions import MethodIncompatibility, NumericalInstability
+
+# Optional Rust kernels (weighted demean, separation pre-pass, native
+# IRLS); ``statspai._rust_backend`` decides whether they are usable.
+from .._rust_backend import HAS_RUST as _HAS_RUST_HDFE
+from .._rust_backend import rust as _rust_hdfe
+from ..exceptions import (
+    ConvergenceWarning,
+    DataInsufficient,
+    MethodIncompatibility,
+    NumericalInstability,
+)
 from ._result_protocol import jsonable as _jsonable
 from ._result_protocol import tidy_records as _tidy_records
 from ._validation import nonempty_sample as _nonempty_sample
 from ._validation import nonnegative_finite_float as _nonnegative_finite_float
 from ._validation import positive_int as _positive_int
 from ._validation import positive_weight_mass as _positive_weight_mass
-
-# Optional Rust kernel for the weighted IRLS-internal demean. When available,
-# the dispatcher below routes to it; when not, the pure-NumPy fallback runs.
-try:
-    import statspai_hdfe as _rust_hdfe  # type: ignore
-
-    _HAS_RUST_HDFE = True
-except ImportError:  # pragma: no cover  - exercised in CI on no-Rust wheels
-    _rust_hdfe = None  # type: ignore
-    _HAS_RUST_HDFE = False
-
+from ._validation import require_identified_regressors as _require_identified_regressors
 
 # ---------------------------------------------------------------------------
 # Result type
@@ -89,6 +87,11 @@ class FePoisResult(ResultProtocolMixin):
     vcov_type: str
     df_residual: int = 0
     backend: str = "statspai-native"
+    #: Kish effective sizes of a weighted fit (``None`` without weights)
+    weight_info: Optional[Dict[str, Any]] = None
+    #: Kernel that ran the IRLS fixed-effect residualisation: ``"rust"``,
+    #: ``"numpy"`` or ``"none"`` (no fixed effects)
+    fe_kernel: str = "numpy"
 
     # ------------------------------------------------------------------
     # pyfixest-compatible accessors
@@ -169,6 +172,7 @@ class FePoisResult(ResultProtocolMixin):
             "vcov_type": self.vcov_type,
             "df_residual": self.df_residual,
             "backend": self.backend,
+            "fe_kernel": self.fe_kernel,
             "fixed_effects": [
                 {"name": name, "cardinality": cardinality}
                 for name, cardinality in zip(
@@ -214,6 +218,7 @@ class FePoisResult(ResultProtocolMixin):
             "n_terms": n_terms,
             "truncated_terms": max(n_terms - limit, 0),
             "backend": self.backend,
+            "fe_kernel": self.fe_kernel,
         }
         return cast(Dict[str, Any], _jsonable(payload))
 
@@ -379,107 +384,6 @@ def _weighted_ap_demean_numpy(
     return arr, iters, converged_all
 
 
-@dataclass
-class _SortedDemeanPlan:
-    """FE-code-only setup for the sort-aware Rust dispatcher path.
-
-    Caches the work that depends solely on the FE codes (the permutation,
-    inverse permutation, primary group_starts, π-order secondary codes).
-    The IRLS outer loop changes ``weights`` every iter but the codes are
-    fixed, so this plan is built once per ``fepois`` call and reused
-    across all ~12 dispatcher calls.
-
-    Without caching, ``np.argsort`` + per-FE indexing + ``searchsorted``
-    cost ~127 ms per call on the medium benchmark (n=1M, G1=100k); 12
-    calls = ~1.5 s, which alone exceeds the Phase A wall-clock target.
-    """
-
-    primary_idx: int
-    primary_G: int
-    perm: np.ndarray  # int64, length n
-    inv_perm: np.ndarray  # int64, length n
-    primary_starts: np.ndarray  # int64, length primary_G + 1
-    secondary_codes_p: List[np.ndarray]  # each int64, in π order
-    secondary_G: List[int]  # cardinality of each non-primary FE
-
-
-# Module-level single-slot fingerprint cache for ``_SortedDemeanPlan``.
-# Key is a tuple of (data-pointer, size, first-elem, last-elem) per FE
-# code array — the combination is bulletproof against false positives
-# within a Python session because matching data pointer + size + boundary
-# elements is astronomically unlikely after garbage-collected reuse.
-_PLAN_CACHE_KEY: Optional[Tuple[Tuple[int, int, int, int], ...]] = None
-_PLAN_CACHE_VALUE: Optional[_SortedDemeanPlan] = None
-
-
-def _fe_codes_fingerprint(
-    fe_codes_list: List[np.ndarray],
-) -> Tuple[Tuple[int, int, int, int], ...]:
-    """Lightweight fingerprint identifying an FE-codes list.
-
-    Combines (data-pointer, size, first-elem, last-elem) per array.
-    O(K) with no per-element work — safe to call on every dispatcher hit.
-    """
-    return tuple(
-        (
-            int(c.ctypes.data),
-            int(c.size),
-            int(c[0]) if c.size > 0 else -1,
-            int(c[-1]) if c.size > 0 else -1,
-        )
-        for c in fe_codes_list
-    )
-
-
-def _build_sorted_demean_plan(
-    fe_codes_list: List[np.ndarray],
-    counts_list: List[np.ndarray],
-) -> _SortedDemeanPlan:
-    """Build the FE-only setup for the sorted dispatcher path.
-
-    Picks the highest-cardinality FE as primary, computes the stable
-    sort permutation, the inverse permutation, primary group_starts via
-    searchsorted, and the π-order secondary codes.
-    """
-    K = len(fe_codes_list)
-    primary_idx = int(np.argmax([c.size for c in counts_list]))
-    primary_codes = fe_codes_list[primary_idx]
-    primary_G = int(counts_list[primary_idx].size)
-
-    perm = np.argsort(primary_codes, kind="stable")
-    inv_perm = np.empty_like(perm)
-    inv_perm[perm] = np.arange(perm.size, dtype=perm.dtype)
-
-    primary_codes_p = primary_codes[perm]
-    primary_starts = np.empty(primary_G + 1, dtype=np.int64)
-    primary_starts[:primary_G] = np.searchsorted(
-        primary_codes_p,
-        np.arange(primary_G, dtype=primary_codes_p.dtype),
-        side="left",
-    )
-    primary_starts[primary_G] = primary_codes_p.size
-
-    secondary_codes_p: List[np.ndarray] = []
-    secondary_G: List[int] = []
-    for k in range(K):
-        if k == primary_idx:
-            continue
-        secondary_codes_p.append(
-            np.ascontiguousarray(fe_codes_list[k][perm], dtype=np.int64)
-        )
-        secondary_G.append(int(counts_list[k].size))
-
-    return _SortedDemeanPlan(
-        primary_idx=primary_idx,
-        primary_G=primary_G,
-        perm=perm,
-        inv_perm=inv_perm,
-        primary_starts=primary_starts,
-        secondary_codes_p=secondary_codes_p,
-        secondary_G=secondary_G,
-    )
-
-
 def _weighted_ap_demean(
     arr: np.ndarray,
     fe_codes_list: List[np.ndarray],
@@ -491,34 +395,20 @@ def _weighted_ap_demean(
     accelerate: bool = True,
     accel_period: int = 5,
 ) -> Tuple[np.ndarray, int, bool]:
-    """Dispatcher: sort-aware Rust when available, NumPy fallback otherwise.
+    """Dispatcher: Rust weighted kernel when available, NumPy otherwise.
 
-    Routing (post-Phase-B0):
     - K=0 (no-op) and K=1 (closed form) stay on the NumPy path because
       FFI overhead would dominate.
-    - K≥2 with the sort-aware Rust kernel
-      (``statspai_hdfe.demean_2d_weighted_sorted``, crate v0.4.0+):
-      pick the highest-cardinality FE as primary, apply the sort
-      permutation π once, run the sequential L1-cache-friendly inner
-      sweep, apply π⁻¹ to restore caller's row order.
-    - K≥2 on older wheels (only ``demean_2d_weighted`` available):
-      fall back to the random-scatter Phase A path bit-for-bit.
-    - Rust unavailable: ``_weighted_ap_demean_numpy`` (canonical
-      NumPy reference).
+    - K>=2 with the Rust kernels: ``statspai_hdfe.demean_2d_weighted``
+      (kernel API 2), which iterates on the FE coefficients over a sparse
+      cross-tabulation of the two largest FEs, in parallel over columns.
+    - Rust unavailable: ``_weighted_ap_demean_numpy`` (the NumPy
+      reference).
 
-    The FE-code-only setup (perm, inv_perm, primary_starts, secondary
-    codes in π order) is cached at module level via a fingerprint of
-    each FE array's data pointer + size + boundary elements; it is
-    rebuilt only when the caller passes new arrays. Reuse across the
-    ~12 IRLS dispatcher calls saves ~1.4 s per ``fepois`` call on the
-    medium benchmark.
-
-    Numerical parity (Rust ↔ NumPy at atol ≤ 1e-14) is verified by
-    ``test_rust_weighted_demean_matches_numpy_kernel``. Output is
-    bit-for-bit identical to the NumPy reference within float rounding.
+    The two paths solve the same weighted projection with different
+    iterations, so they agree to within the stopping tolerance, not bit
+    for bit (``test_rust_weighted_demean_matches_numpy_kernel``).
     """
-    global _PLAN_CACHE_KEY, _PLAN_CACHE_VALUE
-
     K = len(fe_codes_list)
     if not _HAS_RUST_HDFE or K < 2:
         return _weighted_ap_demean_numpy(
@@ -532,89 +422,20 @@ def _weighted_ap_demean(
             accel_period=accel_period,
         )
 
-    use_sorted = hasattr(_rust_hdfe, "demean_2d_weighted_sorted")
-
     squeeze = arr.ndim == 1
     src = arr.reshape(-1, 1) if squeeze else arr
-
-    if use_sorted:
-        # Cached FE-only plan: rebuild only if codes changed.
-        fp = _fe_codes_fingerprint(fe_codes_list)
-        if fp == _PLAN_CACHE_KEY and _PLAN_CACHE_VALUE is not None:
-            plan = _PLAN_CACHE_VALUE
-        else:
-            plan = _build_sorted_demean_plan(fe_codes_list, counts_list)
-            _PLAN_CACHE_KEY = fp
-            _PLAN_CACHE_VALUE = plan
-
-        # Weight-dependent setup (must rebuild every IRLS iter — w changes).
-        weights_p = np.ascontiguousarray(weights[plan.perm])
-        primary_codes_p = fe_codes_list[plan.primary_idx][plan.perm]
-        primary_wsum = np.bincount(
-            primary_codes_p,
-            weights=weights_p,
-            minlength=plan.primary_G,
-        ).astype(np.float64)
-        secondary_wsum = [
-            np.bincount(
-                plan.secondary_codes_p[i],
-                weights=weights_p,
-                minlength=plan.secondary_G[i],
-            ).astype(np.float64)
-            for i in range(len(plan.secondary_codes_p))
-        ]
-
-        # F-contig src in π order; Rust mutates this in place.
-        arr_F_p = np.array(
-            src[plan.perm],
-            dtype=np.float64,
-            order="F",
-            copy=True,
-        )
-
-        infos = _rust_hdfe.demean_2d_weighted_sorted(
-            arr_F_p,
-            plan.primary_starts,
-            primary_wsum,
-            plan.secondary_codes_p,
-            secondary_wsum,
-            weights_p,
-            int(max_iter),
-            0.0,
-            float(tol),
-            bool(accelerate),
-            int(accel_period),
-        )
-
-        # π⁻¹ restores caller's row order.
-        arr_F = np.array(
-            arr_F_p[plan.inv_perm],
-            dtype=np.float64,
-            order="F",
-            copy=True,
-        )
-    else:
-        # Pre-B0 fallback: random-scatter Rust path (Phase A behaviour).
-        arr_F = np.array(src, dtype=np.float64, order="F", copy=True)
-        wsum_list = [
-            np.bincount(
-                fe_codes_list[k],
-                weights=weights,
-                minlength=counts_list[k].size,
-            ).astype(np.float64)
-            for k in range(K)
-        ]
-        infos = _rust_hdfe.demean_2d_weighted(
-            arr_F,
-            list(fe_codes_list),
-            wsum_list,
-            weights,
-            int(max_iter),
-            0.0,
-            float(tol),
-            bool(accelerate),
-            int(accel_period),
-        )
+    arr_F = np.array(src, dtype=np.float64, order="F", copy=True)
+    infos = _rust_hdfe.demean_2d_weighted(
+        arr_F,
+        [np.ascontiguousarray(c, dtype=np.int64) for c in fe_codes_list],
+        [np.ascontiguousarray(c, dtype=np.float64) for c in counts_list],
+        np.ascontiguousarray(weights, dtype=np.float64),
+        int(max_iter),
+        0.0,
+        float(tol),
+        bool(accelerate),
+        int(accel_period),
+    )
 
     iters = max(int(d["iters"]) for d in infos) if infos else 0
     converged_all = all(bool(d["converged"]) for d in infos) if infos else True
@@ -709,6 +530,8 @@ def fepois(
     fe_maxiter: int = 1000,
     drop_singletons: bool = True,
     drop_separation: bool = True,
+    ssc: str = "fixest",
+    weights_as: Optional[str] = None,
 ) -> FePoisResult:
     """Poisson regression with high-dimensional fixed effects.
 
@@ -726,8 +549,8 @@ def fepois(
         Must contain all columns referenced in ``formula``.
     vcov : {"iid", "hc1", "cr1"}
         Variance-covariance estimator. ``"cr1"`` is one-way cluster-
-        robust (Liang-Zeger) with the FE-rank-aware small-sample factor
-        ``(G/(G-1)) * (n-1)/(n - p - Σ(G_k - 1))``. CR2/CR3 are not yet
+        robust (Liang-Zeger); its small-sample factor follows ``ssc``.
+        CR2/CR3 are not yet
         wired in for fepois — the WLS leverage adjustment requires
         weighting the H_gg matrix by ``μ`` (the IRLS working weight),
         which the generic :func:`crve` doesn't separate from the score
@@ -739,7 +562,15 @@ def fepois(
         Column name of observation weights (e.g. survey / frequency
         weights). Each obs's contribution to the log-likelihood is
         scaled by ``w_i``; the IRLS working weight becomes ``w_i * mu_i``.
-        ``None`` (default) is the unweighted MLE.
+        ``None`` (default) is the unweighted MLE. With ``vcov='iid'`` they
+        are frequency weights: the model-based variance scales with them.
+    weights_as : {'frequency', 'sampling'}, optional
+        What the weights are. ``'frequency'`` is what ``weights=`` alone
+        already means. ``'sampling'`` (Stata ``[pw=]``) gives the same
+        coefficients with ``vcov='hc1'``, unless ``vcov=`` or
+        ``cluster=`` asks for another. Saying which also silences the
+        warning about dispersed weights under the model-based variance.
+        ``'analytic'`` is refused.
     maxiter : int
         Outer IRLS iteration cap.
     tol : float
@@ -750,11 +581,84 @@ def fepois(
     drop_separation : bool
         Drop rows whose FE level has all-zero outcomes (Poisson cannot
         identify them anyway).
+    ssc : {"fixest", "statspai"}, default "fixest"
+        Small-sample convention for the covariance. Coefficients do not
+        depend on it.
+
+        - ``"fixest"`` reproduces R ``fixest::fepois`` defaults. With
+          ``K = p + ΣG_k - (dims - 1)`` (the absorbed effects span the
+          intercept): ``iid`` scales the inverse information by
+          ``(n - 1)/(n - K)``, ``hc1`` scales the sandwich by
+          ``n/(n - K)``, and ``cr1`` uses ``G/(G - 1) * (n - 1)/(n - K_c)``
+          where ``K_c`` leaves out absorbed dimensions nested in the
+          clusters (keeping the intercept when all of them are).
+        - ``"statspai"`` is the convention through 1.36.0, kept to reproduce
+          old numbers: ``n/(n - p - Σ(G_k - 1))`` for ``iid`` and ``hc1``,
+          and every absorbed level charged in ``cr1``, which inflates
+          clustered standard errors when the effects are nested in the
+          clusters (8% on the reference panel).
 
     Returns
     -------
     FePoisResult
     """
+    return _fepois_fit(
+        formula,
+        data,
+        vcov=vcov,
+        cluster=cluster,
+        weights=weights,
+        maxiter=maxiter,
+        tol=tol,
+        fe_tol=fe_tol,
+        fe_maxiter=fe_maxiter,
+        drop_singletons=drop_singletons,
+        drop_separation=drop_separation,
+        ssc=ssc,
+        weights_as=weights_as,
+    )[0]
+
+
+def _fepois_fit(
+    formula: str,
+    data: pd.DataFrame,
+    *,
+    vcov: str = "iid",
+    cluster: Optional[str] = None,
+    weights: Optional[str] = None,
+    maxiter: int = 50,
+    tol: float = 1e-8,
+    fe_tol: float = 1e-10,
+    fe_maxiter: int = 1000,
+    drop_singletons: bool = True,
+    drop_separation: bool = True,
+    ssc: str = "fixest",
+    weights_as: Optional[str] = None,
+    note_weights: bool = True,
+) -> Tuple[FePoisResult, Dict[str, Any]]:
+    """Body of :func:`fepois`.
+
+    Also returns the arrays ``sp.fepois`` reports on its native path: the
+    estimation-sample mask, the outcome, the fitted means and the
+    parameter count behind each small-sample factor.
+    """
+    if ssc not in ("fixest", "statspai"):
+        raise MethodIncompatibility(
+            f"fepois: ssc={ssc!r}; supported: 'fixest' or 'statspai'",
+            diagnostics={"ssc": ssc},
+        )
+    # weights_as=: what the weights are; sampling weights take hc1 unless
+    # another variance was asked for.
+    from ..core._agent_summary import resolve_weights_as
+
+    weights_as = resolve_weights_as(
+        weights_as,
+        has_weights=weights is not None,
+        native="frequency",
+        entry="sp.fast.fepois",
+    )
+    if weights_as == "sampling" and cluster is None and vcov == "iid":
+        vcov = "hc1"
     if vcov not in ("iid", "hc1", "cr1"):
         raise MethodIncompatibility(
             f"fepois: vcov={vcov!r}; supported: 'iid', 'hc1', or 'cr1'"
@@ -782,8 +686,14 @@ def fepois(
     needed_cols = [lhs] + rhs_terms + fe_terms
     if weights is not None:
         needed_cols = needed_cols + [weights]
+    # ``cluster`` may name two columns (two-way clustering, internal).
+    cl_cols: List[str] = (
+        []
+        if cluster is None
+        else [cluster] if isinstance(cluster, str) else list(cluster)
+    )
     if cluster is not None:
-        needed_cols = needed_cols + [cluster]
+        needed_cols = needed_cols + cl_cols
     missing = [c for c in needed_cols if c not in data.columns]
     if missing:
         raise MethodIncompatibility(f"fepois: columns missing from data: {missing}")
@@ -814,21 +724,21 @@ def fepois(
     else:
         obs_weights = None
 
-    if cluster is not None:
-        cluster_arr_full = data[cluster].to_numpy()
+    cl_codes_full: List[np.ndarray] = []
+    for col in cl_cols:
         # Reject NaN: ambiguous treatment, force the user to handle upstream.
-        cluster_codes_check, _ = pd.factorize(
-            cluster_arr_full,
+        codes_c, _ = pd.factorize(
+            data[col].to_numpy(),
             sort=False,
             use_na_sentinel=True,
         )
-        if (cluster_codes_check < 0).any():
+        if (codes_c < 0).any():
             raise MethodIncompatibility(
-                f"fepois: cluster column {cluster!r} contains NaN; "
+                f"fepois: cluster column {col!r} contains NaN; "
                 "drop or impute upstream"
             )
-    else:
-        cluster_arr_full = None
+        cl_codes_full.append(codes_c)
+    cluster_arr_full = data[cl_cols[0]].to_numpy() if len(cl_cols) == 1 else None
     X_user = (
         data[rhs_terms].to_numpy(dtype=np.float64).copy()
         if rhs_terms
@@ -925,6 +835,7 @@ def fepois(
             obs_weights = obs_weights[keep]
         if cluster_arr_full is not None:
             cluster_arr_full = cluster_arr_full[keep]
+        cl_codes_full = [c[keep] for c in cl_codes_full]
     else:
         fe_codes = []
         counts_list = []
@@ -961,10 +872,7 @@ def fepois(
         # Python overhead (z/w computation, dispatcher setup, asfortranarray,
         # dict packing/unpacking).
         x_F = np.asfortranarray(X)
-        g_per_fe_arr = np.array(
-            [int(np.unique(c).size) for c in fe_codes],
-            dtype=np.int64,
-        )
+        g_per_fe_arr = np.array([c.size for c in counts_list], dtype=np.int64)
         config_dict = {
             "maxiter": int(maxiter),
             "tol": float(tol),
@@ -994,7 +902,30 @@ def fepois(
         deviance = float(result["deviance"])
         iters_used = int(result["iters"])
         converged = bool(result["converged"])
+        fe_kernel = "rust"
+        if bool(result.get("singular", False)):
+            raise NumericalInstability(
+                "fepois: the weighted normal equations are singular: a "
+                "regressor is perfectly collinear with the fixed effects or "
+                "with the other regressors.",
+                recovery_hint=(
+                    "Drop regressors the fixed effects absorb (unit- or "
+                    "time-level variables) and duplicated regressors."
+                ),
+            )
+        if not bool(result.get("fe_converged", True)):
+            warnings.warn(
+                "fepois: the fixed-effect residualisation did not converge "
+                f"within fe_maxiter={fe_maxiter} sweeps in the last IRLS "
+                "iteration; the estimates may be inaccurate.",
+                ConvergenceWarning,
+                stacklevel=2,
+            )
     else:
+        if not fe_codes:
+            fe_kernel = "none"
+        else:
+            fe_kernel = "rust" if (_HAS_RUST_HDFE and len(fe_codes) >= 2) else "numpy"
         # Python IRLS fallback (Phase A / B0 dispatcher path).
         # Warm start (as fixest / ppmlhdfe): the weighted residual-maker M_w
         # annihilates anything in the FE span, so M_w(z - f) = M_w z for the
@@ -1070,6 +1001,17 @@ def fepois(
                 converged = True
                 break
 
+    # An absorbed regressor comes back from the residualisation as rounding
+    # noise, which the linear solve does not catch; check explicitly.
+    _require_identified_regressors(
+        X,
+        X_tilde,
+        coef_names_full,
+        context="fepois",
+        weights=w,
+        tol_rel=fe_tol,
+    )
+
     # ----- Variance-covariance -----
     # IID:  Var(beta) = sigma^2 * (X_tilde' W X_tilde)^-1 with sigma^2 = 1
     # for canonical Poisson. We use the more conservative HC1 by default.
@@ -1080,26 +1022,91 @@ def fepois(
     except np.linalg.LinAlgError as exc:
         raise NumericalInstability(f"vcov inversion failed: {exc}") from exc
 
-    # fixest / pyfixest small-sample correction: scale by n/(n-p-Σ(G_k-1))
-    # so that absorbed FE coefficients are charged against degrees of
-    # freedom. Matches ``ssc(adj=TRUE)`` in fixest, which is the default.
-    fe_dof = sum(int(c.size) - 1 for c in counts_list)
-    df_resid = n - p - fe_dof
+    # Small-sample convention (see ``ssc`` in the docstring). The fixest
+    # factors were identified against fixest 0.14 to eight digits on one-
+    # and two-dimension models; tests/reference_parity/
+    # test_fast_fepois_fixest_parity.py pins them.
+    fe_card = [int(c.size) for c in counts_list]
+    if ssc == "fixest":
+        from .feols import _fixest_fe_dof, _is_nested_in_cluster
+
+        fe_dof = _fixest_fe_dof(fe_card)
+        df_resid = n - p - fe_dof
+        iid_factor = (n - 1) / df_resid if df_resid > 0 else 1.0
+        if vcov == "cr1" and len(cl_cols) == 1:
+            free = [
+                card
+                for codes_k, card in zip(fe_codes, fe_card)
+                if not _is_nested_in_cluster(codes_k, cluster_arr_full)
+            ]
+            if not fe_card:
+                cr1_extra_df = 0
+            elif not free:
+                cr1_extra_df = 1  # the intercept the nested effects span
+            else:
+                cr1_extra_df = int(sum(free) - (len(free) - 1))
+        else:
+            cr1_extra_df = fe_dof
+    else:
+        fe_dof = sum(card - 1 for card in fe_card)
+        df_resid = n - p - fe_dof
+        iid_factor = n / df_resid if df_resid > 0 else 1.0
+        cr1_extra_df = fe_dof
+
+    # Two-way clustering: both dimensions and their intersection, with an
+    # absorbed effect nested in any of them left out of K (fixest).
+    n_clusters = 0
+    cl_dims: List[Tuple[np.ndarray, int]] = []
+    if len(cl_cols) > 2:
+        raise MethodIncompatibility(
+            "fepois: clustering on more than two dimensions is not supported natively"
+        )
+    if len(cl_cols) == 2:
+        from .feols import _fixest_cluster_fe_dof_codes
+
+        for codes_c in cl_codes_full:
+            dense_c, levels_c = pd.factorize(codes_c, sort=False)
+            cl_dims.append((dense_c, len(levels_c)))
+        (ca, ga), (cb, gb) = cl_dims
+        inter, levels_ab = pd.factorize(ca.astype(np.int64) * gb + cb, sort=False)
+        cl_dims.append((inter, len(levels_ab)))
+        n_clusters = min(ga, gb)
+        if n_clusters < 2:
+            raise DataInsufficient(
+                f"fepois: need at least 2 clusters, got {n_clusters}"
+            )
+        if ssc == "fixest":
+            cr1_extra_df = _fixest_cluster_fe_dof_codes(
+                fe_codes, fe_card, [c for c, _ in cl_dims]
+            )
 
     if vcov == "iid":
-        # Poisson canonical: dispersion = 1, but apply the fixest-style
-        # SSC adjustment so SEs line up with pyfixest / fixest defaults.
-        vcov_mat = XtWX_inv
-        if df_resid > 0:
-            vcov_mat = vcov_mat * (n / df_resid)
+        # Poisson canonical: dispersion = 1; the inverse information is
+        # scaled by the small-sample factor only.
+        vcov_mat = XtWX_inv * iid_factor
     elif vcov == "hc1":
-        # HC1 sandwich: meat = Σ_i s_i s_i' where s_i is the score row.
-        # Score = X_tilde * (y - mu).
-        u = (y - mu)[:, None] * X_tilde
+        # HC1 sandwich: meat = Σ_i s_i s_i' where s_i is the score row,
+        # w_i * (y_i - mu_i) * x̃_i. The observation weight belongs in the
+        # score: without it a weighted fit paired a weighted bread with an
+        # unweighted meat (standard errors 43% to 46% off fixest's on the
+        # reference panel).
+        score_w = obs_weights if obs_weights is not None else 1.0
+        u = (score_w * (y - mu))[:, None] * X_tilde
         meat = u.T @ u
         vcov_mat = XtWX_inv @ meat @ XtWX_inv
         if df_resid > 0:
             vcov_mat = vcov_mat * (n / df_resid)
+    elif cl_dims:  # cr1, two-way: M_a + M_b - M_ab, smallest G
+        from .inference import _cr1_meat
+
+        uw = (obs_weights if obs_weights is not None else 1.0) * (y - mu)
+        meat = np.zeros((p, p))
+        for (codes_c, g_c), sign in zip(cl_dims, (1.0, 1.0, -1.0)):
+            meat += sign * _cr1_meat(X_tilde, uw, codes_c, g_c)
+        vcov_mat = (XtWX_inv @ meat @ XtWX_inv) * (
+            (n_clusters / (n_clusters - 1.0))
+            * ((n - 1.0) / max(n - p - cr1_extra_df, 1))
+        )
     else:  # cr1 cluster-robust
         # Poisson cluster meat: M = Σ_g (Σ_i w_i x̃_i (y_i - μ_i))²
         # where w_i are the **observation** weights (frequency / survey),
@@ -1120,12 +1127,32 @@ def fepois(
             weights=score_weights,
             bread=XtWX_inv,
             type="cr1",
-            extra_df=fe_dof,
+            extra_df=cr1_extra_df,
         )
 
     log_lik = float(np.sum(obs_weights * (y * np.log(np.maximum(mu, 1e-30)) - mu)))
 
-    return FePoisResult(
+    weight_info: Optional[Dict[str, Any]] = None
+    if weights is not None and note_weights:
+        from ..core._agent_summary import note_weight_diagnostics
+
+        weight_info = {}
+        note_weight_diagnostics(
+            weight_info,
+            obs_weights,
+            {"iid": "classical", "hc1": "hc1", "cr1": "cluster"}[vcov],
+            entry="sp.fast.fepois",
+            robust_option="vcov='hc1' or vcov='cr1' with cluster=",
+            classical_reading="frequency weights (Stata [fw=])",
+            classical_assumption=(
+                "frequencies (each row standing for w identical observations)"
+            ),
+            cluster_keys=cluster_arr_full if vcov == "cr1" else None,
+            cluster=cluster,
+            weights_as=weights_as,
+        )
+
+    result = FePoisResult(
         formula=formula,
         coef_names=coef_names_full,
         coef_vec=beta,
@@ -1139,10 +1166,34 @@ def fepois(
         iterations=iters_used,
         converged=converged,
         fe_names=list(fe_terms),
-        fe_cardinality=[int(np.unique(c).size) for c in fe_codes],
+        fe_cardinality=fe_card,
         vcov_type=vcov,
         df_residual=int(max(df_resid, 0)),
+        weight_info=weight_info,
+        fe_kernel=fe_kernel,
     )
+    arrays = {
+        "keep_mask": keep,
+        "y": y,
+        "mu": mu,
+        "eta": eta,
+        "w": obs_weights,
+        "cluster": cluster_arr_full,
+        "n_clusters": (
+            n_clusters
+            if cl_dims
+            else (
+                int(pd.unique(cluster_arr_full).size)
+                if cluster_arr_full is not None
+                else 0
+            )
+        ),
+        "df_k": int(p + fe_dof),
+        "df_k_cluster": int(p + cr1_extra_df),
+        "fe_codes": fe_codes,
+        "fe_card": fe_card,
+    }
+    return result, arrays
 
 
 def _poisson_deviance(

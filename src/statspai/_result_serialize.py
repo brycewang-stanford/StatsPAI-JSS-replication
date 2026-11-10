@@ -31,8 +31,11 @@ does not define the method itself (ordinary Python MRO).
 from __future__ import annotations
 
 import warnings
+from collections.abc import Mapping
 from dataclasses import fields, is_dataclass
-from typing import Any, ClassVar, Dict, Tuple
+from typing import TYPE_CHECKING, Any, Callable, ClassVar, Dict, List, Tuple, TypeVar
+
+import numpy as np
 
 from .core.results import _to_jsonable
 
@@ -57,6 +60,25 @@ def result_to_dict(obj: Any) -> Dict[str, Any]:
     """
     if is_dataclass(obj):
         return {f.name: _to_jsonable(getattr(obj, f.name)) for f in fields(obj)}
+    if isinstance(obj, tuple) and hasattr(obj, "_asdict"):
+        # NamedTuple results: the declared fields, then any properties.
+        out_nt: Dict[str, Any] = {k: _to_jsonable(v) for k, v in obj._asdict().items()}
+        _sweep_properties(obj, out_nt)
+        return out_nt
+    if isinstance(obj, Mapping) and type(obj) is not dict:
+        # Dict-subclass results (``PolicyTreeResult``) keep their fields as
+        # items, not attributes: ``__dict__`` is empty and the export used
+        # to come back as ``{}``.
+        out_map: Dict[str, Any] = {
+            str(k): _to_jsonable(v)
+            for k, v in obj.items()
+            if not str(k).startswith("_") and not callable(v)
+        }
+        for k, v in (getattr(obj, "__dict__", None) or {}).items():
+            if not k.startswith("_") and not callable(v) and k not in out_map:
+                out_map[k] = _to_jsonable(v)
+        _sweep_properties(obj, out_map)
+        return out_map
     attrs = getattr(obj, "__dict__", None)
     if attrs is None:
         raise TypeError(
@@ -68,6 +90,12 @@ def result_to_dict(obj: Any) -> Dict[str, Any]:
         for k, v in attrs.items()
         if not k.startswith("_") and not callable(v)
     }
+    _sweep_properties(obj, out)
+    return out
+
+
+def _sweep_properties(obj: Any, out: Dict[str, Any]) -> None:
+    """Add the public ``property`` values declared on ``obj``'s classes."""
     for klass in type(obj).__mro__:
         for name, member in vars(klass).items():
             if name.startswith("_") or name in out:
@@ -79,17 +107,65 @@ def result_to_dict(obj: Any) -> Dict[str, Any]:
             # reproduce exactly the silent-empty-export bug this sweep
             # exists to fix (CLAUDE.md §7).
             out[name] = _to_jsonable(getattr(obj, name))
-    return out
 
 
-def _fmt_scalar(v: Any) -> str:
-    if isinstance(v, bool):
-        return r"\text{" + str(v) + "}"
-    if isinstance(v, int):
-        return str(v)
-    if isinstance(v, float):
-        return f"{v:.4g}"
-    return str(v).replace("_", r"\_").replace("%", r"\%").replace("&", r"\&")
+def _resolved_fmt(fmt: Any, digits: int | None) -> Any:
+    """Collapse the ``fmt=`` / ``digits=`` pair, package-wide semantics.
+
+    Same rule as every other exporter: either spelling is accepted and
+    passing both raises rather than silently preferring one.
+    """
+    from .output._format import AUTO, resolve_digits
+
+    return resolve_digits(fmt, digits, default=AUTO)
+
+
+def display_value(value: Any, fmt: Any = None) -> str:
+    """Render one field value for a **display** surface.
+
+    Shared by the three renderers that show a result as a Field/Value
+    table — LaTeX, Markdown and Word — so they stop disagreeing about the
+    same number. They previously carried two conventions between them
+    (``%.4g`` in LaTeX, ``%.6g`` in Markdown and Word), which showed one
+    ``att`` as ``-0.09446`` and ``-0.094458`` from the same object.
+
+    Floats follow the package-wide adaptive default, so a value reads the
+    same here as in ``sp.regtable`` or ``CausalResult.to_latex``. ``%.4g``
+    was also actively bad at scale: it rendered 538582.4 as ``5.386e+05``.
+
+    ``to_dict`` and ``to_excel`` deliberately do **not** route through
+    here — those are data-interchange surfaces and keep the full value.
+    """
+    from .output._format import AUTO, fmt_val
+
+    # bool is an int subclass; check it first or True renders as 1.
+    if isinstance(value, bool):
+        return str(value)
+    if isinstance(value, (int, np.integer)):
+        return str(value)
+    if isinstance(value, float):
+        return fmt_val(value, AUTO if fmt is None else fmt)
+    return _one_line(value)
+
+
+def _fmt_scalar(v: Any, fmt: Any = None) -> str:
+    """Render one scalar field as a LaTeX-safe cell.
+
+    This is the *only* place a value gets escaped on the way into
+    ``result_to_latex`` — escaping again at the call site would turn the
+    ``\\&`` produced here into ``\\textbackslash{}\\&``.
+
+    Flattening happens before escaping, so a truncated long value can
+    never be cut through the middle of a ``\\textbackslash{}``.
+
+    Booleans render as plain ``True`` / ``False``. They used to be wrapped
+    in ``\\text{...}``, which is an amsmath macro: any result carrying a
+    bool field emitted a table that failed to compile with "Undefined
+    control sequence" unless the document happened to load amsmath.
+    """
+    from .output._format import latex_escape
+
+    return latex_escape(display_value(v, fmt))
 
 
 def _accepts_second_positional(fn: Any) -> bool:
@@ -157,8 +233,34 @@ def result_export_rows(obj: Any) -> "list[Tuple[str, Any]]":
     return rows
 
 
+#: Longest value rendered in a generic Field/Value cell before truncation.
+#: Long enough for a formula or a vcov description, short enough that one
+#: runaway field cannot push the table off the page.
+_MAX_CELL_CHARS = 120
+
+
+def _one_line(text: str) -> str:
+    """Collapse a value to a single line a ``tabular`` cell can hold.
+
+    Some result fields carry a whole rendered ``summary()`` — forty lines
+    of ASCII rules and headings. LaTeX treats the newlines as ordinary
+    whitespace, so this still *compiles*; it just produces one cell holding
+    the entire summary run together as a paragraph, which is not a table
+    anyone can read. ``to_markdown`` already flattens for the same reason.
+    """
+    flat = " ".join(str(text).split())
+    if len(flat) > _MAX_CELL_CHARS:
+        # ASCII ellipsis: a literal "…" needs utf8 inputenc to typeset.
+        return flat[: _MAX_CELL_CHARS - 3].rstrip() + "..."
+    return flat
+
+
 def result_to_latex(
-    obj: Any, *, caption: str | None = None, label: str | None = None
+    obj: Any,
+    *,
+    caption: str | None = None,
+    label: str | None = None,
+    fmt: Any = None,
 ) -> str:
     """Render the *scalar* fields of a result dataclass as a booktabs table.
 
@@ -166,20 +268,24 @@ def result_to_latex(
     dumped, so the table stays publication-sized. Mirrors the ``to_latex``
     other result objects expose, so ``sp.<est>(...).to_latex()`` works
     uniformly.
+
+    Rows come from :func:`result_export_rows`, the same source Markdown,
+    Word and Excel use, so the four surfaces cannot disagree about which
+    fields exist or how a nested field is summarised.
     """
-    d = result_to_dict(obj)
-    rows = []
-    for key, val in d.items():
-        if val is None:
-            continue
-        if isinstance(val, (list, dict)):
-            n = len(val)
-            disp = f"[{n} item{'s' if n != 1 else ''}]"
-        else:
-            disp = _fmt_scalar(val)
-        rows.append((str(key).replace("_", r"\_"), disp))
-    _warn_if_no_rows(obj, len(rows))
-    cap = caption or type(obj).__name__
+    from .output._format import latex_escape
+
+    rows = [
+        # Values are escaped and flattened inside _fmt_scalar — escaping
+        # again here would turn its "\&" into "\textbackslash{}\&".
+        (latex_escape(key), _fmt_scalar(val, fmt))
+        for key, val in result_export_rows(obj)
+    ]
+    # A caller-supplied caption passes through verbatim — it may hold
+    # deliberate LaTeX. The generated fallback is the class name, which is
+    # data: a class called ``_BoolResult`` or ``PSM_DiDResult`` carries an
+    # underscore and halts the build with "Missing $ inserted".
+    cap = caption if caption is not None else latex_escape(type(obj).__name__)
     body = " \\\\\n".join(f"  {k} & {v}" for k, v in rows)
     lines = [
         "\\begin{table}[htbp]",
@@ -213,34 +319,171 @@ class ResultProtocolMixin:
     #: Verified paper.bib key(s) for the estimator (see CLAUDE.md §10).
     _citation_keys: ClassVar[Tuple[str, ...]] = ()
 
-    def to_dict(self) -> Dict[str, Any]:
-        """JSON-safe dict of every field (agent-native serialization)."""
-        return result_to_dict(self)
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        super().__init_subclass__(**kwargs)
+        # A subclass that defines its own ``to_dict`` without a ``detail``
+        # argument would otherwise break the documented
+        # ``r.to_dict(detail="agent")`` contract (TypeError). Wrap it so the
+        # legacy call is untouched and the other levels get the envelope.
+        _wrap_legacy_to_dict(cls)
 
-    def to_latex(self, *, caption: str | None = None, label: str | None = None) -> str:
+    if TYPE_CHECKING:
+        # Gradual signatures for the type checker only. Domain subclasses
+        # override these with their own historical parameters (``to_dict``
+        # overrides are wrapped at class creation to accept ``detail=``;
+        # CrossValidationResult.next_steps returns strings), so the static
+        # contract is "callable, returns a dict / list"; the runtime
+        # signatures below are the documented ones.
+
+        def to_dict(self, *args: Any, **kwargs: Any) -> Dict[str, Any]:
+            """Type-checker stub; see the runtime definition."""
+
+        def violations(self, *args: Any, **kwargs: Any) -> Any:
+            """Type-checker stub; see the runtime definition."""
+
+        def next_steps(self, *args: Any, **kwargs: Any) -> Any:
+            """Type-checker stub; see the runtime definition."""
+
+        def result_card(self, *args: Any, **kwargs: Any) -> Any:
+            """Type-checker stub; see the runtime definition."""
+
+    else:
+
+        def to_dict(
+            self, *, detail: str = "standard", detail_head: int = 5
+        ) -> Dict[str, Any]:
+            """JSON-safe dict of the result (agent-native serialization).
+
+            Parameters
+            ----------
+            detail : {"minimal", "standard", "agent"}, default ``"standard"``
+                Same levels as :meth:`CausalResult.to_dict`.
+
+                - ``"minimal"`` — the bare envelope: ``method``, ``estimand``,
+                  ``estimate``, ``se``, ``pvalue``, ``ci``, ``alpha``,
+                  ``n_obs``, ``citation_key``, read off the fields this class
+                  records (``None`` where it records none).
+                - ``"standard"`` — every field, JSON-safe (the historical
+                  ``to_dict()`` output, unchanged).
+                - ``"agent"`` — standard fields + the envelope + ``diagnostics``,
+                  ``violations``, ``warnings``, ``next_steps``,
+                  ``suggested_functions`` and ``degradations``.
+            detail_head : int, default 5
+                Accepted for signature parity with ``CausalResult.to_dict``;
+                domain results carry no ``detail`` table, so it is unused.
+
+            Returns
+            -------
+            dict
+                Round-trips through ``json.dumps``.
+            """
+            from ._result_contract import build_payload, check_detail
+
+            check_detail(detail)
+            if detail == "standard":
+                return result_to_dict(self)
+            base = result_to_dict(self) if detail == "agent" else None
+            return build_payload(self, detail, base)
+
+        def violations(self) -> List[Dict[str, Any]]:
+            """Structured assumption / diagnostic issues this result recorded.
+
+            Same item shape as :meth:`CausalResult.violations` (``kind`` /
+            ``severity`` / ``test`` / ``value`` / ``threshold`` / ``message``
+            / ``recovery_hint`` / ``alternatives``). Derived from the stored
+            ``model_info`` / ``diagnostics`` mappings and ``degradations``;
+            nothing is re-run. ``[]`` when nothing was flagged.
+            """
+            from ._result_contract import generic_violations
+
+            return generic_violations(self)
+
+        def next_steps(self, print_result: bool = False) -> List[Dict[str, str]]:
+            """Recommended follow-ups, as dicts (``action`` / ``reason`` /
+            ``priority`` / ``category``), from the producing function's
+            registry card (failure-mode remedies, registered alternatives).
+
+            ``[]`` when the producing function cannot be resolved without
+            guessing. Prints nothing unless ``print_result=True``.
+            """
+            from ._result_contract import generic_next_steps
+
+            steps = generic_next_steps(self)
+            if print_result:
+                for s in steps:
+                    print(f"-> {s['action']}\n   {s['reason']}")
+            return steps
+
+        def result_card(self) -> Any:
+            """Auditable card (estimand, sample, provenance incl. seed,
+            evidence tier, ...). See :func:`statspai.result_card`."""
+            from .result_card import result_card as _result_card
+
+            return _result_card(self)
+
+    def tidy(self, conf_level: float | None = None) -> Any:
+        """Broom-style estimate table (``term, estimate, std_error, ...``).
+
+        Built from the result's coefficient vector, its headline estimate,
+        or its test statistic, whichever it has (see
+        :mod:`statspai._result_tidy`); a result with none of them raises
+        ``MethodIncompatibility`` and points at :meth:`glance`.
+        """
+        from ._result_tidy import tidy as _tidy
+
+        return _tidy(self, conf_level=conf_level)
+
+    def glance(self) -> Any:
+        """One-row DataFrame of the result's scalar fields (broom ``glance``)."""
+        from ._result_tidy import glance as _glance
+
+        return _glance(self)
+
+    def to_json(self, indent: int | None = None) -> str:
+        """``json.dumps`` of :meth:`to_dict` — the same entry point the
+        core result classes offer, so agents serialise every result the
+        same way."""
+        import json
+
+        return json.dumps(self.to_dict(), indent=indent, default=str)
+
+    def to_latex(
+        self,
+        *,
+        caption: str | None = None,
+        label: str | None = None,
+        digits: int | None = None,
+        fmt: Any = None,
+    ) -> str:
         """A compact booktabs table of the result's scalar fields."""
-        return result_to_latex(self, caption=caption, label=label)
+        return result_to_latex(
+            self, caption=caption, label=label, fmt=_resolved_fmt(fmt, digits)
+        )
 
-    def to_markdown(self) -> str:
+    def to_markdown(self, digits: int | None = None, fmt: Any = None) -> str:
         """GitHub-flavoured markdown table of the result's scalar fields."""
-        rows = result_export_rows(self)
+        resolved = _resolved_fmt(fmt, digits)
         lines = [
             f"### {type(self).__name__}",
             "",
             "| Field | Value |",
             "| --- | --- |",
         ]
-        for key, val in rows:
-            disp = f"{val:.6g}" if isinstance(val, float) else str(val)
-            # A literal newline ends the table row and orphans the rest of
-            # the value as body text, silently truncating the table; a bare
-            # pipe opens a spurious column.
-            disp = disp.replace("|", r"\|").replace("\r\n", " ").replace("\n", " ")
-            disp = disp.replace("\r", " ")
+        for key, val in result_export_rows(self):
+            # display_value already flattens newlines — a literal newline
+            # ends the row and orphans the rest as body text. The pipe is
+            # Markdown's own separator and is escaped only here.
+            disp = display_value(val, resolved).replace("|", r"\|")
             lines.append(f"| {key} | {disp} |")
         return "\n".join(lines)
 
-    def to_word(self, filename: str, title: str | None = None) -> str:
+    def to_word(
+        self,
+        filename: str,
+        title: str | None = None,
+        digits: int | None = None,
+        fmt: Any = None,
+    ) -> str:
         """§3 Word (.docx) export.
 
         Uses the class's own ``to_docx`` when it defines one (bespoke
@@ -268,11 +511,10 @@ class ResultProtocolMixin:
         table.style = "Light Grid Accent 1"
         table.rows[0].cells[0].text = "Field"
         table.rows[0].cells[1].text = "Value"
+        resolved = _resolved_fmt(fmt, digits)
         for i, (key, val) in enumerate(rows, start=1):
             table.rows[i].cells[0].text = str(key)
-            table.rows[i].cells[1].text = (
-                f"{val:.6g}" if isinstance(val, float) else str(val)
-            )
+            table.rows[i].cells[1].text = display_value(val, resolved)
         doc.save(filename)
         return filename
 
@@ -327,3 +569,90 @@ class ResultProtocolMixin:
                 f"{type(self).__name__}; see the estimator docstring."
             )
         return "\n".join(keys)
+
+
+#: Mixin members :func:`attach_result_protocol` copies onto a class that
+#: cannot inherit (``typing.NamedTuple`` forbids extra bases).
+_PROTOCOL_MEMBERS: Tuple[str, ...] = (
+    "tidy",
+    "glance",
+    "to_dict",
+    "to_json",
+    "to_latex",
+    "to_markdown",
+    "to_word",
+    "to_excel",
+    "cite",
+    "violations",
+    "next_steps",
+    "result_card",
+)
+
+_C = TypeVar("_C", bound=type)
+
+
+def attach_result_protocol(cls: _C) -> _C:
+    """Class decorator: give ``cls`` the :class:`ResultProtocolMixin` surface.
+
+    For result types that cannot take the mixin as a base — chiefly
+    ``typing.NamedTuple`` results, whose tuple unpacking and field access
+    must keep working. Members the class defines itself are left alone; a
+    legacy ``to_dict`` without ``detail`` is wrapped as for mixin
+    subclasses.
+    """
+    for name in _PROTOCOL_MEMBERS:
+        if name not in vars(cls):
+            setattr(cls, name, vars(ResultProtocolMixin)[name])
+    _wrap_legacy_to_dict(cls)
+    return cls
+
+
+def _wrap_legacy_to_dict(cls: type) -> None:
+    """Make ``cls.to_dict`` accept ``detail=`` when it was defined without."""
+    import functools
+    import inspect
+
+    fn = vars(cls).get("to_dict")
+    if fn is None or not inspect.isfunction(fn):
+        return
+    if getattr(fn, "_statspai_detail_aware", False):
+        return
+    try:
+        sig = inspect.signature(fn)
+    except (TypeError, ValueError):
+        return
+    if "detail" in sig.parameters:
+        return
+
+    legacy: Callable[..., Any] = fn
+
+    @functools.wraps(legacy)
+    def to_dict(self: Any, *args: Any, detail: str = "standard", **kwargs: Any) -> Any:
+        from ._result_contract import build_payload, check_detail
+
+        check_detail(detail)
+        if detail == "standard":
+            # A hand-written to_dict may hold DataFrames or NaN; the
+            # documented contract is JSON-safe at every level.
+            return _to_jsonable(legacy(self, *args, **kwargs))
+        base = legacy(self, *args, **kwargs) if detail == "agent" else None
+        return build_payload(self, detail, base)
+
+    params = list(sig.parameters.values())
+    detail_param = inspect.Parameter(
+        "detail", inspect.Parameter.KEYWORD_ONLY, default="standard", annotation=str
+    )
+    pos = next(
+        (i for i, p in enumerate(params) if p.kind is inspect.Parameter.VAR_KEYWORD),
+        len(params),
+    )
+    params.insert(pos, detail_param)
+    to_dict.__signature__ = sig.replace(parameters=params)  # type: ignore[attr-defined]
+    to_dict._statspai_detail_aware = True  # type: ignore[attr-defined]
+    to_dict.__doc__ = (legacy.__doc__ or "").rstrip() + (
+        "\n\n        ``detail`` ({'minimal', 'standard', 'agent'}, default "
+        "'standard'): 'standard' returns the dict above unchanged; "
+        "'minimal' / 'agent' return the shared agent envelope (see "
+        "``ResultProtocolMixin.to_dict``).\n"
+    )
+    cls.to_dict = to_dict  # type: ignore[attr-defined]

@@ -83,7 +83,9 @@ import numpy as np
 import pandas as pd
 
 from .._aliases import accepts_aliases
-from ..exceptions import DataInsufficient, MethodIncompatibility
+from .._input_validation import missing_named_columns
+from .._result_serialize import attach_result_protocol
+from ..exceptions import ColumnNotFound, DataInsufficient, MethodIncompatibility
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from ..core.results import CausalResult
@@ -104,6 +106,7 @@ _SE_TYPES = ("neyman", "adjusted")
 _GINV_RCOND = float(np.sqrt(np.finfo(float).eps))
 
 
+@attach_result_protocol
 class StaggeredRolloutResult(NamedTuple):
     """Point estimate, both standard errors, and the fitted control weights."""
 
@@ -144,13 +147,15 @@ class _Summaries(NamedTuple):
 
 def _wide_panel(data: pd.DataFrame, i: str, t: str, g: str, y: str) -> _Panel:
     """Pivot to units x periods, recoding never-treated and dropping singletons."""
-    for col in (i, t, g, y):
-        if col not in data.columns:
-            raise MethodIncompatibility(
-                f"staggered_rollout: column {col!r} not in data.",
-                recovery_hint="Check the y / i / t / g arguments.",
-                diagnostics={"columns": list(data.columns)},
-            )
+    missing = missing_named_columns({"y": y, "i": i, "t": t, "g": g}, data.columns)
+    if missing:
+        raise ColumnNotFound.from_missing(
+            missing,
+            list(data.columns),
+            message="staggered_rollout: column "
+            f"{next(iter(missing.values()))!r} not in data.",
+            extra_hint="Check the y / i / t / g arguments.",
+        )
 
     df = data[[i, t, g, y]].copy()
     gv = pd.to_numeric(df[g], errors="coerce")
@@ -796,7 +801,7 @@ def _event_study_vcv(
     return vcv_neyman, vcv
 
 
-@accepts_aliases(id="i", time="t")
+@accepts_aliases(id="i", time="t", seed="random_state", cohort="g", first_treat="g")
 def staggered_rollout(
     data: pd.DataFrame,
     y: str,
@@ -1082,7 +1087,15 @@ def _drop_treated_at_start(data: pd.DataFrame, t: str, g: str) -> pd.DataFrame:
     return data.loc[~early, :]
 
 
-@accepts_aliases(_strict=True, id="i", unit="i", time="t", first_treat="g", cohort="g")
+@accepts_aliases(
+    _strict=True,
+    id="i",
+    unit="i",
+    time="t",
+    first_treat="g",
+    cohort="g",
+    seed="random_state",
+)
 def staggered_cs(
     data: pd.DataFrame,
     y: str,
@@ -1153,7 +1166,15 @@ def staggered_cs(
     return res
 
 
-@accepts_aliases(_strict=True, id="i", unit="i", time="t", first_treat="g", cohort="g")
+@accepts_aliases(
+    _strict=True,
+    id="i",
+    unit="i",
+    time="t",
+    first_treat="g",
+    cohort="g",
+    seed="random_state",
+)
 def staggered_sa(
     data: pd.DataFrame,
     y: str,

@@ -36,7 +36,6 @@ Examples
 
 from __future__ import annotations
 
-import difflib
 import functools
 import inspect
 import os
@@ -86,8 +85,10 @@ def accepts_aliases(
     def decorator(func: F) -> F:
         warn = WARN_ON_LEGACY if _warn is None else _warn
         try:
-            params = inspect.signature(func).parameters
+            signature = inspect.signature(func)
+            params = signature.parameters
         except (TypeError, ValueError):  # pragma: no cover - builtins
+            signature = None
             params = {}
         takes_var_kw = any(p.kind is p.VAR_KEYWORD for p in params.values())
         if params and _strict:
@@ -128,6 +129,22 @@ def accepts_aliases(
                 unknown = [k for k in kwargs if k not in known]
                 if unknown:
                     raise TypeError(_unexpected_message(func.__name__, unknown, known))
+            elif params and takes_var_kw:
+                # A ``**kwargs`` function accepts anything, so an unknown
+                # spelling (``outcome=`` for ``y``) is not rejected here —
+                # but if it leaves a *required* parameter unfilled Python
+                # raises "missing N required positional arguments", which
+                # hides the real mistake. Bind first; on failure with
+                # unknown keywords present, raise the did-you-mean message.
+                unknown = [k for k in kwargs if k not in known]
+                if unknown and signature is not None:
+                    try:
+                        signature.bind(*args, **kwargs)
+                    except TypeError as exc:
+                        raise TypeError(
+                            _unexpected_message(func.__name__, unknown, known)
+                            + f" ({exc})"
+                        ) from None
             return func(*args, **kwargs)
 
         # Advertise the accepted aliases (merge if stacked).
@@ -183,9 +200,7 @@ def accepts_formula_first(formula_param: str = "formula") -> Callable[[F], F]:
 
 def _unexpected_message(name: str, unknown: list, known: set) -> str:
     """``TypeError`` text for unknown keywords, with did-you-mean suggestions."""
-    parts = []
-    for key in unknown:
-        close = difflib.get_close_matches(key, sorted(known), n=3, cutoff=0.6)
-        hint = f" (did you mean {', '.join(repr(c) for c in close)}?)" if close else ""
-        parts.append(f"{key!r}{hint}")
+    from ._kwarg_suggest import did_you_mean
+
+    parts = [f"{key!r}{did_you_mean(key, known)}" for key in unknown]
     return f"{name}() got unexpected keyword argument(s): {'; '.join(parts)}."

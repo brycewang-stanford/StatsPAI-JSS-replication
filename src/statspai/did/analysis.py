@@ -27,6 +27,8 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 import pandas as pd
 
+from ..core._call_record import records_call
+from ..core._vcov_spec import accepts_vce
 from ..core.results import CausalResult
 from ._core import require_bool
 
@@ -167,6 +169,8 @@ class DIDAnalysis:
 _DESIGN_BASED_METHODS = ("staggered_rollout", "staggered_cs", "staggered_sa")
 
 
+@records_call("did_analysis")
+@accepts_vce(default=("hc1", "robust"), native={"nonrobust": {"robust": False}})
 def did_analysis(
     data: pd.DataFrame,
     y: str,
@@ -367,6 +371,9 @@ def did_analysis(
             cluster=cluster,
             robust=robust,
             alpha=alpha,
+            # Pin today's critical values: no FutureWarning users cannot act on.
+            # Switch with the crit_dist default (planned 1.41).
+            crit_dist="residual",
         )
         method_label = "DID 2×2 (OLS)"
     elif method in ("cs", "callaway_santanna"):
@@ -416,6 +423,10 @@ def did_analysis(
             covariates=covariates,
             cluster=cluster,
             alpha=alpha,
+            # Pin today's default: no FutureWarning users cannot act on.
+            # Switch with sun_abraham's default (planned 1.41).
+            aggregation="event_time",
+            crit_dist="normal",
         )
         method_label = "Sun-Abraham (IW)"
     elif method in ("bjs", "did_imputation", "borusyak_jaravel_spiess"):
@@ -469,19 +480,23 @@ def did_analysis(
         main_result = fn(data, y=y, i=id, t=time, g=treat, alpha=alpha, **kwargs)
         method_label = main_result.method
     elif method == "sdid":
-        from ..synth.sdid import sdid as _sdid
+        from ..synth.sdid import _sdid_on_cohort_column
 
-        # SDID requires different parameter mapping
-        treat_time_vals = sorted(data.loc[data[treat] > 0, treat].unique())
-        treat_time_val = treat_time_vals[0] if treat_time_vals else None
-        treat_units = data.loc[data[treat] > 0, id].unique().tolist() if id else None
-        main_result = _sdid(
+        # The treat column holds each unit's first treated period; several
+        # adoption periods are estimated cohort by cohort.
+        if id is None:
+            from statspai.exceptions import MethodIncompatibility
+
+            raise MethodIncompatibility(
+                "did_analysis(method='sdid') needs id= (the unit identifier).",
+                recovery_hint="Pass id='unit_column'.",
+            )
+        main_result = _sdid_on_cohort_column(
             data,
             y=y,
             unit=id,
             time=time,
-            treat_unit=treat_units,
-            treat_time=treat_time_val,
+            cohort=treat,
             method="sdid",
             alpha=alpha,
             **kwargs,
@@ -522,6 +537,9 @@ def did_analysis(
                 window=window,
                 cluster=cluster,
                 alpha=alpha,
+                # Pin today's critical values: no FutureWarning users cannot act on.
+                # Switch with the crit_dist default (planned 1.41).
+                crit_dist="normal",
             )
             raw_mi = es_result.model_info
             mi = raw_mi if isinstance(raw_mi, dict) else {}

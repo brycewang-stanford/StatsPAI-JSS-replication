@@ -23,6 +23,8 @@ Design principles
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
 from typing import Any, Dict, List, Optional
 
 import numpy as np
@@ -66,6 +68,11 @@ _OVERLAP_MIN = 0.05
 #: moderate confounding, which trims essentially nothing.
 _DML_OVERLAP_EXTREME_SHARE = 0.05
 
+#: Kish effective sample size of an arm's inverse-probability weights, as
+#: a share of the arm, below which the weights are flagged. Matches the
+#: fit-time warning of ``sp.ipw``.
+_IPW_ESS_RATIO = 0.2
+
 #: Absolute logit/probit slope coefficient above which (quasi-)complete
 #: separation is the likely cause: an odds ratio of e^15 ≈ 3.3M is not a real
 #: effect, it is the MLE diverging when a predictor perfectly splits the outcome
@@ -107,6 +114,40 @@ _COX_PH_ALPHA = 0.05
 #: remedy. 30 is the conservative end of the common 30-50 rule of thumb.
 _FEW_CLUSTERS_MIN = 30
 
+#: What to do about it, in the words the size study supports
+#: (``tests/reliability/few_clusters.py``, 2,000 replications per cell):
+#: with clusters of similar size and half of them treated the wild cluster
+#: bootstrap rejects a true null 5% to 7% of the time from 6 clusters up;
+#: with two treated clusters it almost never rejects (0.0% to 6%); with
+#: one cluster holding half the sample it over-rejects (up to 13%) while
+#: CR3 stays at 3% to 5%.
+FEW_CLUSTERS_HINT = (
+    "Report sp.wild_cluster_bootstrap (or sp.wild_cluster_ci_inv for CIs): "
+    "near nominal size with few clusters of similar size when the regressor "
+    "varies across many of them. It is not a remedy when only one or two "
+    "clusters are treated (it then almost never rejects) or when one cluster "
+    "holds much of the sample (vce='cr3' held its size there); see "
+    "tests/reliability/few_clusters_results.json."
+)
+
+
+def effective_n_clusters(keys: Any) -> float:
+    """Effective number of clusters by size: ``(sum n_g)^2 / sum n_g^2``.
+
+    The inverse Herfindahl index of the cluster shares. It equals the
+    number of clusters when they are the same size and falls toward 1 as
+    one of them dominates. In ``tests/reliability/few_clusters.py`` CR1
+    rejects a true null about 6% of the time when this is 36 or more, 8%
+    at 26, 10% at 18, and 36% when one of 40 clusters holds half the
+    sample (effective number 4), so the count of clusters alone does not
+    say whether cluster-robust inference is safe.
+    """
+    counts = pd.Series(np.asarray(keys)).value_counts().to_numpy(dtype=float)
+    if counts.size == 0:
+        return 0.0
+    return float(counts.sum() ** 2 / (counts**2).sum())
+
+
 #: Few *treated* clusters. The cluster-robust variance estimates the treated
 #: side's contribution from as many draws as there are treated clusters, so
 #: the over-rejection is governed by that count and not by the total (Conley
@@ -115,6 +156,406 @@ _FEW_CLUSTERS_MIN = 30
 #: report; with one treated cluster the CRVE rejects a true null most of the
 #: time whatever the number of controls.
 _FEW_TREATED_MIN = 10
+
+
+#: Kish effective sample size below which a weighted HC0 / HC1 interval
+#: is visibly too short (``tests/reliability/extreme_weights.py``: 93%
+#: coverage at 82, 88% at 53, 84% at 17, while HC3 stays at 93% to 94%).
+_FEW_EFFECTIVE_OBS = 100
+
+
+def kish_effective_n(weights: Any) -> float:
+    """Kish effective sample size ``(sum w)^2 / sum w^2`` of a weight vector."""
+    w = np.asarray(weights, dtype=float).ravel()
+    denom = float((w**2).sum())
+    return float(w.sum() ** 2 / denom) if denom > 0 else 0.0
+
+
+def warn_if_weights_extreme(
+    weights: Any,
+    variance: str,
+    stacklevel: int = 3,
+    *,
+    entry: str = "sp.regress",
+    robust_option: str = "robust='hc1' (Stata [pw=])",
+    small_sample_option: Optional[str] = "vce='hc3'",
+    classical_reading: str = "analytic weights (Stata [aw=])",
+    classical_assumption: str = "precisions (error variance proportional to 1 / w)",
+    evidence: str = "tests/reliability/extreme_weights_results.json",
+    declared: bool = False,
+    offers_weights_as: bool = True,
+) -> float:
+    """Kish effective sample size; warn where the studies found intervals short.
+
+    ``variance`` is ``"classical"``, a heteroskedasticity-robust label
+    (``"hc0"`` / ``"hc1"`` / ``"hc2"`` / ``"robust"``), or anything else (no
+    warning). Two findings, of ``tests/reliability/extreme_weights.py`` for
+    ``sp.regress`` and ``extreme_weights_models.py`` for fixed effects and
+    Poisson (2,000 replications a cell):
+
+    * the classical weighted variance is right when the weights are
+      precisions or frequencies and badly wrong when they are sampling
+      weights: 78% coverage of a 95% interval at a Kish ratio of 0.4, 34%
+      to 47% at 0.05 to 0.09 (OLS); 45% to 80% (fixed effects) and 14% to
+      68% (Poisson) in the same range;
+    * robust variances are right in large effective samples and too short
+      in small ones (OLS HC1 84% at a Kish size of 17, Poisson 84% at 17
+      and 88% at 53), where HC3 holds for OLS.
+
+    The keyword arguments name the entry point's own options, so the
+    hint is one the caller can act on; ``small_sample_option=None`` says
+    the entry point has no small-sample correction to offer.
+    """
+    import warnings
+
+    from ..exceptions import AssumptionWarning
+
+    w = np.asarray(weights, dtype=float).ravel()
+    n = int(w.size)
+    n_eff = kish_effective_n(w)
+    if n == 0:
+        return n_eff
+    ratio = n_eff / n
+    diagnostics = {"n_obs": n, "n_effective_weights": n_eff, "kish_ratio": ratio}
+    if variance == "classical" and ratio < 0.5 and not declared:
+        # ``declared``: the caller said what the weights are (weights_as=),
+        # so the reading the classical variance assumes is the stated one.
+        small = (
+            f", or {small_sample_option} when the effective sample is small"
+            if small_sample_option
+            else ""
+        )
+        warnings.warn(
+            AssumptionWarning(
+                f"The weights are dispersed (Kish effective sample size "
+                f"{n_eff:.0f} of {n}) and the standard errors are the "
+                "classical weighted ones, which assume the weights are "
+                f"{classical_assumption}. If they "
+                "are sampling weights these intervals are far too short.",
+                recovery_hint=(
+                    "For sampling or inverse-probability weights pass "
+                    f"{robust_option}{small}"
+                    + (", or say weights_as='sampling'" if offers_weights_as else "")
+                    + f". Keep the default only for {classical_reading}"
+                    + (
+                        f"; weights_as='{classical_reading.split(' ')[0]}' says "
+                        "so and silences this warning"
+                        if offers_weights_as
+                        else ""
+                    )
+                    + f". See {evidence}."
+                ),
+                diagnostics=diagnostics,
+                alternative_functions=[entry],
+            ),
+            stacklevel=stacklevel,
+        )
+    elif (
+        variance in ("hc0", "hc1", "hc2", "robust")
+        and n_eff < _FEW_EFFECTIVE_OBS
+        and ratio < 0.5
+    ):
+        label = "robust" if variance == "robust" else variance.upper()
+        hint = (
+            f"Use {small_sample_option}, which held its coverage in the same "
+            f"designs; see {evidence}."
+            if small_sample_option
+            else (
+                f"{entry} has no small-sample correction for this case: "
+                "report the interval as a lower bound on the uncertainty, or "
+                f"trim the weights. See {evidence}."
+            )
+        )
+        warnings.warn(
+            AssumptionWarning(
+                f"A few observations carry most of the weight (Kish effective "
+                f"sample size {n_eff:.0f} of {n}): {label} "
+                "intervals are too short in that case.",
+                recovery_hint=hint,
+                diagnostics=diagnostics,
+                alternative_functions=[entry],
+            ),
+            stacklevel=stacklevel,
+        )
+    return n_eff
+
+
+def few_ever_treated_columns(
+    X: Any, names: Any, keys: Any, max_columns: int = 60
+) -> List[Dict[str, Any]]:
+    """0/1 regressors that are ever 1 in only a few clusters.
+
+    The fixed-effects counterpart of :func:`few_treated_cluster_columns`.
+    In a difference-in-differences regression the treatment dummy varies
+    within a treated unit, so it is not a cluster-level regressor; what
+    can be few is the number of clusters in which it is ever 1. In the
+    fourth block of ``tests/reliability/few_clusters.py`` (40 units, 10
+    periods, AR(1) errors, a true effect of zero) the unit-clustered
+    two-way fixed-effects test rejects 75% of the time with one treated
+    unit, 31% with two, 10% with five and 6% with ten. The placebo test
+    of ``sp.did_few_treated`` holds its size with one or two (3% and 7%)
+    and over-rejects beyond that (10% at five, 14% at ten).
+
+    A column is reported when it is 0/1, at least one cluster is never 1,
+    and the clusters ever at 1 number fewer than ``_FEW_TREATED_MIN`` and
+    under a quarter of all clusters. Level dummies of a categorical term
+    are skipped, and designs wider than ``max_columns`` are not scanned.
+    """
+    X = np.asarray(X, dtype=float)
+    if X.ndim != 2 or X.shape[1] > max_columns:
+        return []
+    codes = pd.factorize(np.asarray(keys))[0]
+    if codes.size != X.shape[0] or codes.min(initial=0) < 0:
+        return []
+    n_clusters = int(codes.max()) + 1 if codes.size else 0
+    if n_clusters < 2:
+        return []
+    out: List[Dict[str, Any]] = []
+    for j, name in enumerate(names):
+        if "[T." in str(name) or str(name).startswith("C("):
+            continue
+        col = X[:, j]
+        if not np.all((col == 0.0) | (col == 1.0)) or col.max(initial=0.0) != 1.0:
+            continue
+        ever = int((np.bincount(codes, weights=col, minlength=n_clusters) > 0).sum())
+        never = n_clusters - ever
+        if never >= 1 and ever < _FEW_TREATED_MIN and 4 * ever < n_clusters:
+            out.append(
+                {
+                    "variable": str(name),
+                    "clusters_ever_at_one": ever,
+                    "clusters_never_at_one": never,
+                }
+            )
+    return out
+
+
+def warn_if_few_ever_treated(
+    X: Any,
+    names: Any,
+    keys: Any,
+    cluster: Any,
+    stacklevel: int = 3,
+    skip: Any = (),
+) -> List[Dict[str, Any]]:
+    """:func:`few_ever_treated_columns`, with a warning for each column.
+
+    More than three such columns is a hand-made set of dummies, not a
+    treatment: they are returned and not warned about. Variables named in
+    ``skip`` were reported by another check already.
+    """
+    import warnings
+
+    from ..exceptions import AssumptionWarning
+
+    skip = set(skip)
+    found = [
+        rec
+        for rec in few_ever_treated_columns(X, names, keys)
+        if rec["variable"] not in skip
+    ]
+    for rec in found if len(found) <= 3 else ():
+        warnings.warn(
+            AssumptionWarning(
+                f"'{rec['variable']}' is 1 in only "
+                f"{rec['clusters_ever_at_one']} of "
+                f"{rec['clusters_ever_at_one'] + rec['clusters_never_at_one']} "
+                f"clusters (cluster='{cluster}'). With so few treated clusters "
+                "the cluster-robust standard error of its coefficient is too "
+                "small whatever the total number of clusters.",
+                recovery_hint=(
+                    (
+                        "For a difference-in-differences design use "
+                        "sp.did_few_treated, which inverts a placebo "
+                        "distribution built from the untreated clusters and "
+                        "held its size with one or two treated clusters."
+                        if rec["clusters_ever_at_one"] <= 2
+                        else "No test here is exact with this many: with five "
+                        "treated clusters of 40 the cluster-robust test "
+                        "rejected a true null 10% of the time and "
+                        "sp.did_few_treated did no better. Report the result "
+                        "as fragile."
+                    )
+                    + " See tests/reliability/few_clusters_results.json."
+                ),
+                diagnostics=dict(rec),
+                alternative_functions=(
+                    ["sp.did_few_treated"] if rec["clusters_ever_at_one"] <= 2 else []
+                ),
+            ),
+            stacklevel=stacklevel,
+        )
+    return found
+
+
+def weighted_effective_n_clusters(weights: Any, keys: Any) -> float:
+    """Kish effective number of clusters, by the weight each cluster carries.
+
+    ``(sum_g W_g)^2 / sum_g W_g^2`` with ``W_g`` the total weight of
+    cluster ``g``. With equal weights this is :func:`effective_n_clusters`.
+    """
+    totals = (
+        pd.Series(np.asarray(weights, dtype=float).ravel())
+        .groupby(pd.Series(np.asarray(keys)).to_numpy())
+        .sum()
+        .to_numpy()
+    )
+    return kish_effective_n(totals)
+
+
+def warn_if_weighted_clusters_few(
+    weights: Any, keys: Any, cluster: Any, stacklevel: int = 3
+) -> float:
+    """Weight-effective number of clusters; warn when the weights leave few.
+
+    In ``tests/reliability/extreme_weights_models.py`` the cluster-robust
+    interval of a weighted fixed-effects regression covered 94% with 82
+    clusters in effect, 91% with 23, 87% with 17 and 78% with 7, although
+    50 or 200 clusters were present and equal in size. The warning fires
+    when the count and the size-effective count are both at least
+    ``_FEW_CLUSTERS_MIN`` (otherwise the existing warnings already speak)
+    and the weight-effective count is below it.
+    """
+    import warnings
+
+    from ..exceptions import AssumptionWarning
+
+    series = pd.Series(np.asarray(keys))
+    n_clusters = int(series.nunique())
+    effective = weighted_effective_n_clusters(weights, series.to_numpy())
+    if (
+        n_clusters >= _FEW_CLUSTERS_MIN
+        and effective_n_clusters(series) >= _FEW_CLUSTERS_MIN
+        and effective < _FEW_CLUSTERS_MIN
+    ):
+        warnings.warn(
+            AssumptionWarning(
+                f"{n_clusters} clusters for cluster='{cluster}', but the "
+                f"weights concentrate on a few of them: the weight-effective "
+                f"number is {effective:.1f} (< {_FEW_CLUSTERS_MIN}). "
+                "Cluster-robust intervals are too short in that case.",
+                recovery_hint=(
+                    "Report the weight-effective count next to the estimate "
+                    "and read the interval as too short; trimming the weights "
+                    "is the usual remedy. See "
+                    "tests/reliability/extreme_weights_models_results.json."
+                ),
+                diagnostics={
+                    "n_clusters": n_clusters,
+                    "n_clusters_effective_weights": effective,
+                    "threshold": _FEW_CLUSTERS_MIN,
+                },
+            ),
+            stacklevel=stacklevel,
+        )
+    return effective
+
+
+def warn_if_clusters_unequal(keys: Any, cluster: Any, stacklevel: int = 3) -> float:
+    """Effective number of clusters; warn when the count hides how few.
+
+    Returns :func:`effective_n_clusters` of ``keys``. When there are at
+    least ``_FEW_CLUSTERS_MIN`` clusters but fewer than that in effect, an
+    :class:`~statspai.exceptions.AssumptionWarning` is raised: the
+    few-cluster warning keyed on the count stays silent there, and in
+    ``tests/reliability/few_clusters.py`` cluster-robust t-tests reject a
+    true null 36% of the time (pooled regression) and 22% (fixed-effects
+    panel) with 40 clusters of which one holds half the sample.
+    """
+    import warnings
+
+    from ..exceptions import AssumptionWarning
+
+    series = pd.Series(np.asarray(keys))
+    n_clusters = int(series.nunique())
+    effective = effective_n_clusters(series)
+    if n_clusters >= _FEW_CLUSTERS_MIN and effective < _FEW_CLUSTERS_MIN:
+        top_share = float(series.value_counts(normalize=True).iloc[0])
+        warnings.warn(
+            AssumptionWarning(
+                f"{n_clusters} clusters for cluster='{cluster}', but unequal "
+                f"in size: the effective number is {effective:.1f} "
+                f"(< {_FEW_CLUSTERS_MIN}; the largest holds "
+                f"{100 * top_share:.0f}% of the rows). Cluster-robust "
+                "t-tests over-reject in that case as they do with few "
+                "clusters.",
+                recovery_hint=FEW_CLUSTERS_HINT,
+                diagnostics={
+                    "n_clusters": n_clusters,
+                    "n_clusters_effective": effective,
+                    "largest_cluster_share": top_share,
+                    "threshold": _FEW_CLUSTERS_MIN,
+                },
+                alternative_functions=[
+                    "sp.wild_cluster_bootstrap",
+                    "sp.wild_cluster_ci_inv",
+                ],
+            ),
+            stacklevel=stacklevel,
+        )
+    return effective
+
+
+def few_treated_cluster_columns(
+    X: Any, names: Any, keys: Any, max_columns: int = 60
+) -> List[Dict[str, Any]]:
+    """Cluster-level 0/1 regressors with few clusters on one side.
+
+    A regressor that is constant within every cluster and takes the
+    values 0 and 1 is a cluster-level treatment. When fewer than
+    ``_FEW_TREATED_MIN`` clusters carry one of the two
+    values, and they are under a quarter of all clusters, the
+    cluster-robust variance of its coefficient rests on that many draws:
+    in ``tests/reliability/few_clusters.py``, with two treated clusters
+    out of 40, CR1 rejects a true null 31% of the time and the wild
+    cluster bootstrap never does.
+
+    Returns one record per such column (name, clusters at 1, clusters at
+    0). Designs wider than ``max_columns`` are not scanned, and the level
+    dummies of a categorical term (``C(state)[T.CA]``) are skipped: a set
+    of cluster indicators is not a treatment.
+    """
+    X = np.asarray(X)
+    if X.ndim != 2 or X.shape[1] > max_columns:
+        return []
+    codes = pd.factorize(np.asarray(keys))[0]
+    if codes.min(initial=0) < 0:
+        return []
+    n_clusters = int(codes.max()) + 1 if codes.size else 0
+    if n_clusters < 2:
+        return []
+    out: List[Dict[str, Any]] = []
+    for j, name in enumerate(names):
+        if "[T." in str(name) or str(name).startswith("C("):
+            continue
+        col = X[:, j]
+        lo, hi = col.min(), col.max()
+        if lo != 0.0 or hi != 1.0:
+            continue
+        if not np.all((col == 0.0) | (col == 1.0)):
+            continue
+        ones = np.bincount(codes, weights=col, minlength=n_clusters)
+        sizes = np.bincount(codes, minlength=n_clusters)
+        if not np.all((ones == 0) | (ones == sizes)):
+            continue  # varies within some cluster
+        treated = int((ones > 0).sum())
+        control = n_clusters - treated
+        # Few on one side in absolute terms and as a share: five of ten
+        # is the balanced few-cluster case, which the count warning covers
+        # and where the bootstrap does work.
+        if (
+            min(treated, control) < _FEW_TREATED_MIN
+            and 4 * min(treated, control) < n_clusters
+        ):
+            out.append(
+                {
+                    "variable": str(name),
+                    "clusters_at_one": treated,
+                    "clusters_at_zero": control,
+                }
+            )
+    return out
+
 
 #: Synthetic-control pre-fit quality: pre-treatment RMSPE divided by the
 #: pre-period SD of the treated outcome. Deliberately conservative (0.6 ⇒ the
@@ -232,7 +673,9 @@ def causal_violations(result: Any) -> List[Dict[str, Any]]:
             if _fam != "generic":
                 method_family = _fam
                 break
-    out: List[Dict[str, Any]] = []
+    from ._design_guardrails import stored_design_violations
+
+    out: List[Dict[str, Any]] = stored_design_violations(result)
 
     # --- DID: parallel trends ------------------------------------------
     pretrend_p = _as_float(_safe_get(mi, "pretrend_test", "pvalue"))
@@ -249,12 +692,12 @@ def causal_violations(result: Any) -> List[Dict[str, Any]]:
                     f"< {_PRETREND_ALPHA} — parallel trends is likely violated."
                 ),
                 "recovery_hint": (
-                    "Run sp.sensitivity_rr(result) for Rambachan & Roth (2023) "
-                    "honest CIs, and consider sp.callaway_santanna or "
+                    "Run sp.honest_did(result) / sp.breakdown_m(result) for "
+                    "Rambachan & Roth (2023) honest CIs, and consider sp.callaway_santanna or "
                     "sp.did_imputation (robust to heterogeneous effects)."
                 ),
                 "alternatives": [
-                    "sp.sensitivity_rr",
+                    "sp.honest_did",
                     "sp.callaway_santanna",
                     "sp.did_imputation",
                 ],
@@ -447,6 +890,33 @@ def causal_violations(result: Any) -> List[Dict[str, Any]]:
             }
         )
 
+    # --- IPW: weight dispersion ------------------------------------------
+    # The share of extreme propensities above can be small while one arm's
+    # weights are still concentrated on a few units (a 90%-treated sample
+    # whose controls have propensities between 0.8 and 1).
+    ess_ratio = _as_float(mi.get("ess_ratio_min"))
+    if ess_ratio is not None and ess_ratio < _IPW_ESS_RATIO:
+        out.append(
+            {
+                "kind": "assumption",
+                "severity": "warning",
+                "test": "ipw_effective_sample_size",
+                "value": ess_ratio,
+                "threshold": _IPW_ESS_RATIO,
+                "message": (
+                    f"The weights leave one arm an effective sample of "
+                    f"{ess_ratio:.0%} of its size; the estimate rests on a "
+                    "few heavily weighted units."
+                ),
+                "recovery_hint": (
+                    "Compare with sp.aipw, restrict to the overlap region "
+                    "(trim= or sp.trimming), or target the overlap "
+                    "population with estimand='ATO'."
+                ),
+                "alternatives": ["sp.aipw", "sp.trimming", "sp.overlap_weights"],
+            }
+        )
+
     # --- Heckman: selection correction ---------------------------------
     # Gated on the two-step selection keys the estimator stores.
     rho = _as_float(mi.get("rho"))
@@ -582,7 +1052,7 @@ def causal_violations(result: Any) -> List[Dict[str, Any]]:
             }
         )
 
-    # --- RD: manipulation (McCrary) -------------------------------------
+    # --- RD: manipulation (density test; key kept as 'mccrary') ----------
     mccrary_p = _as_float(_safe_get(mi, "mccrary", "pvalue"))
     if mccrary_p is not None and mccrary_p < 0.05 and method_family == "rd":
         out.append(
@@ -593,11 +1063,11 @@ def causal_violations(result: Any) -> List[Dict[str, Any]]:
                 "value": mccrary_p,
                 "threshold": 0.05,
                 "message": (
-                    f"McCrary density test p = {mccrary_p:.3g} < 0.05 — "
+                    f"Density test (rddensity) p = {mccrary_p:.3g} < 0.05 — "
                     "running variable may be manipulated at the cutoff."
                 ),
                 "recovery_hint": (
-                    "Re-test with the CJM density test (sp.rddensity); "
+                    "Inspect the density with sp.rdplotdensity; "
                     "manipulation undermines RD identification, so also consider "
                     "excluding a donut window around the cutoff or reporting "
                     "partial-identification bounds."
@@ -631,7 +1101,9 @@ def causal_violations(result: Any) -> List[Dict[str, Any]]:
                 "value": result.se,
                 "threshold": 0,
                 "message": "Standard error is non-positive / NaN.",
-                "recovery_hint": "Check sandwich / cluster setup; inspect influence functions.",
+                "recovery_hint": (
+                    "Check sandwich / cluster setup; inspect influence functions."
+                ),
                 "alternatives": [],
             }
         )
@@ -718,7 +1190,11 @@ def causal_agent_summary(result: Any) -> Dict[str, Any]:
 
 def econometric_violations(result: Any) -> List[Dict[str, Any]]:
     """Detect common violations on an :class:`EconometricResults`."""
-    out: List[Dict[str, Any]] = []
+    from ._design_guardrails import stored_design_violations
+
+    # Design guardrails recorded at fit time (staggered TWFE, treatment
+    # assigned above the clustering level, specification search).
+    out: List[Dict[str, Any]] = stored_design_violations(result)
     diag: Dict[str, Any] = getattr(result, "diagnostics", None) or {}
     mi: Dict[str, Any] = getattr(result, "model_info", None) or {}
     model_type = (mi.get("model_type", "") or "").lower()
@@ -766,10 +1242,7 @@ def econometric_violations(result: Any) -> List[Dict[str, Any]]:
                     "cluster-robust SEs are downward-biased and t-tests "
                     "over-reject (Cameron-Gelbach-Miller 2008)."
                 ),
-                "recovery_hint": (
-                    "Report sp.wild_cluster_bootstrap (or sp.wild_cluster_ci_inv "
-                    "for confidence intervals), correct with few clusters."
-                ),
+                "recovery_hint": FEW_CLUSTERS_HINT,
                 "alternatives": [
                     "sp.wild_cluster_bootstrap",
                     "sp.wild_cluster_ci_inv",
@@ -975,6 +1448,17 @@ def _positional(arr: Any, i: int) -> Optional[float]:
         return None
 
 
+def _inference_rule_or_none(result: Any) -> Optional[Dict[str, Any]]:
+    rule = getattr(result, "inference_rule", None)
+    if not callable(rule):
+        return None
+    try:
+        return rule()
+    except (AttributeError, KeyError, TypeError, ValueError) as exc:
+        # the payload must still build; say why the rule is missing
+        return {"unavailable": f"{type(exc).__name__}: {exc}"}
+
+
 def econometric_agent_summary(result: Any) -> Dict[str, Any]:
     """JSON-ready structured summary of an :class:`EconometricResults`."""
     params = getattr(result, "params", None)
@@ -1019,8 +1503,133 @@ def econometric_agent_summary(result: Any) -> Dict[str, Any]:
         ),
         "df_resid": data_info.get("df_resid"),
         "dependent_var": data_info.get("dependent_var", ""),
+        "inference": _inference_rule_or_none(result),
         "coefficients": coefs,
         "diagnostics": scalar_diagnostics,
         "violations": econometric_violations(result),
         "next_steps": next_steps,
     }
+
+
+def note_weight_diagnostics(
+    model_info: Dict[str, Any],
+    weights: Any,
+    variance: str,
+    *,
+    entry: str,
+    robust_option: str,
+    classical_reading: str,
+    classical_assumption: str = "precisions (error variance proportional to 1 / w)",
+    cluster_keys: Any = None,
+    cluster: Any = None,
+    stacklevel: int = 4,
+    weights_as: Optional[str] = None,
+    offers_weights_as: bool = True,
+) -> None:
+    """Record (and warn on) the weight diagnostics of a weighted fit.
+
+    For the entry points that have no HC3: ``sp.panel``, ``sp.hdfe_ols``,
+    ``sp.feols``, ``sp.poisson``, ``sp.nbreg``, ``sp.ppmlhdfe``,
+    ``sp.fast.feols``, ``sp.fast.fepois``. Writes
+    ``n_effective_weights`` and, for a one-way clustered fit,
+    ``n_clusters_effective_weights`` into ``model_info``.
+    """
+    if weights_as is None:
+        weights_as = _DECLARED_WEIGHTS_AS.get()
+    model_info["n_effective_weights"] = warn_if_weights_extreme(
+        weights,
+        variance,
+        stacklevel=stacklevel,
+        entry=entry,
+        robust_option=robust_option,
+        small_sample_option=None,
+        classical_reading=classical_reading,
+        classical_assumption=classical_assumption,
+        declared=weights_as is not None,
+        offers_weights_as=offers_weights_as,
+        evidence=(
+            "tests/reliability/extreme_weights_models_results.json and "
+            "extreme_weights_fast_results.json"
+        ),
+    )
+    if weights_as is not None:
+        model_info["weights_as"] = weights_as
+    if variance == "cluster" and cluster_keys is not None:
+        model_info["n_clusters_effective_weights"] = warn_if_weighted_clusters_few(
+            weights, cluster_keys, cluster, stacklevel=stacklevel
+        )
+
+
+#: ``weights_as=`` of the call in progress, for entry points whose weight
+#: diagnostic runs several frames below the public function (``sp.panel``,
+#: ``sp.feols``, ``sp.iv``). Set with :func:`declaring_weights_as`.
+_DECLARED_WEIGHTS_AS: "contextvars.ContextVar[Optional[str]]" = contextvars.ContextVar(
+    "statspai_weights_as", default=None
+)
+
+
+@contextlib.contextmanager
+def declaring_weights_as(value: Optional[str]) -> Any:
+    """Make ``value`` the declared reading for the fit inside the block."""
+    token = _DECLARED_WEIGHTS_AS.set(value)
+    try:
+        yield
+    finally:
+        _DECLARED_WEIGHTS_AS.reset(token)
+
+
+#: The readings ``weights_as=`` knows. ``analytic`` and ``frequency`` are
+#: the two model-based ones; an entry point implements one of them.
+WEIGHTS_AS = ("analytic", "frequency", "sampling")
+
+
+def resolve_weights_as(
+    weights_as: Any, *, has_weights: bool, native: str, entry: str
+) -> Optional[str]:
+    """Validate ``weights_as=`` for an entry point; ``None`` if not given.
+
+    ``native`` is the reading the entry point's model-based variance
+    implements: ``'analytic'`` (Stata ``[aw=]``: the variance does not
+    change when the weights are multiplied by a constant) for the linear
+    estimators, ``'frequency'`` (``[fw=]`` / ``[iw=]``: it scales with
+    them) for the likelihood ones. ``'sampling'`` (``[pw=]``) is accepted
+    everywhere and asks for a robust variance. The other model-based
+    reading is refused rather than approximated: under Stata's ``[fw=]`` a
+    linear regression also changes its ``N`` and degrees of freedom, and
+    under ``[aw=]`` a likelihood model rescales the weights to sum to
+    ``N``, neither of which the entry point does.
+    """
+    if weights_as is None:
+        return None
+    from ..exceptions import MethodIncompatibility
+
+    key = str(weights_as).lower()
+    if key not in WEIGHTS_AS:
+        raise MethodIncompatibility(
+            f"weights_as must be one of {list(WEIGHTS_AS)}; got {weights_as!r}.",
+            recovery_hint=f"Use weights_as='{native}' or 'sampling'.",
+            diagnostics={"weights_as": weights_as},
+        )
+    if not has_weights:
+        raise MethodIncompatibility(
+            f"weights_as={key!r} says how to read weights=, and no weights were "
+            "passed.",
+            recovery_hint="Pass weights=, or drop weights_as=.",
+            diagnostics={"weights_as": key},
+        )
+    if key not in (native, "sampling"):
+        other = (
+            "Stata's [fw=] also changes N and the degrees of freedom of a "
+            "linear regression"
+            if key == "frequency"
+            else "Stata's [aw=] rescales the weights of a likelihood model to "
+            "sum to N"
+        )
+        raise MethodIncompatibility(
+            f"{entry} reads weights= as {native} weights or as sampling weights; "
+            f"weights_as={key!r} is not implemented ({other}).",
+            recovery_hint=f"Use weights_as='{native}' for the model-based "
+            "variance, or weights_as='sampling' for the robust one.",
+            diagnostics={"weights_as": key, "native": native},
+        )
+    return key

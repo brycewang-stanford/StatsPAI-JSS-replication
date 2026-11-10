@@ -20,6 +20,7 @@ effects [kattenberg2023causal] on a dyadic trade panel) on simulated data.
 
 from __future__ import annotations
 
+import re
 import warnings
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
@@ -512,6 +513,9 @@ def cate_pretrend_test(
     """
     context = "cate_pretrend_test()"
     _require_grf(forest, context)
+    from ._grf_family import validate_alpha
+
+    alpha = validate_alpha(alpha, context)
     if not gi.is_fe_forest(forest):
         raise MethodIncompatibility(
             f"{context} needs a causal forest with fixed effects (fe=...).",
@@ -920,11 +924,34 @@ def _run_splits(
     """
     runs: List[Dict[str, Any]] = []
     failures: List[str] = []
-    for b in range(n_splits):
-        try:
-            runs.append(run_one(b))
-        except (DataInsufficient, NumericalInstability) as exc:
-            failures.append(str(exc).splitlines()[0])
+    # Each split refits the halves, so a data condition (thin overlap, a
+    # small cluster) warns once per split: 42 identical lines from one
+    # call buried anything else. Collect them and say each once, with how
+    # many splits raised it.
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        for b in range(n_splits):
+            try:
+                runs.append(run_one(b))
+            except (DataInsufficient, NumericalInstability) as exc:
+                failures.append(str(exc).splitlines()[0])
+    # Messages differ only in their numbers from split to split; group on
+    # the text with the numbers taken out and keep the first instance.
+    first: Dict[Tuple[type, str], str] = {}
+    count: Dict[Tuple[type, str], int] = {}
+    for w in caught:
+        text = str(w.message)
+        key = (w.category, re.sub(r"\d+(?:\.\d+)?", "#", text))
+        first.setdefault(key, text)
+        count[key] = count.get(key, 0) + 1
+    for key, text in first.items():
+        n = count[key]
+        if n > 1:
+            text += (
+                f" [{context}: raised {n} times over {n_splits} splits; the "
+                "numbers are from the first]"
+            )
+        warnings.warn(text, key[0], stacklevel=3)
     n_failed = len(failures)
     # Enough must survive to take a median of, but "enough" is relative to
     # what was asked for: n_splits=2 must not trip a floor of three.
@@ -981,9 +1008,41 @@ def _refit_halves(
     n_rows = int(len(forest._Y_original))
     dropped = int(n_rows - in_train.sum() - in_eval.sum())
     params = {p: getattr(forest, p) for p in _CTOR_PARAMS}
+    # The constructor fills model_y / model_t with scikit-learn defaults that
+    # the GRF path never uses; handing those back would make them count as
+    # user models and switch the halves to cross-fitted scikit-learn
+    # nuisances (class labels as W_hat under fe=). Only models the caller
+    # actually supplied are carried.
+    if not getattr(forest, "_user_model_y", False):
+        params["model_y"] = None
+    if not getattr(forest, "_user_model_t", False):
+        params["model_t"] = None
     Y = np.asarray(forest._Y_original, dtype=float)
     T = np.asarray(forest._T_original, dtype=float)
     X = np.asarray(forest._X_original, dtype=float)
+    # Controls of the forest being split (they enter the nuisance models and,
+    # under fe=, the imputation design).
+    controls = getattr(forest, "_W_original", None)
+    if controls is None:
+        controls = getattr(forest, "_fe_W", None)
+    if (
+        controls is None
+        and int(getattr(forest, "data_info", {}).get("n_controls", 0)) > 0
+    ):
+        raise MethodIncompatibility(
+            f"{context}: this forest was fitted with controls but does not "
+            "carry them (it was fitted by an older release), so the halves "
+            "cannot be refitted the way it was.",
+            recovery_hint="Refit the forest with this release and call again.",
+        )
+    # Nuisances the caller supplied are data, not estimates: each half keeps
+    # its own rows of them instead of re-estimating.
+    source = getattr(forest, "diagnostics", {}).get("nuisance_source", {}) or {}
+    supplied = {
+        name: np.asarray(getattr(forest, attr), dtype=float)
+        for name, attr in (("Y_hat", "_m_insample"), ("W_hat", "_e_insample"))
+        if source.get(name) == "user-supplied"
+    }
     unit = getattr(forest, "_fe_unit", None)
     time = getattr(forest, "_fe_time", None)
     clusters = getattr(forest, "_clusters", None)
@@ -1005,6 +1064,9 @@ def _refit_halves(
                 Y=Y[mask],
                 T=T[mask],
                 X=X[mask],
+                W=None if controls is None else np.asarray(controls)[mask],
+                Y_hat=supplied["Y_hat"][mask] if "Y_hat" in supplied else None,
+                W_hat=supplied["W_hat"][mask] if "W_hat" in supplied else None,
                 clusters=None if clusters is None else np.asarray(clusters)[mask],
                 id=None if unit is None else np.asarray(unit)[mask],
                 time=None if time is None else np.asarray(time)[mask],
@@ -1122,7 +1184,7 @@ def _rate_split_once(
     return out
 
 
-@accepts_aliases(_strict=True, controls="covariates")
+@accepts_aliases(_strict=True, controls="covariates", seed="random_state")
 def rate_split(
     forest: Any,
     target: str = "AUTOC",
@@ -1145,10 +1207,10 @@ def rate_split(
     out-of-bag: every imputation score carries :math:`-\hat\gamma_t`,
     estimated from the same periods the forest was trained on, so the
     ranking and the scores stay correlated. Measured on a design with **no
-    heterogeneity whatsoever** (200 replications, N = 150 units, T = 8,
+    heterogeneity whatsoever** (400 replications, N = 150 units, T = 8,
     staggered adoption selected on the unit effect, ``tau = 0.3``): AUTOC
-    averaged **-0.025** instead of 0 and a nominal 5% test rejected
-    **17.5%** of the time; QINI averaged -0.006 and rejected 13.5%.
+    averaged **-0.028** instead of 0 and a nominal 5% test rejected
+    **16.0%** of the time; QINI averaged -0.006 and rejected 12.2%.
 
     This function removes the overlap. The units (or, with ``members=``, the
     nodes of a dyadic panel) are split in two; a forest with the same
@@ -1156,12 +1218,20 @@ def rate_split(
     ranks the evaluation half's treated cells, whose imputation scores come
     from an untreated two-way model fitted on the evaluation half alone.
     Nothing the rule saw enters the score it is graded on. On the same null
-    design AUTOC then averaged **+0.0008** and rejected **7.5%** of the time
-    (QINI +0.0004 and 4.0%); against ``tau = 0.3 + 0.5 z`` it kept 99.5% and
-    100% power. ``variance='forest'`` rejected 5.0% and 4.0% under the null
-    but understates the spread under the alternative (mean standard error
-    0.060 against a Monte Carlo 0.083), which is why ``'bjs'`` is the
-    default here.
+    design, with the default 21 splits, AUTOC then averaged **-0.0002** and
+    rejected **0.5%** of the time (QINI +0.0004 and 0.0%): the aggregation
+    over splits is conservative by construction, so the test errs on the
+    side of not rejecting. Against ``tau = 0.3 + 0.5 z`` it rejected in
+    every replication. There the estimate averaged 0.383 for AUTOC where
+    the ideal ranking has 0.452, because a forest grown on half the units
+    ranks imperfectly: the quantity estimated is the RATE of the rule that
+    was fitted, not of the best rule. ``variance='forest'`` gives the same
+    rejection rates under the null but narrower intervals under the
+    alternative (they covered the ideal ranking's AUTOC 89.5% of the time
+    against 94.5%), which is why ``'bjs'`` is the default here. The study
+    is ``tests/reliability/forest_split_evaluation.py``; single-split
+    figures quoted through 1.39.3 (7.5% and 4.0%) came from
+    halves that were not refitted the way the forest was.
 
     The price is sample: each forest sees half the units, so the rule is
     noisier than the one fitted on everything and the RATE it earns is a
@@ -1601,7 +1671,7 @@ def _forest_policy_tree_once(
     }
 
 
-@accepts_aliases(_strict=True, controls="covariates")
+@accepts_aliases(_strict=True, controls="covariates", seed="random_state")
 def forest_policy_tree(
     forest: Any,
     *,
@@ -1648,12 +1718,13 @@ def forest_policy_tree(
     (200 replications, N = 200 units, T = 8) -- the same-sample gain
     averaged **+0.048**, larger than its own standard error of 0.037, and
     **13.0%** of runs reported a significant benefit from targeting where
-    none existed. Fitted and priced on disjoint halves: **+0.005** and
-    **3.5%**. The split costs almost nothing when the heterogeneity is
-    real: with ``tau = 0.3 + 0.8 z`` and ``cost = 0.3`` the oracle gain is
-    ``0.8 * phi(0) = 0.3191``, and the split-sample estimate averaged
-    **0.3189** at 99.5% power, against a same-sample **0.3316** that
-    overshoots by 0.012. The split is therefore not optional here;
+    none existed. Fitted and priced on disjoint halves, with the default
+    21 splits (400 replications): **+0.008** and **0.0%**. The split costs
+    little when the heterogeneity is real: with ``tau = 0.3 + 0.8 z`` and
+    ``cost = 0.3`` the oracle gain is ``0.8 * phi(0) = 0.3192``, and the
+    split-sample estimate averaged **0.307** and was significant in every
+    replication; the same-sample estimate overshoots the oracle (0.3316 in
+    the earlier study). The split is therefore not optional here;
     ``train_frac`` moves it, nothing switches it off.
 
     Parameters

@@ -17,15 +17,25 @@ Design: A Density Test."
 *Journal of Econometrics*, 142(2), 698-714. [@mccrary2008manipulation]
 """
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 import numpy as np
 import pandas as pd
 from scipy import stats
 
 from .._aliases import accepts_aliases
+from .._dict_result import DictResult
 from ..core.results import CausalResult
 from ..exceptions import DataInsufficient, MethodIncompatibility, NumericalInstability
+
+
+class OsterBoundsResult(DictResult):
+    """Result of :func:`oster_bounds`: a ``dict`` (keys unchanged) with
+    ``summary()`` / ``glance()`` / ``to_latex()`` ..."""
+
+    _title = "Oster (2019) coefficient-stability bounds"
+    _citation_keys = ("oster2019unobservable",)
+
 
 # ======================================================================
 # Oster (2019) Coefficient Stability Bounds
@@ -38,14 +48,18 @@ def oster_bounds(
     y: Optional[str] = None,
     treat: Optional[str] = None,
     controls: Optional[List[str]] = None,
-    r_max: Optional[float] = None,
+    r_max: Optional[Union[float, str]] = None,
     delta: float = 1.0,
     beta_short: Optional[float] = None,
     r2_short: Optional[float] = None,
     beta_long: Optional[float] = None,
     r2_long: Optional[float] = None,
     alpha: float = 0.05,
-) -> Dict[str, Any]:
+    absorb: Optional[Union[str, List[str]]] = None,
+    absorb_controls: Optional[Union[str, List[str]]] = None,
+    moments: Optional[Dict[str, float]] = None,
+    cluster: Optional[str] = None,
+) -> "OsterBoundsResult":
     """
     Oster (2019) coefficient stability bounds.
 
@@ -75,10 +89,13 @@ def oster_bounds(
         Treatment variable.
     controls : list of str, optional
         Control variables (included in the long but not short regression).
-    r_max : float, optional
+    r_max : float or str, optional
         Maximum R² under full selection. Default: min(1.0, 1.3 × R²_long).
         Must not exceed 1; a value at or below R²_long is replaced by
-        R²_long + 0.01 with a warning.
+        R²_long + 0.01 with a warning. A rule such as ``"1.3*r2_a"`` or
+        ``"1.3*r2"`` multiplies the long regression's adjusted / plain R²
+        (``r2_a`` is Stata ``regress``'s, or ``xtreg, fe``'s with
+        ``absorb=``, the base empirical papers use with ``psacalc``).
     delta : float, default 1.0
         Proportionality assumption: ratio of unobservable-to-observable
         selection. δ=1 means equal selection.
@@ -92,18 +109,48 @@ def oster_bounds(
         R² from long regression.
     alpha : float, default 0.05
         Significance level for the identified set.
+    absorb : str or list of str, optional
+        Fixed effects in both regressions, absorbed, as after
+        ``xtreg y d x, fe`` (the panel variable) or ``areg, absorb()``;
+        ``"id"`` or ``"id + firm"``. The coefficients and R² are then
+        within, as ``psacalc`` computes them after ``xtreg, fe``, and the
+        exact solution is used.
+    absorb_controls : str or list of str, optional
+        Fixed effects that are *controls*: absorbed in the long regression
+        only, like ``i.ind#i.year`` dummies in ``xtreg y d x i.ind#i.year,
+        fe``. ``"ind^year + city^year"`` (``#`` also accepted).
+    moments : dict, optional
+        With the summary-statistics call, the three variances ``psacalc``
+        uses -- ``{"sigma_yy": ..., "sigma_xx": ..., "t_x": ...}`` (variance
+        of y, of the treatment, and of the treatment residualised on the
+        controls) -- so the exact solution replaces the first-order
+        approximation.
+    cluster : str, optional
+        With ``absorb=``, the cluster variable of the ``xtreg, fe
+        vce(cluster c)`` whose ``e(r2_a)`` the ``"...*r2_a"`` rule should
+        reproduce: when the panel is nested in the cluster, Stata no longer
+        charges the panel means in its degrees of freedom. Point estimates
+        and the other inputs are unaffected.
 
     Returns
     -------
-    dict
+    OsterBoundsResult
+        A ``dict`` (the keys below, unchanged) that also has
+        ``summary()`` / ``glance()`` / ``to_latex()`` / ``to_word()``.
         Keys:
         - ``beta_short``, ``r2_short``: short regression estimates
         - ``beta_long``, ``r2_long``: long regression estimates
         - ``r_max``: maximum R² used
-        - ``delta_for_zero``: δ* such that adjusted β = 0 (robustness measure)
+        - ``delta_star`` (also ``delta_for_zero``): δ* such that adjusted
+          β = 0 (robustness measure) -- the key ``sp.oster_delta`` uses in
+          ``model_info['delta_star']``
         - ``beta_adjusted``: bias-adjusted β under (δ, R_max)
         - ``beta_adjusted_alternatives``: the other real roots of Oster's
           quadratic (δ = 1) / cubic (δ ≠ 1) -- exact method only
+        - ``r2_a_long``: adjusted R² of the long regression (NaN from
+          summaries)
+        - ``inputs``: the ``psacalc`` inputs used (None for the
+          approximation)
         - ``method``: ``"exact"`` when called with data -- Oster's exact
           solution, which reproduces her Stata ``psacalc`` (``delta`` and
           ``beta``) to machine precision -- or ``"approximate"`` when only
@@ -148,7 +195,29 @@ def oster_bounds(
 
     inputs: Optional[Dict[str, float]] = None
     if data is not None and y is not None and treat is not None:
-        inputs = oster_inputs(data, y, treat, controls or [])
+        if absorb is not None or absorb_controls is not None:
+            from ..core._group_terms import resolve_group_terms
+            from ._oster import oster_inputs_fe
+
+            def _terms(v: Optional[Union[str, List[str]]]) -> List[str]:
+                if v is None:
+                    return []
+                if isinstance(v, str):
+                    return [t.strip() for t in v.split("+") if t.strip()]
+                return list(v)
+
+            data, ab_names = resolve_group_terms(data, _terms(absorb))
+            data, abc_names = resolve_group_terms(data, _terms(absorb_controls))
+            if not ab_names:
+                raise MethodIncompatibility(
+                    "absorb_controls= needs absorb= (the effects in both "
+                    "regressions, e.g. the panel variable)."
+                )
+            inputs = oster_inputs_fe(
+                data, y, treat, controls or [], ab_names, abc_names, cluster=cluster
+            )
+        else:
+            inputs = oster_inputs(data, y, treat, controls or [])
         b_short, r2_s = inputs["beta_o"], inputs["r_o"]
         b_long, r2_l = inputs["beta_t"], inputs["r_t"]
     elif (
@@ -159,6 +228,22 @@ def oster_bounds(
     ):
         b_short, r2_s = beta_short, r2_short
         b_long, r2_l = beta_long, r2_long
+        if moments is not None:
+            missing = {"sigma_yy", "sigma_xx", "t_x"} - set(moments)
+            if missing:
+                raise MethodIncompatibility(
+                    f"moments= needs sigma_yy, sigma_xx and t_x; missing "
+                    f"{sorted(missing)}."
+                )
+            inputs = {
+                "beta_o": float(b_short),
+                "r_o": float(r2_s),
+                "beta_t": float(b_long),
+                "r_t": float(r2_l),
+                "sigma_yy": float(moments["sigma_yy"]),
+                "sigma_xx": float(moments["sigma_xx"]),
+                "t_x": float(moments["t_x"]),
+            }
     else:
         raise ValueError(
             "Provide either (data, y, treat, controls) or "
@@ -166,6 +251,10 @@ def oster_bounds(
         )
 
     # --- R_max ---
+    from ._oster import resolve_r_max
+
+    r2_a_long = float(inputs.get("r2_a", np.nan)) if inputs else float("nan")
+    r_max = resolve_r_max(r_max, r2_l, r2_a_long)
     if r_max is None:
         r_max = min(1.0, 1.3 * r2_l)
     elif r_max > 1.0:
@@ -234,21 +323,27 @@ def oster_bounds(
             f"Result is SENSITIVE to omitted variables."
         )
 
-    return {
-        "beta_short": b_short,
-        "r2_short": r2_s,
-        "beta_long": b_long,
-        "r2_long": r2_l,
-        "r_max": r_max,
-        "delta": delta,
-        "delta_for_zero": delta_star,
-        "beta_adjusted": beta_adj,
-        "beta_adjusted_alternatives": beta_alternatives,
-        "method": method,
-        "identified_set": id_set,
-        "robust": robust,
-        "interpretation": interp,
-    }
+    return OsterBoundsResult(
+        {
+            "beta_short": b_short,
+            "r2_short": r2_s,
+            "beta_long": b_long,
+            "r2_long": r2_l,
+            "r_max": r_max,
+            "delta": delta,
+            "delta_for_zero": delta_star,
+            # psacalc / sp.oster_delta name for the same number.
+            "delta_star": delta_star,
+            "beta_adjusted": beta_adj,
+            "beta_adjusted_alternatives": beta_alternatives,
+            "method": method,
+            "r2_a_long": r2_a_long,
+            "inputs": dict(inputs) if inputs else None,
+            "identified_set": id_set,
+            "robust": robust,
+            "interpretation": interp,
+        }
+    )
 
 
 # ======================================================================

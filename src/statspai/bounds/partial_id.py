@@ -40,6 +40,7 @@ import pandas as pd
 from scipy import stats as sp_stats
 
 from .._aliases import accepts_aliases
+from .._input_validation import check_columns
 from .._result_serialize import ResultProtocolMixin
 from ..core.results import CausalResult
 
@@ -346,7 +347,7 @@ def _bootstrap_bounds(
 # ======================================================================
 
 
-@accepts_aliases(treat="treatment")
+@accepts_aliases(treat="treatment", seed="random_state")
 def horowitz_manski(
     data: pd.DataFrame,
     y: str,
@@ -411,9 +412,16 @@ def horowitz_manski(
     ...     data=df, y="wage", treatment="trained", covariates=["age"],
     ...     y_lower=float(df["wage"].min()), y_upper=float(df["wage"].max()),
     ... )
-    >>> result.summary()
+    >>> result.method
+    'Horowitz-Manski Bounds (2000)'
+    >>> bool(result.lower < 0 < result.upper)   # worst-case bounds straddle zero
+    True
     """
-    _check_cols(data, [y, treatment] + covariates)
+    _check_cols(
+        data,
+        {"y": y, "treatment": treatment, "covariates": list(covariates)},
+        "sp.horowitz_manski",
+    )
     df = data.dropna(subset=[y, treatment] + covariates).copy()
 
     Y = df[y].values.astype(np.float64)
@@ -539,7 +547,7 @@ def _create_strata(df: pd.DataFrame, covariates: List[str]) -> pd.Series:
 # ======================================================================
 
 
-@accepts_aliases(covariates="controls", treat="treatment")
+@accepts_aliases(covariates="controls", treat="treatment", seed="random_state")
 def iv_bounds(
     data: pd.DataFrame,
     y: str,
@@ -602,12 +610,24 @@ def iv_bounds(
     ...     data=df, y="employed", treatment="trained",
     ...     instrument="lottery", assumption="monotone_iv",
     ... )
-    >>> result.summary()
+    >>> result.method
+    'Nevo-Rosen IV Bounds (monotone_iv)'
+    >>> bool(result.lower <= result.upper)
+    True
     """
     cols = [y, treatment, instrument]
     if controls:
         cols += controls
-    _check_cols(data, cols)
+    _check_cols(
+        data,
+        {
+            "y": y,
+            "treatment": treatment,
+            "instrument": instrument,
+            "controls": list(controls) if controls else None,
+        },
+        "sp.iv_bounds",
+    )
 
     df = data.dropna(subset=cols).copy()
 
@@ -737,6 +757,7 @@ def _iv_bounds_point(
 # ======================================================================
 
 
+@accepts_aliases(seed="random_state")
 def oster_delta(
     data: pd.DataFrame,
     y: str,
@@ -817,12 +838,19 @@ def oster_delta(
     ...     x_controls=["experience", "tenure"],
     ...     r_max=1.3,
     ... )
-    >>> result.summary()
+    >>> result.method
+    'Oster (2019) Coefficient Stability Bounds'
+    >>> bool(result.lower <= result.upper)
+    True
     """
     from ..diagnostics._oster import oster_beta_exact, oster_delta_exact, oster_inputs
 
     all_cols = [y] + x_base + x_controls
-    _check_cols(data, all_cols)
+    _check_cols(
+        data,
+        {"y": y, "x_base": list(x_base), "x_controls": list(x_controls)},
+        "sp.oster_delta",
+    )
     df = data.dropna(subset=all_cols).copy()
     n = len(df)
     treat, mcontrol = x_base[0], list(x_base[1:])
@@ -934,7 +962,7 @@ def oster_delta(
 # ======================================================================
 
 
-@accepts_aliases(treat="treatment")
+@accepts_aliases(treat="treatment", seed="random_state")
 def selection_bounds(
     data: pd.DataFrame,
     y: str,
@@ -997,12 +1025,24 @@ def selection_bounds(
     ...     covariates=["age"],
     ...     method="conditional",
     ... )
-    >>> result.summary()
+    >>> result.method
+    'Lee (2009) Bounds (conditional)'
+    >>> bool(result.lower <= result.upper)
+    True
     """
     cols = [y, treatment, selection]
     if covariates:
         cols += covariates
-    _check_cols(data, cols)
+    _check_cols(
+        data,
+        {
+            "y": y,
+            "treatment": treatment,
+            "selection": selection,
+            "covariates": list(covariates) if covariates else None,
+        },
+        "sp.selection_bounds",
+    )
 
     df = data.copy()
     D = df[treatment].values.astype(float)
@@ -1206,8 +1246,11 @@ def breakdown_frontier(
     ...     assumption="parallel_trends",
     ...     max_violation=0.1,
     ... )
-    >>> result.summary()
-    >>> result.plot()
+    >>> round(result.model_info["breakdown_point"], 4)
+    0.05
+    >>> (round(result.lower, 4), round(result.upper, 4))
+    (-0.05, 0.15)
+    >>> ax = result.plot()
     """
     if se <= 0:
         raise ValueError("Standard error must be positive.")
@@ -1267,11 +1310,9 @@ def breakdown_frontier(
 # ======================================================================
 
 
-def _check_cols(data: pd.DataFrame, cols: List[str]) -> None:
-    """Raise if any columns are missing from the DataFrame."""
-    missing = [c for c in cols if c not in data.columns]
-    if missing:
-        raise ValueError(f"Columns not found in data: {missing}")
+def _check_cols(data: pd.DataFrame, cols: Dict[str, Any], function: str) -> None:
+    """Raise :class:`ColumnNotFound` if any named column is absent."""
+    check_columns(data, cols, function=function)
 
 
 # ======================================================================

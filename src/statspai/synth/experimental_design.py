@@ -23,6 +23,8 @@ concentrated donor weights, and pick the ``k`` best-fitted candidates.
 
 from __future__ import annotations
 
+import itertools
+import math
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -30,9 +32,9 @@ import numpy as np
 import pandas as pd
 
 from .._aliases import accepts_aliases
-from .._input_validation import require_columns
+from .._input_validation import check_columns, require_columns
 from .._result_serialize import ResultProtocolMixin
-from ..exceptions import DataInsufficient
+from ..exceptions import DataInsufficient, MethodIncompatibility
 from ._core import solve_simplex_weights
 
 __all__ = [
@@ -46,7 +48,7 @@ __all__ = [
 # ---------------------------------------------------------------------------
 
 
-@dataclass
+@dataclass(repr=False)
 class SynthExperimentalDesignResult(ResultProtocolMixin):
     """Structured output of :func:`synth_experimental_design`.
 
@@ -72,10 +74,20 @@ class SynthExperimentalDesignResult(ResultProtocolMixin):
         ``n_random`` draws); the gain is
         ``baseline_variance - expected_variance``.
     method : str
-        Always ``'loo_sc_fit_ranking'`` (was ``'abadie_zhao_2025'``, a
-        misattribution; see the module docstring).
+        ``'loo_sc_fit_ranking'`` (was ``'abadie_zhao_2025'``, a
+        misattribution; see the module docstring), or
+        ``'population_matching_search'`` under ``criterion='population'``.
     diagnostics : dict
         Extra metadata (n_units, pre_periods, solver, etc.).
+
+    Notes
+    -----
+    Under ``criterion='population'`` the fields read differently:
+    ``ranking`` has one row per unit with its ``role`` and ``weight``,
+    ``weights`` holds the two vectors ``'treated'`` and ``'control'``
+    (aligned to ``donor_units``, here all units), ``expected_variance`` is
+    the sum of the two pre-period MSPEs of the chosen set and
+    ``baseline_variance`` its mean over the sets searched.
 
     Examples
     --------
@@ -102,6 +114,15 @@ class SynthExperimentalDesignResult(ResultProtocolMixin):
     # ------------------------------------------------------------------
     # Convenience API
     # ------------------------------------------------------------------
+    def __repr__(self) -> str:
+        # The dataclass repr prints every weight vector and the full ranking.
+        return (
+            f"SynthExperimentalDesignResult(selected={list(self.selected)!r}, "
+            f"n_candidates={len(self.ranking)}, "
+            f"expected_variance={self.expected_variance:.6g}, "
+            f"baseline_variance={self.baseline_variance:.6g})"
+        )
+
     def summary(self) -> str:
         n = len(self.ranking)
         k = len(self.selected)
@@ -109,6 +130,28 @@ class SynthExperimentalDesignResult(ResultProtocolMixin):
         gain_pct = (
             100 * gain / self.baseline_variance if self.baseline_variance > 0 else 0.0
         )
+        if self.method == "population_matching_search":
+            d = self.diagnostics
+            return "\n".join(
+                [
+                    "Treated set chosen to track the population average",
+                    "-" * 66,
+                    f"  Units                  : {n}",
+                    f"  Treatment budget k     : {d.get('k')}",
+                    f"  Treated (weight > 0)   : {list(self.selected)}",
+                    f"  Treated-side pre RMSE  : {d.get('rmse_treated'):.6g}",
+                    f"  Control-side pre RMSE  : {d.get('rmse_control'):.6g}",
+                    f"  Loss (sum of MSPEs)    : {self.expected_variance:.6g}",
+                    f"  Mean loss, random sets : {self.baseline_variance:.6g}",
+                    f"  Sets searched          : {d.get('n_search')}"
+                    + (
+                        "  (all of them: the optimum)"
+                        if d.get("global_optimum")
+                        else f"  (random, then {d.get('n_exchanges')} exchanges; "
+                        "a local optimum)"
+                    ),
+                ]
+            )
         lines = [
             "Unit selection by leave-one-out SC fit (not the Abadie-Zhao design)",
             "-" * 66,
@@ -183,12 +226,159 @@ def _leave_one_out_sc(
     return w, mspe, eff
 
 
+def _population_design(
+    data: pd.DataFrame,
+    wide: pd.DataFrame,
+    *,
+    unit: str,
+    cand: List[Any],
+    k: int,
+    donors: Optional[Sequence[Any]],
+    population_weights: Optional[str],
+    penalization: float,
+    n_search: int,
+    random_state: Optional[int],
+) -> "SynthExperimentalDesignResult":
+    """Random search for a treated set that tracks the population average."""
+    if donors is not None:
+        raise MethodIncompatibility(
+            "criterion='population' uses every unit outside the treated set "
+            "as a control; donors= does not apply."
+        )
+    if n_search < 1:
+        raise MethodIncompatibility("n_search must be at least 1.")
+    units = list(wide.index)
+    Y = wide.to_numpy(dtype=float).T  # (T_pre, n_units)
+    if population_weights is None:
+        share = np.full(len(units), 1.0 / len(units))
+    else:
+        check_columns(
+            data,
+            {"population_weights": population_weights},
+            function="sp.synth_experimental_design",
+        )
+        per_unit = data.groupby(unit)[population_weights]
+        if (per_unit.nunique(dropna=False) > 1).any():
+            raise MethodIncompatibility(
+                f"{population_weights!r} must be constant within unit."
+            )
+        size = per_unit.first().reindex(units).to_numpy(dtype=float)
+        if not np.all(np.isfinite(size)) or np.any(size <= 0):
+            raise MethodIncompatibility(
+                f"{population_weights!r} must be positive for every unit."
+            )
+        share = size / size.sum()
+    target = Y @ share
+    pos = {u: j for j, u in enumerate(units)}
+    cand_pos = np.array([pos[u] for u in cand])
+    all_pos = np.arange(len(units))
+
+    def evaluate(treated: np.ndarray) -> Tuple[float, np.ndarray, np.ndarray, float]:
+        control = np.setdiff1d(all_pos, treated)
+        w = solve_simplex_weights(target, Y[:, treated], penalization=penalization)
+        v = solve_simplex_weights(target, Y[:, control], penalization=penalization)
+        mse_t = float(np.mean((target - Y[:, treated] @ w) ** 2))
+        mse_c = float(np.mean((target - Y[:, control] @ v) ** 2))
+        return mse_t + mse_c, w, v, mse_t
+
+    rng = np.random.default_rng(random_state)
+    best: Optional[Tuple[float, np.ndarray, np.ndarray, np.ndarray, float]] = None
+    n_sets = math.comb(len(cand_pos), k)
+    exhaustive = n_sets <= n_search
+    if exhaustive:
+        # Few enough sets to try them all: the result is the optimum.
+        trial_sets: Any = (
+            np.array(c) for c in itertools.combinations(sorted(cand_pos), k)
+        )
+        n_trials = n_sets
+    else:
+        trial_sets = (
+            np.sort(rng.choice(cand_pos, size=k, replace=False))
+            for _ in range(n_search)
+        )
+        n_trials = n_search
+    losses = np.empty(n_trials)
+    for b, treated in enumerate(trial_sets):
+        loss, w, v, mse_t = evaluate(treated)
+        losses[b] = loss
+        if best is None or loss < best[0]:
+            best = (loss, treated, w, v, mse_t)
+    assert best is not None
+    n_swaps = 0
+    if not exhaustive:
+        # Local improvement: exchange one treated unit for one untreated
+        # candidate while that lowers the loss. Ends at a set no single
+        # exchange improves, which need not be the global optimum.
+        improved = True
+        while improved and n_swaps < 10 * k:
+            improved = False
+            current = best[1]
+            outside = np.setdiff1d(cand_pos, current)
+            for i in range(k):
+                for j in outside:
+                    trial = np.sort(np.append(np.delete(current, i), j))
+                    loss, w, v, mse_t = evaluate(trial)
+                    if loss < best[0] * (1 - 1e-10):
+                        best = (loss, trial, w, v, mse_t)
+                        improved = True
+                        break
+                if improved:
+                    n_swaps += 1
+                    break
+    loss, treated, w, v, mse_t = best
+    control = np.setdiff1d(all_pos, treated)
+    treated_w = dict(zip([units[j] for j in treated], w))
+    control_w = dict(zip([units[j] for j in control], v))
+    selected = [u for u, wt in treated_w.items() if wt > 1e-6]
+    rows = [
+        {
+            "unit": u,
+            "role": "treated" if u in treated_w else "control",
+            "weight": float(treated_w[u] if u in treated_w else control_w.get(u, 0.0)),
+            "population_share": float(share[pos[u]]),
+            "selected": u in selected,
+        }
+        for u in units
+    ]
+    ranking = (
+        pd.DataFrame(rows)
+        .sort_values(["role", "weight"], ascending=[False, False])
+        .reset_index(drop=True)
+    )
+    return SynthExperimentalDesignResult(
+        selected=selected,
+        ranking=ranking,
+        weights={
+            "treated": np.array([treated_w.get(u, 0.0) for u in units]),
+            "control": np.array([control_w.get(u, 0.0) for u in units]),
+        },
+        donor_units=units,
+        expected_variance=float(loss),
+        baseline_variance=float(losses.mean()),
+        method="population_matching_search",
+        diagnostics={
+            "n_units": len(units),
+            "n_candidates": len(cand),
+            "k": k,
+            "T_pre": int(Y.shape[0]),
+            "n_search": n_trials,
+            "search": "exhaustive" if exhaustive else "random + exchange",
+            "global_optimum": bool(exhaustive),
+            "n_exchanges": n_swaps,
+            "rmse_treated": float(np.sqrt(mse_t)),
+            "rmse_control": float(np.sqrt(loss - mse_t)),
+            "population_weights": population_weights,
+            "penalization": float(penalization),
+        },
+    )
+
+
 # ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
 
 
-@accepts_aliases(id="unit", y="outcome")
+@accepts_aliases(id="unit", y="outcome", seed="random_state")
 def synth_experimental_design(
     data: pd.DataFrame,
     *,
@@ -204,6 +394,9 @@ def synth_experimental_design(
     penalization: float = 0.0,
     n_random: int = 500,
     random_state: Optional[int] = None,
+    criterion: str = "loo_fit",
+    population_weights: Optional[str] = None,
+    n_search: int = 500,
 ) -> SynthExperimentalDesignResult:
     """Pick the ``k`` candidates with the best leave-one-out SC pre-fit.
 
@@ -239,6 +432,33 @@ def synth_experimental_design(
         Monte-Carlo draws used to estimate ``baseline_variance``
         (the expected sum-MSPE under random-``k`` selection).
     random_state : int, optional
+    criterion : {'loo_fit', 'population'}, default 'loo_fit'
+        ``'loo_fit'`` ranks each candidate by how well the other units
+        reproduce it (the recipe below). ``'population'`` looks for a
+        treated set that stands in for the whole market: among ``n_search``
+        random sets of ``k`` candidates it keeps the one for which a
+        simplex-weighted average of the set and a simplex-weighted average
+        of all remaining units both track the population average of the
+        outcome over the pre-period (the smallest sum of the two
+        pre-period MSPEs). The experiment then estimates the effect on the
+        market, not on the units that happen to be easy to predict. Units
+        of the set that get zero weight are left out of ``selected``. The
+        result holds both weight vectors in ``weights['treated']`` and
+        ``weights['control']``. When there are at most ``n_search`` sets of
+        ``k`` candidates all of them are tried and the result is the
+        optimum (``diagnostics['global_optimum']``). Otherwise the best
+        random set is improved by exchanging one treated unit for one
+        untreated candidate until no exchange helps: a local optimum, not
+        the mixed-integer solution. ``risk`` and ``concentration_weight``
+        are not used.
+    population_weights : str, optional
+        For ``criterion='population'``: a column, constant within unit,
+        whose shares define the population average (city population, say).
+        Default: every unit counts equally.
+    n_search : int, default 500
+        For ``criterion='population'``: number of random treated sets tried
+        before the exchange step, and the largest number of sets that is
+        enumerated in full.
 
     Returns
     -------
@@ -331,6 +551,28 @@ def synth_experimental_design(
         fixed_donor_pool = None  # leave-one-out mode
     else:
         fixed_donor_pool = [u for u in all_units if u not in set(cand)]
+
+    if criterion not in ("loo_fit", "population"):
+        raise MethodIncompatibility(
+            f"criterion must be 'loo_fit' or 'population', got {criterion!r}"
+        )
+    if criterion == "population":
+        return _population_design(
+            data,
+            wide,
+            unit=unit,
+            cand=cand,
+            k=int(k),
+            donors=donors,
+            population_weights=population_weights,
+            penalization=penalization,
+            n_search=int(n_search),
+            random_state=random_state,
+        )
+    if population_weights is not None:
+        raise MethodIncompatibility(
+            "population_weights= is used by criterion='population' only."
+        )
 
     # --- Fit SC per candidate ---------------------------------------------
     rows: List[Dict[str, Any]] = []

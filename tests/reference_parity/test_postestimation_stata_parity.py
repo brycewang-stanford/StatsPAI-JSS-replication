@@ -159,9 +159,13 @@ def test_margins_is_not_the_index_coefficient_after_logit():
 
 
 def test_margins_refuses_unsupported_models():
+    # A two-equation count model: Stata's margins after zinb averages the
+    # mixture mean, which index-model margins do not compute. (ologit and
+    # the other LDV models are supported since bd370d02, with Stata parity
+    # in tests/test_ldv_margins_stata.py.)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        r = sp.ologit("yo ~ x1 + x2", _data())
+        r = sp.zinb("yz ~ x1 + x2", _data())
     with pytest.raises(MethodIncompatibility, match="prediction scale"):
         sp.margins(r, data=_data())
     with pytest.raises(MethodIncompatibility, match="do not enter the model"):
@@ -195,10 +199,17 @@ def test_multi_coefficient_restriction_needs_covariance():
 
 
 def test_stale_covariance_is_not_used():
-    """CR2 replaces std_errors after the fit; the stored OLS matrix must not leak."""
+    """CR2 replaces std_errors after the fit; the covariance a test uses must
+    be the CR2 one (stored in full since vce='cr2' keeps its matrix), never
+    the OLS matrix the fit started from."""
     r = sp.regress("yl ~ x1 + x2", _data(), vce="CR2", cluster="g")
     single = sp.test(r, "x1 = 0")
     se = float(r.std_errors["x1"])
     assert single["chi2"] == pytest.approx((float(r.params["x1"]) / se) ** 2, rel=1e-12)
-    with pytest.raises(MethodIncompatibility, match="covariance"):
-        sp.test(r, "x1 = x2")
+    V = np.asarray(r.data_info["var_cov"], dtype=float)
+    names = list(r.params.index)
+    assert np.sqrt(np.diag(V)) == pytest.approx(r.std_errors.to_numpy(), rel=1e-12)
+    c = np.zeros(len(names))
+    c[names.index("x1")], c[names.index("x2")] = 1.0, -1.0
+    wald = float(c @ r.params.to_numpy()) ** 2 / float(c @ V @ c)
+    assert sp.test(r, "x1 = x2")["chi2"] == pytest.approx(wald, rel=1e-10)

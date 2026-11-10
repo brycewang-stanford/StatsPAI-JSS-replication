@@ -28,8 +28,15 @@ import numpy as np
 import pandas as pd
 
 from .._aliases import accepts_aliases
+from ..core._call_record import records_call
 from ..core.results import CausalResult
-from ..exceptions import AssumptionWarning, DataInsufficient, MethodIncompatibility
+from ..exceptions import (
+    AssumptionWarning,
+    ColumnNotFound,
+    DataInsufficient,
+    MethodIncompatibility,
+)
+from . import _cs_conventions as _conv
 from ._absorbing import AbsorbingCheck, check_absorbing
 from ._core import require_bool as _require_bool
 from ._equivalence import EquivalenceResult, pretrend_equivalence, pretrends_equivalence
@@ -39,6 +46,7 @@ from ._staggered_rollout import (
     staggered_rollout,
     staggered_sa,
 )
+from ._xtevent_smpath import xtevent_smpath
 from .aggte import aggte
 from .analysis import DIDAnalysis, did_analysis
 from .bacon import bacon_decomposition
@@ -46,6 +54,7 @@ from .balance import DiDBalanceResult, did_balance
 from .bjs_inference import bjs_pretrend_joint
 from .calibrated_simulation import DidSimulationStudy, did_calibrated_simulation
 from .callaway_santanna import callaway_santanna
+from .cdlz_bunching import cdlz_bunching
 from .cgs_continuous import ContinuousDoseResult, cgs_continuous_did
 from .cic import cic
 from .cohort_anchored import cohort_anchored_event_study
@@ -64,6 +73,7 @@ from .did_bcf import did_bcf
 from .did_forest import DIDForestResult, did_forest
 from .did_imputation import did_imputation
 from .did_multiplegt import did_multiplegt
+from .didregress import didregress
 from .es_convention import (
     EventStudyConventionResult,
     compare_event_study_conventions,
@@ -80,8 +90,14 @@ from .functional_form import (
 )
 from .gardner_2s import did_2stage, gardner_did
 from .harvest import HarvestDIDResult, harvest_did
-from .honest_did import breakdown_m, honest_did
+from .honest_did import (
+    breakdown_m,
+    honest_did,
+    honest_did_from_moments,
+    honest_did_from_result,
+)
 from .influence import aggte_from_influence, influence_functions
+from .jwdid import jwdid
 from .misclassified import did_misclassified
 from .overlap_did import dl_propensity_score, overlap_weighted_did
 from .plots import bacon_plot, cohort_event_study_plot, did_plot, did_summary_plot
@@ -94,6 +110,7 @@ from .plots import (
     sensitivity_plot,
     treatment_rollout_plot,
 )
+from .pmatch import panel_match
 from .pretrends import (
     SensitivityResult,
     pretrends_power,
@@ -116,7 +133,9 @@ from .summary import (
     did_summary_to_markdown,
 )
 from .sun_abraham import sun_abraham
+from .twowayfeweights import twowayfeweights
 from .wooldridge_did import drdid, etwfe, etwfe_emfx, twfe_decomposition, wooldridge_did
+from .xtevent import xtevent
 
 bjs = did_imputation
 borusyak_jaravel_spiess = did_imputation
@@ -228,7 +247,87 @@ def _require_int_at_least(value: Any, *, argument: str, minimum: int) -> int:
     return out
 
 
-@accepts_aliases(_strict=True, unit="id", controls="covariates")
+def _indicator_to_cohort(
+    data: pd.DataFrame, *, treat: str, id: str, time: str
+) -> pd.Series:
+    """Map a 0/1 treatment indicator to the first-treatment-period cohort.
+
+    Never-treated units get 0 (the R ``did`` convention). Raises when the
+    indicator is not absorbing (a unit switches back to 0), because then
+    no single first-treatment period exists and the user has to say
+    which estimator they mean.
+    """
+    d = data[[id, time, treat]].copy()
+    d[treat] = d[treat].astype(float)
+    first = d[d[treat] == 1].groupby(id)[time].min().rename("_first")
+    merged = d.merge(first, left_on=id, right_index=True, how="left")
+    # Absorbing check: once treated, a unit must stay treated.
+    post = merged["_first"].notna() & (merged[time] >= merged["_first"])
+    if bool(((merged[treat] == 0) & post).any()):
+        raise MethodIncompatibility(
+            f"Treatment indicator {treat!r} switches back to 0 after "
+            "treatment, so no first-treatment period can be derived for "
+            "the staggered estimator.",
+            recovery_hint=(
+                "Pass a first-treatment-period (cohort) column as treat=, or "
+                "use method='2x2' / sp.event_study for non-absorbing "
+                "treatment."
+            ),
+            diagnostics={"treat": treat},
+        )
+    cohort = merged["_first"].fillna(0)
+    cohort.index = data.index
+    return cohort
+
+
+_DESIGN_DID_METHODS = frozenset({"2x2", "callaway_santanna", "cs"})
+
+
+def _refuse_did_design(method: str, aggregation: Optional[str]) -> None:
+    """``design=`` reaches only the estimators with a survey variance."""
+    if method not in _DESIGN_DID_METHODS:
+        raise MethodIncompatibility(
+            f"sp.did: design= (a complex survey design) is implemented for "
+            f"method='2x2' and method='cs' only; got method={method!r}. "
+            "The other DID estimators have no survey-linearisation variance, "
+            "and ignoring the strata and PSUs would understate the SE.",
+            recovery_hint="Use method='2x2' (two periods) or method='cs' "
+            "(staggered panel), or drop design= and pass weights= / cluster=.",
+            diagnostics={"method": method},
+            alternative_functions=["sp.did_2x2", "sp.callaway_santanna"],
+        )
+    if aggregation is not None:
+        raise MethodIncompatibility(
+            "sp.did: aggregation= re-aggregates ATT(g,t) through sp.aggte, "
+            "which has no survey-design variance. A design= fit already "
+            "reports the simple ATT as its headline and the event study in "
+            "model_info['event_study'], both with design standard errors.",
+            recovery_hint="Drop aggregation=; read result.estimate (simple "
+            "ATT) and result.model_info['event_study'] (dynamic).",
+            diagnostics={"aggregation": aggregation},
+        )
+
+
+#: sp.did methods whose estimator takes ``parity=`` (and where it goes).
+_PARITY_METHODS = frozenset(
+    {"2x2", "callaway_santanna", "cs", "sun_abraham", "sa", "sunab"}
+)
+
+#: sp.did methods whose estimator takes ``crit_dist=``, with the value that
+#: ``crit_dist='legacy'`` stands for there (the pre-1.41 default).
+_CRIT_LEGACY = {
+    "2x2": "residual",
+    "sun_abraham": "normal",
+    "sa": "normal",
+    "sunab": "normal",
+}
+
+
+@records_call("did")
+@accepts_aliases(
+    _strict=True, unit="id", controls="covariates", outcome="y", treatment="treat"
+)
+@_conv.track_explicit
 def did(
     data: pd.DataFrame,
     y: str,
@@ -261,6 +360,9 @@ def did(
     wild_reps: int = 999,
     wild_weight_type: str = "rademacher",
     seed: Optional[int] = None,
+    design: Any = None,
+    parity: Optional[Literal["r", "stata"]] = None,
+    crit_dist: Optional[str] = None,
     **kwargs: Any,
 ) -> CausalResult:
     """
@@ -305,7 +407,10 @@ def did(
         Covariate names for conditional parallel trends / controls.
     method : str, default 'auto'
         - ``'auto'`` — 2×2 if ``id`` is None and treatment is binary,
-          else Callaway-Sant'Anna.
+          else Callaway-Sant'Anna. One exception: a 0/1 group flag with a
+          0/1 ``time`` and several rows per unit and period (daily data
+          with a ``post`` column) is the 2×2 design too, and is estimated
+          as such with standard errors clustered on ``id``.
         - ``'2x2'`` — classic two-period, two-group DID.
         - ``'ddd'`` — triple differences (requires ``subgroup``).
         - ``'callaway_santanna'`` or ``'cs'`` — staggered DID.
@@ -361,6 +466,56 @@ def did(
         .. versionadded:: 1.23.0
     anticipation : int, default 0
         Forwarded to :func:`callaway_santanna`.
+    design : SurveyDesign, optional
+        A complex survey design from :func:`sp.svydesign` declared on the
+        same rows as ``data``. Forwarded to :func:`did_2x2` (``method``
+        ``'2x2'`` / ``'classic'`` / ``'twfe'``) or :func:`callaway_santanna`
+        (``'cs'``, panel, analytic SEs): the design weights are the unit
+        weights and the standard errors are the survey linearisation of
+        the influence functions over strata / PSUs / fpc, with t
+        intervals on the design df. Other methods, ``aggregation=``,
+        ``weights=`` and ``cluster=`` are refused with ``design=``.
+        A replicate-weight design (:func:`sp.svrepdesign`) is accepted
+        too: the estimator is refitted with every replicate's weights
+        and the replicate variance replaces the linearisation (R
+        ``svrepdesign`` / Stata ``svy brr`` / ``svy jackknife``).
+
+        .. versionadded:: 1.40.0
+    parity : {'r', 'stata'}, optional
+        Forwarded to the estimator ``method`` resolves to, which sets the
+        conventions of R or Stata in one argument:
+        :func:`callaway_santanna` (and :func:`aggte` when
+        ``aggregation`` is set, which inherits it), :func:`sun_abraham`
+        and :func:`did_2x2`. Any other method raises. Under ``parity=``,
+        ``base_period`` reaches :func:`callaway_santanna` only when passed,
+        so that the program's base period applies, and under
+        ``parity='stata'`` the same holds for ``n_boot`` /
+        ``random_state`` on the aggregation (``csdid``'s ``estat`` reports
+        analytic standard errors); a value that contradicts the parity
+        raises there. Otherwise ``sp.did(..., parity=p)`` is the same call
+        as the estimator's with ``parity=p``.
+
+        .. versionadded:: 1.40.1
+    crit_dist : {'t', 'residual', 'normal', 'legacy'}, optional
+        Critical-value rule, forwarded to :func:`did_2x2` (``'t'`` /
+        ``'residual'``) or :func:`sun_abraham` (``'t'`` / ``'normal'``)
+        when ``method`` resolves to one of them; ``sp.did(...,
+        crit_dist=c)`` is then the same call as the estimator's. Both
+        warn (``FutureWarning``) when it is left unset and their default
+        would change in 1.41; pass ``'t'`` to adopt the Stata / fixest
+        rule now. ``'legacy'`` keeps the pre-1.41 rule of whichever
+        estimator runs (``'residual'`` / ``'normal'``) and is a no-op for
+        the methods without the option and under ``parity=``, so it can be
+        passed before the method is known. Any other value with a method that has no
+        ``crit_dist`` raises (Callaway-Sant'Anna uses normal critical
+        values).
+
+        .. versionadded:: 1.40.1
+    **kwargs
+        Branch-specific options: ``horizon`` / ``event_window`` /
+        ``pretrends`` / ``pretrend_method`` for the BJS imputation
+        method, the synthetic-DiD options for ``'sdid'``. Anything else
+        raises rather than being ignored.
 
     Returns
     -------
@@ -465,17 +620,9 @@ def did(
             required[f"covariate ({c})"] = c
     missing = {label: col for label, col in required.items() if col not in data.columns}
     if missing:
-        details = ", ".join(f"{label}={col!r}" for label, col in missing.items())
-        available = ", ".join(sorted(data.columns)[:10])
-        raise MethodIncompatibility(
-            f"Column(s) not found in data: {details}. "
-            f"Available: {available}" + (" ..." if len(data.columns) > 10 else ""),
-            recovery_hint="Check the DID variable names against the DataFrame columns.",
-            diagnostics={
-                "missing_columns": dict(missing),
-                "available_columns": list(data.columns),
-            },
-        )
+        # ColumnNotFound is a MethodIncompatibility (and ValueError), so the
+        # historical except-clauses keep working; it adds did_you_mean.
+        raise ColumnNotFound.from_missing(missing, list(data.columns))
 
     # If estimator-specific aggregation arguments are passed with auto,
     # choose the estimator whose aggregation vocabulary was requested.
@@ -531,6 +678,47 @@ def did(
     if method == "auto":
         if id is not None:
             method = "callaway_santanna"
+            treat_vals = set(data[treat].dropna().unique())
+            if treat_vals <= {0, 1, True, False}:
+                # ``treat`` is documented as "indicator OR first-treatment
+                # period", but Callaway-Sant'Anna needs the cohort coding.
+                # A 0/1 column that switches *within* unit is a treatment
+                # indicator; derive the cohort (first period with treat==1,
+                # 0 = never treated) instead of failing with "no cohorts".
+                # A 0/1 column that is constant within unit is already a
+                # cohort column (period 1) or a time-invariant group flag,
+                # and is left alone.
+                within = data.groupby(id)[treat].nunique(dropna=True)
+                if (within > 1).any():
+                    derived = _indicator_to_cohort(data, treat=treat, id=id, time=time)
+                    data = data.copy()
+                    data["_statspai_cohort"] = derived
+                    treat = "_statspai_cohort"
+                elif treat_vals & {1, True}:
+                    time_vals = set(data[time].dropna().unique())
+                    if time_vals <= {0, 1, True, False}:
+                        # Group flag x pre/post flag: the 2x2 design, whatever
+                        # the number of rows behind each cell. With repeated
+                        # rows per unit and period there is no panel to hand
+                        # to Callaway-Sant'Anna; run the 2x2 regression and
+                        # cluster on the unit, which is what repeats.
+                        if data.duplicated(subset=[id, time]).any():
+                            method = "2x2"
+                            if cluster is None and vce is None and design is None:
+                                cluster = id
+                    else:
+                        warnings.warn(
+                            f"sp.did: {treat!r} is a 0/1 column that never "
+                            f"changes within {id!r}, and {time!r} has "
+                            f"{len(time_vals)} periods. It is read as the "
+                            "cohort column, so the units with 1 count as "
+                            f"first treated in period {time!r} == 1. If it is "
+                            "a treated-group flag, pass the first treated "
+                            "period instead (0 for never-treated units); see "
+                            "the `treat` entry of the docstring.",
+                            AssumptionWarning,
+                            stacklevel=2,
+                        )
         else:
             treat_vals = set(data[treat].dropna().unique())
             if treat_vals <= {0, 1, True, False}:
@@ -605,6 +793,51 @@ def did(
             time = "_post"
         method = "2x2"
 
+    # ── parity= goes to the estimators that implement it ───────────── #
+    if parity is not None and method not in _PARITY_METHODS:
+        raise MethodIncompatibility(
+            f"sp.did: parity={parity!r} is implemented by the "
+            "Callaway-Sant'Anna, Sun-Abraham and 2x2 estimators; "
+            f"method={method!r} has no R / Stata parity switch.",
+            recovery_hint=(
+                "Use method='cs', 'sun_abraham' or '2x2' with parity=, or "
+                "drop parity= and set the estimator's conventions directly."
+            ),
+            diagnostics={"method": method, "parity": parity},
+            alternative_functions=[
+                "sp.callaway_santanna",
+                "sp.sun_abraham",
+                "sp.did_2x2",
+            ],
+        )
+    _parity_kw: Dict[str, Any] = {} if parity is None else {"parity": parity}
+    _explicit = _conv.explicit_args()
+
+    # ── crit_dist= goes to the 2x2 and Sun-Abraham estimators ─────── #
+    _crit_kw: Dict[str, Any] = {}
+    if crit_dist is not None:
+        _crit = crit_dist.strip().lower() if isinstance(crit_dist, str) else crit_dist
+        if _crit == "legacy":
+            # Each estimator's pre-1.41 rule; parity= sets its own.
+            if method in _CRIT_LEGACY and parity is None:
+                _crit_kw["crit_dist"] = _CRIT_LEGACY[method]
+        elif method in _CRIT_LEGACY:
+            _crit_kw["crit_dist"] = crit_dist
+        else:
+            raise MethodIncompatibility(
+                f"sp.did: crit_dist={crit_dist!r} is implemented by the 2x2 "
+                f"and Sun-Abraham estimators; method={method!r} has no "
+                "crit_dist option (Callaway-Sant'Anna uses normal critical "
+                "values).",
+                recovery_hint=(
+                    "Use method='2x2' or 'sun_abraham' with crit_dist=, drop "
+                    "crit_dist=, or pass crit_dist='legacy' to keep each "
+                    "estimator's current rule whatever the method."
+                ),
+                diagnostics={"method": method, "crit_dist": crit_dist},
+                alternative_functions=["sp.did_2x2", "sp.sun_abraham"],
+            )
+
     # ── Reject unknown keyword arguments ───────────────────────────── #
     #
     # ``**kwargs`` exists to forward branch-specific options (sdid's
@@ -651,6 +884,9 @@ def did(
 
     # ── Dispatch ───────────────────────────────────────────────────── #
 
+    if design is not None:
+        _refuse_did_design(method, aggregation)
+
     if method == "2x2":
         return did_2x2(
             data,
@@ -666,6 +902,9 @@ def did(
             wild_reps=wild_reps,
             wild_weight_type=wild_weight_type,
             seed=seed,
+            design=design,
+            **_parity_kw,
+            **_crit_kw,
         )
 
     # ── ω guard ────────────────────────────────────────────────────── #
@@ -733,6 +972,13 @@ def did(
                 recovery_hint="Pass id='unit_column' for method='cs'.",
                 diagnostics={"method": method},
             )
+        # Under parity= the program's base period applies unless one was
+        # passed (callaway_santanna refuses a contradicting one).
+        _base_kw: Dict[str, Any] = (
+            {"base_period": base_period}
+            if parity is None or "base_period" in _explicit
+            else {}
+        )
         cs_result = callaway_santanna(
             data,
             y=y,
@@ -743,11 +989,13 @@ def did(
             weights=weights,
             estimator=estimator,
             control_group=control_group,
-            base_period=base_period,
+            **_base_kw,
             alpha=alpha,
             anticipation=anticipation,
             panel=panel,
             allow_unbalanced_panel=allow_unbalanced_panel,
+            design=design,
+            **_parity_kw,
         )
         if aggregation is not None:
             if aggregation not in ("simple", "dynamic", "group", "calendar"):
@@ -761,12 +1009,19 @@ def did(
                     ),
                     diagnostics={"aggregation": aggregation},
                 )
+            # Stata csdid's estat reports analytic SEs, so under
+            # parity='stata' the bootstrap is not requested unless asked for
+            # (aggte refuses an explicit one). R did bootstraps by default.
+            _boot_kw: Dict[str, Any] = {
+                k: v
+                for k, v in (("n_boot", n_boot), ("random_state", random_state))
+                if parity != "stata" or k in _explicit
+            }
             return aggte(
                 cs_result,
                 type=aggregation,
                 alpha=alpha,
-                n_boot=n_boot,
-                random_state=random_state,
+                **_boot_kw,
             )
         return cs_result
 
@@ -786,8 +1041,10 @@ def did(
             covariates=covariates,
             weights=weights,
             cluster=cluster,
-            aggregation=aggregation or "event_time",
+            aggregation=aggregation,
             alpha=alpha,
+            **_parity_kw,
+            **_crit_kw,
         )
 
     if method in (
@@ -840,6 +1097,9 @@ def did(
                 diagnostics={"method": method, "se_method": se_method},
             )
         sdid_se_method = cast(_SDIDSeMethod, se_method)
+        # The placebo / bootstrap draws were unseeded here through 1.31:
+        # seed= and random_state= were accepted and not passed on.
+        sdid_seed = seed if seed is not None else random_state
         if id is None:
             raise MethodIncompatibility(
                 "'id' (unit identifier) is required for SDID.",
@@ -850,11 +1110,23 @@ def did(
         _treat_unit = treat_unit
         _treat_time = treat_time
         if _treat_unit is None and _treat_time is None:
-            # treat column encodes first treatment period (0 = never treated)
-            treated_mask = data[treat] > 0
-            if treated_mask.any():
-                _treat_unit = data.loc[treated_mask, id].unique().tolist()
-                _treat_time = int(data.loc[treated_mask, treat].min())
+            # treat column encodes first treatment period (0 = never treated);
+            # several adoption periods are estimated cohort by cohort.
+            from ..synth.sdid import _sdid_on_cohort_column
+
+            return _sdid_on_cohort_column(
+                data,
+                y=y,
+                unit=id,
+                time=time,
+                cohort=treat,
+                method="sdid",
+                covariates=covariates,
+                se_method=sdid_se_method,
+                alpha=alpha,
+                seed=sdid_seed,
+                **kwargs,
+            )
         return _sdid(
             data,
             y=y,
@@ -866,6 +1138,7 @@ def did(
             covariates=covariates,
             se_method=sdid_se_method,
             alpha=alpha,
+            seed=sdid_seed,
             **kwargs,
         )
 
@@ -921,7 +1194,10 @@ __all__ = [
     "bjs_pretrend_joint",
     "sun_abraham",
     "bacon_decomposition",
+    "didregress",
     "honest_did",
+    "honest_did_from_moments",
+    "honest_did_from_result",
     "breakdown_m",
     "DiDClusterDiagnostics",
     "DiDDesignContract",
@@ -938,6 +1214,10 @@ __all__ = [
     "bjs",
     "borusyak_jaravel_spiess",
     "stacked_did",
+    "cdlz_bunching",
+    "xtevent",
+    "xtevent_smpath",
+    "panel_match",
     "gardner_did",
     "did_2stage",
     "harvest_did",
@@ -956,12 +1236,14 @@ __all__ = [
     "wooldridge_did",
     "etwfe",
     "etwfe_emfx",
+    "jwdid",
     "did_summary",
     "did_summary_to_markdown",
     "did_summary_to_latex",
     "did_report",
     "drdid",
     "twfe_decomposition",
+    "twowayfeweights",
     # v0.10 staggered DiD frontier
     "did_bcf",
     "did_forest",

@@ -22,11 +22,13 @@ the MCP layer doesn't need to special-case their content blocks.
 
 from __future__ import annotations
 
+import re
 import warnings
 from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 
+from ..exceptions import MethodIncompatibility as _MethodIncompatibility
 from ._result_cache import RESULT_CACHE
 
 # ----------------------------------------------------------------------
@@ -55,16 +57,13 @@ WORKFLOW_TOOL_SPECS: List[Dict[str, Any]] = [
     {
         "name": "audit_result",
         "description": (
-            "Reviewer-grade audit on a previously-fitted result. Pass "
-            "the result_id returned by an earlier tool call (with "
-            "as_handle=true). Returns the same checklist sp.audit() "
-            "produces — every robustness check the literature expects "
-            "for the design, each with status "
-            "'passed|failed|missing|not_applicable' and a concrete "
-            "suggest_function for the missing ones. A not_applicable "
-            "check (e.g. an over-identification test on a just-identified "
-            "IV fit) carries a 'reason' and is excluded from the "
-            "summary's n_total."
+            "Reviewer-grade audit of a fitted result (result_id from an "
+            "as_handle=true call): every robustness check the literature "
+            "expects for the design, with status "
+            "'passed|failed|missing|not_applicable' and a suggest_function "
+            "for each missing one. not_applicable checks (an overid test "
+            "on a just-identified IV) carry a 'reason' and are left out of "
+            "n_total."
         ),
         "input_schema": _result_id_schema(
             "Handle returned by an earlier estimator call. Must be in "
@@ -84,16 +83,12 @@ WORKFLOW_TOOL_SPECS: List[Dict[str, Any]] = [
     {
         "name": "interpret_result",
         "description": (
-            "Natural-language interpretation of a fitted result. When the "
-            "connected MCP client advertised sampling, this REUSES the "
-            "agent's own model (no API key) to explain the estimate, its "
-            "uncertainty, and what the design does / does not identify — "
-            "optionally focused by a `question` and tuned for an "
-            "`audience`. With no sampling available it falls back to a "
-            "deterministic structured brief: it NEVER fabricates a "
-            "narrative. Every claim is grounded in the result's own "
-            "numbers — the model is told not to invent estimates. Pass "
-            "the result_id from an earlier as_handle=true call."
+            "Natural-language interpretation of a fitted result "
+            "(result_id): the estimate, its uncertainty and what the "
+            "design does / does not identify, grounded in the result's own "
+            "numbers. Uses the client's model via MCP sampling when "
+            "advertised (no API key); otherwise returns a deterministic "
+            "structured brief, never an invented narrative."
         ),
         "input_schema": {
             "type": "object",
@@ -127,10 +122,12 @@ WORKFLOW_TOOL_SPECS: List[Dict[str, Any]] = [
     {
         "name": "sensitivity_from_result",
         "description": (
-            "Run sp.sensitivity / sp.evalue / sp.oster_bounds / "
-            "sp.sensemakr on a cached result. Pass method='evalue' "
-            "(default) for the omitted-confounder-strength bound, "
-            "'oster' for delta/R-max, 'cinelli_hazlett' for OVB bounds."
+            "Sensitivity of a cached fit (result_id). 'evalue' (default): "
+            "E-value from the estimate. 'oster' (delta / R-max) and "
+            "'cinelli_hazlett' (OVB bounds) refit OLS of y on treat + "
+            "controls on the fit's data: from a regress formula (name the "
+            "term with treat) or passed as y / treat / controls. 'auto': "
+            "sensitivity dashboard."
         ),
         "input_schema": {
             "type": "object",
@@ -148,8 +145,61 @@ WORKFLOW_TOOL_SPECS: List[Dict[str, Any]] = [
                     "type": "string",
                     "description": "Cinelli-Hazlett benchmark column (optional).",
                 },
+                "y": {"type": "string", "description": "oster / cinelli_hazlett."},
+                "treat": {"type": "string", "description": "Term to bound."},
+                "controls": {"type": "array", "items": {"type": "string"}},
+                "measure": {
+                    "type": "string",
+                    "enum": ["SMD", "MD", "RR", "OR", "HR"],
+                    "default": "SMD",
+                    "description": (
+                        "evalue: scale of the estimate. SMD / MD (a mean "
+                        "difference) need sd; RR / OR / HR are ratios."
+                    ),
+                },
+                "sd": {
+                    "type": "number",
+                    "description": (
+                        "evalue with SMD / MD: the outcome's standard "
+                        "deviation (1 if already standardised)."
+                    ),
+                },
             },
             "required": ["result_id"],
+        },
+    },
+    {
+        "name": "vcov_from_result",
+        "description": (
+            "Standard errors of a cached fit (result_id) under another vce: "
+            "re-runs the fit's own call with only vce= changed, so the SEs "
+            "equal a direct refit. One vce returns the new result; a list "
+            "returns a side-by-side table with the ratio to the fitted SE."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "result_id": {
+                    "type": "string",
+                    "description": "Handle to a fit from an estimator with vce=.",
+                },
+                "vce": {
+                    "description": (
+                        "Stata-style request ('robust', 'hc3', 'cluster state', "
+                        "'cluster state year') or a list of them."
+                    ),
+                    "anyOf": [
+                        {"type": "string"},
+                        {"type": "array", "items": {"type": "string"}},
+                    ],
+                },
+                "terms": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Table: keep only these coefficients.",
+                },
+            },
+            "required": ["result_id", "vce"],
         },
     },
     {
@@ -265,8 +315,8 @@ WORKFLOW_TOOL_SPECS: List[Dict[str, Any]] = [
         "input_schema": {
             "type": "object",
             "properties": {
-                "time_col_hint": {"type": "string"},
-                "id_col_hint": {"type": "string"},
+                "time_col_hint": {"type": "string", "description": "Time column."},
+                "id_col_hint": {"type": "string", "description": "Unit id column."},
             },
             "required": [],
         },
@@ -274,14 +324,16 @@ WORKFLOW_TOOL_SPECS: List[Dict[str, Any]] = [
     {
         "name": "brief",
         "description": (
-            "One-line agent-friendly brief for a fitted result. "
-            "Cheaper than calling brief_result if you already have the "
-            "result object in scope."
+            "One-line brief of a fitted result (estimand, estimate, SE, "
+            "CI, N). Same output as brief_result."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "result_id": {"type": "string"},
+                "result_id": {
+                    "type": "string",
+                    "description": "Handle from a fit made with as_handle=true.",
+                },
             },
             "required": [],
         },
@@ -343,14 +395,9 @@ WORKFLOW_TOOL_SPECS: List[Dict[str, Any]] = [
     {
         "name": "plot_from_result",
         "description": (
-            "Render the canonical diagnostic plot for a fitted result "
-            "and return it as an inline PNG image content block. "
-            "MCP clients with vision (Claude Desktop, vision-capable "
-            "agents) get the plot for free; clients that don't support "
-            "image content see only the JSON metadata. Plot kind is "
-            "auto-selected from the result type: event-study for DID, "
-            "rdplot for RD, gap plot for synth, balance plot for "
-            "matching, ROC for classification, etc."
+            "Render a fitted result's diagnostic plot (event study, rdplot, "
+            "synth gap, balance, ROC) as a PNG image block. Optional edits "
+            "restyle it with the data locked."
         ),
         "input_schema": {
             "type": "object",
@@ -371,6 +418,11 @@ WORKFLOW_TOOL_SPECS: List[Dict[str, Any]] = [
                     "type": "array",
                     "items": {"type": "number"},
                     "description": "Width, height in inches (default [8,5]).",
+                },
+                "edits": {
+                    "type": "array",
+                    "items": {"type": "object"},
+                    "description": "sp.interactive actions; reply adds code.",
                 },
             },
             "required": ["result_id"],
@@ -472,6 +524,230 @@ WORKFLOW_TOOL_SPECS: List[Dict[str, Any]] = [
             "required": ["estimand"],
         },
     },
+    # ------------------------------------------------------------------
+    # Discovery meta-tools. These are what make the curated MCP profile
+    # usable: a client that sees only ~40 tools can still reach every
+    # registered function by searching, reading the schema, and calling
+    # it by name — the same discover -> describe -> call loop that
+    # ``sp.search_functions`` / ``sp.describe_function`` give in Python.
+    # ------------------------------------------------------------------
+    {
+        "name": "search_functions",
+        "description": (
+            "Search the StatsPAI function registry by task keywords or a "
+            "short phrase (e.g. 'staggered adoption event study', 'weak "
+            "instrument robust CI'). Returns ranked matches with one-line "
+            "descriptions, category and validation tier. Use it when no "
+            "listed tool fits, then describe_function for the parameters "
+            "and call_function to run it."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Keywords or a short task description.",
+                },
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 50,
+                    "default": 10,
+                    "description": "Maximum number of matches to return.",
+                },
+                "category": {
+                    "type": "string",
+                    "description": (
+                        "Optional registry category filter (e.g. 'causal', "
+                        "'panel', 'regression', 'diagnostics')."
+                    ),
+                },
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "describe_function",
+        "description": (
+            "Full machine-readable metadata for one registered StatsPAI "
+            "function: JSON-Schema parameters (types, defaults, enums), "
+            "assumptions, pre-conditions, failure modes, alternatives, "
+            "validation tier and evidence notes, plus the accepted "
+            "keyword aliases. Read this before calling a function that "
+            "is not in the listed tools."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Registered function name (sp.<name>).",
+                },
+            },
+            "required": ["name"],
+        },
+    },
+    {
+        "name": "call_function",
+        "description": (
+            "Run ANY registered StatsPAI function by name with keyword "
+            "arguments — the escape hatch for the ~1,200 functions that "
+            "are not individually listed as tools. `arguments` follows "
+            "the parameter schema from describe_function; column names "
+            "refer to the dataset passed as data_id / data_path. An "
+            "argument the function does not accept refuses the call "
+            "(error_kind unknown_argument, with did_you_mean). Supports "
+            "as_handle / result_id chaining like every other tool."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "function": {
+                    "type": "string",
+                    "description": "Registered function name (sp.<name>).",
+                },
+                "arguments": {
+                    "type": "object",
+                    "description": (
+                        "Keyword arguments for the function (JSON object)."
+                    ),
+                    "additionalProperties": True,
+                },
+            },
+            "required": ["function"],
+        },
+    },
+    # ------------------------------------------------------------------
+    # Data handles. ``load_data`` turns a file / inline table into a
+    # ``data_id``; ``transform_data`` derives new handles with a recorded
+    # lineage; ``describe_data`` profiles any handle. Every tool accepts
+    # ``data_id`` wherever it accepts ``data_path``.
+    # ------------------------------------------------------------------
+    {
+        "name": "load_data",
+        "description": (
+            "Load a dataset into the server and get a data_id handle. "
+            "Source: data_path (file or URL), data_records (JSON rows) or "
+            "data_csv (CSV text). Returns the handle plus shape, dtypes, "
+            "missing counts, the first rows and a numeric summary. Pass "
+            "data_id to any later tool instead of re-sending the file; "
+            "chain transform_data to filter / reshape / winsorise / impute "
+            "and get a new handle whose lineage is recorded in every "
+            "result's data_provenance."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Optional label recorded with the handle.",
+                },
+                "dataset": {
+                    "type": "string",
+                    "description": "Built-in example by name (sp.list_datasets).",
+                },
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "describe_data",
+        "description": (
+            "Profile a dataset (data_id, data_path or inline data): shape, "
+            "dtypes, missing counts, head, numeric summary and — for a "
+            "handle — the lineage of transforms that produced it."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "head": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 50,
+                    "default": 5,
+                    "description": "Rows to echo.",
+                },
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "transform_data",
+        "description": (
+            "Derive a new dataset from a data_id (or data_path / inline "
+            "data) by applying `operations` in order, and return a new "
+            "data_id with the lineage recorded. Operations (each an object "
+            "with `op`): query {expr} (pandas DataFrame.query), select "
+            "{columns}, drop {columns}, rename {mapping}, dropna "
+            "{columns?}, fillna {value | mapping}, assign {column, expr} "
+            "(DataFrame.eval), sort {by, ascending?}, sample {n, seed?}, "
+            "winsor {columns?, cuts?=[1,99]} (replaces in place), "
+            "wide_to_long {stubnames, i, j, sep?}, long_to_wide {index, "
+            "columns, values}, mice {columns?, m?} (single completed "
+            "dataset), function {name, arguments?} (any sp.<name> taking "
+            "data= and returning a DataFrame). query / assign expressions "
+            "are limited to columns (backticks for odd names), constants, "
+            "operators, in / not in, math functions (log, exp, sqrt, abs, "
+            "...) and col.isnull()/isin()/between()/str.contains(); other "
+            "attribute access, subscripts and @locals fail with "
+            "error_kind='unsafe_expression'."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "operations": {
+                    "type": "array",
+                    "items": {"type": "object", "additionalProperties": True},
+                    "description": "Ordered list of {op, ...} objects.",
+                },
+                "name": {
+                    "type": "string",
+                    "description": "Optional label for the new handle.",
+                },
+            },
+            "required": ["operations"],
+        },
+    },
+    {
+        "name": "route_estimator",
+        "description": (
+            "Route a research question to estimator calls without data. Give "
+            "the family (did / iv / rd / matching / ml_causal / qte / "
+            "dynamic_panel) and answers to its decision questions; get the "
+            "matching registered functions with example calls, why each is "
+            "right, the assumptions it adds and the guide section to read, "
+            "plus the unanswered questions and the one that narrows the "
+            "choice most. Call with no answers to see the questions. The "
+            "full guide is readable at statspai://guide/{family}."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "family": {
+                    "type": "string",
+                    "enum": [
+                        "did",
+                        "iv",
+                        "rd",
+                        "matching",
+                        "ml_causal",
+                        "qte",
+                        "dynamic_panel",
+                    ],
+                    "description": "Estimator family.",
+                },
+                "answers": {
+                    "type": "object",
+                    "additionalProperties": {"type": "string"},
+                    "description": (
+                        "question_key -> answer (see the questions returned when "
+                        "omitted)."
+                    ),
+                },
+            },
+            "required": ["family"],
+        },
+    },
 ]
 
 
@@ -522,6 +798,33 @@ def execute_workflow_tool(
     if name == "bibtex":
         return _tool_bibtex(arguments)
 
+    if name == "search_functions":
+        return _tool_search_functions(arguments)
+
+    if name == "describe_function":
+        return _tool_describe_function(arguments)
+
+    if name == "route_estimator":
+        return _tool_route_estimator(arguments)
+
+    if name == "load_data":
+        return _tool_load_data(arguments, data)
+
+    if name == "describe_data":
+        return _tool_describe_data(arguments, data)
+
+    if name == "transform_data":
+        return _tool_transform_data(arguments, data)
+
+    if name == "call_function":
+        return _tool_call_function(
+            arguments,
+            data=data,
+            detail=detail,
+            result_id=rid_arg,
+            as_handle=as_handle,
+        )
+
     if name == "plot_from_result":
         return _tool_plot_from_result(rid_arg, arguments)
 
@@ -561,7 +864,12 @@ def execute_workflow_tool(
 
     if name == "sensitivity_from_result":
         return _tool_sensitivity_from_result(
-            rid_arg, arguments, detail=detail, as_handle=as_handle
+            rid_arg, arguments, detail=detail, as_handle=as_handle, data=data
+        )
+
+    if name == "vcov_from_result":
+        return _tool_vcov_from_result(
+            rid_arg, arguments, detail=detail, as_handle=as_handle, data=data
         )
 
     if name == "honest_did_from_result":
@@ -627,34 +935,13 @@ def _need_result(rid: Optional[str]) -> Any:
         }
     obj = RESULT_CACHE.get(rid)
     if obj is None:
-        reason = RESULT_CACHE.miss_reason(rid)
-        hints = {
-            "ttl": (
-                "result_id expired (server result-cache TTL); the "
-                "underlying fit may be stale — re-fit the estimator "
-                "with as_handle=true for a fresh handle."
-            ),
-            "lru": (
-                "result_id evicted (LRU cache keeps only the most "
-                "recent fits); re-fit the estimator with "
-                "as_handle=true to obtain a fresh handle."
-            ),
-            "explicit": (
-                "result_id was explicitly dropped; re-fit the "
-                "estimator with as_handle=true."
-            ),
-            "unknown": (
-                "unknown result_id (never cached, or evicted long "
-                "ago, or the server restarted); re-fit the "
-                "estimator with as_handle=true."
-            ),
-        }
-        return {
-            "error": f"result_id {rid!r} not found in cache",
-            "reason": reason,
-            "hint": hints.get(reason, hints["unknown"]),
-            "available_result_ids": RESULT_CACHE.keys(),
-        }
+        from ._result_cache import missing_result_error
+
+        miss = missing_result_error(rid)
+        # ``reason`` is the older spelling of ``miss_reason``; kept so
+        # existing agents keep branching on it.
+        miss["reason"] = miss["miss_reason"]
+        return miss
     return obj
 
 
@@ -891,12 +1178,186 @@ def _tool_interpret_result(
     return out
 
 
+#: Tools whose cached fit is an OLS written as a formula, so ``y`` and the
+#: regressors can be read off it for the OLS-based sensitivity methods.
+_OLS_FORMULA_TOOLS = frozenset({"regress", "ols"})
+_SIMPLE_TERM = re.compile(r"^[A-Za-z_][A-Za-z0-9_.]*$")
+
+
+def _ols_sensitivity_inputs(
+    rid: str,
+    method: str,
+    arguments: Dict[str, Any],
+    data: Optional[pd.DataFrame],
+) -> Dict[str, Any]:
+    """``data`` / ``y`` / ``treat`` / ``controls`` for Oster or Cinelli-Hazlett.
+
+    Both methods bound an OLS coefficient and refit the short and long
+    regressions, so they need the dataset and the variable roles, not a
+    fitted object. Explicit ``y`` / ``treat`` / ``controls`` win; otherwise
+    they are read off the cached fit when it is a ``regress`` formula of
+    plain column names. The dataset is the one passed with this call, or
+    the handle the cached fit was made on. Anything missing is an error
+    that names it.
+    """
+    entry = RESULT_CACHE.get_entry(rid)
+    fit_args: Dict[str, Any] = dict(entry.arguments) if entry is not None else {}
+    fit_tool = entry.tool if entry is not None else None
+    y = arguments.get("y")
+    treat = arguments.get("treat") or arguments.get("treatment")
+    controls = arguments.get("controls")
+    formula = fit_args.get("formula")
+    if (
+        fit_tool in _OLS_FORMULA_TOOLS
+        and isinstance(formula, str)
+        and "~" in formula
+        and (y is None or controls is None)
+    ):
+        lhs, rhs = formula.split("~", 1)
+        terms = [t.strip() for t in rhs.split("+") if t.strip() not in ("", "1")]
+        if _SIMPLE_TERM.match(lhs.strip()) and all(
+            _SIMPLE_TERM.match(t) for t in terms
+        ):
+            y = y if y is not None else lhs.strip()
+            if treat is None and len(terms) == 1:
+                treat = terms[0]
+            if controls is None and treat in terms:
+                controls = [t for t in terms if t != treat]
+    needs = [
+        k
+        for k, v in (("y", y), ("treat", treat), ("controls", controls))
+        if v in (None, "") or (k == "controls" and not v)
+    ]
+    if data is None:
+        prov = fit_args.get("_mcp_data_provenance") or {}
+        handle = prov.get("data_id") if isinstance(prov, dict) else None
+        if handle:
+            from ._data_cache import DATA_CACHE
+
+            data = DATA_CACHE.get(handle)
+        if data is None:
+            needs.append("data_id")
+    if needs:
+        compatible = fit_tool in _OLS_FORMULA_TOOLS
+        return {
+            "error": (
+                f"sensitivity_from_result(method={method!r}) bounds an OLS "
+                "coefficient and refits the short and long regressions; "
+                f"missing {needs}"
+                + (
+                    ""
+                    if compatible
+                    else f" (the cached fit is a {fit_tool} result, not an OLS)"
+                )
+                + "."
+            ),
+            "error_kind": "missing_arguments",
+            "missing_arguments": needs,
+            "hint": (
+                "Pass y (outcome), treat (the coefficient to bound), controls "
+                "(list of control columns) and data_id (the dataset) with "
+                "this call"
+                + (
+                    "; with a regress fit, treat alone names the term and the "
+                    "rest of the formula becomes the controls."
+                    if compatible
+                    else ", or use method='evalue', which works from the "
+                    "cached estimate."
+                )
+            ),
+        }
+    if isinstance(controls, str):
+        controls = [c.strip() for c in controls.split(",") if c.strip()]
+    return {"data": data, "y": y, "treat": treat, "controls": list(controls or [])}
+
+
+def _tool_vcov_from_result(
+    rid: Optional[str],
+    arguments: Dict[str, Any],
+    *,
+    detail: str,
+    as_handle: bool,
+    data: Optional[pd.DataFrame] = None,
+) -> Dict[str, Any]:
+    """``sp.vcov`` / ``sp.vcov_compare`` on a cached fit.
+
+    The fit is re-run, so it needs its data: the frame passed with this
+    call, else the ``data_id`` the fit was made on. ``sp.vcov`` refuses
+    unless an unchanged replay reproduces the cached estimates, so a
+    mismatched frame is an error, not a wrong table.
+    """
+    obj = _need_result(rid)
+    if isinstance(obj, dict) and "error" in obj:
+        return obj
+    vce = arguments.get("vce")
+    if vce in (None, "", []):
+        return _missing_argument_error(
+            tool="vcov_from_result",
+            argument="vce",
+            arguments=arguments,
+            corrected="vce='cluster <column>'",
+            hint="Name the standard errors to report, e.g. 'robust' or "
+            "'cluster state', or a list of them for a comparison table.",
+        )
+    if data is None:
+        entry = RESULT_CACHE.get_entry(str(rid))
+        fit_args: Dict[str, Any] = dict(entry.arguments) if entry is not None else {}
+        prov = fit_args.get("_mcp_data_provenance") or {}
+        handle = prov.get("data_id") if isinstance(prov, dict) else None
+        if handle:
+            from ._data_cache import DATA_CACHE
+
+            data = DATA_CACHE.get(handle)
+
+    from ..inference.vcov_refit import vcov as _vcov
+    from ..inference.vcov_refit import vcov_compare as _vcov_compare
+
+    try:
+        if isinstance(vce, (list, tuple)):
+            table = _vcov_compare(
+                obj, list(vce), data=data, terms=arguments.get("terms")
+            )
+            records = table.replace({float("nan"): None}).to_dict(orient="records")
+            return {
+                "method": "vcov_compare",
+                "source_result_id": rid,
+                "table": records,
+                "columns": list(table.columns),
+            }
+        result = _vcov(obj, vce, data=data)
+    except Exception as e:  # noqa: BLE001 - returned to the agent with remediation
+        from .remediation import remediate
+
+        return {
+            "error": f"{type(e).__name__}: {e}",
+            "remediation": remediate(e, context={"tool": "vcov_from_result"}),
+        }
+
+    from .tools import _default_serializer
+
+    out = _default_serializer(result, detail=detail)
+    if not isinstance(out, dict):
+        out = {"value": out}
+    out["source_result_id"] = rid
+    out["vce"] = vce
+    if as_handle:
+        new_rid = RESULT_CACHE.put(
+            result,
+            tool="vcov_from_result",
+            arguments={"source": rid, "vce": vce},
+        )
+        out["result_id"] = new_rid
+        out["result_uri"] = f"statspai://result/{new_rid}"
+    return out
+
+
 def _tool_sensitivity_from_result(
     rid: Optional[str],
     arguments: Dict[str, Any],
     *,
     detail: str,
     as_handle: bool,
+    data: Optional[pd.DataFrame] = None,
 ) -> Dict[str, Any]:
     obj = _need_result(rid)
     if isinstance(obj, dict) and "error" in obj:
@@ -906,6 +1367,12 @@ def _tool_sensitivity_from_result(
 
     import statspai as sp
 
+    ols_inputs: Dict[str, Any] = {}
+    if method in ("oster", "cinelli_hazlett"):
+        ols_inputs = _ols_sensitivity_inputs(str(rid), method, arguments, data)
+        if "error" in ols_inputs:
+            return ols_inputs
+
     try:
         if method == "evalue":
             fn = getattr(sp, "evalue_from_result", None) or getattr(
@@ -913,14 +1380,19 @@ def _tool_sensitivity_from_result(
                 "evalue",
                 None,
             )
-            result = fn(obj) if fn else None
+            ev_kwargs = {
+                k: arguments[k]
+                for k in ("measure", "sd")
+                if arguments.get(k) is not None
+            }
+            result = fn(obj, **ev_kwargs) if fn else None
         elif method == "oster":
             fn = getattr(sp, "oster_bounds", None)
-            result = fn(obj) if fn else None
+            result = fn(**ols_inputs) if fn else None
         elif method == "cinelli_hazlett":
             fn = getattr(sp, "sensemakr", None)
-            kwargs = {"benchmark_covariate": benchmark} if benchmark else {}
-            result = fn(obj, **kwargs) if fn else None
+            kwargs = {"benchmark": [benchmark]} if benchmark else {}
+            result = fn(**ols_inputs, **kwargs) if fn else None
         else:
             fn = getattr(sp, "sensitivity", None)
             # The caller already told us which column is the treatment;
@@ -1219,6 +1691,13 @@ def _tool_detect_design(
     return result_dict
 
 
+def _server_runtime() -> Dict[str, Any]:
+    """StatsPAI version and interpreter of this server (``sp.doctor`` subset)."""
+    from .._doctor import runtime_summary
+
+    return runtime_summary()
+
+
 def _tool_preflight(
     arguments: Dict[str, Any],
     data: Optional[pd.DataFrame],
@@ -1266,6 +1745,7 @@ def _tool_preflight(
         result_dict = out.to_dict()
     else:
         result_dict = {"value": str(out), "verdict": getattr(out, "verdict", None)}
+    result_dict["server_runtime"] = _server_runtime()
     if as_handle:
         rid = RESULT_CACHE.put(out, tool="preflight", arguments=arguments)
         result_dict["result_id"] = rid
@@ -1361,6 +1841,30 @@ def _render_plot_png(
     type doesn't expose a plot path. The caller should treat ``None``
     as "rendered nothing" and emit a JSON-only response.
     """
+    fig = _render_plot_figure(obj, kind, figsize=figsize)
+    return None if fig is None else _figure_png(fig)
+
+
+def _figure_png(fig: Any) -> bytes:
+    import io
+
+    import matplotlib.pyplot as plt
+
+    buf = io.BytesIO()
+    try:
+        fig.savefig(buf, format="png", dpi=120, bbox_inches="tight")
+    finally:
+        plt.close(fig)
+    return buf.getvalue()
+
+
+def _render_plot_figure(
+    obj: Any,
+    kind: str,
+    figsize: Any = (8, 5),
+) -> Any:
+    """The matplotlib Figure for ``obj``, or ``None`` (see
+    :func:`_render_plot_png`)."""
     try:
         import matplotlib
 
@@ -1368,8 +1872,6 @@ def _render_plot_png(
         import matplotlib.pyplot as plt
     except Exception:
         return None
-
-    import io
 
     fig = None
     try:
@@ -1421,13 +1923,7 @@ def _render_plot_png(
                     ret = None
                 fig = _coerce_to_fig(ret)
 
-        if fig is None:
-            return None
-
-        buf = io.BytesIO()
-        fig.savefig(buf, format="png", dpi=120, bbox_inches="tight")
-        plt.close(fig)
-        return buf.getvalue()
+        return fig
     except Exception:
         if fig is not None:
             try:
@@ -1435,6 +1931,41 @@ def _render_plot_png(
             except Exception:
                 pass
         return None
+
+
+def _apply_figure_edits(fig: Any, edits: Any) -> Dict[str, Any]:
+    """Apply ``sp.interactive`` actions to ``fig``.
+
+    Returns the reproducible edit code, the pre-submission check and any
+    data-protection notices (an axis limit widened to keep intervals in
+    view), or ``{"error": ...}`` naming the supported operations.
+    """
+    import warnings
+
+    from ..plots.interactive import interactive
+
+    if not isinstance(edits, list) or not all(isinstance(e, dict) for e in edits):
+        return {
+            "error": "`edits` must be a list of action objects.",
+            "example": [{"action": "set_title", "text": "Event study"}],
+        }
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        try:
+            editor = interactive(fig, ui="none", actions=edits)
+        except ValueError as exc:
+            return {
+                "error": f"edit not applied: {exc}",
+                "fix": "Check the action name and its parameters against "
+                "FigureEditor.operations() (describe_function('interactive')).",
+            }
+    return {
+        "edit_code": editor.generate_code(include_comment=False),
+        "check": editor.check(),
+        "notices": [
+            str(w.message) for w in caught if issubclass(w.category, UserWarning)
+        ],
+    }
 
 
 def _coerce_to_fig(ret: Any) -> Any:
@@ -1470,7 +2001,17 @@ def _tool_plot_from_result(
     if isinstance(figsize, list):
         figsize = tuple(figsize[:2]) if len(figsize) >= 2 else (8, 5)
 
-    png = _render_plot_png(obj, kind, figsize=figsize)
+    edits = arguments.get("edits")
+    fig = _render_plot_figure(obj, kind, figsize=figsize)
+    edited: Dict[str, Any] = {}
+    if fig is not None and edits:
+        edited = _apply_figure_edits(fig, edits)
+        if "error" in edited:
+            import matplotlib.pyplot as plt
+
+            plt.close(fig)
+            return {"result_id": rid, "kind": kind, **edited}
+    png = None if fig is None else _figure_png(fig)
     if png is None:
         return {
             "error": (
@@ -1488,6 +2029,7 @@ def _tool_plot_from_result(
         "figsize": list(figsize),
         "mime_type": "image/png",
         "image_bytes": len(png),
+        **edited,
         # The MCP server promotes ``_plot_png`` to an image content
         # block; the underscore-prefixed key is dropped from the JSON
         # text payload so the agent doesn't see raw base64 in chat.
@@ -1593,6 +2135,843 @@ def _load_bibtex_index() -> Dict[str, str]:
 
     _BIBTEX_CACHE = entries
     return _BIBTEX_CACHE
+
+
+# ----------------------------------------------------------------------
+# Data handles — load_data / describe_data / transform_data
+# ----------------------------------------------------------------------
+
+
+def _need_data(
+    data: Optional[pd.DataFrame], *, tool: str, arguments: Dict[str, Any]
+) -> Any:
+    if data is None:
+        return _missing_argument_error(
+            tool=tool,
+            argument="data_id",
+            arguments=arguments,
+            corrected=(
+                f"{tool}(data_id='d_…')  # or data_path=..., data_records=[...], "
+                "data_csv='...'"
+            ),
+        )
+    return data
+
+
+def _load_builtin_dataset(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
+    """``load_data(dataset=...)``: a bundled example as a data handle."""
+    import warnings as _warnings
+
+    import statspai as sp
+
+    from ._data_cache import describe_frame, register_frame
+
+    with _warnings.catch_warnings():
+        # The simulated-replica warning is carried in the payload instead.
+        _warnings.simplefilter("ignore")
+        try:
+            frame = sp.load_dataset(name)
+        except sp.exceptions.MethodIncompatibility as exc:
+            return {
+                "error": str(exc),
+                "error_kind": "unknown_dataset",
+                "hint": exc.recovery_hint,
+                "did_you_mean": exc.diagnostics.get("did_you_mean"),
+                "available": exc.diagnostics.get("available"),
+            }
+    simulated = bool(frame.attrs.get("simulated"))
+    prov: Dict[str, Any] = {
+        "source": f"sp.load_dataset({name!r})",
+        "source_type": "builtin_dataset",
+        "statspai_version": sp.__version__,
+        "simulated": simulated,
+    }
+    label = arguments.get("name")
+    if isinstance(label, str) and label.strip():
+        prov["label"] = label.strip()
+    data_id = register_frame(frame, provenance=prov, tool="load_data")
+    out: Dict[str, Any] = {"data_id": data_id, "data_uri": f"statspai://data/{data_id}"}
+    out.update(describe_frame(frame))
+    out["provenance"] = prov
+    out["simulated"] = simulated
+    if simulated:
+        out["warning"] = (
+            f"{name} is a SIMULATED replica, not the original data: estimates "
+            "on it describe the simulation and must not be reported as "
+            "findings about the real data."
+        )
+    out["next_step"] = "Pass data_id to any estimator."
+    return out
+
+
+def _tool_load_data(
+    arguments: Dict[str, Any], data: Optional[pd.DataFrame]
+) -> Dict[str, Any]:
+    from ._data_cache import describe_frame, register_frame
+
+    builtin = arguments.get("dataset")
+    if data is None and isinstance(builtin, str) and builtin:
+        return _load_builtin_dataset(builtin, arguments)
+    frame = _need_data(data, tool="load_data", arguments=arguments)
+    if isinstance(frame, dict):
+        return frame
+    prov = dict(arguments.get("_source_provenance") or {})
+    source_id = arguments.get("_source_data_id")
+    if source_id:
+        # Re-registering a handle is a no-op alias: return the same id so
+        # an agent cannot accidentally duplicate a frame in the cache.
+        out: Dict[str, Any] = {"data_id": source_id, "aliased": True}
+        out.update(describe_frame(frame))
+        return out
+    label = arguments.get("name")
+    if isinstance(label, str) and label.strip():
+        prov["label"] = label.strip()
+    data_id = register_frame(frame, provenance=prov, tool="load_data")
+    out = {"data_id": data_id, "data_uri": f"statspai://data/{data_id}"}
+    out.update(describe_frame(frame))
+    out["provenance"] = prov
+    out["next_step"] = (
+        "Pass data_id to any estimator (instead of data_path), or "
+        "transform_data(data_id=..., operations=[...]) for a derived handle."
+    )
+    return out
+
+
+def _tool_describe_data(
+    arguments: Dict[str, Any], data: Optional[pd.DataFrame]
+) -> Dict[str, Any]:
+    from ._data_cache import describe_frame, lineage
+
+    frame = _need_data(data, tool="describe_data", arguments=arguments)
+    if isinstance(frame, dict):
+        return frame
+    head = arguments.get("head", 5)
+    try:
+        head = max(0, min(int(head), 50))
+    except (TypeError, ValueError):
+        head = 5
+    out: Dict[str, Any] = describe_frame(frame, head=head)
+    source_id = arguments.get("_source_data_id")
+    if source_id:
+        out["data_id"] = source_id
+        out["lineage"] = lineage(source_id)
+    prov = arguments.get("_source_provenance")
+    if prov:
+        out["provenance"] = prov
+    return out
+
+
+_TRANSFORM_OPS = (
+    "query",
+    "select",
+    "drop",
+    "rename",
+    "dropna",
+    "fillna",
+    "assign",
+    "sort",
+    "sample",
+    "winsor",
+    "wide_to_long",
+    "long_to_wide",
+    "mice",
+    "function",
+)
+
+
+#: Names agents reach for first (dplyr / SQL / Stata habits) mapped to the
+#: op that does the same thing. The step is rewritten to the canonical name
+#: before it runs, so lineage and replay only ever see canonical ops.
+_TRANSFORM_OP_ALIASES = {
+    "filter": "query",
+    "where": "query",
+    "keep": "select",
+    "mutate": "assign",
+    "winsorize": "winsor",
+}
+
+
+def _canonical_step(step: Dict[str, Any]) -> Dict[str, Any]:
+    op = step.get("op")
+    if isinstance(op, str) and op in _TRANSFORM_OP_ALIASES:
+        return {**step, "op": _TRANSFORM_OP_ALIASES[op]}
+    return step
+
+
+class UnsafeExpression(_MethodIncompatibility):
+    """A ``transform_data`` expression uses syntax outside the allowlist."""
+
+    code = "unsafe_expression"
+
+
+#: Element-wise functions ``query`` / ``assign`` expressions may call
+#: (the math functions pandas ``eval`` supports).
+_EXPR_FUNCS = frozenset(
+    {
+        "abs",
+        "log",
+        "log10",
+        "log1p",
+        "exp",
+        "expm1",
+        "sqrt",
+        "sin",
+        "cos",
+        "tan",
+        "sinh",
+        "cosh",
+        "tanh",
+        "arcsin",
+        "arccos",
+        "arctan",
+        "arcsinh",
+        "arccosh",
+        "arctanh",
+        "arctan2",
+    }
+)
+
+#: Column methods allowed as ``<column>.<method>(...)``.
+_EXPR_METHODS = frozenset({"isnull", "notnull", "isna", "notna", "isin", "between"})
+
+#: String methods allowed as ``<column>.str.<method>(...)``.
+_EXPR_STR_METHODS = frozenset({"contains", "startswith", "endswith"})
+
+
+def _validate_expression(expr: str) -> None:
+    """Reject a ``query`` / ``assign`` expression outside a small allowlist.
+
+    ``DataFrame.query`` / ``eval`` with ``engine="python"`` evaluate
+    Python syntax, including attribute access, subscripts and local
+    ``@name`` references — a model-supplied string must not reach them
+    unchecked. Allowed: column names (bare or backtick-quoted), constants,
+    arithmetic / comparison / boolean / bitwise operators, ``in`` /
+    ``not in``, list and tuple literals, the math functions in
+    :data:`_EXPR_FUNCS`, and ``col.isnull()``-style methods
+    (:data:`_EXPR_METHODS`, ``col.str.contains(...)``). Everything else —
+    other attribute access, dunder names, subscripts, lambdas,
+    comprehensions, ``@`` references, ``@`` matrix products — raises
+    :class:`UnsafeExpression`.
+    """
+    import ast
+    import re
+
+    # Backtick-quoted column names are opaque to Python's parser.
+    masked = re.sub(r"`[^`]*`", "_statspai_bt_col_", expr)
+    try:
+        tree = ast.parse(masked.strip(), mode="eval")
+    except SyntaxError as e:
+        raise UnsafeExpression(
+            f"Expression {expr!r} is not allowed: {e.msg}.",
+            recovery_hint=(
+                "Use column names, constants and operators only; local "
+                "variable references (@name) are not supported."
+            ),
+        ) from e
+
+    ops_ok = (
+        ast.Expression,
+        ast.BoolOp,
+        ast.And,
+        ast.Or,
+        ast.BinOp,
+        ast.Add,
+        ast.Sub,
+        ast.Mult,
+        ast.Div,
+        ast.FloorDiv,
+        ast.Mod,
+        ast.Pow,
+        ast.BitAnd,
+        ast.BitOr,
+        ast.BitXor,
+        ast.UnaryOp,
+        ast.Not,
+        ast.USub,
+        ast.UAdd,
+        ast.Invert,
+        ast.Compare,
+        ast.Eq,
+        ast.NotEq,
+        ast.Lt,
+        ast.LtE,
+        ast.Gt,
+        ast.GtE,
+        ast.In,
+        ast.NotIn,
+        ast.Is,
+        ast.IsNot,
+        ast.Load,
+        ast.List,
+        ast.Tuple,
+        ast.keyword,
+    )
+
+    def _reject(node: Any, why: str) -> None:
+        raise UnsafeExpression(
+            f"Expression {expr!r} is not allowed: {why}.",
+            recovery_hint=(
+                "Allowed: columns, constants, + - * / // % **, comparisons, "
+                "and/or/not, & | ~, in / not in, list literals, math "
+                "functions (log, exp, sqrt, abs, ...), "
+                "col.isnull()/notnull()/isna()/notna()/isin()/between(), "
+                "col.str.contains()/startswith()/endswith()."
+            ),
+            diagnostics={"node": type(node).__name__},
+        )
+
+    def _check_name(node: Any) -> None:
+        if "__" in node.id:
+            _reject(node, f"name {node.id!r} contains a dunder")
+
+    def _walk(node: Any) -> None:
+        if isinstance(node, ast.Name):
+            _check_name(node)
+            return
+        if isinstance(node, ast.Constant):
+            if not isinstance(node.value, (str, int, float, bool, type(None))):
+                _reject(node, "unsupported constant")
+            return
+        if isinstance(node, ast.Call):
+            func = node.func
+            if isinstance(func, ast.Name):
+                if func.id not in _EXPR_FUNCS:
+                    _reject(node, f"call to {func.id!r}")
+            elif isinstance(func, ast.Attribute):
+                owner = func.value
+                if func.attr in _EXPR_METHODS and isinstance(owner, ast.Name):
+                    _check_name(owner)
+                elif (
+                    func.attr in _EXPR_STR_METHODS
+                    and isinstance(owner, ast.Attribute)
+                    and owner.attr == "str"
+                    and isinstance(owner.value, ast.Name)
+                ):
+                    _check_name(owner.value)
+                else:
+                    _reject(node, f"method call .{func.attr}()")
+            else:
+                _reject(node, "call target")
+            for arg in node.args:
+                _walk(arg)
+            for kw in node.keywords:
+                if kw.arg is None:
+                    _reject(node, "**kwargs")
+                _walk(kw.value)
+            return
+        if not isinstance(node, ops_ok):
+            _reject(node, f"{type(node).__name__} syntax")
+        for child in ast.iter_child_nodes(node):
+            _walk(child)
+
+    _walk(tree)
+
+
+def _apply_transform(df: pd.DataFrame, step: Dict[str, Any]) -> pd.DataFrame:
+    """Apply one ``transform_data`` step. Raises on a bad step."""
+    from ..exceptions import MethodIncompatibility
+
+    op = step.get("op")
+    if op not in _TRANSFORM_OPS:
+        raise MethodIncompatibility(
+            f"Unknown transform op {op!r}.",
+            recovery_hint=f"Use one of: {', '.join(_TRANSFORM_OPS)}.",
+            diagnostics={"step": step},
+        )
+
+    def _cols(key: str = "columns", required: bool = True) -> List[str]:
+        cols = step.get(key)
+        if cols is None:
+            if required:
+                raise MethodIncompatibility(
+                    f"op={op!r} needs `{key}`.",
+                    recovery_hint=f"Add {key}=[...] to the step.",
+                    diagnostics={"step": step},
+                )
+            return []
+        if isinstance(cols, str):
+            cols = [cols]
+        missing = [c for c in cols if c not in df.columns]
+        if missing:
+            raise MethodIncompatibility(
+                f"op={op!r}: column(s) not found: {missing}. "
+                f"Available: {list(map(str, df.columns))[:40]}",
+                recovery_hint="Check the column names with describe_data.",
+                diagnostics={"missing": missing},
+            )
+        return list(cols)
+
+    if op == "query":
+        expr = step.get("expr")
+        if not isinstance(expr, str) or not expr.strip():
+            raise MethodIncompatibility(
+                "op='query' needs a string `expr`.",
+                recovery_hint=(
+                    "e.g. {'op': 'query', 'expr': 'year >= 2005 and age < 65'}"
+                ),
+            )
+        _validate_expression(expr)
+        return df.query(expr, engine="python")
+    if op == "select":
+        return df[_cols()]
+    if op == "drop":
+        return df.drop(columns=_cols())
+    if op == "rename":
+        mapping = step.get("mapping")
+        if not isinstance(mapping, dict):
+            raise MethodIncompatibility(
+                "op='rename' needs `mapping` {old: new}.",
+                recovery_hint="e.g. {'op': 'rename', 'mapping': {'lwage': 'y'}}",
+            )
+        unknown = [k for k in mapping if k not in df.columns]
+        if unknown:
+            raise MethodIncompatibility(
+                f"op='rename': column(s) not found: {unknown}",
+                recovery_hint="Check the column names with describe_data.",
+            )
+        return df.rename(columns=mapping)
+    if op == "dropna":
+        cols = _cols(required=False)
+        return df.dropna(subset=cols or None)
+    if op == "fillna":
+        value = step.get("value", step.get("mapping"))
+        if value is None:
+            raise MethodIncompatibility(
+                "op='fillna' needs `value` (scalar) or `mapping` {column: value}.",
+                recovery_hint="e.g. {'op': 'fillna', 'mapping': {'x': 0}}",
+            )
+        if isinstance(value, dict):
+            unknown = [k for k in value if k not in df.columns]
+            if unknown:
+                raise MethodIncompatibility(
+                    f"op='fillna': column(s) not found: {unknown}",
+                    recovery_hint="Check the column names with describe_data.",
+                )
+        return df.fillna(value)
+    if op == "assign":
+        column, expr = step.get("column"), step.get("expr")
+        if not isinstance(column, str) or not isinstance(expr, str):
+            raise MethodIncompatibility(
+                "op='assign' needs `column` and a string `expr`.",
+                recovery_hint=(
+                    "e.g. {'op': 'assign', 'column': 'lwage', 'expr': 'log(wage)'}"
+                ),
+            )
+        _validate_expression(expr)
+        out = df.copy()
+        out[column] = out.eval(expr, engine="python")
+        return out
+    if op == "sort":
+        by = _cols("by")
+        asc = step.get("ascending", True)
+        return df.sort_values(by=by, ascending=asc).reset_index(drop=True)
+    if op == "sample":
+        n = step.get("n")
+        try:
+            n = int(n)
+        except (TypeError, ValueError):
+            raise MethodIncompatibility(
+                "op='sample' needs an integer `n`.",
+                recovery_hint="e.g. {'op': 'sample', 'n': 1000, 'seed': 0}",
+            )
+        seed = step.get("seed", 0)
+        return df.sample(n=min(n, len(df)), random_state=int(seed)).reset_index(
+            drop=True
+        )
+    if op == "winsor":
+        from ..utils.data_tools import winsor
+
+        cols = _cols(required=False) or None
+        cuts = step.get("cuts", [1, 99])
+        return winsor(
+            df, vars=cols, cuts=(float(cuts[0]), float(cuts[1])), replace=True
+        )
+    if op == "wide_to_long":
+        stub = step.get("stubnames")
+        i, j = step.get("i"), step.get("j")
+        if not stub or not i or not j:
+            raise MethodIncompatibility(
+                "op='wide_to_long' needs `stubnames`, `i` and `j`.",
+                recovery_hint=(
+                    "e.g. {'op': 'wide_to_long', 'stubnames': ['y'], 'i': 'id', "
+                    "'j': 'year', 'sep': '_'}"
+                ),
+            )
+        return pd.wide_to_long(
+            df, stubnames=stub, i=i, j=j, sep=step.get("sep", "")
+        ).reset_index()
+    if op == "long_to_wide":
+        index, columns, values = (
+            step.get("index"),
+            step.get("columns"),
+            step.get("values"),
+        )
+        if not index or not columns or not values:
+            raise MethodIncompatibility(
+                "op='long_to_wide' needs `index`, `columns` and `values`.",
+                recovery_hint=(
+                    "e.g. {'op': 'long_to_wide', 'index': 'id', 'columns': "
+                    "'year', 'values': 'y'}"
+                ),
+            )
+        wide = df.pivot(index=index, columns=columns, values=values)
+        wide.columns = [f"{values}_{c}" for c in wide.columns]
+        return wide.reset_index()
+    if op == "mice":
+        import statspai as sp
+
+        cols = _cols(required=False) or None
+        m = int(step.get("m", 5))
+        # A fixed default seed keeps the handle's lineage replayable.
+        seed = step.get("seed", 0)
+        res = sp.mice(df, m=m, seed=None if seed is None else int(seed))
+        first = res.complete(0)
+        if not cols:
+            return first
+        # Fill only the named columns; every other column keeps its values
+        # (and its missing cells).
+        out = df.copy()
+        out[cols] = first[cols].to_numpy()
+        return out
+    # op == "function"
+    import statspai as sp
+
+    name = step.get("name")
+    if not isinstance(name, str) or not name.strip():
+        raise MethodIncompatibility(
+            "op='function' needs `name` (a registered sp.<name>).",
+            recovery_hint=(
+                "e.g. {'op': 'function', 'name': 'winsor', 'arguments': {...}}"
+            ),
+        )
+    name = name.strip()
+    if name.startswith("sp."):
+        name = name[3:]
+    fn = getattr(sp, name, None)
+    if fn is None or not callable(fn):
+        raise MethodIncompatibility(
+            f"Unknown function {name!r}.",
+            recovery_hint="Use search_functions to find the right name.",
+        )
+    kwargs = dict(step.get("arguments") or {})
+    kwargs.pop("data", None)
+    out = fn(data=df, **kwargs)
+    if not isinstance(out, pd.DataFrame):
+        raise MethodIncompatibility(
+            f"sp.{name} returned {type(out).__name__}, not a DataFrame.",
+            recovery_hint=(
+                "transform_data only chains DataFrame-returning functions; "
+                "fit estimators with call_function instead."
+            ),
+        )
+    return out
+
+
+#: ``attrs`` keys that map column name -> metadata for that column.
+_PER_COLUMN_LABEL_ATTRS = (
+    "_labels",
+    "_value_labels",
+    "_missing_labels",
+    "_formats",
+    "_value_label_names",
+    "_notes",
+    "_characteristics",
+)
+
+
+def _carry_label_attrs(
+    attrs: Dict[Any, Any], df: pd.DataFrame, step: Dict[str, Any]
+) -> Dict[Any, Any]:
+    """Label metadata for the frame a transform step produced.
+
+    pandas keeps ``attrs`` through some operations and silently drops it in
+    others (``pivot``, ``melt``, ``concat``), so a loaded .dta would lose its
+    variable and value labels somewhere along a transform chain.  This
+    rebuilds them explicitly: a column keeps its labels while it survives
+    under the same name, ``rename`` moves them to the new name, and a column
+    that ``assign`` wrote gets none, since they described the old contents.
+    """
+    renamed = step.get("mapping") if step.get("op") == "rename" else None
+    renamed = renamed if isinstance(renamed, dict) else {}
+    overwritten = {step.get("column")} if step.get("op") == "assign" else set()
+    present = {str(c) for c in df.columns}
+    out: Dict[Any, Any] = {}
+    for key, value in attrs.items():
+        if key not in _PER_COLUMN_LABEL_ATTRS or not isinstance(value, dict):
+            out[key] = value
+            continue
+        kept = {}
+        for col, meta in value.items():
+            if col in overwritten:
+                continue
+            new_name = renamed.get(col, col)
+            # notes and characteristics of the dataset itself sit under '_dta'
+            if str(new_name) in present or col == "_dta":
+                kept[new_name] = meta
+        if kept:
+            out[key] = kept
+    return out
+
+
+def _tool_transform_data(
+    arguments: Dict[str, Any], data: Optional[pd.DataFrame]
+) -> Dict[str, Any]:
+    from ..workflow._degradation import record_degradation
+    from ._data_cache import describe_frame, register_frame
+
+    frame = _need_data(data, tool="transform_data", arguments=arguments)
+    if isinstance(frame, dict):
+        return frame
+    ops = arguments.get("operations")
+    if (
+        not isinstance(ops, list)
+        or not ops
+        or not all(isinstance(o, dict) for o in ops)
+    ):
+        return {
+            "error": "`operations` must be a non-empty list of {op, ...} objects.",
+            "ops": list(_TRANSFORM_OPS),
+            "example": {
+                "operations": [
+                    {"op": "query", "expr": "year >= 2005"},
+                    {"op": "winsor", "columns": ["wage"], "cuts": [1, 99]},
+                ]
+            },
+        }
+    df = frame
+    applied: List[Dict[str, Any]] = []
+    for k, step in enumerate(ops):
+        step = _canonical_step(step)
+        before = int(len(df))
+        try:
+            previous_attrs = df.attrs
+            df = _apply_transform(df, step)
+            df.attrs = _carry_label_attrs(previous_attrs, df, step)
+        except Exception as exc:
+            # A failed step aborts the chain: a partially transformed frame
+            # is not what the agent asked for (CLAUDE.md §3.7).
+            entry = record_degradation(
+                None, section=f"transform_data step {k} ({step.get('op')})", exc=exc
+            )
+            envelope: Dict[str, Any] = {
+                "error": f"{type(exc).__name__}: {exc}",
+                "failed_step": k,
+                "step": step,
+                "applied": applied,
+                "degradation": entry,
+            }
+            from ..exceptions import StatsPAIError
+
+            if isinstance(exc, StatsPAIError):
+                envelope["error_kind"] = exc.code
+                envelope["recovery_hint"] = getattr(exc, "recovery_hint", None)
+            return envelope
+        applied.append(
+            {
+                "step": k,
+                "op": step.get("op"),
+                "arguments": {kk: vv for kk, vv in step.items() if kk != "op"},
+                "n_rows_before": before,
+                "n_rows_after": int(len(df)),
+            }
+        )
+    source_id = arguments.get("_source_data_id")
+    prov = dict(arguments.get("_source_provenance") or {})
+    label = arguments.get("name")
+    if isinstance(label, str) and label.strip():
+        prov["label"] = label.strip()
+    data_id = register_frame(
+        df,
+        provenance=prov,
+        parent_id=source_id,
+        operations=applied,
+        tool="transform_data",
+    )
+    out: Dict[str, Any] = {
+        "data_id": data_id,
+        "data_uri": f"statspai://data/{data_id}",
+        "parent_id": source_id,
+        "operations": applied,
+    }
+    out.update(describe_frame(df))
+    return out
+
+
+def _tool_route_estimator(arguments: Dict[str, Any]) -> Dict[str, Any]:
+    """``route_estimator`` meta-tool: data-free estimator routing."""
+    from .._routing import decision_guide, route
+    from ..exceptions import StatsPAIError
+
+    family = arguments.get("family")
+    if not isinstance(family, str) or not family.strip():
+        return {"error": "`family` is required.", "families": decision_guide()}
+    answers = arguments.get("answers") or {}
+    if not isinstance(answers, dict):
+        return {"error": "`answers` must be an object of question_key -> answer."}
+    try:
+        if not answers:
+            out: Dict[str, Any] = decision_guide(family)
+            out["hint"] = (
+                "Answer the questions with route_estimator(family=..., "
+                "answers={key: answer, ...})."
+            )
+            return out
+        out = route(family, **{str(k): str(v) for k, v in answers.items()})
+    except StatsPAIError as exc:
+        return {
+            "error": str(exc),
+            "error_kind": exc.code,
+            "error_payload": exc.to_dict(),
+        }
+    out["guide_uri"] = f"statspai://guide/{family.strip().lower()}"
+    return out
+
+
+def _tool_search_functions(arguments: Dict[str, Any]) -> Dict[str, Any]:
+    """``search_functions`` meta-tool: ranked registry search."""
+    from ..registry import search_functions
+
+    query = arguments.get("query")
+    if not isinstance(query, str) or not query.strip():
+        return {
+            "error": "`query` is required (keywords or a short task phrase).",
+            "example": {"query": "staggered adoption event study"},
+        }
+    limit = arguments.get("limit", 10)
+    try:
+        limit = max(1, min(int(limit), 50))
+    except (TypeError, ValueError):
+        limit = 10
+    category = arguments.get("category")
+    if not (isinstance(category, str) and category.strip()):
+        category = None
+    hits = search_functions(query, limit=None, category=category)
+    return {
+        "query": query,
+        "n_matches": len(hits),
+        "matches": hits[:limit],
+        "next_step": (
+            "describe_function(name=<match>) for the parameter schema, "
+            "then call_function(function=<match>, arguments={...})."
+        ),
+    }
+
+
+def _tool_describe_function(arguments: Dict[str, Any]) -> Dict[str, Any]:
+    """``describe_function`` meta-tool: full registry metadata + schema."""
+    from ..registry import _REGISTRY, _ensure_full_registry, describe_function
+    from ..registry import function_schema as _function_schema
+
+    name = arguments.get("name")
+    if not isinstance(name, str) or not name.strip():
+        return {"error": "`name` is required (a registered function name)."}
+    name = name.strip()
+    if name.startswith("sp."):
+        name = name[3:]
+    _ensure_full_registry()
+    if name not in _REGISTRY:
+        from difflib import get_close_matches
+
+        return {
+            "error": f"Unknown function: {name!r}.",
+            "did_you_mean": get_close_matches(name, sorted(_REGISTRY), n=5, cutoff=0.6),
+            "hint": "Use search_functions to find the right name.",
+        }
+    out: Dict[str, Any] = dict(describe_function(name))
+    try:
+        schema = _function_schema(name)
+    except Exception as e:  # pragma: no cover - defensive
+        out["schema_error"] = f"{type(e).__name__}: {e}"
+    else:
+        # The JSON-Schema parameters carry every field of the ``params``
+        # list (type, default, enum, description) plus the accepted
+        # aliases, and the schema's composed description repeats the
+        # card fields above. Sending both doubled the payload (2026-10-19
+        # audit: 5.9 KB + 6.8 KB for callaway_santanna), so the parameters
+        # are sent once, as the schema.
+        out.pop("params", None)
+        out["schema"] = {
+            "name": schema.get("name", name),
+            "parameters": schema.get("parameters", {}),
+        }
+    out["call_with"] = {
+        "tool": "call_function",
+        "arguments": {"function": name, "arguments": {"<param>": "<value>"}},
+    }
+    out["server_runtime"] = _server_runtime()
+    return out
+
+
+def _tool_call_function(
+    arguments: Dict[str, Any],
+    *,
+    data: Optional[pd.DataFrame],
+    detail: str,
+    result_id: Optional[str],
+    as_handle: bool,
+) -> Dict[str, Any]:
+    """``call_function`` meta-tool: dispatch any registered function."""
+    fn_name = arguments.get("function")
+    if fn_name is None:
+        # describe_function takes `name`; an agent carrying it over to
+        # call_function means the same thing.
+        fn_name = arguments.get("name")
+    if not isinstance(fn_name, str) or not fn_name.strip():
+        return {
+            "error": "`function` is required (a registered function name).",
+            "example": {
+                "function": "callaway_santanna",
+                "arguments": {"y": "y", "g": "g", "t": "t", "i": "id"},
+            },
+        }
+    fn_name = fn_name.strip()
+    if fn_name.startswith("sp."):
+        fn_name = fn_name[3:]
+    if fn_name == "call_function":
+        return {"error": "call_function cannot call itself."}
+    inner = arguments.get("arguments") or {}
+    if not isinstance(inner, dict):
+        return {"error": "`arguments` must be a JSON object of keyword arguments."}
+    # Agents often send the function's own arguments next to `function`
+    # instead of nesting them under `arguments` (the 2026-10-19 audit: a
+    # flat call_function(function='sun_abraham', y=..., g=...) failed with
+    # "missing 3 required positional arguments"). Fold them in; a key given
+    # both ways with different values is ambiguous and refused.
+    # Without `function`, `name` carried the function name, not an argument.
+    meta = ("function", "arguments") + (() if "function" in arguments else ("name",))
+    flat = {k: v for k, v in arguments.items() if k not in meta}
+    folded: list = []
+    if flat:
+        clash = sorted(k for k in flat if k in inner and inner[k] != flat[k])
+        if clash:
+            return {
+                "error": (
+                    "call_function got "
+                    + ", ".join(repr(k) for k in clash)
+                    + " both inside `arguments` and at the top level with "
+                    "different values; pass each argument once, inside "
+                    "`arguments`."
+                ),
+                "error_kind": "ambiguous_argument",
+            }
+        folded = sorted(k for k in flat if k not in inner)
+        inner = {**flat, **inner}
+    from .tools import execute_tool
+
+    out = execute_tool(
+        fn_name,
+        dict(inner),
+        data=data,
+        detail=detail,
+        result_id=result_id,
+        as_handle=as_handle,
+    )
+    if isinstance(out, dict):
+        out.setdefault("tool", fn_name)
+        out["called_via"] = "call_function"
+        if folded:
+            out["arguments_folded"] = folded
+    return out
 
 
 def _tool_bibtex(arguments: Dict[str, Any]) -> Dict[str, Any]:

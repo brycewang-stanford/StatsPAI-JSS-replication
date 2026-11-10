@@ -32,9 +32,72 @@ import numpy as np
 import pandas as pd
 
 from .._result_serialize import ResultProtocolMixin
+from ..core._call_record import records_call
+from ..core._collinear import drop_collinear
 from ..exceptions import DataInsufficient, MethodIncompatibility
 
 _SUPF_SEED = 20240601
+
+#: a residual root mean square below this share of that of the outcome is
+#: rounding error: the regression fits exactly and there is nothing to test
+_EXACT_FIT = 1e-10
+
+
+def _break_design(data: pd.DataFrame, y: str, x: Optional[List[str]], who: str) -> Any:
+    """Outcome, full-rank design with a constant, and its column names.
+
+    Refuses missing values (the procedures index consecutive observations,
+    so a row cannot be dropped) and omits redundant regressors with a note,
+    so every statistic sees the same full-rank design: the recursive
+    residual sums of squares start from an inverse of ``X'X`` and the F
+    statistics divide by the number of coefficients.
+    """
+    y_data = data[y].to_numpy(dtype=float)
+    n = len(y_data)
+    names = ["const"] + [str(v) for v in (x or [])]
+    if x is not None:
+        X_full = np.column_stack([np.ones(n), data[x].to_numpy(dtype=float)])
+    else:
+        X_full = np.ones((n, 1))
+    bad = ~(np.isfinite(y_data) & np.isfinite(X_full).all(axis=1))
+    if bad.any():
+        rows = np.flatnonzero(bad)
+        raise MethodIncompatibility(
+            f"{who}: {rows.size} row(s) have a missing or non-finite value "
+            f"(first at position {int(rows[0])}). Break dates are positions "
+            "in a series of consecutive observations, so a row cannot be "
+            "dropped.",
+            recovery_hint="Trim the sample to a stretch without missing "
+            "values, or fill the gap before calling.",
+            diagnostics={"n_missing_rows": int(rows.size), "rows": rows[:20].tolist()},
+        )
+    X_full, names, _, _ = drop_collinear(X_full, names, who, stacklevel=4)
+    return y_data, X_full, names
+
+
+def _refuse_exact_split(y: np.ndarray, rss: float, date: int, who: str) -> None:
+    """Refuse a split whose regimes reproduce the outcome exactly."""
+    if not rss > _EXACT_FIT**2 * float(y @ y):
+        raise DataInsufficient(
+            f"{who}: the regimes split at observation {date} fit the outcome "
+            "exactly, so the residual sum of squares is rounding error and "
+            "the statistic has a zero denominator.",
+            recovery_hint="The series has no residual variation within "
+            "regimes; a break test needs noise to compare against.",
+        )
+
+
+def _refuse_exact_fit(y: np.ndarray, rss: float, who: str) -> None:
+    """Refuse an outcome the full-sample regression reproduces exactly."""
+    if not rss > _EXACT_FIT**2 * float(y @ y):
+        raise DataInsufficient(
+            f"{who}: the outcome is reproduced exactly by the regression "
+            "(a constant outcome, or one that is a linear function of the "
+            "regressors), so the residuals are rounding error and no "
+            "stability statistic can be formed from them.",
+            recovery_hint="Check the outcome column; a test of parameter "
+            "stability needs residual variation.",
+        )
 
 
 @lru_cache(maxsize=128)
@@ -101,40 +164,66 @@ def _supf_pvalue(stat: float, q: int, n: int, trimming: float) -> float:
 
 
 def hansen_supf_pvalue(stat: float, k: int, lam: float) -> float:
-    """Hansen's (1997) approximate asymptotic p-value of a sup-Wald statistic.
+    """Approximate asymptotic p-value of a sup-Wald statistic (Hansen 1997).
 
     ``stat`` is the Wald-scale statistic (``k`` x sup-F), ``k`` the number
     of coefficients tested for constancy (1..40), ``lam`` either Andrews'
-    ``pi_0`` (``< 1``) or his ``lambda`` (``>= 1``, then
-    ``pi_0 = 1 / (1 + sqrt(lambda))``). Transcribes ``pv_sup`` of Hansen's
-    own code, which ``strucchange::sctest(type = "supF")`` and Stata's
-    ``estat sbsingle`` use: a chi-square response surface per ``pi_0`` in
-    .01, .03, ..., .49, linearly interpolated in ``pi_0``.
+    ``pi_0`` (``0 < pi_0 <= 0.5``) or his ``lambda`` (``>= 1``, then
+    ``pi_0 = 1 / (1 + sqrt(lambda))``). Hansen's (1997) eq. (8) with
+    ``v = 1``: ``p = 1 - chi2(theta_0 + theta_1 stat; eta)``, one row of
+    ``(theta_0, theta_1, eta)`` per ``pi_0`` in .01, .03, ..., .49 from
+    :mod:`._hansen_supf_table`, which StatsPAI recomputed by simulation
+    from the paper's description (``scripts/generate_hansen_supf_table.py``)
+    [@hansen1997approximate]. Between rows the p-value is interpolated
+    linearly in ``pi_0``; between .49 and .5 it is interpolated towards
+    the exact ``chi2(k)`` p-value at ``pi_0 = .5``; below .01 the .01 row is
+    used. These interpolation rules are those of R ``strucchange`` and
+    Stata ``estat sbsingle`` (black-box outputs), whose own coefficients
+    are Hansen's and agree with these to Monte Carlo accuracy.
     """
-    from scipy import stats as _st
+    from scipy import stats
 
-    from ._break_tables import HANSEN_SUP_BETA
+    from ._hansen_supf_table import HANSEN_SUP_BETA
 
-    if k > 40:
+    if int(k) != k or not 1 <= int(k) <= 40:
         raise MethodIncompatibility(
-            "Hansen's (1997) table covers k <= 40 tested coefficients",
-            recovery_hint="Use pvalue_method='simulate'.",
+            "Hansen's (1997) table covers 1 <= k <= 40 tested coefficients; "
+            f"got k={k}.",
+            recovery_hint="Use pvalue_method='simulate' for more than 40 coefficients.",
         )
-    tau = lam if lam < 1 else 1.0 / (1.0 + np.sqrt(lam))
-    beta = np.asarray(HANSEN_SUP_BETA[int(k)], float)
-    x = beta[:, 0] + beta[:, 1] * stat
-    x = x * (x > 0)
-    pp = _st.chi2.sf(x, beta[:, 2])
-    if tau == 0.5:
-        return float(_st.chi2.sf(stat, k))
-    if tau <= 0.01:
-        return float(pp[24])
-    if tau >= 0.49:
-        return float(((0.5 - tau) * pp[0] + (tau - 0.49) * _st.chi2.sf(stat, k)) * 100)
-    taua = (0.51 - tau) * 50
-    tau1 = int(np.floor(taua))
-    # R's 1-based pp[tau1] is pp[tau1 - 1] here
-    return float((tau1 + 1 - taua) * pp[tau1 - 1] + (taua - tau1) * pp[tau1])
+    k = int(k)
+    stat = float(stat)
+    if np.isnan(stat):
+        return float("nan")
+    lam = float(lam)
+    if lam >= 1.0:
+        pi0 = 1.0 / (1.0 + np.sqrt(lam))
+    elif 0.0 < lam <= 0.5:
+        pi0 = lam
+    else:
+        raise MethodIncompatibility(
+            f"Trimming {lam} is neither a pi_0 in (0, 0.5] nor a lambda >= 1.",
+            recovery_hint="Pass pi_0 = trimming fraction (e.g. 0.15) or "
+            "lambda = ((1 - pi_0) / pi_0)^2.",
+        )
+    rows = np.asarray(HANSEN_SUP_BETA[k], dtype=float)  # pi_0 = .49, ..., .01
+    nodes = np.round(np.arange(0.49, 0.0, -0.02), 2)
+
+    def row_p(i: int) -> float:
+        t0, t1, eta = rows[i]
+        return float(stats.chi2.sf(t0 + t1 * stat, eta))
+
+    if pi0 >= 0.49:
+        w = (pi0 - 0.49) / 0.01
+        return float((1.0 - w) * row_p(0) + w * float(stats.chi2.sf(stat, k)))
+    if pi0 <= 0.01:
+        return row_p(nodes.size - 1)
+    hi = int(np.flatnonzero(nodes >= pi0 - 1e-12)[-1])  # node at or above pi0
+    if abs(nodes[hi] - pi0) < 1e-12:
+        return row_p(hi)
+    lo = hi + 1  # the next node below pi0
+    w = (pi0 - nodes[lo]) / (nodes[hi] - nodes[lo])
+    return float((1.0 - w) * row_p(lo) + w * row_p(hi))
 
 
 class StructuralBreakResult(ResultProtocolMixin):
@@ -163,6 +252,19 @@ class StructuralBreakResult(ResultProtocolMixin):
     >>> res.n_breaks >= 1
     True
     """
+
+    # Attributes set by individual tests after construction (declared here
+    # for the type checker only; they exist when the test sets them).
+    sup_wald: float
+    sup_break: Any
+    f_path: np.ndarray
+    candidate_breaks: np.ndarray
+    critical_values: Optional[List[float]]
+    sequential_tests: List[Dict[str, Any]]
+    min_segment_size: int
+    rss_by_breaks: np.ndarray
+    bic_by_breaks: np.ndarray
+    breaks_by_m: Any
 
     def __init__(
         self,
@@ -236,6 +338,7 @@ class StructuralBreakResult(ResultProtocolMixin):
         return ax
 
 
+@records_call("structural_break")
 def structural_break(
     data: Optional[pd.DataFrame] = None,
     y: Optional[str] = None,
@@ -245,6 +348,8 @@ def structural_break(
     method: str = "bai-perron",
     alpha: float = 0.05,
     pvalue_method: str = "hansen",
+    break_vars: Optional[List[str]] = None,
+    vce: str = "nonrobust",
 ) -> StructuralBreakResult:
     """
     Structural break detection.
@@ -289,6 +394,18 @@ def structural_break(
         an ordinary Chow F test, as in strucchange). ``'simulate'`` is the
         earlier Monte-Carlo draw from the same limit law (5,000 fixed-seed
         Brownian-bridge replications on a grid tied to ``n``).
+    break_vars : list of str, optional
+        For 'sup-f' / 'chow': the coefficients allowed to change at the
+        break, as names from ``x`` plus ``"const"`` for the intercept. The
+        others are held equal across the two regimes. Default: every
+        coefficient changes. Naming a subset gives the Quandt likelihood
+        ratio statistic as usually applied to a forecasting regression,
+        where the lags of ``y`` stay fixed and the intercept and the
+        predictor's coefficients are tested.
+    vce : {'nonrobust', 'hc0', 'hc1'}, default 'nonrobust'
+        For 'sup-f' / 'chow': covariance estimator of the Wald statistic at
+        each candidate date. ``'hc1'`` gives a heteroskedasticity-robust
+        sup-F. The limit law, and so the p-value, is the same.
 
     Returns
     -------
@@ -338,20 +455,19 @@ def structural_break(
         raise ValueError("data is required")
     assert y is not None
 
-    y_data = data[y].values.astype(float)
+    y_data, X_full, kept_names = _break_design(data, y, x, "structural_break")
     n = len(y_data)
-
-    if x is not None:
-        X_data = data[x].values.astype(float)
-        X_full = np.column_stack([np.ones(n), X_data])
-    else:
-        X_full = np.ones((n, 1))
-
     k = X_full.shape[1]
+    if n <= k:
+        raise DataInsufficient(
+            f"structural_break: {n} observation(s) for {k} coefficient(s).",
+            recovery_hint="Use a longer series or fewer regressors.",
+        )
 
     # Full sample RSS
     beta_full = np.linalg.lstsq(X_full, y_data, rcond=None)[0]
     rss_full = np.sum((y_data - X_full @ beta_full) ** 2)
+    _refuse_exact_fit(y_data, float(rss_full), "structural_break")
 
     if method not in ("bai-perron", "chow", "sup-f", "global"):
         raise MethodIncompatibility(
@@ -360,8 +476,53 @@ def structural_break(
     if pvalue_method not in ("hansen", "simulate"):
         raise MethodIncompatibility("pvalue_method must be 'hansen' or 'simulate'")
 
+    if vce not in ("nonrobust", "hc0", "hc1"):
+        raise MethodIncompatibility("vce must be 'nonrobust', 'hc0' or 'hc1'")
+    partial = break_vars is not None or vce != "nonrobust"
+    if partial and method not in ("chow", "sup-f"):
+        raise MethodIncompatibility(
+            "break_vars= and vce= apply to method='sup-f' / 'chow' only; the "
+            "Bai-Perron procedures here assume every coefficient breaks and "
+            "homoskedastic errors."
+        )
     if method == "global":
+        if max_breaks is not None and int(max_breaks) < 1:
+            raise MethodIncompatibility(
+                f"structural_break: max_breaks must be at least 1, got "
+                f"{max_breaks!r}.",
+                recovery_hint="The fit without a break is always among the "
+                "candidates BIC compares; pass max_breaks=1 or more.",
+            )
         return _breakpoints_global(y_data, X_full, min_segment, max_breaks, rss_full)
+    if partial:
+        names = ["const"] + list(x or [])
+        chosen = kept_names if break_vars is None else list(break_vars)
+        unknown = [v for v in chosen if v not in names]
+        if unknown or not chosen:
+            raise MethodIncompatibility(
+                f"break_vars {unknown or chosen} must be drawn from {names}"
+            )
+        omitted = [v for v in chosen if v not in kept_names]
+        if omitted:
+            raise MethodIncompatibility(
+                f"break_vars {omitted} were omitted as collinear with the "
+                "other regressors, so no break in their coefficients can be "
+                "tested.",
+                recovery_hint="Name the regressor that was kept instead.",
+            )
+        names = kept_names
+        cols = [names.index(v) for v in dict.fromkeys(chosen)]
+        return _sup_wald_break(
+            y_data,
+            X_full,
+            cols,
+            vce,
+            min_segment,
+            alpha,
+            pvalue_method,
+            rss_full,
+            method,
+        )
 
     if method == "chow" or method == "sup-f":
         # Sup-F test: find the single break maximizing F. Candidate break
@@ -373,6 +534,15 @@ def structural_break(
         f_stats = []
         t_from = max(int(np.floor(min_segment * n)), k + 1)
         t_to = min(n - int(np.floor(min_segment * n)), n - k - 1)
+        if t_to < t_from:
+            raise DataInsufficient(
+                "structural_break: no admissible break date. The first "
+                f"regime must hold between {t_from} and {t_to} of the {n} "
+                f"observations (min_segment={min_segment}, {k} "
+                "coefficient(s) per regime).",
+                recovery_hint="Use a longer series, fewer regressors, or a "
+                "min_segment below one half.",
+            )
 
         for t in range(t_from, t_to + 1):
             # Segment 1
@@ -386,6 +556,7 @@ def structural_break(
             rss2 = np.sum((y2 - X2 @ b2) ** 2)
 
             rss_break = rss1 + rss2
+            _refuse_exact_split(y_data, float(rss_break), t, "structural_break")
             denom = rss_break / max(n - 2 * k, 1)
             f_stat = ((rss_full - rss_break) / k) / max(denom, 1e-20)
             f_stats.append((t, f_stat))
@@ -437,6 +608,93 @@ def structural_break(
     return _bai_perron_sequential(
         y_data, X_full, min_segment, max_breaks, alpha, rss_full
     )
+
+
+def _sup_wald_break(
+    y: np.ndarray,
+    X: np.ndarray,
+    cols: List[int],
+    vce: str,
+    min_segment: float,
+    alpha: float,
+    pvalue_method: str,
+    rss_full: float,
+    method: str,
+) -> "StructuralBreakResult":
+    """Sup-F for a break in a subset of coefficients, optionally robust.
+
+    At each candidate date ``t`` (size of the first regime) the model is
+    augmented with ``D_t * X[:, cols]``, where ``D_t`` is one in the second
+    regime, and the Wald statistic that those ``q`` coefficients are zero is
+    computed with the requested covariance estimator. ``F = W / q``. With
+    every coefficient breaking and ``vce='nonrobust'`` this is the Chow F of
+    the split-sample formula.
+    """
+    n, k = X.shape
+    q = len(cols)
+    Z = X[:, cols]
+    kk = k + q
+    t_from = max(int(np.floor(min_segment * n)), kk + 1)
+    t_to = min(n - int(np.floor(min_segment * n)), n - kk - 1)
+    if t_to < t_from:
+        raise MethodIncompatibility(
+            "structural_break: too few observations for the trimming and the "
+            "number of coefficients."
+        )
+    best_f, best_break = -np.inf, None
+    f_stats = []
+    for t in range(t_from, t_to + 1):
+        d = (np.arange(n) >= t).astype(float)
+        W = np.column_stack([X, Z * d[:, None]])
+        WtW_inv = np.linalg.pinv(W.T @ W)
+        beta = WtW_inv @ (W.T @ y)
+        e = y - W @ beta
+        if vce == "nonrobust":
+            V = WtW_inv * float(e @ e) / (n - kk)
+        else:
+            meat = (W * (e**2)[:, None]).T @ W
+            V = WtW_inv @ meat @ WtW_inv
+            if vce == "hc1":
+                V = V * (n / (n - kk))
+        b = beta[k:]
+        wald = float(b @ np.linalg.solve(V[k:, k:], b))
+        f_stat = wald / q
+        f_stats.append((t, f_stat))
+        if f_stat > best_f:
+            best_f, best_break = f_stat, t
+
+    if pvalue_method == "hansen":
+        lam = ((n - t_from) * t_to) / (t_from * (n - t_to))
+        if lam == 1:
+            from scipy import stats as _st
+
+            p_value = float(_st.f.sf(best_f, q, n - kk))
+        else:
+            p_value = hansen_supf_pvalue(q * best_f, q, lam)
+    else:
+        p_value = _supf_pvalue(best_f, q, n, min_segment)
+    selected = [best_break] if p_value < alpha and best_break is not None else []
+    res = StructuralBreakResult(
+        test_type="Sup-F" if method == "sup-f" else "Chow",
+        break_dates=selected,
+        f_stats=best_f,
+        p_values=p_value,
+        n_breaks=len(selected),
+        rss_full=rss_full,
+        rss_segments=None,
+        bic=None,
+        n_obs=n,
+    )
+    for name, value in (
+        ("sup_wald", float(q * best_f)),
+        ("sup_break", best_break),
+        ("f_path", np.array([f for _, f in f_stats])),
+        ("candidate_breaks", np.array([t for t, _ in f_stats])),
+        ("n_restrictions", q),
+        ("vce", vce),
+    ):
+        setattr(res, name, value)
+    return res
 
 
 _BP_LEVELS = (0.10, 0.05, 0.025, 0.01)
@@ -515,7 +773,7 @@ def _bai_perron_sequential(
     def seg(a: int, b: int) -> float:  # SSR of observations a..b-1 (0-based)
         return float(rss[a, b - 1])
 
-    def best_split(a: int, b: int):
+    def best_split(a: int, b: int) -> Any:
         """SSR-minimising split of observations a..b-1 and its statistic."""
         L = b - a
         best, date = np.inf, None
@@ -523,7 +781,21 @@ def _bai_perron_sequential(
             v = seg(a, a + d) + seg(a + d, b)
             if v < best:
                 best, date = v, d
+        if date is None:
+            raise DataInsufficient(
+                f"structural_break: a segment of {L} observations has no "
+                f"split leaving {h} on each side.",
+                recovery_hint="Use a smaller min_segment or a longer series.",
+            )
         ssr0 = seg(a, b)
+        if not best > _EXACT_FIT**2 * float(y @ y):
+            raise DataInsufficient(
+                "structural_break: the two regimes split at observation "
+                f"{a + date} fit the outcome exactly, so sup F has a "
+                "zero denominator.",
+                recovery_hint="The series has no residual variation within "
+                "regimes; a break test needs noise to compare against.",
+            )
         stat = (L - 2 * q) * (ssr0 - best) / best
         return a + date, float(stat)
 
@@ -654,7 +926,7 @@ def _breakpoints_global(
     rss = _segment_rss_table(y, X, h)
 
     def seg(a: int, b: int) -> float:  # 1-based inclusive a..b
-        return rss[a - 1, b - 1]
+        return float(rss[a - 1, b - 1])
 
     # table[m][i]: optimal RSS of observations 1..i with m breaks, and the
     # position of the last of those breaks (1-based end of regime m).
@@ -693,6 +965,8 @@ def _breakpoints_global(
             float(sum(seg(edges[q] + 1, edges[q + 1]) for q in range(len(edges) - 1)))
         )
         bps_by_m.append(bps)
+        # log(RSS) below: an exact fit has no likelihood to compare
+        _refuse_exact_split(y, rss_by_m[-1], bps[-1], "structural_break")
     bic = [
         n * (np.log(r) + 1 - np.log(n) + np.log(2 * np.pi))
         + (k + 1) * (m + 1) * np.log(n)
@@ -754,6 +1028,7 @@ def cusum_test(
     y: str,
     x: Optional[List[str]] = None,
     alpha: float = 0.05,
+    method: str = "recursive",
 ) -> Dict[str, Any]:
     """
     CUSUM test for parameter stability.
@@ -768,10 +1043,27 @@ def cusum_test(
     x : list of str, optional
         Regressors.
     alpha : float, default 0.05
+    method : {'recursive', 'ols'}, default 'recursive'
+        Which residuals are cumulated. ``'recursive'`` is the test of
+        Brown, Durbin and Evans on one-step-ahead prediction errors.
+        ``'ols'`` is the test of Ploberger and Kramer on the residuals of
+        the full-sample fit, ``cumsum(e) / (s sqrt(n))`` with ``s**2 =
+        RSS / (n - k)``; its limit is a Brownian bridge, so the boundary
+        is a constant (1.358 at 5%). This is
+        ``strucchange::efp(type="OLS-CUSUM")`` and Stata's ``estat
+        sbcusum, ols``. statsmodels' ``breaks_cusumolsresid`` divides the
+        residual sum of squares by ``n`` unless ``ddof=k`` is passed.
 
     Returns
     -------
     dict
+        For ``method='ols'``: ``'cusum'`` (the scaled partial sums, one per
+        observation), ``'statistic'`` and ``'max_cusum'`` (their largest
+        absolute value), ``'p_value'`` (from the law of the supremum of a
+        Brownian bridge), ``'critical_value'`` (a constant),
+        ``'boundary_coef'`` (the same number), ``'reject'``, ``'n_obs'``
+        and ``'method'``. For ``method='recursive'``:
+
         Keys: ``'cusum'`` (standardised CUSUM path of the recursive
         residuals, ``strucchange::efp(type = "Rec-CUSUM")$process`` without
         its leading 0), ``'max_cusum'`` (its supremum in absolute value),
@@ -795,7 +1087,7 @@ def cusum_test(
 
     References
     ----------
-    brown1975techniques
+    brown1975techniques, ploberger1992cusum
 
     Examples
     --------
@@ -808,22 +1100,52 @@ def cusum_test(
     >>> df = pd.DataFrame({"y": y, "x": x})
     >>> res = sp.cusum_test(df, y="y", x=["x"])
     >>> sorted(res.keys())  # doctest: +NORMALIZE_WHITESPACE
-    ['boundary_coef', 'critical_value', 'cusum', 'max_cusum', 'n_obs',
-     'p_value', 'reject', 'statistic']
+    ['boundary_coef', 'critical_value', 'cusum', 'max_cusum', 'method',
+     'n_obs', 'p_value', 'reject', 'statistic']
+    >>> ols = sp.cusum_test(df, y="y", x=["x"], method="ols")
+    >>> round(ols["critical_value"], 3)
+    1.358
     >>> res["n_obs"]
     120
     >>> bool(res["reject"])
     False
     """
-    y_data = data[y].values.astype(float)
+    y_data, X_data, _ = _break_design(data, y, x, "cusum_test")
     n = len(y_data)
-
-    if x is not None:
-        X_data = np.column_stack([np.ones(n), data[x].values.astype(float)])
-    else:
-        X_data = np.ones((n, 1))
-
     k = X_data.shape[1]
+
+    if method not in ("recursive", "ols"):
+        raise MethodIncompatibility(
+            f"cusum_test: method must be 'recursive' or 'ols', got {method!r}."
+        )
+    if n <= k + 1:
+        raise DataInsufficient(
+            f"cusum_test: {n} observation(s) for {k} coefficient(s).",
+            recovery_hint="Use a longer series or fewer regressors.",
+        )
+    beta = np.linalg.lstsq(X_data, y_data, rcond=None)[0]
+    e = y_data - X_data @ beta
+    _refuse_exact_fit(y_data, float(e @ e), "cusum_test")
+    if method == "ols":
+        from scipy.stats import kstwobign
+
+        if not 0.0 < alpha < 1.0:
+            raise MethodIncompatibility("alpha must lie in (0, 1)")
+        s = np.sqrt(float(e @ e) / (n - k))
+        path = np.cumsum(e) / (s * np.sqrt(n))
+        ols_stat = float(np.max(np.abs(path)))
+        crit = float(kstwobign.isf(alpha))
+        return {
+            "cusum": path,
+            "max_cusum": ols_stat,
+            "critical_value": crit,
+            "boundary_coef": crit,
+            "statistic": ols_stat,
+            "p_value": float(kstwobign.sf(ols_stat)),
+            "reject": bool(ols_stat > crit),
+            "n_obs": n,
+            "method": "ols",
+        }
 
     # Recursive residuals
     rec_resid_values: list[float] = []
@@ -877,4 +1199,5 @@ def cusum_test(
         "p_value": _bm_linear_crossing_pvalue(stat),
         "reject": bool(np.any(np.abs(cusum) > boundary)),
         "n_obs": n,
+        "method": "recursive",
     }

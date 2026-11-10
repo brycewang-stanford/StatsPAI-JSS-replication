@@ -16,6 +16,8 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from ..exceptions import MethodIncompatibility
+
 # ---------------------------------------------------------------------------
 # Difference-in-Differences
 # ---------------------------------------------------------------------------
@@ -150,6 +152,9 @@ def dgp_did(
 # ---------------------------------------------------------------------------
 
 
+_FUZZY_RD_JUMP = 0.6
+
+
 def dgp_rd(
     n: int = 1000,
     effect: float = 0.3,
@@ -165,20 +170,26 @@ def dgp_rd(
     n : int
         Sample size.
     effect : float
-        Treatment effect at the cutoff.
+        Treatment effect at the cutoff. The effect is constant, so in the
+        fuzzy design it is also the complier effect.
     cutoff : float
-        RD cutoff value.
+        RD cutoff value. The running variable is centred on it.
     fuzzy : bool
-        If True, generate a fuzzy RD design.
+        If True, generate a fuzzy RD design: the probability of treatment
+        is ``0.2 + 0.1 (x - cutoff) / s`` below the cutoff and 0.6 higher
+        above it, where ``s`` is the half-width of the support.
     bandwidth_relevant : float
-        Standard deviation of the running variable (controls spread).
+        Spread of the running variable, which is uniform on
+        ``cutoff +/- 2 * bandwidth_relevant`` (``+/- 1`` at the default).
     seed : int or None
         Random seed.
 
     Returns
     -------
     pd.DataFrame
-        Columns: ``y``, ``x``, ``treatment``.
+        Columns: ``y``, ``x``, ``treatment``. ``attrs['true_effect']`` is
+        ``effect``; the fuzzy design also records
+        ``attrs['first_stage_jump'] = 0.6``.
 
     Examples
     --------
@@ -191,20 +202,32 @@ def dgp_rd(
     """
     rng = np.random.default_rng(seed)
 
-    x = rng.uniform(-1, 1, size=n)
+    if bandwidth_relevant <= 0:
+        raise MethodIncompatibility("bandwidth_relevant must be positive.")
+    # Centred, unit-support score: uniform on (-1, 1). At the defaults
+    # (cutoff 0, bandwidth_relevant 0.5) x equals it draw for draw.
+    half_width = 2.0 * bandwidth_relevant
+    xc = rng.uniform(-1, 1, size=n)
+    x = cutoff + half_width * xc
+    above = xc >= 0
 
     if fuzzy:
-        prob = 1.0 / (1.0 + np.exp(-3.0 * (x - cutoff)))
+        # A fuzzy design needs a jump in the probability of treatment at
+        # the cutoff; a probability that is smooth through it identifies
+        # nothing.
+        prob = 0.2 + 0.1 * xc + _FUZZY_RD_JUMP * above
         treatment = rng.binomial(1, prob).astype(float)
     else:
-        treatment = (x >= cutoff).astype(float)
+        treatment = above.astype(float)
 
-    # Smooth control function
-    f_x = 0.5 * x + 0.3 * x**2
+    # Smooth control function of the centred score
+    f_x = 0.5 * xc + 0.3 * xc**2
     y = f_x + effect * treatment + rng.normal(0, 0.3, size=n)
 
     df = pd.DataFrame({"y": y, "x": x, "treatment": treatment})
     df.attrs["true_effect"] = effect
+    if fuzzy:
+        df.attrs["first_stage_jump"] = _FUZZY_RD_JUMP
     return df
 
 
@@ -416,11 +439,19 @@ def dgp_rdit(
     n_periods : int
         Number of time periods.
     effect : float
-        Treatment effect at the policy change date.
+        Treatment effect at the policy change date: a permanent level
+        shift of this size.
     cutoff_period : int
         Period of the policy change.
     seasonality : bool
         Include monthly seasonality.
+
+    Notes
+    -----
+    ``y = 0.01 t + effect * 1[t >= cutoff_period] + season + e`` with
+    AR(1) errors, ``e_t = 0.3 e_{t-1} + nu_t`` and ``nu_t ~ N(0, 0.5^2)``.
+    The autocorrelation is in the errors only, so the level shift is
+    ``effect`` at every horizon.
     seed : int or None
         Random seed.
 
@@ -441,17 +472,20 @@ def dgp_rdit(
     t = np.arange(n_periods)
     dates = pd.date_range("2010-01-01", periods=n_periods, freq="MS")
 
+    # AR(1) errors. The recursion runs on the errors alone: applied to
+    # the outcome it also feeds the level shift back into itself, and the
+    # shift grows from ``effect`` to ``effect / (1 - 0.3)``.
+    e = rng.normal(0, 0.5, n_periods)
+    for i in range(1, n_periods):
+        e[i] += 0.3 * e[i - 1]
+
     # Trend + treatment + noise
-    y = 0.01 * t + effect * (t >= cutoff_period) + rng.normal(0, 0.5, n_periods)
+    y = 0.01 * t + effect * (t >= cutoff_period) + e
 
     # Seasonality
     if seasonality:
-        month = dates.month
+        month = np.asarray(dates.month)
         y += 0.5 * np.sin(2 * np.pi * month / 12)
-
-    # Autocorrelation (AR(1))
-    for i in range(1, n_periods):
-        y[i] += 0.3 * (y[i - 1] - 0.01 * (i - 1))
 
     df = pd.DataFrame({"y": y, "time": t, "date": dates})
     df.attrs["true_effect"] = effect
@@ -809,8 +843,19 @@ def dgp_bunching(
     kink_point: float = 50000.0,
     elasticity: float = 0.3,
     seed: int | None = None,
+    t0: float = 0.0,
+    t1: float = 0.2,
 ) -> pd.DataFrame:
-    """Generate bunching data around a kink point.
+    """Generate earnings that bunch at a kink in the marginal tax schedule.
+
+    Counterfactual earnings ``z*`` are those under the flat rate ``t0``. At the
+    kink the marginal rate rises to ``t1``; with iso-elastic earnings
+    ``z = z* ((1 - t) / (1 - t0))^elasticity``:
+
+    * ``z* <= kink_point`` -- unaffected;
+    * ``z* >= kink_point * ((1 - t0) / (1 - t1))^elasticity`` -- earn
+      ``z* ((1 - t1) / (1 - t0))^elasticity``;
+    * in between -- locate exactly at ``kink_point`` (the bunchers).
 
     Parameters
     ----------
@@ -819,34 +864,50 @@ def dgp_bunching(
     kink_point : float
         Location of the kink (e.g., tax threshold).
     elasticity : float
-        Behavioral elasticity governing bunching intensity.
+        Earnings elasticity with respect to the net-of-tax rate.
     seed : int or None
         Random seed.
+    t0, t1 : float
+        Marginal tax rate below and above the kink (``t0 < t1 < 1``).
 
     Returns
     -------
     pd.DataFrame
-        Columns: ``income``, ``counterfactual_income``.
+        Columns: ``income``, ``counterfactual_income``. ``df.attrs`` holds
+        ``true_effect`` (the elasticity), ``dt`` (``t1 - t0``, the argument
+        :func:`sp.bunching` takes), ``bunching_upper`` (the top of the
+        counterfactual interval that bunches) and ``n_bunchers``.
 
     Examples
     --------
     >>> import statspai as sp
     >>> df = sp.dgp_bunching(n=5000, kink_point=50000, elasticity=0.2, seed=0)
-    >>> df.attrs['true_effect']  # elasticity
-    0.2
-    >>> bool((df['income'] <= df['counterfactual_income'] + 1e-9).all())  # bunched down
+    >>> df.attrs['true_effect'], df.attrs['dt']
+    (0.2, 0.2)
+    >>> bool((df['income'] <= df['counterfactual_income'] + 1e-9).all())
+    True
+    >>> bool((df['income'] == 50000).sum() == df.attrs['n_bunchers'] > 0)
     True
     """
+    if not 0 <= t0 < t1 < 1:
+        raise MethodIncompatibility(f"need 0 <= t0 < t1 < 1, got t0={t0}, t1={t1}")
+    if elasticity < 0:
+        raise MethodIncompatibility(
+            f"elasticity must be non-negative, got {elasticity}"
+        )
     rng = np.random.default_rng(seed)
 
-    # Counterfactual income from log-normal centred near the kink
+    # Counterfactual (flat-tax) earnings: log-normal centred near the kink.
     log_mean = np.log(kink_point) - 0.5 * 0.3**2
     z_star = rng.lognormal(mean=log_mean, sigma=0.3, size=n)
 
-    # Behavioural response: those above the kink reduce income
+    response = ((1 - t1) / (1 - t0)) ** elasticity
+    upper = kink_point / response
     income = z_star.copy()
-    above = z_star > kink_point
-    income[above] = kink_point + (z_star[above] - kink_point) * (1 - elasticity)
+    bunch = (z_star > kink_point) & (z_star < upper)
+    income[bunch] = kink_point
+    above = z_star >= upper
+    income[above] = z_star[above] * response
 
     df = pd.DataFrame(
         {
@@ -855,6 +916,9 @@ def dgp_bunching(
         }
     )
     df.attrs["true_effect"] = elasticity
+    df.attrs["dt"] = round(t1 - t0, 12)
+    df.attrs["bunching_upper"] = float(upper)
+    df.attrs["n_bunchers"] = int(bunch.sum())
     return df
 
 

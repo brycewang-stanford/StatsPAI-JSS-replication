@@ -62,6 +62,7 @@ import pandas as pd
 
 from .._aliases import accepts_aliases
 from .._result_serialize import ResultProtocolMixin
+from ..core._call_record import records_call
 from ..diagnostics.weak_iv import anderson_rubin_test, tF_critical_value
 from ..exceptions import MethodIncompatibility
 
@@ -322,10 +323,17 @@ class IVDiagResult(ResultProtocolMixin):
                 f"   p = {d.kp_rk_lm_pvalue:.4f}"
             )
             lines.append(f"  Kleibergen–Paap rk Wald F   : {d.kp_rk_f:10.4f}")
-        lines.append(
-            f"  LMMP 2022 tF adjusted crit. : {d.tF_critical_value:10.4f}"
-            f"   (F = {d.first_stage_F:.2f})"
-        )
+        tf_defined = not np.isnan(d.tF_critical_value)
+        if tf_defined:
+            lines.append(
+                f"  LMMP 2022 tF adjusted crit. : {d.tF_critical_value:10.4f}"
+                f"   (effective F = {d.effective_F:.2f})"
+            )
+        else:
+            lines.append(
+                "  LMMP 2022 tF adjusted crit. : not defined with more than "
+                "one instrument"
+            )
         lines.append("-" * 70)
         lines.append("Point estimate:")
         lines.append(
@@ -338,8 +346,14 @@ class IVDiagResult(ResultProtocolMixin):
             f"  Wald  {100 * (1 - d.alpha):.0f}% CI                : "
             f"[{ci_lo:.4f}, {ci_hi:.4f}]"
         )
-        lo, hi = d.tF_adjusted_ci
-        lines.append(f"  tF-corrected CI             : [{lo:.4f}, {hi:.4f}]")
+        if tf_defined:
+            lo, hi = d.tF_adjusted_ci
+            lines.append(f"  tF-corrected CI             : [{lo:.4f}, {hi:.4f}]")
+        else:
+            lines.append(
+                "  tF-corrected CI             : n/a (use the Anderson-Rubin "
+                "interval)"
+            )
         if d.bootstrap_ci_pairs is not None:
             lo, hi = d.bootstrap_ci_pairs
             lines.append(
@@ -409,7 +423,9 @@ class IVDiagResult(ResultProtocolMixin):
         """Return all numeric diagnostics as a flat dict (jsonable)."""
         return dict(self.diagnostics)
 
-    def to_latex(
+    # Own layout without the base class's digits= / fmt= precision options;
+    # passing them raises TypeError rather than being ignored.
+    def to_latex(  # type: ignore[override]
         self,
         caption: Optional[str] = None,
         label: Optional[str] = None,
@@ -440,7 +456,11 @@ class IVDiagResult(ResultProtocolMixin):
         """Write the summary table to ``path`` (one sheet)."""
         self.to_frame().to_excel(path, index=False, sheet_name="iv_diag")
 
-    def to_word(self, path: str, title: Optional[str] = None) -> None:
+    # Own layout without the base class's digits= / fmt= precision options;
+    # passing them raises TypeError rather than being ignored.
+    def to_word(  # type: ignore[override]
+        self, path: str, title: Optional[str] = None
+    ) -> None:
         """Write the summary table to a .docx file (requires python-docx)."""
         try:
             from docx import Document
@@ -524,14 +544,30 @@ def _prep_inputs(
     if cluster_col is not None:
         cols = cols + [cluster_col]
     cols = cols + list(absorb or [])
-    seen: set = set()
-    cols = [c for c in cols if not (c in seen or seen.add(c))]
-    df_raw = data[cols].copy().dropna()
-    # Save the surviving rows' positions (Int64Index) BEFORE we reset
-    # the index — needed to align an external cluster array with the
-    # post-dropna rows.
-    _orig_idx = df_raw.index.to_numpy()
-    df = df_raw.reset_index(drop=True)
+    cols = list(dict.fromkeys(cols))
+    # Complete cases as a positional mask: an external cluster array is
+    # aligned with the rows of ``data`` by position, whatever its index.
+    # (Indexing the array with the surviving index *labels* gave rows other
+    # rows' cluster ids on a shuffled frame and IndexError on an offset one.)
+    ext_cluster = None
+    if cluster_col is None and cluster is not None:
+        if not isinstance(cluster, (np.ndarray, pd.Series, list, tuple)):
+            raise MethodIncompatibility(
+                "cluster must be a column name or an array with one id per row."
+            )
+        ext_cluster = np.asarray(cluster)
+        if ext_cluster.ndim != 1 or len(ext_cluster) != len(data):
+            raise MethodIncompatibility(
+                f"cluster array length {len(ext_cluster)} does not match data "
+                f"length {len(data)}."
+            )
+    frame = data[cols]
+    keep_rows = frame.notna().all(axis=1).to_numpy()
+    if ext_cluster is not None:
+        # a row without a cluster id is dropped, as it is when the cluster
+        # is a column of ``data``
+        keep_rows = keep_rows & ~np.asarray(pd.isna(ext_cluster))
+    df = frame.loc[keep_rows].reset_index(drop=True)
     Y = df[y].to_numpy(dtype=float)
     D = df[endog].to_numpy(dtype=float)
     Z = df[instruments].to_numpy(dtype=float)
@@ -542,17 +578,8 @@ def _prep_inputs(
         W = np.ones((len(df), 1))
     if cluster_col is not None:
         cluster_arr = df[cluster_col].to_numpy()
-    elif isinstance(cluster, (np.ndarray, pd.Series)):
-        cluster_arr = np.asarray(cluster)
-        if len(cluster_arr) != len(data):
-            raise ValueError(
-                f"cluster array length {len(cluster_arr)} does not match data "
-                f"length {len(data)}."
-            )
-        # Align with the post-dropna rows by their *original* index
-        # positions; reset_index(drop=True) above would otherwise alias
-        # them to 0..n_clean-1 and silently shift cluster membership.
-        cluster_arr = cluster_arr[_orig_idx]
+    elif ext_cluster is not None:
+        cluster_arr = ext_cluster[keep_rows]
     else:
         cluster_arr = None
     return df, Y, D, Z, W, cluster_arr
@@ -780,7 +807,8 @@ def _check_tsls_late_caveat(
 # ═══════════════════════════════════════════════════════════════════════
 
 
-@accepts_aliases(vce="vcov")
+@records_call("iv_diag")
+@accepts_aliases(vce="vcov", seed="random_state")
 def iv_diag(
     data: pd.DataFrame,
     y: str,
@@ -906,10 +934,15 @@ def iv_diag(
         if isinstance(absorb, str)
         else list(absorb or [])
     )
+    from .weak_iv_ci import _check_instrument_rank, _check_level
+    from .weak_iv_ci import _residualize as _partial_out
+
+    _check_level(alpha, "alpha")
     df_clean, Y, D, Z, W, cluster_arr = _prep_inputs(
         data, y, endog, instruments, exog_l, cluster, absorb_l
     )
     fe_dof = 0
+    fe_rank = 0
     if absorb_l:
         from ..fast.demean import demean as _demean
         from ..inference._dof import absorbed_dof_charge
@@ -935,6 +968,34 @@ def iv_diag(
             cl_frame,
         )
         df_clean = df_clean.iloc[keep].reset_index(drop=True)
+        # dimension of the absorbed dummy block (it spans the constant;
+        # each further effect loses one level to the previous ones)
+        fe_rank = int(sum(info.n_fe)) - (len(absorb_l) - 1)
+
+    # A redundant instrument makes Z'Z singular; the rank statistics would
+    # be computed from a rounding-level inverse (and their failure only
+    # logged). Refused here, as the confidence-set routines refuse it.
+    _check_instrument_rank(
+        _partial_out(Z, W), instruments, what="the weak-instrument diagnostics"
+    )
+    cluster_name: Optional[str] = cluster if isinstance(cluster, str) else None
+    if cluster_arr is not None:
+        n_clusters = int(pd.Series(cluster_arr).nunique())
+        if n_clusters < 2:
+            from ..exceptions import DataInsufficient
+
+            raise DataInsufficient(
+                "iv_diag: cluster-robust diagnostics need at least two "
+                f"clusters; found {n_clusters}.",
+                recovery_hint="Cluster on a variable with more than one "
+                "value, or drop cluster=.",
+                diagnostics={"n_clusters": n_clusters},
+            )
+        if cluster_name is None:
+            # an array: hand it to the column-based routines below as a
+            # column, so the AR test and the effective F are clustered too
+            cluster_name = "__iv_diag_cluster__"
+            df_clean = df_clean.assign(**{cluster_name: cluster_arr})
 
     n = len(Y)
     k_z = Z.shape[1]
@@ -971,7 +1032,7 @@ def iv_diag(
         alpha=alpha,
         vcov=vcov,
         absorb=absorb_l or None,
-        cluster=cluster if isinstance(cluster, str) else None,
+        cluster=cluster_name,
     )
     first_stage_F = float(ar["first_stage_F"])
     effective_F = float(ar["effective_F"])
@@ -1015,42 +1076,60 @@ def iv_diag(
         kp_rk_lm = float(kp.rk_lm)
         kp_rk_lm_pvalue = float(kp.rk_lm_pvalue)
         kp_rk_f = float(kp.rk_f)
-    except Exception:  # pragma: no cover
-        pass
+    except Exception as exc:  # pragma: no cover
+        from ..core._fallback import warn_fallback
+
+        warn_fallback(
+            "iv_diag Kleibergen-Paap rk statistics",
+            exc,
+            "they are omitted from the report",
+        )
 
     # ── Optional CLR / K confidence sets ──────────────────────────────
     clr_ci = k_ci = None
     if include_clr_ci or include_k_ci:
         try:
-            from .weak_iv_ci import conditional_lr_ci, k_test_ci
+            from .weak_iv_ci import _clr_set, _k_set
 
             level = 1.0 - alpha
+            # The sets describe the same model as the point estimate: the
+            # outcome, regressor and instruments net of the controls and of
+            # any absorbed fixed effects (Frisch-Waugh), with the absorbed
+            # dummies counted in the residual degrees of freedom. Before
+            # the 2026-10 fix they were computed from the raw columns, i.e. for the
+            # model without the fixed effects.
+            _Yt = _partial_out(Y.reshape(-1, 1), W).ravel()
+            _Dt = _partial_out(D.reshape(-1, 1), W).ravel()
+            _Zt = _partial_out(Z, W)
+            _kW = W.shape[1] + fe_rank
             if include_clr_ci:
-                clr_cs = conditional_lr_ci(
-                    y=y,
-                    endog=endog,
-                    instruments=instruments,
-                    exog=exog_l or None,
-                    data=df_clean,
+                clr_cs = _clr_set(
+                    _Yt,
+                    _Dt,
+                    _Zt,
+                    _kW,
+                    n,
                     level=level,
                     n_grid=grid_size,
+                    beta_grid=None,
                     n_sim=4000,
                     random_state=random_state,
+                    method="exact",
                 )
                 clr_ci = (float(clr_cs.lower), float(clr_cs.upper))
             if include_k_ci:
-                k_cs = k_test_ci(
-                    y=y,
-                    endog=endog,
-                    instruments=instruments,
-                    exog=exog_l or None,
-                    data=df_clean,
-                    level=level,
-                    n_grid=grid_size,
+                k_cs = _k_set(
+                    _Yt, _Dt, _Zt, _kW, n, level=level, n_grid=grid_size, beta_grid=None
                 )
                 k_ci = (float(k_cs.lower), float(k_cs.upper))
-        except Exception:  # pragma: no cover
-            pass
+        except Exception as exc:  # pragma: no cover
+            from ..core._fallback import warn_fallback
+
+            warn_fallback(
+                "iv_diag CLR / K confidence sets",
+                exc,
+                "the sets that did not complete are omitted from the report",
+            )
 
     # ── Bootstrap ─────────────────────────────────────────────────────
     rng = np.random.default_rng(random_state)
@@ -1325,7 +1404,12 @@ def iv_compare(
             lo = beta - z_crit * se
             hi = beta + z_crit * se
             diag = getattr(res, "diagnostics", {}) or {}
-            f_first = diag.get("First-stage F", diag.get("first_stage_F", np.nan))
+            # sp.iv stores the first-stage F under a key that names the
+            # endogenous regressor; the bare spellings are older ones.
+            f_first = diag.get(
+                f"First-stage F ({local_endog})",
+                diag.get("First-stage F", diag.get("first_stage_F", np.nan)),
+            )
             f_eff = diag.get(
                 "Olea-Pflueger effective F", diag.get("effective_F", np.nan)
             )

@@ -64,6 +64,7 @@ import numpy as np
 import pandas as pd
 
 from .._aliases import accepts_aliases
+from .._input_validation import check_columns
 from .._result_serialize import ResultProtocolMixin
 from ..exceptions import (
     AssumptionWarning,
@@ -118,7 +119,9 @@ _DEFAULT_ESTIMATORS = (
 def _fit_twfe(df: pd.DataFrame, opt: "_Options") -> Tuple[float, float]:
     from ..fixest import feols
 
-    fit = feols(f"{_Y} ~ {_D} | {_ID} + {_T}", data=df, vcov={"CRV1": _ID})
+    fit = feols(
+        f"{_Y} ~ {_D} | {_ID} + {_T}", data=df, vcov={"CRV1": _ID}, fixef_rm="none"
+    )
     r = fit[0] if isinstance(fit, list) else fit  # one formula, one fit
     return float(np.asarray(r.params[_D])), float(np.asarray(r.std_errors[_D]))
 
@@ -144,7 +147,21 @@ def _fit_cs(df: pd.DataFrame, opt: "_Options") -> Tuple[float, float]:
 def _fit_sa(df: pd.DataFrame, opt: "_Options") -> Tuple[float, float]:
     from .sun_abraham import sun_abraham
 
-    r = sun_abraham(df, y=_Y, g=_G, t=_T, i=_ID, control_group=opt.control_group)
+    # Sun-Abraham compares with a cohort, never with not-yet-treated cells;
+    # the calibration keeps at least two never-treated units, so that cohort
+    # is the reference under either setting
+    r = sun_abraham(
+        df,
+        y=_Y,
+        g=_G,
+        t=_T,
+        i=_ID,
+        control_group="nevertreated",
+        aggregation="fixest_att",
+        # Only the estimate and SE are read; the critical values are
+        # irrelevant. Passing the value keeps the FutureWarning away.
+        crit_dist="normal",
+    )
     return (
         float(r.model_info["att_fixest_att"]),
         float(r.model_info["se_fixest_att"]),
@@ -307,12 +324,13 @@ def _prepare(
     data: pd.DataFrame, y: str, id: str, time: str, cohort: str
 ) -> Tuple[_Panel, Dict[str, Any]]:
     """Validate the panel and recode it to ``0..n-1`` / ``1..T`` integers."""
-    missing = [c for c in (y, id, time, cohort) if c not in data.columns]
-    if missing:
-        raise MethodIncompatibility(
-            f"Columns not found in `data`: {missing}.",
-            diagnostics={"columns": list(data.columns)[:40]},
-        )
+    check_columns(
+        data,
+        {"y": y, "id": id, "time": time, "cohort": cohort},
+        message="Columns not found in `data`: "
+        f"{[c for c in (y, id, time, cohort) if c not in data.columns]}.",
+        extra_diagnostics={"columns": list(data.columns)[:40]},
+    )
     df = data[[y, id, time, cohort]].copy()
     if df[[y, id, time]].isna().any().any():
         raise MethodIncompatibility(
@@ -642,7 +660,18 @@ def _fit_one(frame: pd.DataFrame, opt: _Options) -> Dict[str, Dict[str, Any]]:
             warnings.simplefilter("always")
             try:
                 est, se = _ADAPTERS[name](frame, opt)
-                if not np.isfinite(est) or not np.isfinite(se) or se <= 0:
+                # An exact fit leaves a VARIANCE of zero up to rounding,
+                # about 1e-16 of the squared outcome scale and of either
+                # sign. An estimator that clips a negative variance reports
+                # se = 0; one that does not reports sqrt(1e-16) = 1e-8 of
+                # the outcome scale, and an iterative within transform
+                # stops at a tolerance of the same order. Which of these
+                # happens depends on the estimator and on the BLAS (etwfe:
+                # exactly 0 on macOS, above 1e-10 of the scale on Linux).
+                # So the floor sits on the standard-error scale, two orders
+                # above sqrt(machine epsilon).
+                se_floor = 1e-6 * float(np.max(np.abs(frame[_Y].to_numpy())))
+                if not np.isfinite(est) or not np.isfinite(se) or se <= se_floor:
                     # Some estimators answer a degenerate design with a
                     # point estimate and no standard error. Scoring that as
                     # a draw would credit the estimator with a number it
@@ -884,7 +913,9 @@ def did_calibrated_simulation(
         unit's residual path by a Rademacher draw; ``'none'`` holds the
         outcome fixed so the only randomness is the assignment.
     control_group : {'nevertreated', 'notyettreated'}
-        Passed through to the estimators that take one.
+        Passed through to the estimators that take one. Sun-Abraham has no
+        not-yet-treated comparison and uses the never-treated cohort under
+        either setting.
     n_sims : int, default 200
         Replications.  Monte Carlo standard errors are reported so this can
         be chosen against the precision actually needed.

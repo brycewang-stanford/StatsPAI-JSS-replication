@@ -9,13 +9,13 @@ It also keeps the future JSS package boundary separate from the
 active JOSS review without requiring edits to `paper.md`.
 
 Source snapshot:
-- Package metadata version: 1.32.0
-- Source `__version__`: 1.32.0
-- Schema-bundle version: 1.32.0
+- Package metadata version: 1.40.2
+- Source `__version__`: 1.40.2
+- Schema-bundle version: 1.40.2
 - Version-consistent: True
 - Ready for final publication release: False
-- Final-publication gate blocker paths: 5
-- Generated dirty paths: 20
+- Final-publication gate blocker paths: 28
+- Generated dirty paths: 53
 - Unreleased CHANGELOG nonempty: False
 - Structured release gate checks: 6
 - JSS submission archive status: Audited source-snapshot submission archive; the failing final-publication release gate is a tag/changelog synchronization gate, not a JSS upload reproducibility failure.

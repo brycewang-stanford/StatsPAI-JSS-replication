@@ -1,48 +1,38 @@
+%% No \clearpage: the appendix follows the reference list on the same page.
 \appendix
 
-\section{The complete Track A ledger}\label{app:parity}
+\section{All parity modules}\label{app:parity}
 
-Table~\ref{tab:track-a-cross-language-snapshot} in Section~\ref{sec:track-a} prints a
-twelve-row slice of Track A, chosen to span the validation suite. The
-slice is a reading aid, not the evidence. The evidence is
-Table~\ref{tab:track-a-parity} below: every one of the
-\RParityModuleCount{} modules, with the worst residual gap each one
-carries against its canonical \proglang{R} reference and, for
-\StataParityModuleCount{} of them, against a canonical or audited
-\proglang{Stata} bridge.
-
-The difference columns are worst-case over each module's headline rows
-and cover \emph{point estimates only}; every SE row of every passing
-module is gated separately (Section~\ref{sec:adjudication}). The
-parenthetical notes name the convention, delegation, or common
-specification under which a row is claimed, and italic text in the
-\proglang{Stata} column records a \emph{measured} reason that no
-portable \proglang{Stata} artifact exists.
+Table~\ref{tab:track-a-parity} prints every one of the
+\RParityModuleCount{} parity modules (Track A), with the worst observed gap
+across its headline rows against its \proglang{R} reference and, for
+\StataParityModuleCount{} of them, its \proglang{Stata} reference. The gaps
+cover \emph{point estimates only}; every SE row of a passing module is gated
+separately (Section~\ref{sec:adjudication}). The per-row results, with notes
+on convention, delegation, and the measured reason a \proglang{Stata} reference
+is missing, are in \code{tests/r\_parity/results/parity\_table\_3way.md} of the
+archive.
 
 \input{tables/appendix_b_parity.tex}
 
-\noindent Of the \RParityModuleCount{} modules, \RParityStrictCount{} pass at
-T2. A pass covers ordinary strict passes, common-specification passes
-such as RD at a forced common bandwidth, seeded passes in which both
-sides share the folds or draws (such as DML), and coefficient-level
-passes whose secondary diagnostic follows a documented small-sample
-convention. The other two are graded differently. The causal-forest row
-is a single draw per engine and is printed as a stochastic screen
-(\textbf{S}). The classical-SCM row is the \textit{GAP} of donor-weight
-non-uniqueness (Section~\ref{sec:scm-identification}), kept visible
-rather than absorbed into a wider tolerance. The note of module 84
-calls its horizon standard errors an open gap. They are inside the
-module's budget and agree with both references to \(3\times10^{-8}\),
-short of the \(10^{-14}\) of its leads. Per-row detail is in the generated ledger,
-and Section~\ref{sec:reproducibility} shows how to re-derive either side.
+\noindent \RParityStrictCount{} modules are graded T2. Their registered
+tolerance is \(10^{-6}\), except that modules 18, 26, 27, 29 and 64 allow
+\(2\times10^{-4}\) because the reference's optimizer stops short; the table
+shows the gaps actually observed. Some passes rest on a common specification
+(pre-trends at \pkg{pretrends}' 1.96 cutoff) or shared folds (DML), and every
+other row above \(10^{-6}\) is in the register of
+Section~\ref{sec:adjudication}, such as module 74's \proglang{Stata} gap and module 76, whose default
+\proglang{Stata} rows sit up to \(1.4\times10^{-4}\) away (see text''). The
+forest row is one draw per engine (\textbf{S}). The classical-SCM row is the
+disclosed disagreement (\textit{GAP}). Four \proglang{R} references are
+transcriptions, not packages: modules 68, 69, 75 and 83.
 
-\section{Output-changing corrections}\label{app:corrections}
+\section{Selected output-changing corrections}\label{app:corrections}
 
-Each fix in Table~\ref{tab:correctness-history} is pinned by a
-regression test. Users on affected versions should re-estimate.
-Section~\ref{sec:parity-gaps} discusses 1.23.0 and 1.25.0. The 1.29.0
-count is the numbered items in \path{docs/dev/campaign_phase3/}, each
-counted once, excluding documentation-only corrections.
+Table~\ref{tab:correctness-history} lists the corrections that bear most on the
+suite. \code{CHANGELOG.md} and \code{MIGRATION.md}, which ship in the archive,
+hold every entry, with a release for each. Users on an affected version should
+re-estimate.
 
 \begingroup
 \scriptsize
@@ -61,22 +51,21 @@ Version & Affected area & Output-changing fix \\
 \multicolumn{3}{r}{\textit{(continued on the next page)}}\\
 \endfoot
 \bottomrule
-\caption{Output-changing correctness fixes through release
-\StatsPAIVersion{}; CHANGELOG and \code{MIGRATION.md} hold the detail.}
+\caption{Selected output-changing fixes through release \StatsPAIVersion{}.}
 \label{tab:correctness-history}
 \endlastfoot
-1.6--1.15 & IV/LIML/Heckman, event study, CS-DiD, TMLE, DML, meta-learners & Small-sample, two-step and rank SE corrections; influence-function, orthogonal-score and AIPW fixes. \\
-1.16.0 & Quantile reg., Newey--West, Arellano--Bond, forest ATE & SE scaling and GMM weight construction corrected; forest headline moved to the \pkg{grf} AIPW estimand. \\
-1.21.0 & CBPS, entropy balancing, Mahalanobis, genetic matching & GMM basis, exact moment balance, and covariance conventions corrected (up to $8.6\times$ off \pkg{CBPS}); now pinned against \pkg{CBPS}, \pkg{ebal}, \pkg{MatchIt}, \pkg{optmatch}, \pkg{Matching}, \pkg{sbw}. \\
-1.23.0 & CS-DiD unit weights; IPW SEs & Weighted estimand restored; IPW SEs were 9--11\% (up to 89\% weighted) too large; pinned to \code{did::att\_gt} (see text). \\
-1.24.0 & Sun--Abraham, GLMM, PPML-HDFE, TWFE SEs & Degrees-of-freedom/nesting conventions fixed to the reference rules; SEs moved 0.1--2\% (see text). \\
+1.23.0 & CS-DiD unit weights; IPW SEs & Weighted estimand restored; IPW SEs were 9--11\% (up to 89\% weighted) too large; pinned to \code{did::att\_gt}. \\
+1.24.0 & Sun--Abraham, GLMM, PPML-HDFE, TWFE SEs & Degrees-of-freedom/nesting conventions fixed to the reference rules; SEs moved 0.1--2\%. \\
 1.25.0 & Forest average, continuous treatment & The binary AIPW score was applied to a continuous treatment ($-1266.6$, $p=0.0000$ on Card); guarded in 1.25.0, replaced by the Riesz-representer average in 1.29.0. Binary results unchanged. \\
 1.26.0 & Evidence grades & A false alias certification (\code{sp.wooldridge\_did} as \code{sp.etwfe}) withdrawn; grades, not estimates, changed. \\
-1.27.0 & ETWFE, \code{etregress}, RE logit/probit, FGLS, spatial LM & Cohort ATTs read from a saturated regression; clustered SEs account for absorbed effects; the \code{etregress} default is a true MLE with first-stage-aware two-step SEs; \code{lm\_tests} no longer reverses its model-selection conclusion. \\
-1.28.0 & SCM placebo \(p\)-values; MR; evidence grades & Permutation \(p\)-values now rank the treated unit with its placebos, \((1+\#\{\text{placebo}\ge\text{treated}\})/(J+1)\); MR estimators ported to their reference definitions; 31 functions graded T2 on closed-form tests that never ran \proglang{R} or \proglang{Stata} were regraded T1. \\
-1.29.0 & Parity campaign; Track A closure & Fourteen families bisected against their reference on identical bytes; 174 output-changing defects fixed, none caught by a unit test; forest defaults follow \pkg{grf}; Gardner two-stage SE as \pkg{did2s}; PSM SE as \code{teffects psmatch}. \\
-1.30.0 & HonestDiD on a CS fit; forest ATT/ATC & The event-study covariance passed to \code{sp.honest\_did} dropped the cohort-share term off the diagonal (cross-cell entries up to 8\% off \pkg{did}), overstating robustness; now matches \pkg{did} to \(2.8\times10^{-13}\), and the bounds of Listing~\ref{lst:csdid-output} moved in the fourth decimal. ATT and ATC now raise for a continuous treatment, as in \pkg{grf}. \\
-1.31.0 & Entropy balancing; IV and HDFE covariances; CS event study; pre-trend tests; forest policy; audit; grades & \code{sp.ebalance} SE was twice the Monte Carlo SD; now the M-estimation sandwich (\pkg{WeightIt} to \(3\times10^{-9}\)). \code{sp.iv(vce=)} silently returned CR1 for CR2/CR3/wild requests; now bit-identical to \code{sp.ivreg} or refused. \code{sp.fast.feols} defaults to \pkg{fixest}'s small-sample factor (the old default over-covered, 0.979). The convenience event study of a Callaway--Sant'Anna fit omitted the cohort-share term of its SEs (up to 0.9\% on \texttt{mpdta}, 47\% on a castle-doctrine panel); it now equals \code{sp.aggte} to \(10^{-15}\), and the grid of Listing~\ref{lst:csdid-output} moved in the fourth decimal. \code{sp.pretrends\_test} on an event study used a diagonal pre-period covariance (\(p=0.603\) against \proglang{Stata}'s 0.293); it now uses the joint one. \code{sp.rate\_split} and \code{sp.forest\_policy\_tree} aggregate 21 sample splits instead of reporting one. Over-identification audit skipped on just-identified fits; native relative-magnitudes Honest-DiD; two parity rows that ran \proglang{R} itself rebuilt natively. \\
-1.32.0 & Silently ignored options; IV weights; quantile, tobit and panel SEs; margins; labels; original-data ledger & Options accepted and then dropped now take effect or raise: \code{sp.iv}/\code{sp.ivreg} returned unweighted estimates for \code{weights=} (4.238 weighted against 3.547 reported; now \proglang{Stata} \code{ivregress [aw=]} to \(10^{-14}\)); \code{alpha=} on 31 estimators still printed 95\% intervals; \code{sp.panel} ignored \code{weights=} and clustered a named \code{cluster=} column on the entity; \code{sp.synth} dropped \code{covariates=} for matrix completion and \code{standardize=False} for the classical method. A fuzzy \code{sp.rdrobust} with a \code{comb} selector chose the sharp bandwidth (now \proglang{R} to \(10^{-12}\)). The \code{sp.qreg} default SE matched neither \proglang{Stata} nor \pkg{quantreg} (3--7\% off on Track A); it is now \proglang{Stata}'s \code{vce(iid)}, with \(t(N-k)\) inference, and module 40's SE budget tightens from \(10^{-1}\) to \(10^{-6}\). \code{sp.tobit} stopped short of the optimum (module 41: \(2\times10^{-6}\) to \(3\times10^{-11}\)). \code{sp.feols} intervals use \pkg{fixest}'s degrees of freedom, CRE random-effects variance components follow \proglang{Stata}, and \code{sp.margins} averages over the estimation sample with the fit's weights. The DML PLR estimate is labelled \code{theta}, not ATE (a variance-weighted average, or a partial coefficient for continuous \(D\)), and \code{sp.cate\_summary} reports \code{Mean}, not \code{Mean (ATE)}; estimates unchanged. The original-data RD row ran the official \pkg{rdrobust} port and so compared the authors' code with itself; it now runs the native selector, and the call trace covers that ledger. \\
+1.29.0 & Parity campaign & Fourteen families bisected against their reference on identical bytes; 174 output-changing defects fixed, none caught by a unit test; forest defaults follow \pkg{grf}; Gardner two-stage SE as \pkg{did2s}; PSM SE as \code{teffects psmatch}. \\
+1.30.0 & HonestDiD on a CS fit; forest ATT/ATC & The event-study covariance passed to \code{sp.honest\_did} dropped the cohort-share term off the diagonal (cross-cell entries up to 8\% off \pkg{did}), overstating robustness; now matches \pkg{did} to \(2.8\times10^{-13}\). ATT and ATC now raise for a continuous treatment, as in \pkg{grf}. \\
+1.31.0 & Entropy balancing; IV and HDFE covariances; CS event study; pre-trend tests; grades & \code{sp.ebalance} SE was twice the Monte Carlo SD; now the M-estimation sandwich. \code{sp.iv(vce=)} silently returned CR1 for CR2/CR3/wild requests; now identical to \code{sp.ivreg} or refused. \code{sp.fast.feols} defaults to \pkg{fixest}'s small-sample factor (the old default over-covered, 0.979). The convenience event study of a CS fit omitted the cohort-share term of its SEs (47\% on a castle-doctrine panel). \code{sp.pretrends\_test} used a diagonal pre-period covariance (\(p=0.603\) against \proglang{Stata}'s 0.293). Two parity rows that ran \proglang{R} itself rebuilt natively. \\
+1.32.0 & Silently ignored options; quantile and panel SEs; original-data rows & Options accepted and then dropped now take effect or raise: \code{sp.iv} returned unweighted estimates for \code{weights=} (4.238 weighted against 3.547 reported); \code{alpha=} on 31 estimators still printed 95\% intervals; \code{sp.panel} ignored \code{weights=} and clustered a named \code{cluster=} column on the entity. The \code{sp.qreg} default SE matched neither \proglang{Stata} nor \pkg{quantreg} (3--7\% off); it is now \code{vce(iid)}. The original-data RD row compared the authors' code with itself; it now runs the native selector. \\
+1.33.0 & CS-DiD without never-treated units; HDFE inference; wild bootstrap; weak-IV tests & Found by re-running published replications. With every unit eventually treated, \code{sp.callaway\_santanna} entered comparison-free cells as zero effects (simple ATT 0.55 against \pkg{did}'s 0.92 on a design with effect 1). The \code{sp.hdfe\_ols} wild bootstrap did not re-absorb the fixed effects (\(p=0.045\) against \code{boottest}'s 0.218). The cluster-robust Anderson--Rubin test with absorbed effects is now the Wald form (\(p=0.068\) against \code{ivreghdfe}'s 0.025). \code{sp.hausman\_test} disagreed with \proglang{Stata} by up to 50\(\times\). \\
+1.35.0 & Clustered RD bandwidths; event-study averages & Found by probing unpinned estimators against known answers (33 functions changed). With \code{cluster=}, the CER bandwidths of \code{sp.rdrobust} shrank by observations, not clusters (0.2054 against \pkg{rdrobust}'s 0.2305). \code{sp.event\_study} averaged an empty event time into the ATT as zero (1.56 for a true 2.0). \\
+1.39.0 & Matching ties; CS-DiD and Sun--Abraham on irregular panels; DML with classifiers & Found by replaying textbook code. \code{sp.match} kept the first of tied controls, so row order mattered (Lalonde ATT 1967.94 or 2012.47; now 1968.80, as \code{teffects psmatch}). \code{sp.callaway\_santanna} read a time-varying covariate from each unit's first row (0.3985 to 0.4028). \code{sp.sun\_abraham} used unit shares on an unbalanced panel (\(-0.1399\) to \(-0.1054\)). \code{sp.dml} residualised on a classifier's label (6{,}044 against 8{,}754). \\
+1.40.0 & Clustered RD variances; DR-DiD on repeated cross-sections; dynamic-panel GMM; radius matching; spatial SAC & Found by a library-wide review against \proglang{Stata} and \proglang{R}. Clustered HC2/HC3 \code{sp.rdrobust} now uses \pkg{rdrobust}'s CR2/CR3 (SEs up to 18\% larger). The repeated-cross-section DR-DiD variance defaults to the influence function of \citet{santanna2020doubly}; \pkg{DRDID} and \code{csdid}, which sign one estimation effect the other way, are reproduced by \code{variance\_convention="reference"}. One-step GMM SEs after orthogonal deviations were \(\sqrt{2}\) too small (0.0642 against \code{xtabond2}'s 0.0907); \code{caliper\_scale="sd"} was ignored (1.947 against 1.767); \code{sp.sac} SEs treated the spatial parameters as known (0.109 against 0.344). \\
+1.40.2 & GMM small-sample factor; stochastic-frontier SEs & \code{sp.iv(method="gmm")} under the unadjusted weight matrix now carries \(N/(N-K)\) with \code{small=True}, as \proglang{Stata} does (SEs grow by \(\sqrt{N/(N-K)}\)). \code{sp.frontier} and \code{sp.xtfrontier} SEs were round-off of a fixed-step Hessian (\(1.3\times10^{-5}\) from \proglang{R} and \proglang{Stata}; now \(10^{-8}\)). \\
 \end{longtable}
 \endgroup

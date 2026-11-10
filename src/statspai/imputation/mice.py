@@ -25,6 +25,7 @@ from scipy import stats
 
 from .._result_serialize import ResultProtocolMixin
 from ..exceptions import DataInsufficient, MethodIncompatibility
+from ._mi_result import MIEstimateResult
 
 
 class MICEResult(ResultProtocolMixin):
@@ -97,23 +98,65 @@ class MICEResult(ResultProtocolMixin):
         return _rubins_rules(estimates)
 
 
-def _barnard_rubin_df(m: int, b: np.ndarray, t: np.ndarray, dfcom: float) -> np.ndarray:
+def _barnard_rubin_df(
+    m: int, b: np.ndarray, t: np.ndarray, dfcom: float
+) -> Union[float, np.ndarray]:
     """Barnard & Rubin (1999) small-sample degrees of freedom.
 
-    ``lambda = (1 + 1/m) b / t``; ``nu_old = (m - 1) / lambda^2`` (Rubin
-    1987) and, for finite ``dfcom``,
-    ``nu = (m - 1) tmp / ((dfcom + 3)(m - 1) + lambda^2 tmp)`` with
-    ``tmp = (1 - lambda)(1 + dfcom) dfcom`` -- algebraically
-    ``1 / (1/nu_old + 1/nu_obs)``, written as R ``mice:::barnard.rubin``
-    writes it so that ``b = 0`` (no between-imputation variance) gives
-    ``nu_obs`` instead of ``inf / inf``.
+    Clean-room implementation from the published formula; R sensemakr /
+    mice used only as black boxes (docs/dev/cleanroom/sensemakr_mice_helpers.md).
+
+    With ``lambda = (1 + 1/m) b / t`` (fraction of missing information),
+    ``nu_old = (m - 1) / lambda^2`` [@rubin1987multiple] and
+    ``nu_obs = (dfcom + 1) / (dfcom + 3) * dfcom * (1 - lambda)``, the
+    adjusted degrees of freedom are
+    ``nu = nu_old nu_obs / (nu_old + nu_obs)`` [@barnard1999small].
+    It is computed as the reciprocal of ``1/nu_old + 1/nu_obs`` so that
+    ``b = 0`` returns ``nu_obs`` and ``dfcom = inf`` returns ``nu_old``
+    (``inf`` when also ``b = 0``).
+
+    Parameters
+    ----------
+    m : int
+        Number of imputations.
+    b : np.ndarray
+        Between-imputation variance (elementwise).
+    t : np.ndarray
+        Total variance (elementwise).
+    dfcom : float
+        Complete-data degrees of freedom; ``np.inf`` for large samples.
+
+    Returns
+    -------
+    np.ndarray
+        Degrees of freedom, elementwise (a float for scalar inputs).
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> from statspai.imputation.mice import _barnard_rubin_df
+    >>> _barnard_rubin_df(5, np.array([0.0]), np.array([1.0]), np.inf)
+    array([inf])
+
+    References
+    ----------
+    [@barnard1999small]
     """
-    lam = (1.0 + 1.0 / m) * b / t
+    b_arr = np.asarray(b, dtype=float)
+    t_arr = np.asarray(t, dtype=float)
+    lam = (1.0 + 1.0 / m) * b_arr / t_arr
     with np.errstate(divide="ignore", invalid="ignore"):
-        if not np.isfinite(dfcom):
-            return (m - 1) / lam**2
-        tmp = (1.0 - lam) * (1.0 + dfcom) * dfcom
-        return (m - 1) * tmp / ((dfcom + 3.0) * (m - 1) + lam**2 * tmp)
+        inv_old = lam**2 / (m - 1.0)
+        if np.isinf(dfcom):
+            inv_obs = np.zeros_like(lam)
+        else:
+            nu_obs = (dfcom + 1.0) / (dfcom + 3.0) * dfcom * (1.0 - lam)
+            inv_obs = 1.0 / nu_obs
+        nu = 1.0 / (inv_old + inv_obs)
+    if nu.ndim == 0:
+        return float(nu)
+    nu_arr: np.ndarray = nu
+    return nu_arr
 
 
 def _rubins_rules(
@@ -170,15 +213,16 @@ def _rubins_rules(
     vcov_list = np.asarray([np.asarray(e["var_cov"], dtype=float) for e in estimates])
 
     if dfcom is None:
-        dfs = [e.get("df_resid") for e in estimates]
-        if all(d is not None for d in dfs):
-            if len(set(float(d) for d in dfs)) != 1:
+        dfs_raw = [e.get("df_resid") for e in estimates]
+        dfs = [float(d) for d in dfs_raw if d is not None]
+        if len(dfs) == len(dfs_raw):
+            if len(set(dfs)) != 1:
                 raise MethodIncompatibility(
                     f"complete-data df differ across imputations ({sorted(set(dfs))}); "
                     "pass dfcom= explicitly",
                     recovery_hint="Pass dfcom= explicitly.",
                 )
-            dfcom = float(dfs[0])
+            dfcom = dfs[0]
         else:
             dfcom = float("inf")
     dfcom = float(dfcom)
@@ -720,7 +764,7 @@ def mi_estimate(
     mice_result: MICEResult,
     estimator: Any,
     **kwargs: Any,
-) -> Dict[str, Any]:
+) -> "MIEstimateResult":
     """
     Run an estimator on each imputed dataset and combine using Rubin's rules.
 
@@ -735,14 +779,21 @@ def mi_estimate(
 
     Returns
     -------
-    dict
-        Combined estimates (Rubin's rules), keyed as in
-        :meth:`MICEResult.combine`, plus ``var_names``. The within-imputation
+    MIEstimateResult
+        A ``dict`` of the combined estimates (Rubin's rules), keyed as in
+        :meth:`MICEResult.combine`, plus ``var_names`` and ``n_obs``; it also
+        has ``summary()`` / ``tidy()`` and labelled ``params`` /
+        ``std_errors`` ... so ``sp.regtable(result)`` takes it. The within-imputation
         covariance is the estimator's full ``var_cov`` when it exposes one
         (``data_info['var_cov']``), else the diagonal of squared standard
-        errors; the complete-data df for Barnard-Rubin is its ``df_resid``
-        when exposed, else infinity. This reproduces R ``mice::pool`` and
-        Stata ``mi estimate`` (small-sample df) for ``sp.regress``.
+        errors. The complete-data df for Barnard-Rubin is the df of the
+        fit's t reference distribution, as Stata ``mi estimate`` takes it
+        from ``e(df_r)``: ``n - k`` for ``sp.regress``, ``G - 1`` with
+        clustered standard errors, and infinity (Rubin's large-sample df)
+        for likelihood fits that report z statistics (``sp.logit``,
+        ``sp.poisson`` ...) or fits that record no df. This reproduces R
+        ``mice::pool`` and Stata ``mi estimate`` (checked against Stata 18
+        for ``regress``, ``regress, vce(cluster)`` and ``logit``).
 
     Examples
     --------
@@ -761,8 +812,11 @@ def mi_estimate(
     >>> combined['var_names']
     ['Intercept', 'x1', 'x2']
     """
+    from ..postestimation._covariance import inference_df
+
     estimates = []
-    var_names: Optional[List[str]] = None
+    var_names: Optional[List[Any]] = None
+    n_obs = None
     for i in range(mice_result.n_imputations):
         df_i = mice_result.complete(i)
         result = estimator(data=df_i, **kwargs)
@@ -773,13 +827,23 @@ def mi_estimate(
         if V is None or np.shape(V) != (k, k):
             # No full covariance exposed: pool the variances only.
             V = np.diag(np.asarray(result.std_errors, dtype=float) ** 2)
-        est = {"params": np.asarray(params, dtype=float), "var_cov": np.asarray(V)}
-        if info.get("df_resid") is not None:
-            est["df_resid"] = float(info["df_resid"])
+        est: Dict[str, Any] = {
+            "params": np.asarray(params, dtype=float),
+            "var_cov": np.asarray(V),
+        }
+        # The complete-data df is the df of the fit's own t reference:
+        # G - 1 for a clustered fit, none (large sample) for a z-based
+        # likelihood fit -- what Stata's mi estimate reads from e(df_r).
+        dfcom = inference_df(result, stores=("data_info",))
+        if np.isfinite(dfcom):
+            est["df_resid"] = float(dfcom)
         estimates.append(est)
         if var_names is None:
             var_names = list(getattr(params, "index", range(k)))
+            n_obs = info.get("nobs")
 
     combined = _rubins_rules(estimates)
     combined["var_names"] = var_names
-    return combined
+    if n_obs is not None:
+        combined["n_obs"] = int(n_obs)
+    return MIEstimateResult(combined)

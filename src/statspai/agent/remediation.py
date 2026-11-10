@@ -11,12 +11,28 @@ practice:
 - Identification blockers from ``strict=True`` mode
 - Formula-parse errors
 - Missing dependencies (sklearn, matplotlib, ...)
+
+Four failure families are recognised *structurally* before the regex
+registry runs, because the agent can repair them mechanically:
+
+- ``column_not_found`` — any error whose ``diagnostics`` carry
+  ``missing_columns`` + ``available_columns`` (``ColumnNotFound`` and the
+  many per-estimator validators that use the same keys); adds
+  ``did_you_mean``.
+- ``missing_dependency`` — ``ImportError`` / ``ModuleNotFoundError`` /
+  ``MissingDependencyError``; adds ``install`` (the ``pip install``
+  command, extracted from the message when present) and ``package``.
+- ``missing_arguments`` — ``TypeError: f() missing N required ...``; adds
+  ``missing_arguments`` and the function's schema ``required`` list.
+- ``unknown_argument`` — ``TypeError: ... unexpected keyword argument``;
+  adds ``unknown_arguments`` and ``did_you_mean`` against the function's
+  parameter names and accepted aliases.
 """
 
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 # ---------------------------------------------------------------------------
 # Registry
@@ -110,7 +126,7 @@ REMEDIATIONS: List[Dict[str, Any]] = [
         "fix": (
             "Use sp.liml() instead of ivreg (less bias under weak IVs), "
             "or construct Anderson-Rubin confidence sets with "
-            "sp.weak_iv_ci(result, method='ar').  Alternatively, find "
+            "sp.anderson_rubin_ci(...).  Alternatively, find "
             "a stronger instrument or collect a larger sample."
         ),
     },
@@ -162,7 +178,7 @@ REMEDIATIONS: List[Dict[str, Any]] = [
     {
         "match": r"(unexpected keyword argument|got an unexpected " r"keyword)",
         "exception": ["TypeError"],
-        "category": "bad_argument",
+        "category": "unknown_argument",
         "diagnosis": ("Passed a keyword that the target function doesn't accept."),
         "fix": (
             "Check the function signature: `help(sp.<fn>)` or "
@@ -197,8 +213,8 @@ REMEDIATIONS: List[Dict[str, Any]] = [
             "are likely biased."
         ),
         "fix": (
-            "Run sp.sensitivity_rr(result) for Rambachan-Roth (2023) "
-            "honest CIs.  Or switch to sp.callaway_santanna / "
+            "Run sp.honest_did(result) / sp.breakdown_m(result) for "
+            "Rambachan-Roth (2023) honest CIs.  Or switch to sp.callaway_santanna / "
             "sp.did_imputation which are robust to heterogeneous "
             "effects.  Consider dropping the longest-pre-period cohorts."
         ),
@@ -237,7 +253,7 @@ REMEDIATIONS: List[Dict[str, Any]] = [
     },
     # --- DML: orthogonality / score mean ≠ 0 ---
     {
-        "match": r"(orthogonal.{0,20}(fail|violat)|score mean.{0,10}≠|score mean.{0,10}!=|dml.*bias)",
+        "match": r"(orthogonal.{0,20}(fail|violat)|score mean.{0,10}\u2260|score mean.{0,10}!=|dml.*bias)",
         "category": "dml_ortho_fail",
         "diagnosis": (
             "Double-ML nuisance estimates did not yield a zero-mean "
@@ -352,7 +368,7 @@ REMEDIATIONS: List[Dict[str, Any]] = [
             "effects.  RE estimates are inconsistent for this panel."
         ),
         "fix": (
-            "Use fixed-effects estimation: sp.fixest(..., fe=['id','time']) "
+            "Use fixed-effects estimation: sp.feols('y ~ x | id + time', data=df) "
             "or sp.panel(method='within').  If FE is infeasible "
             "(time-invariant treatment), consider Mundlak's device."
         ),
@@ -516,6 +532,21 @@ REMEDIATIONS: List[Dict[str, Any]] = [
 # ---------------------------------------------------------------------------
 
 
+def _is_plain_json(v: Any, depth: int = 0) -> bool:
+    """Scalars, or small lists / dicts of scalars (e.g. ``did_you_mean``)."""
+    if isinstance(v, (int, float, str, bool)) or v is None:
+        return True
+    if depth >= 2:
+        return False
+    if isinstance(v, (list, tuple)):
+        return all(_is_plain_json(x, depth + 1) for x in v)
+    if isinstance(v, dict):
+        return all(
+            isinstance(k, str) and _is_plain_json(x, depth + 1) for k, x in v.items()
+        )
+    return False
+
+
 def _enrich_with_statspai_error(
     result: Dict[str, Any], error: BaseException
 ) -> Dict[str, Any]:
@@ -544,13 +575,291 @@ def _enrich_with_statspai_error(
         )
     if diag:
         result["diagnostics"] = {
-            str(k): v
-            for k, v in diag.items()
-            if isinstance(v, (int, float, str, bool)) or v is None
+            str(k): v for k, v in diag.items() if _is_plain_json(v)
         }
     if alts:
         result["alternative_functions"] = [str(a) for a in alts]
     return result
+
+
+_QUOTED = re.compile(r"'([^']+)'")
+_FN_PREFIX = re.compile(r"^\s*([A-Za-z_][\w.]*)\(\)")
+_PIP_CMD = re.compile(r"pip install\s+(\"[^\"]+\"|'[^']+'|[^\s`'\"]+)")
+
+
+def _candidate_function_names(
+    err_msg: str, context: Optional[Dict[str, Any]]
+) -> List[str]:
+    """Names to look up in the registry, most specific first.
+
+    The ``f()`` prefix of a Python ``TypeError`` names the function that
+    actually rejected the call, so it outranks the dispatching tool name.
+    """
+    names: List[str] = []
+    m = _FN_PREFIX.match(err_msg)
+    if m:
+        names.append(m.group(1).split(".")[-1])
+    if context:
+        for key in ("function", "tool"):
+            val = context.get(key)
+            if isinstance(val, str) and val:
+                names.append(val)
+    return list(dict.fromkeys(names))
+
+
+def _function_signature_info(
+    names: List[str],
+) -> Tuple[Optional[str], List[str], List[str], Dict[str, str]]:
+    """``(name, params, required, aliases)`` from the registry schema.
+
+    Only a registry miss (``KeyError``) is treated as "no information";
+    anything else propagates, so a broken registry fails loudly.
+    """
+    import statspai as sp
+
+    for name in names:
+        try:
+            schema = sp.function_schema(name)
+        except KeyError:
+            continue
+        params_block = schema.get("parameters", {}) or {}
+        params = list((params_block.get("properties") or {}).keys())
+        required = list(params_block.get("required") or [])
+        fn = getattr(sp, name, None)
+        aliases = dict(getattr(fn, "__statspai_aliases__", {}) or {})
+        return name, params, required, aliases
+    return None, [], [], {}
+
+
+def _structured_remediation(
+    error: BaseException, err_msg: str, context: Optional[Dict[str, Any]]
+) -> Optional[Dict[str, Any]]:
+    """Mechanically repairable failures, recognised before the regex table."""
+    diag = getattr(error, "diagnostics", None)
+    if (
+        isinstance(diag, dict)
+        and "missing_columns" in diag
+        and "available_columns" in diag
+    ):
+        from ..exceptions import suggest_columns
+
+        missing = diag["missing_columns"]
+        pairs = (
+            [(str(k), v) for k, v in missing.items()]
+            if isinstance(missing, dict)
+            else [(str(c), c) for c in (missing or [])]
+        )
+        dym = diag.get("did_you_mean")
+        if not isinstance(dym, dict):
+            sug = suggest_columns([c for _, c in pairs], diag["available_columns"])
+            dym = {label: sug[str(col)] for label, col in pairs if sug.get(str(col))}
+        fix_bits = [
+            (
+                f"{label}={col!r} -> {dym[label]!r}"
+                if label in dym
+                else f"{col!r}: no close match"
+            )
+            for label, col in pairs
+        ]
+        return {
+            "category": "column_not_found",
+            "diagnosis": "A column named in the call is not in the DataFrame.",
+            "fix": (
+                "Rename the argument(s): " + "; ".join(fix_bits) + "."
+                if dym
+                else "Print df.columns and pick the correct name."
+            ),
+            "did_you_mean": dict(dym),
+        }
+
+    if isinstance(error, ImportError):
+        install = None
+        package = None
+        if isinstance(diag, dict):
+            install = diag.get("install")
+            package = diag.get("package")
+        if not install:
+            m = _PIP_CMD.search(err_msg)
+            if m:
+                install = "pip install " + m.group(1).rstrip(".,;:)")
+        if not package:
+            package = getattr(error, "name", None)
+            if not package:
+                m = re.search(r"No module named '([^']+)'", err_msg)
+                package = m.group(1) if m else None
+            if package:
+                package = str(package).split(".")[0]
+        if not install and package:
+            install = f"pip install {package}"
+        out: Dict[str, Any] = {
+            "category": "missing_dependency",
+            "diagnosis": (
+                "An optional dependency is not installed.  StatsPAI core "
+                "works without it; this function needs it."
+            ),
+            "fix": (
+                f"Run: {install}"
+                if install
+                else "Install the missing package named in the message."
+            ),
+        }
+        if install:
+            out["install"] = install
+        if package:
+            out["package"] = package
+        return out
+
+    if isinstance(error, TypeError):
+        missing_m = re.search(
+            r"missing (?:\d+ |a )?required (?:positional |keyword-only )?"
+            r"arguments?:?(.*)",
+            err_msg,
+        )
+        if missing_m:
+            missing = _QUOTED.findall(missing_m.group(1))
+            name, _params, required, _aliases = _function_signature_info(
+                _candidate_function_names(err_msg, context)
+            )
+            out = {
+                "category": "missing_arguments",
+                "diagnosis": "Required argument(s) were not supplied.",
+                "fix": (
+                    "Pass "
+                    + ", ".join(f"{m}=..." for m in missing)
+                    + (f" to sp.{name}" if name else "")
+                    + "."
+                    if missing
+                    else "Supply every required argument."
+                ),
+                "missing_arguments": missing,
+            }
+            if name:
+                out["function"] = name
+                out["required"] = required
+            return out
+        unexp_m = re.search(r"unexpected keyword argument(?:\(s\))?:?\s*(.*)", err_msg)
+        if unexp_m:
+            tail = unexp_m.group(1)
+            unknown = []
+            for part in tail.split(";"):
+                q = _QUOTED.search(part)
+                if q:
+                    unknown.append(q.group(1))
+            name, params, _required, aliases = _function_signature_info(
+                _candidate_function_names(err_msg, context)
+            )
+            import difflib
+
+            vocab = list(dict.fromkeys(list(params) + list(aliases)))
+            arg_dym: Dict[str, str] = {}
+            for u in unknown:
+                close = difflib.get_close_matches(u, vocab, n=1, cutoff=0.6)
+                if close:
+                    arg_dym[u] = close[0]
+            out = {
+                "category": "unknown_argument",
+                "diagnosis": "Passed a keyword the target function does not accept.",
+                "fix": (
+                    "Rename: "
+                    + "; ".join(f"{k}= -> {v}=" for k, v in arg_dym.items())
+                    + "."
+                    if arg_dym
+                    else (
+                        f"Check the accepted parameters: sp.function_schema({name!r})."
+                        if name
+                        else "Check the function signature (sp.function_schema(name))."
+                    )
+                ),
+                "unknown_arguments": unknown,
+                "did_you_mean": arg_dym,
+            }
+            if name:
+                out["function"] = name
+                out["accepted_parameters"] = params
+                if aliases:
+                    out["aliases"] = aliases
+            return out
+    return None
+
+
+#: The four ways an MCP call names its dataset (server-handled arguments).
+MCP_DATA_SOURCES = ("data_id", "data_path", "data_records", "data_csv")
+
+MCP_DATA_HINT = (
+    "Pass the dataset with one of data_id (a handle from load_data), "
+    "data_path (a file on the server), data_records (inline row objects) "
+    "or data_csv (inline CSV text)."
+)
+
+#: Python-API phrasings and their MCP equivalents.
+_MCP_REWRITES: Tuple[Tuple[str, str], ...] = (
+    (r"sp\.function_schema\((['\"]?)([\w.]+)\1\)", r"describe_function(name='\2')"),
+    (r"sp\.function_schema\(name\)", "describe_function(name=...)"),
+    (r"sp\.agent\.tool_manifest\(\)", "tools/list"),
+    (
+        r"`help\(sp\.<fn>\)` or\s+`sp\.<fn>\?` in IPython\.\s+Tool-manifest JSON "
+        r"schemas list\s+every accepted argument\.",
+        "describe_function(name=<tool>) lists every accepted argument.",
+    ),
+    (r"the target function's help string", "describe_function(name=<tool>)"),
+)
+
+
+def mcp_remediation(remediation: Dict[str, Any], *, tool: str = "") -> Dict[str, Any]:
+    """Rephrase a :func:`remediate` payload for an MCP client.
+
+    :func:`remediate` speaks to a Python caller ("Pass data=... to
+    sp.regress", "sp.agent.tool_manifest()"). Over MCP the dataset is a
+    server argument (``data_id`` / ``data_path`` / ``data_records`` /
+    ``data_csv``), the schema is in ``tools/list`` and a function's
+    parameters come from ``describe_function``. The original sentence is
+    kept under ``python_fix``; ``fix`` is replaced.
+    """
+    if not isinstance(remediation, dict):
+        return remediation
+    out = dict(remediation)
+    fix = out.get("fix")
+    if not isinstance(fix, str):
+        return out
+    name = out.get("function") or tool or "<tool>"
+    new_fix = fix
+    category = out.get("category")
+    if category == "missing_arguments":
+        missing = [str(m) for m in out.get("missing_arguments") or []]
+        parts = []
+        if "data" in missing:
+            parts.append(MCP_DATA_HINT)
+            out["data_sources"] = list(MCP_DATA_SOURCES)
+        rest = [m for m in missing if m != "data"]
+        if rest:
+            parts.append(
+                "Add "
+                + ", ".join(f"`{m}`" for m in rest)
+                + f" to the {name} arguments."
+            )
+        if parts:
+            new_fix = " ".join(parts)
+    elif category == "unknown_argument":
+        dym = out.get("did_you_mean") or {}
+        if isinstance(dym, dict) and dym:
+            new_fix = (
+                "Rename in the tool arguments: "
+                + "; ".join(f"{k} -> {v}" for k, v in dym.items())
+                + "."
+            )
+        else:
+            new_fix = f"describe_function(name={name!r}) lists the accepted parameters."
+    for pattern, repl in _MCP_REWRITES:
+        new_fix = re.sub(pattern, repl.replace("<tool>", repr(str(name))), new_fix)
+    if new_fix != fix:
+        out["python_fix"] = fix
+        out["fix"] = new_fix
+    if re.search(r"\bsp\.[A-Za-z_]\w*", new_fix):
+        out["mcp_note"] = (
+            "sp.<name> refers to a StatsPAI function: call it as the tool "
+            "<name>, or through call_function(function='<name>')."
+        )
+    return out
 
 
 def remediate(
@@ -585,6 +894,18 @@ def remediate(
     # entries keyed on 'AssumptionViolation' also fire for
     # 'IdentificationFailure' etc.
     err_mro = [c.__name__ for c in type(error).__mro__]
+
+    special = _structured_remediation(error, err_msg, context)
+    if special is not None:
+        result = {
+            **special,
+            "matched": True,
+            "exception_type": err_type,
+            "exception_message": err_msg,
+        }
+        if context:
+            result["context"] = context
+        return _enrich_with_statspai_error(result, error)
 
     for entry in REMEDIATIONS:
         exc_filter = entry.get("exception")

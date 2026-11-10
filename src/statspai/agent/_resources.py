@@ -31,7 +31,19 @@ from typing import Any, Callable, Dict, List, Optional, Type
 
 FUNCTION_URI_PREFIX = "statspai://function/"
 RESULT_URI_PREFIX = "statspai://result/"
+#: ``statspai://result/<id>/bundle``: the reproduction bundle of a result.
+BUNDLE_SUFFIX = "/bundle"
+#: ``statspai://result/<id>/arrays/<path>``: one capped per-observation
+#: array of a result, in full.
+ARRAYS_SEGMENT = "/arrays/"
+DATA_URI_PREFIX = "statspai://data/"
+GUIDE_URI_PREFIX = "statspai://guide/"
 PARITY_TRACK_A_URI = "statspai://parity/track-a-summary"
+#: Long-form reference for the arguments the server adds to every tool
+#: (``mcp_server.COMMON_ARGUMENTS_URI`` is the same literal).
+ARGUMENTS_URI = "statspai://arguments"
+#: Index of the live data / result handles (what an agent lost track of).
+HANDLES_URI = "statspai://handles"
 
 #: Fallback URI for the result-schema resource. ``mcp_server`` owns the
 #: canonical :data:`RESULT_SCHEMA_URI` (it must reference it early, before
@@ -71,7 +83,9 @@ def _resource_manifest() -> List[Dict[str, Any]]:
     ``mcp_server`` imports this module, so the import stays inside the
     helper to avoid a module-load cycle. Once the server is loaded this
     reuses its static tools/list cache instead of rebuilding the agent
-    manifest for resources/read.
+    manifest for resources/read. Always the ``full`` profile: the
+    resource index covers every callable tool, not just the advertised
+    ``tools/list`` subset.
     """
     try:
         from .mcp_server import _build_mcp_tools
@@ -86,7 +100,7 @@ def _resource_manifest() -> List[Dict[str, Any]]:
             }
             for t in tool_manifest()
         ]
-    return _build_mcp_tools()
+    return _build_mcp_tools("full")
 
 
 @lru_cache(maxsize=8)
@@ -371,6 +385,58 @@ def track_a_parity_summary() -> Dict[str, Any]:
 # ----------------------------------------------------------------------
 
 
+def handles_index() -> Dict[str, Any]:
+    """Live data and result handles, newest first.
+
+    An agent whose context was compacted no longer has the ``data_id`` /
+    ``result_id`` it was given; this lists what the server still holds,
+    with enough to tell the handles apart (shape and source for data, the
+    producing tool, result class and replay call for results). Handles kept
+    only on disk (``STATSPAI_MCP_STATE_DIR``) and not yet read back into
+    memory are not listed; they are still readable by id.
+    """
+    import datetime as _dt
+
+    from ._data_cache import DATA_CACHE
+    from ._result_cache import RESULT_CACHE
+
+    def stamp(t: float) -> str:
+        return _dt.datetime.fromtimestamp(t, _dt.timezone.utc).isoformat(
+            timespec="seconds"
+        )
+
+    data = []
+    for did, entry in reversed(list(DATA_CACHE.snapshot().items())):
+        rec = entry.arguments
+        item: Dict[str, Any] = {
+            "data_id": did,
+            "uri": DATA_URI_PREFIX + did,
+            "tool": entry.tool,
+            "n_rows": rec.get("n_rows"),
+            "n_cols": rec.get("n_cols"),
+            "created_at": stamp(entry.created_at),
+        }
+        if rec.get("parent_id"):
+            item["parent_id"] = rec["parent_id"]
+        source = (rec.get("source_provenance") or {}).get("source")
+        if source:
+            item["source"] = source
+        data.append(item)
+    results = []
+    for rid, entry in reversed(list(RESULT_CACHE.snapshot().items())):
+        item = {
+            "result_id": rid,
+            "uri": RESULT_URI_PREFIX + rid,
+            "tool": entry.tool,
+            "result_class": type(entry.obj).__name__,
+            "created_at": stamp(entry.created_at),
+        }
+        if entry.replay:
+            item["replay"] = entry.replay.split("  #", 1)[0]
+        results.append(item)
+    return {"data": data, "results": results}
+
+
 def handle_resources_list(params: Dict[str, Any]) -> Dict[str, Any]:
     """Enumerate the top-level resources only.
 
@@ -411,6 +477,25 @@ def handle_resources_list(params: Dict[str, Any]) -> Dict[str, Any]:
                 "field-by-field reference.",
             },
             {
+                "uri": ARGUMENTS_URI,
+                "name": "StatsPAI common tool arguments",
+                "mimeType": "text/markdown",
+                "description": "Full reference for the data / handle / "
+                "output arguments every tool accepts (data_path, data_id, "
+                "inline tables, sampling, result_id, as_handle, "
+                "max_output_bytes, detail). Tool schemas carry one clause "
+                "per argument; this is the long form.",
+            },
+            {
+                "uri": HANDLES_URI,
+                "name": "StatsPAI live handles",
+                "mimeType": "application/json",
+                "description": "The data_id / result_id handles this server "
+                "still holds, newest first, with shape, source, producing "
+                "tool and replay call. Read it to recover handles lost to "
+                "context compaction instead of reloading or refitting.",
+            },
+            {
                 "uri": PARITY_TRACK_A_URI,
                 "name": "StatsPAI Track A parity summary",
                 "mimeType": "application/json",
@@ -448,6 +533,25 @@ def handle_resources_read(
     if not isinstance(uri, str):
         raise InvalidParamsError(f"`uri` must be a string; got {uri!r}")
 
+    if uri.startswith("skill://"):
+        from ._skills_ext import read_skill_file
+
+        found = read_skill_file(uri)
+        if found is None:
+            raise ResourceNotFoundError(f"Unknown skill file: {uri!r}")
+        return found
+    if uri == HANDLES_URI:
+        return {
+            "contents": [
+                {
+                    "uri": uri,
+                    "mimeType": "application/json",
+                    "text": json.dumps(
+                        _clean(handles_index()), default=json_default, allow_nan=False
+                    ),
+                }
+            ]
+        }
     if uri == "statspai://catalog":
         return {
             "contents": [
@@ -488,6 +592,19 @@ def handle_resources_read(
                 },
             ],
         }
+    if uri == ARGUMENTS_URI:
+        from .mcp_server import common_arguments_reference
+
+        return {
+            "contents": [
+                {
+                    "uri": uri,
+                    "mimeType": "text/markdown",
+                    "text": common_arguments_reference(),
+                }
+            ]
+        }
+
     if uri == PARITY_TRACK_A_URI:
         return {
             "contents": [
@@ -536,6 +653,87 @@ def handle_resources_read(
             ],
         }
 
+    if uri.startswith(RESULT_URI_PREFIX) and ARRAYS_SEGMENT in uri:
+        rid, _, path = uri[len(RESULT_URI_PREFIX) :].partition(ARRAYS_SEGMENT)
+        if not rid or "/" in rid or not path:
+            raise InvalidParamsError(
+                f"Malformed array URI {uri!r}; expected "
+                f"{RESULT_URI_PREFIX}<id>{ARRAYS_SEGMENT}<path from arrays_capped>."
+            )
+        from ._result_cache import RESULT_CACHE
+        from .tools._helpers import full_array
+
+        entry = RESULT_CACHE.get_entry(rid)
+        if entry is None:
+            raise ResourceNotFoundError(
+                f"Result {rid!r} not in server cache; re-fit with as_handle=true."
+            )
+        try:
+            values = full_array(entry.obj, "/" + path)
+        except KeyError as exc:
+            raise ResourceNotFoundError(str(exc).strip("'\"")) from None
+        body = {
+            "result_id": rid,
+            "path": "/" + path,
+            "n": len(values),
+            "values": values,
+        }
+        return {
+            "contents": [
+                {
+                    "uri": uri,
+                    "mimeType": "application/json",
+                    "text": json.dumps(_clean(body), default=json_default),
+                },
+            ],
+        }
+
+    if uri.startswith(RESULT_URI_PREFIX) and uri.endswith(BUNDLE_SUFFIX):
+        rid = uri[len(RESULT_URI_PREFIX) : -len(BUNDLE_SUFFIX)]
+        if not rid or "/" in rid:
+            raise InvalidParamsError(
+                f"Result handle in URI {uri!r} is empty or malformed; "
+                f"expected {RESULT_URI_PREFIX}<id>{BUNDLE_SUFFIX}."
+            )
+        from ._replay import build_bundle
+        from ._result_cache import RESULT_CACHE
+        from .tools import _default_serializer
+
+        entry = RESULT_CACHE.get_entry(rid)
+        if entry is None:
+            raise ResourceNotFoundError(
+                f"Result {rid!r} not in server cache; a bundle can only be "
+                "exported while the handle is live. Re-fit with "
+                "as_handle=true and read the bundle before the session ends."
+            )
+        headline_error = None
+        try:
+            summary = _default_serializer(entry.obj, detail="standard")
+        except (TypeError, ValueError, AttributeError, KeyError) as exc:
+            # The call can still be re-run; what is lost is the numbers to
+            # compare against, and the bundle says so.
+            summary = {}
+            headline_error = f"{type(exc).__name__}: {exc}"
+        bundle = build_bundle(
+            result_id=rid,
+            replay=entry.replay or "",
+            data_provenance=entry.arguments.get("_mcp_data_provenance"),
+            payload=summary if isinstance(summary, dict) else {},
+        )
+        if headline_error is not None:
+            bundle["expected_unavailable"] = headline_error
+        return {
+            "contents": [
+                {
+                    "uri": uri,
+                    "mimeType": "application/json",
+                    "text": json.dumps(
+                        _clean(bundle), default=json_default, allow_nan=False
+                    ),
+                },
+            ],
+        }
+
     if uri.startswith(RESULT_URI_PREFIX):
         rid = uri[len(RESULT_URI_PREFIX) :]
         if not rid or "/" in rid:
@@ -577,6 +775,64 @@ def handle_resources_read(
             ],
         }
 
+    if uri.startswith(GUIDE_URI_PREFIX):
+        family = uri[len(GUIDE_URI_PREFIX) :].strip().lower()
+        from .._routing import FAMILIES
+
+        if family not in FAMILIES:
+            raise ResourceNotFoundError(
+                f"Unknown guide {family!r}; families: {sorted(FAMILIES)}."
+            )
+        guide_path = (
+            Path(__file__).resolve().parent / "_guides" / FAMILIES[family].guide
+        )
+        if not guide_path.exists():
+            raise ResourceNotFoundError(
+                f"Guide file {guide_path.name} is not packaged in this install."
+            )
+        return {
+            "contents": [
+                {
+                    "uri": uri,
+                    "mimeType": "text/markdown",
+                    "text": guide_path.read_text(encoding="utf-8"),
+                },
+            ],
+        }
+
+    if uri.startswith(DATA_URI_PREFIX):
+        did = uri[len(DATA_URI_PREFIX) :]
+        if not did or "/" in did:
+            raise InvalidParamsError(
+                f"Data handle in URI {uri!r} is empty or malformed; "
+                f"expected {DATA_URI_PREFIX}<id>."
+            )
+        from ._data_cache import DATA_CACHE, describe_frame, lineage
+
+        entry = DATA_CACHE.get_entry(did)
+        if entry is None:
+            reason = DATA_CACHE.miss_reason(did)
+            raise ResourceNotFoundError(
+                f"Data handle {did!r} not in server cache ({reason}). "
+                "Handles are process-local and LRU-bounded; reload with "
+                "load_data for a fresh data_id."
+            )
+        data_payload: Dict[str, Any] = {"data_id": did}
+        data_payload.update(describe_frame(entry.obj))
+        data_payload["lineage"] = lineage(did)
+        data_payload["provenance"] = entry.to_metadata()
+        return {
+            "contents": [
+                {
+                    "uri": uri,
+                    "mimeType": "application/json",
+                    "text": json.dumps(
+                        _clean(data_payload), default=json_default, allow_nan=False
+                    ),
+                },
+            ],
+        }
+
     raise ResourceNotFoundError(f"Unknown resource: {uri!r}")
 
 
@@ -607,6 +863,32 @@ def handle_resources_templates_list(params: Dict[str, Any]) -> Dict[str, Any]:
                 ),
             },
             {
+                "uriTemplate": GUIDE_URI_PREFIX + "{family}",
+                "name": "StatsPAI estimator-choice guide",
+                "mimeType": "text/markdown",
+                "description": (
+                    "The full 'choosing an estimator' guide for a family "
+                    "(did, iv, rd, matching, ml_causal, qte, dynamic_panel): "
+                    "target parameter, design questions, decision tables, "
+                    "diagnostics and pitfalls. The machine-readable version "
+                    "of its decision logic is the route_estimator tool / "
+                    "sp.decision_guide."
+                ),
+            },
+            {
+                "uriTemplate": DATA_URI_PREFIX + "{id}",
+                "name": "StatsPAI dataset handle",
+                "mimeType": "application/json",
+                "description": (
+                    "Read a server-cached dataset by data_id (from "
+                    "load_data / transform_data): shape, dtypes, missing "
+                    "counts, head, numeric summary and the lineage of "
+                    "transforms that produced it. Handles are process-local "
+                    "and LRU-bounded; a missing handle raises -32002 — "
+                    "reload with load_data."
+                ),
+            },
+            {
                 "uriTemplate": RESULT_URI_PREFIX + "{id}",
                 "name": "StatsPAI fitted-result handle",
                 "mimeType": "application/json",
@@ -621,11 +903,41 @@ def handle_resources_templates_list(params: Dict[str, Any]) -> Dict[str, Any]:
                     "as_handle=true to refresh."
                 ),
             },
+            {
+                "uriTemplate": RESULT_URI_PREFIX + "{id}" + ARRAYS_SEGMENT + "{path}",
+                "name": "StatsPAI per-observation array",
+                "mimeType": "application/json",
+                "description": (
+                    "One per-observation array (residuals, fitted values, "
+                    "scores, ...) of a cached result in full. Tool payloads "
+                    "show 20 values and list the cut under arrays_capped, "
+                    "whose 'full' field is this URI."
+                ),
+            },
+            {
+                "uriTemplate": RESULT_URI_PREFIX + "{id}" + BUNDLE_SUFFIX,
+                "name": "StatsPAI reproduction bundle",
+                "mimeType": "application/json",
+                "description": (
+                    "Everything a new Python process needs to re-run a "
+                    "cached result: the data file and its SHA-256, the "
+                    "transform_data steps in order, the sp.<fn>(...) call, "
+                    "the headline numbers to compare against, and (when "
+                    "completeness is 'standalone') a script that does all "
+                    "of it and checks the numbers. When the data was sent "
+                    "inline or an argument has no literal form, "
+                    "completeness is 'call_only', needs says why, and no "
+                    "script is offered. Read it before the session ends: "
+                    "handles do not survive a restart."
+                ),
+            },
         ],
     }
 
 
 __all__ = [
+    "DATA_URI_PREFIX",
+    "GUIDE_URI_PREFIX",
     "FUNCTION_URI_PREFIX",
     "RESULT_URI_PREFIX",
     "PARITY_TRACK_A_URI",

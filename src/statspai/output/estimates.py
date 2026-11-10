@@ -24,12 +24,14 @@ from __future__ import annotations
 
 import warnings
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
+from typing import Any, Dict, List, NoReturn, Optional, Sequence, Tuple, Union
 
 import numpy as np
 import pandas as pd
 from scipy import stats as sp_stats
 
+from .._aliases import accepts_aliases
+from .._result_serialize import attach_result_protocol, result_to_dict
 from . import _format as _format_module
 
 _format_stars = _format_module.format_stars
@@ -85,21 +87,38 @@ _STAT_ALIASES = {
     "N": "N",
     "n": "N",
     "nobs": "N",
+    "n_obs": "N",
     "R2": "R-squared",
     "r2": "R-squared",
+    "r_squared": "R-squared",
+    "rsquared": "R-squared",
     "R-squared": "R-squared",
     "adj_R2": "Adj. R-squared",
     "adj_r2": "Adj. R-squared",
+    "r2_a": "Adj. R-squared",
+    "adj_r_squared": "Adj. R-squared",
+    "adj_rsquared": "Adj. R-squared",
     "Adj. R-squared": "Adj. R-squared",
     "F": "F-statistic",
     "f": "F-statistic",
+    "f_stat": "F-statistic",
+    "fstat": "F-statistic",
     "F-statistic": "F-statistic",
     "AIC": "AIC",
     "aic": "AIC",
     "BIC": "BIC",
     "bic": "BIC",
     "ll": "Log-Likelihood",
+    "loglik": "Log-Likelihood",
+    "log_likelihood": "Log-Likelihood",
+    "logLik": "Log-Likelihood",
     "Log-Likelihood": "Log-Likelihood",
+    "Log-likelihood": "Log-Likelihood",
+    "pseudo_r2": "Pseudo R-squared",
+    "pr2": "Pseudo R-squared",
+    "r2_p": "Pseudo R-squared",
+    "Pseudo R2": "Pseudo R-squared",
+    "Pseudo R-squared": "Pseudo R-squared",
     # Dependent-variable summary rows. Top-5 econ journals routinely require
     # these so reviewers can sanity-check effect magnitudes against the
     # outcome's scale; ``modelsummary`` exposes them via ``glance``,
@@ -110,7 +129,34 @@ _STAT_ALIASES = {
     "SD of Y": "SD of Y",
     "ymean": "Mean of Y",
     "ysd": "SD of Y",
+    "DV mean": "Mean of Y",
+    "dv_mean": "Mean of Y",
+    "Mean DV": "Mean of Y",
+    "DV SD": "SD of Y",
 }
+
+#: ``stats=`` names that request the fixed-effect / cluster / first-stage F
+#: indicator rows.
+#: Those rows come from the diagnostics block (``diagnostics="auto"``) and
+#: are printed whenever a column absorbs effects or clusters, so the names
+#: are accepted and add no summary-statistic row of their own. They used to
+#: be passed through as unknown statistics and print as empty rows.
+_DIAGNOSTIC_STAT_NAMES = frozenset(
+    {
+        "Cluster",
+        "cluster",
+        "Cluster SE",
+        "cluster_se",
+        "clusters",
+        "FE",
+        "fe",
+        "Fixed Effects",
+        "fixed_effects",
+        "First-stage F",
+        "first_stage_F",
+        "first_stage_f",
+    }
+)
 
 _STAT_DISPLAY = {
     "N": "N",
@@ -120,6 +166,7 @@ _STAT_DISPLAY = {
     "AIC": "AIC",
     "BIC": "BIC",
     "Log-Likelihood": "Log-Lik.",
+    "Pseudo R-squared": "Pseudo R\u00b2",
     "Mean of Y": "Mean of Y",
     "SD of Y": "SD of Y",
 }
@@ -223,10 +270,100 @@ def _ci_bounds(model: "_ModelData", var: str, alpha: float) -> Tuple[float, floa
     return b - crit * se_f, b + crit * se_f
 
 
+def _as_series(values: Any, index: pd.Index) -> Optional[pd.Series]:
+    """``values`` as a Series on ``index``; ``None`` when it cannot align.
+
+    Most result classes store standard errors / p-values as Series, a few
+    as bare arrays; the table renderers look terms up by name.
+    """
+    if values is None:
+        return None
+    if isinstance(values, pd.Series):
+        return values
+    arr = np.asarray(values, dtype=float).ravel()
+    if arr.size != len(index):
+        return None
+    return pd.Series(arr, index=index)
+
+
+def _full_vector_causal(result: Any) -> Optional[_ModelData]:
+    """Term-by-term extraction for a ``CausalResult`` with a coefficient vector.
+
+    Limited-dependent-variable fits (Tobit, Heckman ...) return a
+    ``CausalResult`` whose ``params`` carries every coefficient. Collapsing it
+    to the single headline estimand dropped the intercept and ancillary
+    parameters (Tobit's ``sigma``) and relabelled the slope with the estimand
+    name (``beta_x1``).
+    """
+    params = getattr(result, "params", None)
+    if not isinstance(params, pd.Series) or len(params) < 2:
+        return None
+    std_errors = _as_series(getattr(result, "std_errors", None), params.index)
+    if std_errors is None or not std_errors.index.equals(params.index):
+        return None
+    nan = pd.Series(np.nan, index=params.index)
+    pvalues = _as_series(getattr(result, "pvalues", None), params.index)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        tvalues = _as_series(getattr(result, "tvalues", None), params.index)
+        if tvalues is None:
+            tvalues = params / std_errors
+    mi = getattr(result, "model_info", {}) or {}
+    stats: Dict[str, Any] = {"N": getattr(result, "n_obs", None)}
+    for key, label in (
+        ("log_likelihood", "Log-Likelihood"),
+        ("aic", "AIC"),
+        ("bic", "BIC"),
+    ):
+        if key in mi:
+            stats[label] = mi[key]
+    return _ModelData(
+        params,
+        std_errors,
+        tvalues,
+        pvalues if pvalues is not None else nan,
+        nan,
+        nan,
+        stats,
+        getattr(result, "method", ""),
+        # Likelihood-based: confidence bounds use the normal (df_resid=None).
+        df_resid=None,
+    )
+
+
+def _refuse_untabulable(result: Any) -> NoReturn:
+    """Raise a typed error for an object a regression table cannot hold.
+
+    A result without a coefficient vector (``params``) or a headline
+    ``estimate`` / ``se`` pair used to surface as a bare
+    ``AttributeError: ... has no attribute 'params'`` from deep inside the
+    table builder.
+    """
+    from ..exceptions import MethodIncompatibility
+
+    name = type(result).__name__
+    hint = (
+        "A regression table needs coefficients (params / std_errors) or an "
+        "estimate / se pair. Export this result on its own with "
+        "result.to_latex() / .to_word(path) / .to_excel(path), or tabulate "
+        "result.tidy()."
+    )
+    raise MethodIncompatibility(
+        f"{name} has no coefficient vector or estimate/se pair to put in a "
+        "regression table.",
+        recovery_hint=hint,
+        diagnostics={"result_type": name},
+    )
+
+
 def _extract_model_data(result: Any) -> _ModelData:
     """Unified extraction for EconometricResults and CausalResult."""
 
+    if isinstance(result, _ModelData):
+        return result  # extracted (and possibly renamed) by the caller
     if _is_causal(result):
+        full = _full_vector_causal(result)
+        if full is not None:
+            return full
         name = getattr(result, "estimand", "Treatment")
         params = pd.Series({name: result.estimate})
         std_errors = pd.Series({name: result.se})
@@ -264,8 +401,17 @@ def _extract_model_data(result: Any) -> _ModelData:
         )
 
     # EconometricResults (or duck-typed equivalent)
-    params = result.params
-    std_errors = result.std_errors
+    params = getattr(result, "params", None)
+    if params is None:
+        _refuse_untabulable(result)
+    if not isinstance(params, pd.Series):
+        try:
+            params = pd.Series(params)
+        except (TypeError, ValueError):
+            _refuse_untabulable(result)
+    std_errors = _as_series(getattr(result, "std_errors", None), params.index)
+    if std_errors is None:
+        std_errors = pd.Series(np.nan, index=params.index)
     tvalues = getattr(result, "tvalues", params / std_errors)
     pvalues_raw = getattr(result, "pvalues", None)
     if pvalues_raw is None:
@@ -291,11 +437,13 @@ def _extract_model_data(result: Any) -> _ModelData:
 
     diag = getattr(result, "diagnostics", {}) or {}
     dinfo = getattr(result, "data_info", {}) or {}
-    n = diag.get("N") or dinfo.get("nobs")
+    # some estimators record the sample size as n_obs
+    n = diag.get("N") or dinfo.get("nobs") or dinfo.get("n_obs")
     stats = {"N": n}
     for k in (
         "R-squared",
         "Adj. R-squared",
+        "Pseudo R-squared",
         "F-statistic",
         "AIC",
         "BIC",
@@ -303,6 +451,16 @@ def _extract_model_data(result: Any) -> _ModelData:
     ):
         if k in diag:
             stats[k] = diag[k]
+    # The fixest family spells it with a lower-case "l".
+    if "Log-Likelihood" not in stats and "Log-likelihood" in diag:
+        stats["Log-Likelihood"] = diag["Log-likelihood"]
+    # Result dataclasses without a diagnostics dict (``FEOLSResult`` from
+    # sp.hdfe_ols) carry R² as attributes.
+    for attr, key in (("r2", "R-squared"), ("r2_a", "Adj. R-squared")):
+        if key not in stats:
+            val = getattr(result, attr, None)
+            if isinstance(val, (int, float, np.floating)) and np.isfinite(val):
+                stats[key] = float(val)
 
     # Dependent-variable mean / SD (sample, ddof=1). Looked up across the
     # several conventions different StatsPAI estimators use to stash the
@@ -312,6 +470,25 @@ def _extract_model_data(result: Any) -> _ModelData:
     y_vec = dinfo.get("y") if isinstance(dinfo, dict) else None
     if y_vec is None and isinstance(dinfo, dict):
         y_vec = dinfo.get("endog") or dinfo.get("dep_var") or dinfo.get("Y")
+    mi_econ = getattr(result, "model_info", {}) or {}
+    if isinstance(mi_econ, dict) and mi_econ.get("fixed_effects"):
+        # With absorbed fixed effects ``data_info['y']`` is the *within*
+        # (demeaned) outcome, whose mean is zero by construction: the table
+        # printed "Mean of Y  -0.000" for every FE column. The outcome
+        # itself is fitted + residual on the estimation sample (exact for
+        # feols, and for fepois / feglm whose residuals are response
+        # residuals); without both vectors the row stays empty.
+        y_vec = None
+        fitted = dinfo.get("fitted_values") if isinstance(dinfo, dict) else None
+        resid = dinfo.get("residuals") if isinstance(dinfo, dict) else None
+        if fitted is not None and resid is not None:
+            try:
+                f_arr = np.asarray(fitted, dtype=float).ravel()
+                r_arr = np.asarray(resid, dtype=float).ravel()
+                if f_arr.shape == r_arr.shape:
+                    y_vec = f_arr + r_arr
+            except (TypeError, ValueError):
+                y_vec = None
     if y_vec is not None:
         try:
             y_arr = np.asarray(y_vec, dtype=float).ravel()
@@ -347,18 +524,6 @@ def _extract_model_data(result: Any) -> _ModelData:
 
 # Escape helpers
 # ---------------------------------------------------------------------------
-
-
-def _latex_escape(text: str) -> str:
-    """Escape special LaTeX characters (except $ and *)."""
-    if not text:
-        return ""
-    text = text.replace("\\", "\\textbackslash{}")
-    for ch in ("&", "%", "#", "_", "{", "}"):
-        text = text.replace(ch, f"\\{ch}")
-    text = text.replace("~", "\\textasciitilde{}")
-    text = text.replace("^", "\\textasciicircum{}")
-    return text
 
 
 def _html_escape(text: str) -> str:
@@ -412,6 +577,7 @@ def _warn_once_esttab() -> None:
     warnings.warn(_DEPRECATION_MSG_ESTTAB, DeprecationWarning, stacklevel=3)
 
 
+@attach_result_protocol
 class EstimateTableResult:
     """Stata ``esttab`` result handle — thin wrapper over a :class:`RegtableResult`.
 
@@ -446,6 +612,17 @@ class EstimateTableResult:
     def to_csv(self) -> str:
         # Legacy esttab returned CSV via the table's dataframe view.
         return str(self._rt.to_dataframe().to_csv())
+
+    def to_dict(self) -> Dict[str, Any]:
+        """The wrapped table's JSON-safe dict (``RegtableResult.to_dict``).
+
+        ``detail="minimal"`` / ``"agent"`` add the shared agent envelope
+        (see ``ResultProtocolMixin.to_dict``).
+        """
+        fn = getattr(self._rt, "to_dict", None)
+        if callable(fn):
+            return dict(fn())
+        return result_to_dict(self)
 
     # ── dunder ─────────────────────────────────────────────────────────
     def _render(self, fmt: str) -> str:
@@ -485,6 +662,13 @@ def _resolve_se_type(se: bool, t: bool, p: bool, ci: bool) -> str:
     return "se"
 
 
+@accepts_aliases(
+    _strict=True,
+    model_labels="names",
+    model_names="names",
+    mtitles="names",
+    coef_labels="labels",
+)
 def esttab(
     *results: Any,
     names: Optional[Sequence[str]] = None,
@@ -520,8 +704,55 @@ def esttab(
     positional arguments and a non-empty store exist, positional
     arguments take precedence.
 
-    Parameters mirror the original ``esttab`` API; see the module
-    docstring for the exact mapping to ``regtable``.
+    Parameters mirror the original ``esttab`` API and are forwarded to
+    :func:`statspai.regtable`.
+
+    Parameters
+    ----------
+    *results
+        Fitted model results, one table column each. Without them the
+        models stored by :func:`eststo` are used.
+    names : sequence of str, optional
+        Column header labels (regtable's ``model_labels``); defaults to
+        ``(1), (2), ...``, or the :func:`eststo` names. Must have one
+        entry per model.
+    se, t, p, ci : bool
+        What to show beneath each coefficient: the standard error
+        (default), the t statistic, the p-value or the confidence
+        interval. When several are true the first of ``ci``, ``p``, ``t``
+        wins.
+    stars : bool, default True
+        Append significance stars.
+    star_levels : tuple of float, default (0.10, 0.05, 0.01)
+        p-value thresholds for ``*``, ``**``, ``***``.
+    keep, drop : sequence of str, optional
+        Show only these coefficients / hide these coefficients.
+    order : sequence of str, optional
+        Coefficients to list first, in this order.
+    labels : dict, optional
+        Rename coefficients ``{"raw_name": "Label"}`` (regtable's
+        ``coef_labels``).
+    stats : sequence of str, optional
+        Summary-statistic rows, as in regtable (default ``N``, ``R2``,
+        ``adj_R2``, ``F``).
+    fmt : str or int, optional
+        Numeric format for coefficients and standard errors, as in
+        regtable.
+    digits : int, optional
+        Number of decimals; ``digits=3`` is ``fmt="%.3f"``.
+    output : str, default 'text'
+        Format of ``str(result)``: ``'text'``, ``'latex'``, ``'html'``,
+        ``'markdown'`` or ``'csv'``.
+    filename : str, optional
+        Write the table to this path. With ``output='text'`` the format
+        follows the extension (``.tex``, ``.html`` / ``.htm``, ``.md``,
+        ``.csv``); otherwise ``output`` decides.
+    title : str, optional
+        Table title / caption.
+    notes : sequence of str, optional
+        Notes printed beneath the table.
+    alpha : float, default 0.05
+        Significance level of the intervals shown with ``ci=True``.
 
     Examples
     --------
@@ -539,8 +770,22 @@ def esttab(
     True
     """
     _warn_once_esttab()
+    _esttab_outputs = ("text", "latex", "tex", "html", "markdown", "md", "csv")
+    if output not in _esttab_outputs:
+        # An unknown keyword used to fall back to text silently.
+        from ..exceptions import MethodIncompatibility
+
+        raise MethodIncompatibility(
+            f"esttab(output={output!r}) is not a known format.",
+            recovery_hint=(
+                f"Use one of {list(_esttab_outputs)}; to write a file pass "
+                "filename='table.tex' (the extension picks the format)."
+            ),
+            diagnostics={"output": output},
+        )
 
     # Resolve models: positional args > global store
+    results = _format_module.unwrap_single_sequence(results)
     if results:
         model_list: List[Any] = list(results)
         if names:

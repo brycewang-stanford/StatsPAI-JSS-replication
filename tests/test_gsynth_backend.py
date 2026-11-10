@@ -83,3 +83,67 @@ def test_gsynth_rejects_unknown_backend():
             treatment_time=1970,
             backend="unknown",
         )
+
+
+def _small_panel():
+    import pandas as pd
+
+    rng = np.random.default_rng(0)
+    rows = [
+        dict(u=i, t=t, y=rng.normal() + 0.1 * t + 2.0 * (i == 1 and t >= 10))
+        for i in range(12)
+        for t in range(15)
+    ]
+    return pd.DataFrame(rows)
+
+
+@pytest.mark.parametrize("treated", [[1, 2], (1, 2), np.array([1, 2])])
+def test_gsynth_takes_several_treated_units(treated):
+    """A list of treated units is the same call as a treatment column."""
+    df = _small_panel()
+    listed = sp.gsynth(
+        df,
+        outcome="y",
+        unit="u",
+        time="t",
+        treated_unit=treated,
+        treatment_time=10,
+        n_factors=1,
+        inference="none",
+    )
+    df["d"] = (df["u"].isin([1, 2]) & (df["t"] >= 10)).astype(int)
+    column = sp.gsynth(
+        df, outcome="y", unit="u", time="t", treat="d", n_factors=1, inference="none"
+    )
+    assert listed.estimate == column.estimate
+    assert listed.model_info["n_treated_units"] == 2
+
+
+def test_gsynth_r_backend_still_takes_one_treated_unit():
+    from statspai.exceptions import MethodIncompatibility
+
+    with pytest.raises(MethodIncompatibility, match="single treated unit"):
+        sp.gsynth(
+            _small_panel(),
+            outcome="y",
+            unit="u",
+            time="t",
+            treated_unit=[1, 2],
+            treatment_time=10,
+            backend="r",
+        )
+
+
+def test_gsynth_unknown_treated_unit_is_named():
+    from statspai.exceptions import DataInsufficient
+
+    with pytest.raises(DataInsufficient, match="not found in column 'u'"):
+        sp.gsynth(
+            _small_panel(),
+            outcome="y",
+            unit="u",
+            time="t",
+            treated_unit=99,
+            treatment_time=10,
+            placebo=False,
+        )

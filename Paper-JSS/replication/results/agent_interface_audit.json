@@ -14,22 +14,24 @@
     "estimate": -0.03297651380965374,
     "honest_max_rejecting_M": 0.007458338247963724,
     "missing_suggested_functions": [
-      "sp.sensitivity_rr",
+      "sp.honest_did",
       "sp.bacon_decomposition"
     ],
     "required_tools_present": {
       "audit_result": true,
       "bibtex": true,
+      "call_function": true,
       "callaway_santanna": true,
       "callaway_schema_in_manifest": true,
-      "honest_did_from_result": true
+      "describe_function": true,
+      "honest_did_from_result": true,
+      "search_functions": true
     },
     "schema_control_group_enum": [
       "nevertreated",
       "notyettreated"
     ],
     "schema_required": [
-      "data_path",
       "g",
       "i",
       "t",
@@ -38,14 +40,14 @@
     "se": 0.0077645425356625665,
     "stale_handle_available_ids": 2,
     "stale_handle_error": "result_id 'missing_result_id' not found in cache",
-    "stale_handle_hint": "unknown result_id (never cached, or evicted long ago, or the server restarted); re-fit the estimator with as_handle=true.",
+    "stale_handle_hint": "unknown result_id (never cached, evicted long ago, or the server restarted without STATSPAI_MCP_STATE_DIR); re-fit the estimator with as_handle=true.",
     "stale_handle_is_error": true,
-    "stale_handle_reason": "unknown",
-    "tool_count": 579,
+    "stale_handle_reason": "",
+    "tool_count": 45,
     "unknown_bibtex_keys": []
   },
   "boundary_files_checked": [
-    "Paper-JSS/REVIEWER-HARDENING-AUDIT.md",
+    "Paper-JSS/RELEASE-CHECKLIST.md",
     "Paper-JSS/manuscript/main.tex",
     "Paper-JSS/manuscript/sections/03-agent-facing-compact.tex",
     "Paper-JSS/manuscript/sections/07-agent-eval.tex",
@@ -65,14 +67,14 @@
     "Paper-JSS/manuscript/sections/07-agent-eval.tex"
   ],
   "schema_quality": {
-    "curated_agent_card": 417,
-    "parameter_total": 9697,
-    "parameter_with_default": 3395,
-    "parameter_with_description": 9697,
-    "parameter_with_enum": 477,
-    "public_surface": 1255,
-    "with_nonempty_description": 1255,
-    "with_typed_parameter": 1221
+    "curated_agent_card": 1010,
+    "parameter_total": 14022,
+    "parameter_with_default": 4780,
+    "parameter_with_description": 14022,
+    "parameter_with_enum": 1018,
+    "public_surface": 1627,
+    "with_nonempty_description": 1627,
+    "with_typed_parameter": 1588
   },
   "status": "PASS"
 }

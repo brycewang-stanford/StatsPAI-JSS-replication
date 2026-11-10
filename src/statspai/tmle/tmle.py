@@ -36,6 +36,9 @@ import pandas as pd
 from scipy import stats as sp_stats
 from scipy.special import expit, logit
 
+from ..core._call_record import records_call
+from ..core._vcov_spec import accepts_vce
+
 # sklearn is imported lazily inside the functions that need it so that
 # ``import statspai`` doesn't pull ~245 sklearn submodules through this
 # file when the user never touches tmle. ``BaseEstimator`` only appears
@@ -44,16 +47,26 @@ if TYPE_CHECKING:
     from sklearn.base import BaseEstimator
 
 from .._aliases import accepts_aliases
+from .._input_validation import check_columns
+from ..core._covariates import expands_categorical_covariates as _expands_categorical
+from ..core._validate import treatment_as_float as _treatment_as_float
 from ..core.results import CausalResult
 from ..exceptions import MethodIncompatibility
+from ._targeting import cluster_se, parameter_table
 from .super_learner import SuperLearner
+
+_ARM_ESTIMANDS = ("RR", "OR", "EY1", "EY0")
+_ESTIMANDS = ("ATE", "ATT", "ATC") + _ARM_ESTIMANDS
 
 # ======================================================================
 # Public API
 # ======================================================================
 
 
-@accepts_aliases(_strict=True, controls="covariates")
+@records_call("tmle")
+@accepts_aliases(_strict=True, controls="covariates", seed="random_state")
+@accepts_vce(default="robust", native={"bootstrap": {"se_method": "bootstrap"}})
+@_expands_categorical("covariates")
 def tmle(
     data: pd.DataFrame,
     y: str,
@@ -68,11 +81,14 @@ def tmle(
     random_state: int = 42,
     Q: "Optional[np.ndarray]" = None,
     g1W: "Optional[np.ndarray]" = None,
-    fluctuation: str = "single",
+    fluctuation: Optional[str] = None,
     q_bound: float = 1e-5,
     fold_indices: "Optional[Any]" = None,
     weights: Optional[str] = None,
     cluster: Optional[str] = None,
+    se_method: str = "influence",
+    n_boot: int = 200,
+    design: Optional[Any] = None,
 ) -> CausalResult:
     """
     Estimate causal effects using TMLE with Super Learner.
@@ -96,12 +112,42 @@ def tmle(
     n_folds : int, default 5
         Cross-validation folds for Super Learner.
     estimand : str, default 'ATE'
-        'ATE' or 'ATT'.
+        What the targeted fit is asked for (case-insensitive; anything
+        else raises):
+
+        - ``'ATE'``: ``E[Y(1)] - E[Y(0)]``.
+        - ``'ATT'`` / ``'ATC'``: the effect among the treated / among the
+          controls (see Notes).
+        - ``'EY1'`` / ``'EY0'``: the treatment-specific means.
+        - ``'RR'``: ``E[Y(1)] / E[Y(0)]``, the marginal (causal) risk
+          ratio; needs a non-negative outcome.
+        - ``'OR'``: the marginal odds ratio; needs an outcome in [0, 1].
+          It is not the coefficient of a logistic regression, which is a
+          conditional odds ratio.
+
+        For the last four each arm's mean is targeted
+        (``fluctuation='per_arm'``), and ``result.detail`` lists all of
+        EY1, EY0, ATE, RR and OR that are defined for the outcome. The
+        ratio and odds-ratio intervals are built on the log scale and are
+        not symmetric; ``result.se`` is the natural-scale delta-method
+        standard error and ``detail['se_log']`` the one the interval uses.
     alpha : float, default 0.05
         Significance level.
     propensity_bounds : tuple, default (0.025, 0.975)
         Bounds for propensity score truncation.
     random_state : int, default 42
+    Q : array of shape (n, 2), optional
+        Initial outcome predictions ``[Q(0, W), Q(1, W)]`` on the outcome's
+        own scale, replacing the Super Learner fit.
+    g1W : array of length n or float, optional
+        Propensity ``P(A = 1 | W)``, replacing the Super Learner fit. One
+        number is a known randomisation probability.
+    fluctuation : {'single', 'per_arm'}, optional
+        ``'single'`` (the default for ATE) fluctuates along one clever
+        covariate ``A/g - (1-A)/(1-g)``; ``'per_arm'`` (R ``tmle``'s
+        submodel, and the default for EY1 / EY0 / RR / OR) uses one per
+        arm, so the two arm-specific score equations are solved
+        separately and ``result.detail`` is filled.
     q_bound : float, default 1e-5
         The initial outcome predictions, on the [0, 1] scale the logistic
         fluctuation works on (continuous outcomes are min-max rescaled),
@@ -140,13 +186,45 @@ def tmle(
         Observation (sampling) weights column, R ``tmle``'s ``obsWeights``:
         normalised to mean one, passed to every Super Learner fit, used in
         the fluctuation regression, and multiplying the plug-in average and
-        the influence function. ``estimand='ATE'`` only.
+        the influence function. For ``'ATT'`` / ``'ATC'`` the treated
+        share is the weighted one as well.
+    se_method : {'influence', 'bootstrap'}, default 'influence'
+        ``'influence'`` is the standard deviation of the efficient
+        influence function over ``sqrt(n)``. It treats the nuisance fits
+        as known, which is right to first order and too small when
+        propensities come close to 0 or 1: in a simulation with 9% of the
+        true propensities outside [0.025, 0.975] its 95% interval covered
+        the ATE 91% of the time and the ATT 81%. ``'bootstrap'`` reruns
+        the whole fit, Super Learner included, on ``n_boot`` resamples of
+        the rows (of whole clusters with ``cluster=``); the standard error
+        is the standard deviation of the resampled estimates and the
+        interval their percentile interval (92% and 90% in the same
+        simulation). It costs ``n_boot`` fits. Not with ``Q`` / ``g1W``.
+        With ``fold_indices`` every copy of a row keeps that row's fold,
+        so no resampled row is predicted by a model that saw its twin.
+    n_boot : int, default 200
+        Number of bootstrap resamples.
     cluster : str, optional
         Cluster column. The standard error sums the influence function
         within clusters: ``G/(G-1) sum_g (S_g - mean S)^2 / n^2``, which
         is R ``tmle``'s ``id=`` variance when clusters are of equal size
         (``tmle`` averages the influence function within ``id`` instead, a
         repeated-measures convention that differs with unequal sizes).
+    design : SurveyDesign, optional
+        A complex survey design from :func:`sp.svydesign` declared on
+        ``data`` (same rows). The design weights are the observation
+        weights (as ``weights=``) and every standard error -- the
+        estimate's and those in ``result.detail`` -- is the
+        Taylor-linearisation variance of the weighted efficient influence
+        function over strata, PSUs and the finite population correction
+        (R ``survey::svyrecvar`` on ``w_i EIF_i / sum(w)``). Intervals and
+        p-values use the t distribution with the design degrees of
+        freedom (#PSU - #strata). Not with ``weights=``, ``cluster=``,
+        ``fold_indices`` or ``se_method='bootstrap'``.
+        A replicate-weight design (:func:`sp.svrepdesign`) is accepted
+        too: the estimator is refitted with every replicate's weights
+        and the replicate variance replaces the linearisation (R
+        ``svrepdesign`` / Stata ``svy brr`` / ``svy jackknife``).
 
     Returns
     -------
@@ -164,16 +242,34 @@ def tmle(
     ``model_info["cross_fitted"]`` is ``False`` on this path. Pass
     ``fold_indices`` for out-of-fold initial fits.
 
-    **ATT.** With ``estimand='ATT'`` only the outcome model is targeted;
-    ``g`` is held at its (truncated) initial fit and is not updated. The
-    clever covariate is ``H(A, W) = A - (1 - A) g / (1 - g)`` (so
-    ``H(0, W) = -g / (1 - g)``), and the reported estimate uses the
+    **ATT and ATC.** With ``estimand='ATT'`` only the outcome model is
+    targeted; ``g`` is held at its (truncated) initial fit. The clever
+    covariate is ``H(A, W) = A - (1 - A) g / (1 - g)`` (so
+    ``H(0, W) = -g / (1 - g)``). The estimate is written in the
     estimating-equation form
     ``mean(A (Y - Q*(0,W)) / p - (1 - A) g (Y - Q*(0,W)) / ((1 - g) p))``
-    with ``p`` the treated share of the retained sample, not the plug-in
-    ``mean over treated of Q*(1,W) - Q*(0,W)``. The SE is the standard
-    deviation of the corresponding influence function (the summand minus
-    ``psi A / p``) over ``sqrt(n)``.
+    with ``p`` the treated share of the retained sample. Because the
+    fluctuation solves ``sum H (Y - Q*) = 0``, that is the same number as
+    the plug-in mean of ``Q*(1,W) - Q*(0,W)`` over the treated, so the
+    estimate is a substitution estimator at the empirical distribution of
+    ``W`` among the treated and the efficient influence function of the
+    ATT has mean zero at it. The SE is the standard deviation of that
+    influence function (the summand minus ``psi A / p``) over ``sqrt(n)``.
+    ``estimand='ATC'`` is the same computation with the arms relabelled
+    (and the sign restored). R ``tmle`` reports a different, equally valid
+    TMLE for both: it also updates ``g``, along a small-step path, on the
+    rows with ``g >= min(g | A = 1)`` only, and stops when the likelihood
+    stops improving rather than when the influence-function equation is
+    solved. The two agree to a small fraction of a standard error; see
+    ``tests/reference_parity/test_r2_teffects_parity.py``.
+
+    **Influence function.** ``model_info['influence_function']`` holds the
+    per-row efficient influence function at the targeted fit, in the row
+    order of the complete cases. Its mean is zero up to the Newton
+    tolerance; that is the equation targeting solves, and it is what
+    makes the plug-in free of first-order bias. Use it to combine
+    estimates (a covariance between two fits on the same rows is the
+    covariance of their influence functions over ``n``).
 
     References
     ----------
@@ -193,8 +289,21 @@ def tmle(
     >>> df["outcome"], df["treatment"] = outcome, treatment
     >>> result = sp.tmle(df, y="outcome", treat="treatment",
     ...                  covariates=["x1", "x2", "x3"])
-    >>> print(result.summary())
+    >>> result.estimand, round(result.estimate, 1)
+    ('ATE', 2.0)
+    >>> report = result.summary()
     """
+    if design is not None and getattr(design, "is_replicate_design", False):
+        _args = dict(locals())
+        from ..survey._replicate_refit import replicate_refit
+
+        return replicate_refit(
+            tmle,
+            _args,
+            design,
+            function="sp.tmle",
+            overrides={"se_method": "influence"},
+        )
     est = TMLE(
         data=data,
         y=y,
@@ -214,8 +323,15 @@ def tmle(
         fold_indices=fold_indices,
         weights=weights,
         cluster=cluster,
+        se_method=se_method,
+        n_boot=n_boot,
+        design=design,
     )
     _result = est.fit()
+    if se_method == "bootstrap":
+        from ._bootstrap import bootstrap_inference
+
+        bootstrap_inference(_result, est)
     try:
         from ..output._lineage import attach_provenance as _attach_prov
 
@@ -235,6 +351,10 @@ def tmle(
                 "cross_fitted": fold_indices is not None,
                 "weights": weights,
                 "cluster": cluster,
+                "fluctuation": est.fluctuation,
+                "se_method": se_method,
+                "n_boot": n_boot if se_method == "bootstrap" else None,
+                "design": None if design is None else repr(design),
                 "outcome_library": (
                     [type(m).__name__ for m in outcome_library]
                     if outcome_library
@@ -350,22 +470,45 @@ class TMLE:
         random_state: int = 42,
         Q: "Optional[np.ndarray]" = None,
         g1W: "Optional[np.ndarray]" = None,
-        fluctuation: str = "single",
+        fluctuation: Optional[str] = None,
         q_bound: float = 1e-5,
         fold_indices: "Optional[Any]" = None,
         weights: Optional[str] = None,
         cluster: Optional[str] = None,
+        se_method: str = "influence",
+        n_boot: int = 200,
+        design: Optional[Any] = None,
     ):
         if not (0 < q_bound < 0.5):
             raise MethodIncompatibility(
                 f"tmle: q_bound must lie in (0, 0.5), got {q_bound!r}"
             )
         self.q_bound = float(q_bound)
-        if fluctuation not in ("single", "per_arm"):
+        if not isinstance(estimand, str) or estimand.upper() not in _ESTIMANDS:
+            raise MethodIncompatibility(
+                f"tmle: unknown estimand={estimand!r}.",
+                recovery_hint="Use one of " + ", ".join(_ESTIMANDS) + ".",
+                diagnostics={"estimand": estimand},
+            )
+        estimand = estimand.upper()
+        if fluctuation not in (None, "single", "per_arm"):
             raise ValueError(
                 f"tmle: unknown fluctuation={fluctuation!r}; use "
                 "'single' or 'per_arm'."
             )
+        if estimand in _ARM_ESTIMANDS:
+            # A treatment-specific mean is only targeted when its own score
+            # equation is solved; the single clever covariate solves the
+            # equation of the difference alone.
+            if fluctuation == "single":
+                raise MethodIncompatibility(
+                    f"tmle: estimand={estimand!r} needs each arm's mean to be "
+                    "targeted, which fluctuation='single' does not do.",
+                    recovery_hint="Drop fluctuation= or pass 'per_arm'.",
+                )
+            fluctuation = "per_arm"
+        elif fluctuation is None:
+            fluctuation = "single"
         self.fluctuation = fluctuation
         self.Q_init = None if Q is None else np.asarray(Q, dtype=np.float64)
         self.g1W_init = None if g1W is None else np.asarray(g1W, dtype=np.float64)
@@ -398,13 +541,42 @@ class TMLE:
                 "fitted unweighted.",
                 recovery_hint="Drop fold_indices, or drop weights=.",
             )
-        if weights is not None and estimand != "ATE":
-            raise MethodIncompatibility(
-                "tmle: weights= is implemented for estimand='ATE' only.",
-                recovery_hint="Drop weights= or use estimand='ATE'.",
-            )
         self.weights = weights
         self.cluster = cluster
+        self.design: Any = None
+        if design is not None:
+            from ..survey.linearization import check_design
+
+            self.design = check_design(
+                design, data, function="tmle", weights=weights, cluster=cluster
+            )
+            if fold_indices is not None or se_method == "bootstrap":
+                raise MethodIncompatibility(
+                    "tmle: design= gives the survey linearisation variance of "
+                    "the influence function; it is not implemented with "
+                    "fold_indices or se_method='bootstrap' (a bootstrap of a "
+                    "complex design needs replicate weights).",
+                    recovery_hint="Drop fold_indices / se_method='bootstrap'.",
+                )
+        if se_method not in ("influence", "bootstrap"):
+            raise MethodIncompatibility(
+                f"tmle: se_method must be 'influence' or 'bootstrap', got "
+                f"{se_method!r}"
+            )
+        if se_method == "bootstrap":
+            if Q is not None or g1W is not None:
+                raise MethodIncompatibility(
+                    "tmle: se_method='bootstrap' refits the nuisance models on "
+                    "every resample; with Q / g1W supplied there is nothing to "
+                    "refit and their sampling error would be left out.",
+                    recovery_hint="Drop Q / g1W, or use se_method='influence'.",
+                )
+            if int(n_boot) < 20:
+                raise MethodIncompatibility(
+                    "tmle: n_boot must be at least 20 for a standard error."
+                )
+        self.se_method = se_method
+        self.n_boot = int(n_boot)
 
     def fit(self) -> CausalResult:
         """Run TMLE and return causal effect estimates."""
@@ -412,18 +584,33 @@ class TMLE:
         design = [c for c in (self.weights, self.cluster) if c is not None]
         cols = list(dict.fromkeys([self.y, self.treat] + self.covariates + design))
         missing = [c for c in cols if c not in self.data.columns]
-        if missing:
-            raise ValueError(f"Columns not found in data: {missing}")
+        check_columns(
+            self.data,
+            {
+                "y": self.y,
+                "treat": self.treat,
+                "covariates": self.covariates,
+                "weights": self.weights,
+                "cluster": self.cluster,
+            },
+            message=f"sp.tmle: Columns not found in data: {missing}",
+        )
 
         clean = self.data[cols].dropna()
         Y = clean[self.y].values.astype(np.float64)
-        A = clean[self.treat].values.astype(np.float64)
+        A = _treatment_as_float(clean[self.treat], function="tmle")
         W = clean[self.covariates].values.astype(np.float64)
         n = len(Y)
         # Observation weights normalised to mean one (R tmle's obsWeights);
         # None keeps the unweighted path byte-identical.
         obs_w: "Optional[np.ndarray]" = None
-        if self.weights is not None:
+        svy_rows = None
+        if self.design is not None:
+            from ..survey.linearization import design_rows
+
+            svy_rows = design_rows(self.design, self.data, cols)
+            obs_w = svy_rows.weights * (n / svy_rows.weights.sum())
+        elif self.weights is not None:
             obs_w = clean[self.weights].to_numpy(dtype=np.float64)
             if not np.all(np.isfinite(obs_w)) or np.any(obs_w <= 0):
                 raise MethodIncompatibility(
@@ -438,9 +625,19 @@ class TMLE:
                     "tmle: cluster= needs at least two clusters."
                 )
 
+        from ..core._validate import require_binary_treatment
+        from ..exceptions import DataInsufficient
+
+        require_binary_treatment(A, function="tmle", argument=self.treat)
         unique_a = np.unique(A)
-        if not (len(unique_a) == 2 and set(unique_a.astype(int)) == {0, 1}):
-            raise ValueError(f"Treatment must be binary (0/1), got: {unique_a}")
+        if len(unique_a) != 2:
+            raise DataInsufficient(
+                f"tmle: {self.treat!r} takes only the value {unique_a.tolist()} "
+                "on the complete rows; the estimator needs treated and "
+                "control units.",
+                recovery_hint="Check the treatment coding and the row filter.",
+                diagnostics={"values": unique_a.tolist()},
+            )
 
         # Opt-in CV-TMLE partition, aligned with the input rows and then
         # subset to the complete cases kept above.
@@ -537,6 +734,25 @@ class TMLE:
         # Propensity model: g(A | W)
         if self.g1W_init is not None:
             g_hat_raw = np.asarray(self.g1W_init, dtype=np.float64).ravel()
+            if g_hat_raw.shape[0] == 1:
+                # One number: a trial randomised with that probability.
+                if not 0.0 < float(g_hat_raw[0]) < 1.0:
+                    raise MethodIncompatibility(
+                        "tmle: a known treatment probability g1W must lie "
+                        f"strictly between 0 and 1, got {float(g_hat_raw[0])!r}.",
+                        recovery_hint=(
+                            "Pass the randomisation probability of the trial; "
+                            "with probability 0 or 1 one arm is never observed."
+                        ),
+                    )
+                g_hat_raw = np.full(n, float(g_hat_raw[0]))
+            elif not bool(
+                np.all(np.isfinite(g_hat_raw) & (g_hat_raw >= 0) & (g_hat_raw <= 1))
+            ):
+                raise MethodIncompatibility(
+                    "tmle: g1W holds values that are missing or outside "
+                    "[0, 1], so they are not treatment probabilities.",
+                )
             if g_hat_raw.shape[0] != n:
                 raise ValueError(
                     f"tmle: g1W must have length n = {n}; " f"got {g_hat_raw.shape[0]}."
@@ -595,7 +811,9 @@ class TMLE:
                 f"sample. Inspect "
                 f"result.model_info['propensity_diagnostics'] and "
                 f"consider sp.overlap_plot() / a more flexible "
-                f"propensity model.",
+                f"propensity model. The influence-function standard "
+                f"error is too small in this regime; "
+                f"se_method='bootstrap' is closer to nominal.",
                 UserWarning,
                 stacklevel=2,
             )
@@ -604,8 +822,27 @@ class TMLE:
         # Step 2: Targeting step (fluctuation parameter epsilon)
         # ---------------------------------------------------------------
 
+        se_of = cluster_se(cl_codes, n)
+        svy_df: Optional[float] = None
+        if svy_rows is not None:
+            from ..survey.linearization import design_df, design_se_of
+
+            _svy = self.design
+            se_of = design_se_of(_svy, svy_rows.rows, n)
+            svy_df = design_df(_svy, svy_rows.rows)
+        detail: "Optional[pd.DataFrame]" = None
+        # The effect on the controls is minus the effect on the treated of
+        # the relabelled treatment: swap the arms, run the same targeting,
+        # and swap back.
+        on_treated = self.estimand in ("ATT", "ATC")
+        flip = self.estimand == "ATC"
+        if flip:
+            A = 1.0 - A
+            Q_bar_1, Q_bar_0 = Q_bar_0, Q_bar_1
+            g_hat = 1.0 - g_hat
+
         # Clever covariate H(A, W)
-        if self.estimand == "ATE":
+        if not on_treated:
             H_A = A / g_hat - (1 - A) / (1 - g_hat)
             H_1 = 1.0 / g_hat
             H_0 = -1.0 / (1 - g_hat)
@@ -641,7 +878,7 @@ class TMLE:
         else:
             # Per-arm covariates, evaluated at the observed A for fitting
             # and at each arm for the counterfactual updates.
-            if self.estimand == "ATE":
+            if not on_treated:
                 H1_A = A / g_hat
                 H0_A = -(1 - A) / (1 - g_hat)
                 H1_at1, H0_at1 = 1.0 / g_hat, np.zeros(n)
@@ -675,7 +912,7 @@ class TMLE:
             Q_star_0_orig = Q_star_0
             Q_star_A_orig = Q_star_A
 
-        if self.estimand == "ATE" and obs_w is not None:
+        if not on_treated and obs_w is not None:
             # R tmle: mu_a = mean(w * Q*_a), IC = w * (... - (mu1 - mu0)).
             psi = float(np.mean(obs_w * (Q_star_1_orig - Q_star_0_orig)))
             EIF = obs_w * (
@@ -684,7 +921,7 @@ class TMLE:
                 - (1 - A) * (Y - Q_star_A_orig) / (1 - g_hat)
                 - psi
             )
-        elif self.estimand == "ATE":
+        elif not on_treated:
             psi = float(np.mean(Q_star_1_orig - Q_star_0_orig))
 
             # Efficient influence function
@@ -694,7 +931,7 @@ class TMLE:
                 - (1 - A) * (Y - Q_star_A_orig) / (1 - g_hat)
                 - psi
             )
-        else:  # ATT
+        elif obs_w is None:  # ATT
             p_treat = np.mean(A)
             psi = float(
                 np.mean(
@@ -708,26 +945,87 @@ class TMLE:
                 - (1 - A) * g_hat * (Y - Q_star_0_orig) / ((1 - g_hat) * p_treat)
                 - psi * A / p_treat
             )
+        else:  # ATT with observation weights
+            # Every empirical mean becomes a weighted one (the weights have
+            # mean one), including the treated share, and each row of the
+            # influence function carries its weight.
+            p_treat = float(np.mean(obs_w * A))
+            summand = (
+                A * (Y - Q_star_0_orig)
+                - (1 - A) * g_hat * (Y - Q_star_0_orig) / (1 - g_hat)
+            ) / p_treat
+            psi = float(np.mean(obs_w * summand))
+            EIF = obs_w * (summand - psi * A / p_treat)
+
+        if self.fluctuation == "per_arm" and not on_treated:
+            # Both arm-specific score equations are solved, so each
+            # targeted mean is itself a TMLE and so is any smooth
+            # function of the pair.
+            ow = np.ones(n) if obs_w is None else obs_w
+            ey1 = float(np.mean(ow * Q_star_1_orig))
+            ey0 = float(np.mean(ow * Q_star_0_orig))
+            ic1 = ow * (A * (Y - Q_star_A_orig) / g_hat + Q_star_1_orig - ey1)
+            ic0 = ow * (
+                (1 - A) * (Y - Q_star_A_orig) / (1 - g_hat) + Q_star_0_orig - ey0
+            )
+            detail = parameter_table(
+                ic1,
+                ic0,
+                ey1,
+                ey0,
+                se_of,
+                self.alpha,
+                nonnegative_outcome=bool(Y.min() >= 0.0),
+                unit_interval_outcome=bool(Y.min() >= 0.0 and Y.max() <= 1.0),
+                df=svy_df,
+            )
+
+        if flip:
+            psi, EIF = -psi, -EIF
+            Q_star_1_orig, Q_star_0_orig = Q_star_0_orig, Q_star_1_orig
+            A = 1.0 - A
+            g_hat = 1.0 - g_hat
 
         # Standard error from influence function
-        if cl_codes is None:
-            se = float(np.std(EIF, ddof=1) / np.sqrt(n))
-        else:
-            # Cluster sums of the influence function, centred, with the
-            # G/(G-1) factor: equals the line above when every row is its
-            # own cluster, and R tmle's id= variance for equal cluster sizes.
-            S = np.bincount(cl_codes, weights=EIF)
-            G = S.shape[0]
-            se = float(np.sqrt(G / (G - 1) * np.sum((S - S.mean()) ** 2)) / n)
-
-        if se > 0:
-            z_stat = psi / se
-            pvalue = float(2 * sp_stats.norm.sf(abs(z_stat)))
-        else:
-            pvalue = 0.0
-
+        se = se_of(EIF)
         z_crit = sp_stats.norm.ppf(1 - self.alpha / 2)
         ci = (psi - z_crit * se, psi + z_crit * se)
+        pvalue = float(2 * sp_stats.norm.sf(abs(psi / se))) if se > 0 else 0.0
+        if svy_df is not None:
+            from ..survey.linearization import design_inference
+
+            ci, pvalue = design_inference(psi, se, svy_df, self.alpha)
+        eif_scale = "estimate"
+
+        if self.estimand in _ARM_ESTIMANDS:
+            assert detail is not None
+            row = detail.loc[detail["parameter"] == self.estimand]
+            if row.empty:
+                raise MethodIncompatibility(
+                    f"tmle: estimand={self.estimand!r} is not defined for this "
+                    "outcome: the ratio needs a non-negative outcome with "
+                    "positive targeted means, and the odds ratio an outcome "
+                    "in [0, 1] with both means strictly inside it.",
+                    recovery_hint="Use estimand='ATE'.",
+                    diagnostics={
+                        "EY1": float(detail["estimate"].iloc[0]),
+                        "EY0": float(detail["estimate"].iloc[1]),
+                    },
+                )
+            r0 = row.iloc[0]
+            psi, se = float(r0["estimate"]), float(r0["se"])
+            ci = (float(r0["ci_lower"]), float(r0["ci_upper"]))
+            pvalue = float(r0["pvalue"])
+            ey1, ey0 = (float(v) for v in detail["estimate"].iloc[:2])
+            if self.estimand == "EY1":
+                EIF = ic1
+            elif self.estimand == "EY0":
+                EIF = ic0
+            elif self.estimand == "RR":
+                EIF, eif_scale = ic1 / ey1 - ic0 / ey0, "log"
+            else:
+                EIF = ic1 / (ey1 * (1 - ey1)) - ic0 / (ey0 * (1 - ey0))
+                eif_scale = "log"
 
         # Model info
         model_info = {
@@ -774,6 +1072,15 @@ class TMLE:
             "sl_propensity_weights_by_fold": (
                 [m.weights_.tolist() for m in sl_g_folds] if folds is not None else None
             ),
+            # Which learners fit the nuisances: the built-in Super Learner
+            # library, or one the caller passed. The point estimate depends
+            # on it, so validation_scope keeps the two apart.
+            "library": (
+                "user"
+                if self.outcome_library is not None
+                or self.propensity_library is not None
+                else "default"
+            ),
             "nuisance_source": {
                 "Q": (
                     "supplied"
@@ -807,7 +1114,19 @@ class TMLE:
             # carries the full vector in both modes.
             "epsilon": (float(epsilon) if self.fluctuation == "single" else None),
             "epsilon_vec": [float(v) for v in np.atleast_1d(epsilon_vec)],
+            # Per-row efficient influence function at the targeted fit, in
+            # the row order of the retained (complete-case) sample. For the
+            # ratio and the odds ratio it is the influence function of the
+            # log of the estimate (``influence_function_scale == 'log'``).
+            "influence_function": np.asarray(EIF, dtype=float),
+            "influence_function_scale": eif_scale,
         }
+
+        if svy_df is not None:
+            from ..survey.linearization import design_info
+
+            model_info["se_method"] = "survey_linearization"
+            model_info["survey_design"] = design_info(_svy, svy_df)
 
         # One fitted Super Learner, or one per fold under CV-TMLE.
         self._sl_Q: Any
@@ -834,7 +1153,7 @@ class TMLE:
             ci=ci,
             alpha=self.alpha,
             n_obs=n,
-            detail=None,
+            detail=detail,
             model_info=model_info,
             _citation_key="tmle",
         )

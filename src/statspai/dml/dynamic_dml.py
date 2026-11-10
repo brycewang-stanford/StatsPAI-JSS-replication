@@ -79,8 +79,14 @@ import pandas as pd
 from scipy import stats
 
 from .._aliases import accepts_aliases
+from .._input_validation import missing_named_columns
 from .._result_serialize import ResultProtocolMixin
-from ..exceptions import AssumptionWarning, DataInsufficient, MethodIncompatibility
+from ..exceptions import (
+    AssumptionWarning,
+    ColumnNotFound,
+    DataInsufficient,
+    MethodIncompatibility,
+)
 
 __all__ = ["dynamic_dml", "DynamicDMLResult"]
 
@@ -280,10 +286,11 @@ def _wide_panel(
     """Balanced wide arrays, or a message saying exactly what is missing."""
     missing = [c for c in [y, treat, unit, time, *needed] if c not in data.columns]
     if missing:
-        raise MethodIncompatibility(
-            f"dynamic_dml(): columns not in data: {missing}.",
-            recovery_hint="Check the spelling against data.columns.",
-            diagnostics={"missing": missing},
+        raise ColumnNotFound.from_missing(
+            missing,
+            data.columns,
+            context="dynamic_dml()",
+            extra_diagnostics={"missing": missing},
         )
     frame = data.loc[:, [unit, time, y, treat, *dict.fromkeys(needed)]].copy()
     labels = sorted(frame[time].unique()) if periods is None else list(periods)
@@ -367,15 +374,24 @@ def _default_learner() -> Any:
 def _fit_predict(
     model: Any, state: np.ndarray, target: np.ndarray, folds: np.ndarray
 ) -> np.ndarray:
-    """Cross-fitted out-of-fold prediction; folds are unit-level already."""
+    """Cross-fitted out-of-fold prediction; folds are unit-level already.
+
+    A classifier on a 0/1 target predicts P(target = 1) (its hard label
+    would make the residual ``T - 1{p > 0.5}``, not ``T - E[T | state]``);
+    a classifier on any other target is refused, as in ``sp.dml``.
+    """
     from sklearn.base import clone
+
+    from ._base import _DoubleMLBase
 
     pred = np.empty(len(target), dtype=float)
     scored = np.zeros(len(target), dtype=bool)
     for f in np.unique(folds):
         train, test = folds != f, folds == f
         fitted = clone(model).fit(state[train], target[train])
-        pred[test] = np.asarray(fitted.predict(state[test]), dtype=float).ravel()
+        pred[test] = _DoubleMLBase._predict_nuisance(
+            fitted, state[test], target[train], "dynamic_dml model"
+        )
         scored[test] = True
     if not scored.all():  # pragma: no cover - every fold index is covered
         raise DataInsufficient("dynamic_dml(): a fold produced no predictions.")
@@ -388,7 +404,7 @@ def _r2(target: np.ndarray, pred: np.ndarray) -> float:
     return float(1.0 - np.sum(resid**2) / denom) if denom > 0 else float("nan")
 
 
-@accepts_aliases(_strict=True, unit="id")
+@accepts_aliases(_strict=True, unit="id", seed="random_state")
 def dynamic_dml(
     data: pd.DataFrame,
     y: str,
@@ -540,6 +556,25 @@ def dynamic_dml(
     if not 0.0 < alpha < 1.0:
         raise MethodIncompatibility(
             "dynamic_dml(): alpha must be in (0, 1).", recovery_hint="Use alpha=0.05."
+        )
+    named = missing_named_columns(
+        {
+            "y": y,
+            "treat": treat,
+            "id": id,
+            "time": time,
+            "covariates": cov_cols,
+            "baseline": base_cols,
+            "modifiers": mod_cols,
+        },
+        data.columns,
+    )
+    if named:
+        raise ColumnNotFound.from_missing(
+            named,
+            data.columns,
+            context="dynamic_dml()",
+            extra_diagnostics={"missing": list(named.values())},
         )
     frame, labels, n_units, m, wide, dropped = _wide_panel(
         data, y, treat, id, time, [*cov_cols, *base_cols, *mod_cols], periods

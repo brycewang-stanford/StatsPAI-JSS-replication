@@ -69,7 +69,7 @@
       "metrics": {
         "tier1_live_external_call_count": 0,
         "tier1_no_r_stata": true,
-        "tier1_steps": "31/31"
+        "tier1_steps": "32/32"
       },
       "primary_evidence": [
         "replication/reproduce.py",
@@ -114,10 +114,10 @@
         "protocol_scoring_dimensions": 6,
         "protocol_task_families": 5,
         "protocol_validity_controls": 6,
-        "schema_files": 1255,
-        "schema_parameters": 9697,
+        "schema_files": 1627,
+        "schema_parameters": 14022,
         "trace_bibtex_entry_count": 2,
-        "trace_tools": 579
+        "trace_tools": 45
       },
       "primary_evidence": [
         "replication/results/agent_interface_audit.md",
@@ -135,10 +135,10 @@
       "id": "full_registry_numeric_validation",
       "jss_upload_blocking": false,
       "metrics": {
-        "api_stable_symbols": 694,
-        "certified_validated_symbols": 558,
+        "api_stable_symbols": 643,
+        "certified_validated_symbols": 981,
         "missing_validation_notes": 0,
-        "unbacked_auto_stable": 601
+        "unbacked_auto_stable": 570
       },
       "primary_evidence": [
         "replication/results/validation_evidence_audit.md",
@@ -156,7 +156,7 @@
       "jss_upload_blocking": false,
       "metrics": {
         "ready_for_final_publication": false,
-        "release_blocker_count": 5,
+        "release_blocker_count": 28,
         "release_boundary_status": "PASS",
         "version_consistent": true
       },

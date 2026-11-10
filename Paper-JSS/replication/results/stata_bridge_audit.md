@@ -21,7 +21,7 @@ separate Stata license.
 | `04_csdid` | 19 | R+Stata | 18 MP | csdid ... method(reg) long2 \| estat simple/event/group/calendar |
 | `05_sunab` | 8 | R+Stata | 18 MP | eventstudyinteract Y rel_dummies, cohort(first_treat) control_cohort(nevertreat) absorb(i.countyreal i.year) vce(cluster countyreal) |
 | `06_rd` | 6 | R+Stata | 18 MP | rdrobust Y X, c(0) |
-| `07_scm` | 18 | R+Stata | 18 MP | synth gdppc gdppc(1955..1969), trunit(.) trperiod(1970) nested |
+| `07_scm` | 20 | R+Stata | 18 MP | synth gdppc gdppc(1955..1969), trunit(.) trperiod(1970) nested |
 | `08_dml` | 1 | R+Stata | 18 MP | DML2 PLR: foldwise OLS residualization and pooled orthogonal score |
 | `09_rddensity` | 6 | R+Stata | 18 MP | rddensity x, c(0) |
 | `10_honest_did` | 10 | R+Stata | 18 MP | honestdid, b(b) vcov(V) numpre(3) mvec(...) delta(sd) |
@@ -43,7 +43,7 @@ separate Stata license.
 | `27_glmm_aghq` | 3 | R+Stata | 18 MP | melogit y x1 \|\| gid:, intpoints(8) |
 | `28_frontier` | 7 | R+Stata | 18 MP | frontier lny lnk lnl, distribution(hnormal) |
 | `29_panel_sfa` | 5 | R+Stata | 18 MP | constraint 1 [mu]_cons = 0; xtfrontier lny lnk lnl, ti constraints(1) |
-| `30_oaxaca` | 7 | R+Stata | 18 MP | oaxaca log_wage educ exper, by(female) |
+| `30_oaxaca` | 10 | R+Stata | 18 MP | oaxaca log_wage educ exper, by(female) [vce(robust) fixed] |
 | `31_dfl` | 6 | R+Stata | 18 MP | Newton-Raphson logit P(group==0\|educ,exper); reference=1 reweights group 0 to group 1 covariates |
 | `32_rif` | 6 | R+Stata | 18 MP | Hmisc type-7 quantile + R stats::density binned Gaussian density + groupwise RIF-OLS decomposition |
 | `33_var` | 11 | R+Stata | 18 MP | var y1 y2, lags(1/2) |
@@ -64,7 +64,7 @@ separate Stata license.
 | `48_probit` | 3 | R+Stata | 18 MP | probit y x1 x2 |
 | `49_oprobit` | 3 | R+Stata | 18 MP | oprobit y x |
 | `50_xtabond` | 2 | R+Stata | 18 MP | xtabond y x, lags(1) vce(robust) |
-| `51_newey` | 2 | R+Stata | 18 MP | newey y x, lag(4) |
+| `51_newey` | 4 | R+Stata | 18 MP | newey y x, lag(4) |
 | `52_scm_unique` | 7 | R+Stata | 18 MP | synth y y(0..19), trunit(6) trperiod(20) |
 | `53_cr2` | 6 | R+Stata | 18 MP | CR2 uses (I-H_gg)^-1/2 adjusted scores; CR3 uses (I-H_gg)^-1 adjusted scores |
 | `54_twoway_cluster` | 4 | R+Stata | 18 MP | reghdfe y x, noabsorb vce(cluster g1 g2) for diagnostic SEs; headline SEs from Mata CGM bridge |

@@ -63,7 +63,8 @@ WATCHED_PREFIXES = (
     "CHANGELOG.md",
     "MIGRATION.md",
     "README.md",
-    "README_CN.md",
+    "README_EN.md",  # English README after the post-1.34.2 rename
+    "README_CN.md",  # Chinese README up to 1.34.2
     "pyproject.toml",
 )
 
@@ -76,6 +77,8 @@ GENERATED_PREFIXES = (
     "tests/r_parity/results/",
     "tests/orig_parity/results/",
     "tests/perf/figures/",
+    # Written by tests/perf/run_when_idle.sh together with tests/perf/figures/.
+    "tests/perf/results/",
 )
 
 SNAPSHOT_DISPLAY_IGNORES = (

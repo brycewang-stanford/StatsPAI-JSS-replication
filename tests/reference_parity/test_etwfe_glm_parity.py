@@ -184,17 +184,23 @@ def test_gaussian_and_default_are_the_historical_linear_path(poisson_panel):
 @pytest.mark.parametrize(
     "kwargs",
     [
-        {"family": "poisson", "xvar": "lpop"},
+        {"family": "poisson", "hettype": "calendar_cohort"},
+        {"family": "poisson", "fe": "unit", "separated": "sometimes"},
+        {"family": "poisson", "separated": "drop"},  # needs fe='unit'
+        {"hettype": "event", "fe": "cohort"},  # linear hettype: unit FE only
+        {"hettype": "event", "weights": "y"},  # linear hettype: no weights
         {"family": "poisson", "panel": False},
-        {"family": "poisson", "cgroup": "nevertreated"},
+        {"family": "poisson", "weights": "y"},
+        {"family": "logit", "fe": "unit"},
+        {"family": "poisson", "scale": "odds"},
         {"family": "probit"},
     ],
 )
 def test_unsupported_nonlinear_options_raise(poisson_panel, kwargs):
     """Options the nonlinear branch cannot honour must raise, never be dropped.
 
-    Silently ignoring ``cgroup`` or ``xvar`` would change the estimand without
-    telling the caller.
+    Silently ignoring ``cgroup`` / ``hettype`` / ``separated`` would change
+    the estimand without telling the caller.
     """
     from statspai.exceptions import MethodIncompatibility
 

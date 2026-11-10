@@ -23,14 +23,288 @@ confounders affected by treatment.
 """
 
 import warnings
-from typing import List, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
 from scipy import stats
 
+from .._input_validation import check_columns
 from ..core.results import CausalResult
-from ..exceptions import ConvergenceFailure, DataInsufficient
+from ..exceptions import ConvergenceFailure, DataInsufficient, MethodIncompatibility
+
+
+def _attach_mediate_provenance(
+    result: CausalResult, data: pd.DataFrame, params: dict
+) -> None:
+    try:
+        from ..output._lineage import attach_provenance as _attach_prov
+
+        _attach_prov(
+            result, function="sp.mediate", params=params, data=data, overwrite=False
+        )
+    except Exception:  # pragma: no cover - provenance is best effort
+        pass
+
+
+def _mediate_robust(
+    data: pd.DataFrame,
+    *,
+    y: str,
+    treat: str,
+    mediator: str,
+    covariates: Optional[List[str]],
+    interaction: bool,
+    mediator_model: str,
+    alpha: float,
+    outcome_model: str = "linear",
+    treat_values: Optional[Tuple[float, float]] = None,
+    weights: Optional[str] = None,
+    design: Any = None,
+) -> CausalResult:
+    """Potential-outcome mediation packaged as a ``CausalResult``."""
+    fit = _po_fit(
+        data,
+        y=y,
+        treat=treat,
+        mediator=mediator,
+        covariates=covariates,
+        interaction=interaction,
+        mediator_model=mediator_model,
+        alpha=alpha,
+        outcome_model=outcome_model,
+        treat_values=treat_values,
+        weights=weights,
+        design=design,
+    )
+    res = _po_result(fit, interaction=interaction, alpha=alpha)
+    if design is not None:
+        from ..survey.linearization import design_info
+
+        res.model_info["inference"] = "design"
+        res.model_info["survey_design"] = design_info(design, fit["design_df"])
+    return res
+
+
+def _po_fit(
+    data: pd.DataFrame,
+    *,
+    y: str,
+    treat: str,
+    mediator: str,
+    covariates: Optional[List[str]],
+    interaction: bool,
+    mediator_model: str,
+    alpha: float,
+    outcome_model: str = "linear",
+    treat_values: Optional[Tuple[float, float]] = None,
+    weights: Optional[str] = None,
+    design: Any = None,
+) -> dict:
+    """Potential-outcome means, effects and their sandwich variance."""
+    from ._po_means import potential_outcome_mediation
+    from ._po_means_nonlinear import potential_outcome_mediation_nonlinear
+
+    if (
+        str(outcome_model).lower() == "linear"
+        and treat_values is None
+        and weights is None
+        and design is None
+    ):
+        return potential_outcome_mediation(
+            data,
+            y,
+            treat,
+            mediator,
+            covariates,
+            interaction=interaction,
+            mediator_model=mediator_model,
+            alpha=alpha,
+        )
+    return potential_outcome_mediation_nonlinear(
+        data,
+        y,
+        treat,
+        mediator,
+        covariates,
+        interaction=interaction,
+        mediator_model=mediator_model,
+        outcome_model=outcome_model,
+        treat_values=treat_values,
+        alpha=alpha,
+        weights=weights,
+        design=design,
+    )
+
+
+def _po_result(fit: dict, *, interaction: bool, alpha: float) -> CausalResult:
+    effects = fit["effects"]
+    detail = pd.concat([effects, fit["prop_mediated"]], ignore_index=True)
+    nie = effects.set_index("effect").loc["NIE"]
+    by_name = effects.set_index("effect")
+    model_info = {
+        "inference": "robust",
+        "reference": "Stata mediate",
+        "interaction": interaction,
+        "mediator_model": fit["mediator_model"],
+        "outcome_model": fit.get("outcome_model", "linear"),
+        "treat_values": fit.get("treat_values", (0.0, 1.0)),
+        "mediator_variance": fit.get("mediator_variance"),
+        "acme": float(by_name.loc["NIE", "estimate"]),
+        "ade": float(by_name.loc["NDE", "estimate"]),
+        "total_effect": float(by_name.loc["TE", "estimate"]),
+        "prop_mediated": float(fit["prop_mediated"]["estimate"].iloc[0]),
+        "se_acme": float(by_name.loc["NIE", "se"]),
+        "se_ade": float(by_name.loc["NDE", "se"]),
+        "se_total": float(by_name.loc["TE", "se"]),
+        "se_prop_mediated": float(fit["prop_mediated"]["se"].iloc[0]),
+        "po_means": fit["po_means"],
+        "vcov_po": fit["vcov_po"],
+        "outcome_coef": fit["outcome_coef"],
+        "outcome_se": fit["outcome_se"],
+        "mediator_coef": fit["mediator_coef"],
+        "mediator_se": fit["mediator_se"],
+        "pvalue_method": "wald",
+    }
+    return CausalResult(
+        method="Causal Mediation Analysis",
+        estimand="NIE",
+        estimate=float(nie["estimate"]),
+        se=float(nie["se"]),
+        pvalue=float(nie["pvalue"]),
+        ci=(float(nie["ci_lower"]), float(nie["ci_upper"])),
+        alpha=alpha,
+        n_obs=int(fit["n_obs"]),
+        detail=detail,
+        model_info=model_info,
+        _citation_key="mediation",
+    )
+
+
+def _mediate_po_bootstrap(
+    data: pd.DataFrame,
+    *,
+    y: str,
+    treat: str,
+    mediator: str,
+    covariates: Optional[List[str]],
+    interaction: bool,
+    mediator_model: str,
+    outcome_model: str,
+    treat_values: Optional[Tuple[float, float]],
+    alpha: float,
+    n_boot: int,
+    seed: int,
+    pvalue_method: str,
+    weights: Optional[str] = None,
+) -> CausalResult:
+    """``inference='bootstrap'`` for the potential-outcome estimator.
+
+    Point estimates are the ``'robust'`` ones; standard errors are the
+    bootstrap standard deviations, intervals are percentile intervals and
+    p-values follow ``pvalue_method`` (as R ``mediation`` with
+    ``boot = TRUE``).
+    """
+    from ._po_bootstrap import bootstrap_po_effects
+
+    kw = dict(
+        y=y,
+        treat=treat,
+        mediator=mediator,
+        covariates=covariates,
+        interaction=interaction,
+        mediator_model=mediator_model,
+        alpha=alpha,
+        outcome_model=outcome_model,
+        treat_values=treat_values,
+        weights=weights,
+    )
+    cols = (
+        [y, treat, mediator] + list(covariates or []) + ([weights] if weights else [])
+    )
+    boot = bootstrap_po_effects(
+        data, cols, lambda d: _po_fit(d, **kw), n_boot=n_boot, seed=seed
+    )
+    res = _po_result(boot["full"], interaction=interaction, alpha=alpha)
+    draws, names = boot["draws"], boot["names"]
+    ok = np.isfinite(draws).all(axis=1)
+    n_ok = int(ok.sum())
+    if n_ok < max(20, n_boot // 2):
+        raise ConvergenceFailure(
+            f"mediate: only {n_ok} of {n_boot} bootstrap replications could "
+            "be fitted.",
+            recovery_hint="Use inference='robust' (sandwich standard errors), "
+            "or check for a mediator / outcome that is nearly constant.",
+            diagnostics={"n_boot": n_boot, "n_failed": boot["n_failed"]},
+        )
+    if boot["n_failed"] > 0.05 * n_boot:
+        from ..exceptions import AssumptionWarning
+
+        warnings.warn(
+            AssumptionWarning(
+                f"mediate: {boot['n_failed']} of {n_boot} bootstrap "
+                "replications could not be fitted and were dropped; the "
+                "bootstrap distribution is conditional on fitting.",
+                recovery_hint="Compare with inference='robust'.",
+                diagnostics={"n_failed": boot["n_failed"]},
+            ),
+            stacklevel=3,
+        )
+    d = draws[ok]
+    lo_q, hi_q = 100 * alpha / 2, 100 * (1 - alpha / 2)
+    rows = []
+    for j, name in enumerate(names):
+        row = res.detail.loc[res.detail["effect"] == name].iloc[0]
+        est = float(row["estimate"])
+        se = float(np.std(d[:, j], ddof=1))
+        if pvalue_method == "wald":
+            pv = MediationAnalysis._wald_pvalue(est, se)
+        else:
+            pv = MediationAnalysis._boot_pvalue(d[:, j])
+        lo, hi = np.percentile(d[:, j], [lo_q, hi_q])
+        rows.append(
+            {
+                "effect": name,
+                "estimate": est,
+                "se": se,
+                "z": est / se if se > 0 else np.nan,
+                "pvalue": pv,
+                "ci_lower": float(lo),
+                "ci_upper": float(hi),
+            }
+        )
+    detail = pd.DataFrame(rows)
+    by = detail.set_index("effect")
+    mi = dict(res.model_info)
+    mi.update(
+        {
+            "inference": "bootstrap",
+            "reference": "R mediation (boot = TRUE); point estimates as Stata mediate",
+            "n_boot": n_boot,
+            "n_boot_failed": int(boot["n_failed"]),
+            "seed": seed,
+            "pvalue_method": pvalue_method,
+            "se_acme": float(by.loc["NIE", "se"]),
+            "se_ade": float(by.loc["NDE", "se"]),
+            "se_total": float(by.loc["TE", "se"]),
+            "se_prop_mediated": float(by.loc["Prop. Mediated", "se"]),
+            "boot_draws": pd.DataFrame(d, columns=names),
+        }
+    )
+    nie = by.loc["NIE"]
+    return CausalResult(
+        method="Causal Mediation Analysis",
+        estimand="NIE",
+        estimate=float(nie["estimate"]),
+        se=float(nie["se"]),
+        pvalue=float(nie["pvalue"]),
+        ci=(float(nie["ci_lower"]), float(nie["ci_upper"])),
+        alpha=alpha,
+        n_obs=res.n_obs,
+        detail=detail,
+        model_info=mi,
+        _citation_key="mediation",
+    )
 
 
 def mediate(
@@ -44,6 +318,12 @@ def mediate(
     inference: str = "bootstrap",
     pvalue_method: str = "bootstrap_sign",
     seed: int = 42,
+    interaction: bool = False,
+    mediator_model: str = "linear",
+    outcome_model: str = "linear",
+    treat_values: Optional[Tuple[float, float]] = None,
+    weights: Optional[str] = None,
+    design: Any = None,
 ) -> CausalResult:
     """
     Causal mediation analysis.
@@ -64,11 +344,80 @@ def mediate(
         Number of bootstrap replications for inference.
     alpha : float, default 0.05
         Significance level.
-    inference : {'bootstrap', 'delta'}, default 'bootstrap'
+    inference : {'bootstrap', 'delta', 'robust'}, default 'bootstrap'
         Standard-error convention. ``'bootstrap'`` keeps the simulation
         path used by R ``mediation::mediate(..., boot=TRUE)``.
         ``'delta'`` uses the closed-form Sobel/delta method for the
         linear no-interaction model and matches Stata ``paramed``.
+        ``'robust'`` is the estimator of Stata 18 ``mediate``: the
+        potential-outcome means ``Y(d, M(d'))`` are averaged over the sample
+        and every effect is a contrast of them, with standard errors from
+        the sandwich of the stacked estimating equations (outcome model,
+        mediator model and the four means), so they are robust to
+        heteroskedasticity and account for the covariate distribution being
+        estimated. It needs a 0/1 treatment (or ``treat_values``).
+        ``interaction=True``, a non-linear model and ``treat_values`` use
+        this potential-outcome estimator under ``'robust'`` and under
+        ``'bootstrap'``; with ``'bootstrap'`` its point estimates are
+        re-computed on ``n_boot`` case resamples (standard errors are the
+        bootstrap standard deviations, intervals are percentile intervals,
+        as R ``mediation::mediate(boot = TRUE)``). ``'delta'`` refuses them.
+        Point estimates agree with Stata to 1e-9 and the covariance of the
+        model coefficients to 1e-9; the effects' standard errors agree to
+        about 1e-4, which is the size of the numerical-derivative noise in
+        Stata's own variance (its standard errors move by that much when a
+        covariate is merely centred, ours do not).
+    interaction : bool, default False
+        Include the treatment-by-mediator interaction in the outcome model
+        (``inference='robust'`` or ``'bootstrap'``). The natural indirect and direct
+        effects then depend on the treatment level they are evaluated at,
+        and ``detail`` reports all of ``NIE``, ``NDE``, ``PNIE`` (pure
+        natural indirect), ``TNDE`` (total natural direct) and ``TE``.
+        Stata's ``mediate`` includes the interaction by default; pass
+        ``interaction=True`` to reproduce it.
+    mediator_model : {'linear', 'logit', 'probit'}, default 'linear'
+        Model of the mediator given treatment and covariates
+        (``inference='robust'`` or ``'bootstrap'``). ``'logit'`` / ``'probit'`` need a
+        0/1 mediator.
+    outcome_model : {'linear', 'logit', 'probit', 'poisson'}, default 'linear'
+        Model of the outcome given treatment, mediator and covariates
+        (``inference='robust'`` or ``'bootstrap'``). With a non-linear model the effects
+        are on the scale of the outcome's mean (a difference in
+        probabilities, or in expected counts), and the mediator is
+        integrated out of the potential-outcome means: a binary mediator by
+        its two-point distribution, a continuous one by a normal
+        distribution around its regression line with the regression's
+        maximum-likelihood residual variance. The natural indirect and
+        direct effects then depend on the treatment level even without the
+        interaction, so all five effects are reported. Estimates and
+        standard errors equal Stata 18's ``mediate`` for the pairs it
+        allows; a logit outcome with a linear mediator, which Stata
+        refuses, is computed by Gauss-Hermite quadrature.
+    treat_values : (float, float), optional
+        The two treatment levels to contrast, ``(control, treated)``, for a
+        treatment that is not coded 0/1 (``inference='robust'`` or
+        ``'bootstrap'``; Stata's ``continuous(numlist)``). The treatment
+        enters the two models linearly.
+    design : SurveyDesign, optional
+        A survey design from ``sp.svydesign`` on the rows of ``data``
+        (``inference='robust'`` only): the weights are the design's and the
+        standard errors are the design-based linearisation of the stacked
+        estimating equations (strata, PSUs, FPC), with ``t`` intervals on
+        the design degrees of freedom. With PSUs and no strata the standard
+        errors are Stata 18 ``mediate [pw=w], vce(cluster psu)``'s times
+        ``sqrt(G / (G - 1))`` (the survey small-sample factor, which Stata's
+        ``mediate`` omits;
+        ``tests/reference_parity/test_mediate_design_Stata_parity.py``).
+    weights : str, optional
+        Column of sampling (probability) weights, Stata ``mediate [pw=]``.
+        Both models are fitted by weighted (quasi-)likelihood and the
+        potential-outcome means are weighted averages, so the
+        potential-outcome estimator is used (as for ``interaction=True``);
+        ``inference='robust'`` gives the weighted sandwich (squared
+        weights in the meat), ``'bootstrap'`` resamples units with their
+        weights, ``'delta'`` refuses. Estimates equal Stata 18
+        ``mediate [pw=w]`` to 1e-9 on four model pairs
+        (``tests/reference_parity/test_mediate_weights_Stata_parity.py``).
     pvalue_method : {'bootstrap_sign', 'wald'}, default 'bootstrap_sign'
         How each effect's p-value is computed:
 
@@ -87,6 +436,8 @@ def mediate(
         ``inference='delta'`` has no bootstrap distribution, so p-values
         are reported with the Wald convention.
 
+        ``inference='robust'`` reports Wald p-values as well.
+
         The matching kwarg is also accepted by
         :func:`sp.mediate_interventional`; pass the same value to
         keep reporting conventions aligned across a mediation study.
@@ -96,7 +447,12 @@ def mediate(
     Returns
     -------
     CausalResult
-        Contains ACME, ADE, total effect, and proportion mediated.
+        Contains ACME, ADE, total effect, and proportion mediated. With
+        ``inference='robust'`` the headline is the natural indirect effect
+        (``estimand='NIE'``), ``detail`` lists the effects and the proportion
+        mediated with its delta-method standard error, and ``model_info``
+        carries ``po_means`` (the four potential-outcome means),
+        ``vcov_po``, ``outcome_coef`` and ``mediator_coef``.
 
     Examples
     --------
@@ -116,9 +472,142 @@ def mediate(
     'ACME'
     >>> result.method
     'Causal Mediation Analysis'
+
+    Stata 18 ``mediate (y x) (m x) (treat)``: potential-outcome means,
+    treatment-mediator interaction, robust standard errors.
+
+    >>> df["d"] = (df["treat"] > 0).astype(int)
+    >>> po = sp.mediate(df, y="y", treat="d", mediator="m", covariates=["x"],
+    ...                 inference="robust", interaction=True)
+    >>> list(po.detail["effect"])
+    ['NIE', 'NDE', 'PNIE', 'TNDE', 'TE', 'Prop. Mediated']
+
+    References
+    ----------
+    imai2010general, vanderweele2014unification
     """
-    if inference not in ("bootstrap", "delta"):
-        raise ValueError(f"inference must be 'bootstrap' or 'delta'; got {inference!r}")
+    if inference not in ("bootstrap", "delta", "robust"):
+        raise ValueError(
+            "inference must be 'bootstrap', 'delta' or 'robust'; " f"got {inference!r}"
+        )
+    po_only = bool(
+        interaction
+        or mediator_model != "linear"
+        or outcome_model != "linear"
+        or treat_values is not None
+        or weights is not None
+    )
+    if design is not None:
+        from ..survey.linearization import check_design
+
+        design = check_design(design, data, function="sp.mediate", weights=weights)
+        if inference != "robust":
+            raise MethodIncompatibility(
+                "mediate(design=...) gives the design-based variance of the "
+                "potential-outcome estimator, which needs inference='robust'.",
+                recovery_hint="Pass inference='robust' with design=.",
+            )
+        po_only = True
+    if weights is not None:
+        check_columns(data, {"weights": weights}, function="sp.mediate")
+    if isinstance(data, pd.DataFrame) and treat in data.columns:
+        from ..core._validate import treatment_as_float
+
+        # every path reads the treatment as numbers; say so by name here
+        treatment_as_float(data[treat], function="sp.mediate")
+    if inference == "bootstrap" and po_only:
+        if pvalue_method not in ("bootstrap_sign", "wald"):
+            raise ValueError(
+                f"pvalue_method must be 'bootstrap_sign' or 'wald'; "
+                f"got {pvalue_method!r}"
+            )
+        _result = _mediate_po_bootstrap(
+            data,
+            y=y,
+            treat=treat,
+            mediator=mediator,
+            covariates=covariates,
+            interaction=bool(interaction),
+            mediator_model=mediator_model,
+            outcome_model=outcome_model,
+            treat_values=treat_values,
+            alpha=alpha,
+            n_boot=n_boot,
+            seed=seed,
+            pvalue_method=pvalue_method,
+            weights=weights,
+        )
+        _attach_mediate_provenance(
+            _result,
+            data,
+            {
+                "y": y,
+                "treat": treat,
+                "mediator": mediator,
+                "covariates": list(covariates) if covariates else None,
+                "alpha": alpha,
+                "inference": inference,
+                "n_boot": n_boot,
+                "seed": seed,
+                "pvalue_method": pvalue_method,
+                "interaction": bool(interaction),
+                "mediator_model": mediator_model,
+                "outcome_model": outcome_model,
+                "treat_values": treat_values,
+                "weights": weights,
+            },
+        )
+        return _result
+    if inference == "delta" and po_only:
+        raise MethodIncompatibility(
+            "mediate: interaction=True, a non-linear mediator_model or "
+            "outcome_model, treat_values= and weights= are estimated from "
+            "potential-outcome means, which have no closed-form delta "
+            "(Sobel) variance here.",
+            recovery_hint="Pass inference='robust' (sandwich) or "
+            "inference='bootstrap' (the default).",
+            diagnostics={
+                "inference": inference,
+                "interaction": interaction,
+                "mediator_model": mediator_model,
+                "outcome_model": outcome_model,
+                "treat_values": treat_values,
+                "weights": weights,
+            },
+        )
+    if inference == "robust":
+        _result = _mediate_robust(
+            data,
+            y=y,
+            treat=treat,
+            mediator=mediator,
+            covariates=covariates,
+            interaction=bool(interaction),
+            mediator_model=mediator_model,
+            outcome_model=outcome_model,
+            treat_values=treat_values,
+            alpha=alpha,
+            weights=weights,
+            design=design,
+        )
+        _attach_mediate_provenance(
+            _result,
+            data,
+            {
+                "y": y,
+                "treat": treat,
+                "mediator": mediator,
+                "covariates": list(covariates) if covariates else None,
+                "alpha": alpha,
+                "inference": inference,
+                "interaction": bool(interaction),
+                "mediator_model": mediator_model,
+                "outcome_model": outcome_model,
+                "treat_values": treat_values,
+                "weights": weights,
+            },
+        )
+        return _result
     if pvalue_method not in ("bootstrap_sign", "wald"):
         raise ValueError(
             f"pvalue_method must be 'bootstrap_sign' or 'wald'; "
@@ -223,9 +712,16 @@ class MediationAnalysis:
         self._validate()
 
     def _validate(self) -> None:
-        for col in [self.y, self.treat, self.mediator] + self.covariates:
-            if col not in self.data.columns:
-                raise ValueError(f"Column '{col}' not found in data")
+        check_columns(
+            self.data,
+            {
+                "y": self.y,
+                "treat": self.treat,
+                "mediator": self.mediator,
+                "covariates": list(self.covariates),
+            },
+            function="sp.mediate",
+        )
 
     def fit(self) -> CausalResult:
         """Estimate mediation effects with bootstrap inference."""
@@ -234,7 +730,9 @@ class MediationAnalysis:
         n = len(clean)
 
         Y = clean[self.y].values.astype(float)
-        T = clean[self.treat].values.astype(float)
+        from ..core._validate import treatment_as_float
+
+        T = treatment_as_float(clean[self.treat], function="sp.mediate")
         M = clean[self.mediator].values.astype(float)
 
         if self.covariates:
@@ -245,6 +743,7 @@ class MediationAnalysis:
         # Point estimates
         acme, ade, total = self._estimate_effects(Y, T, M, X)
         prop_mediated = acme / total if abs(total) > 1e-10 else np.nan
+        ci_prop: Tuple[float, float] = (float("nan"), float("nan"))
 
         lo = self.alpha / 2
         hi = 1 - self.alpha / 2
@@ -344,6 +843,18 @@ class MediationAnalysis:
             # single mediate()/mediate_interventional() study can report
             # consistent p-values regardless of which family member is used.
             pvalue_method_used = self.pvalue_method
+            # Proportion mediated: percentile interval of the ratio over
+            # the replications. Its distribution has heavy tails when the
+            # total effect is near zero, so no standard error is reported
+            # for it; the interval says what the data can.
+            with np.errstate(divide="ignore", invalid="ignore"):
+                ratios = boot_acme_arr / boot_total_arr
+            ratios = ratios[np.isfinite(ratios)]
+            if ratios.size >= 2 and np.isfinite(prop_mediated):
+                ci_prop = (
+                    float(np.percentile(ratios, lo * 100)),
+                    float(np.percentile(ratios, hi * 100)),
+                )
             pv_acme = self._pvalue(boot_acme_arr, acme, se_acme)
             pv_ade = self._pvalue(boot_ade_arr, ade, se_ade)
             pv_total = self._pvalue(boot_total_arr, total, se_total)
@@ -359,8 +870,8 @@ class MediationAnalysis:
                 ],
                 "estimate": [acme, ade, total, prop_mediated],
                 "se": [se_acme, se_ade, se_total, np.nan],
-                "ci_lower": [ci_acme[0], ci_ade[0], ci_total[0], np.nan],
-                "ci_upper": [ci_acme[1], ci_ade[1], ci_total[1], np.nan],
+                "ci_lower": [ci_acme[0], ci_ade[0], ci_total[0], ci_prop[0]],
+                "ci_upper": [ci_acme[1], ci_ade[1], ci_total[1], ci_prop[1]],
                 "pvalue": [pv_acme, pv_ade, pv_total, np.nan],
             }
         )
@@ -381,6 +892,7 @@ class MediationAnalysis:
             "ci_acme": ci_acme,
             "ci_ade": ci_ade,
             "ci_total": ci_total,
+            "ci_prop_mediated": ci_prop,
             "pvalue_method": pvalue_method_used,
         }
 
@@ -675,6 +1187,17 @@ def mediate_interventional(
         )
     covariates = list(covariates or [])
     tv_confounders = list(tv_confounders or [])
+    check_columns(
+        data,
+        {
+            "y": y,
+            "treat": treat,
+            "mediator": mediator,
+            "covariates": covariates,
+            "tv_confounders": tv_confounders,
+        },
+        function="sp.mediate_interventional",
+    )
     cols = [y, treat, mediator] + covariates + tv_confounders
     df = data[cols].dropna().reset_index(drop=True)
     n = len(df)

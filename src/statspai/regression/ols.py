@@ -3,19 +3,22 @@ OLS regression implementation with comprehensive features
 """
 
 import warnings
-from typing import Any, Callable, Dict, List, Optional, cast
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, cast
 
 import numpy as np
 import pandas as pd
 from scipy import stats
+from scipy.linalg import solve_triangular
 
 from .._aliases import accepts_aliases
+from ..core._call_record import records_call
 from ..core._vcov_spec import markout_clusters
 from ..core.base import BaseEstimator, BaseModel
 from ..core.results import EconometricResults
 from ..core.utils import _coerce_string_extension_dtypes, create_design_matrices
 from ..exceptions import (
     AssumptionWarning,
+    ColumnNotFound,
     DataInsufficient,
     MethodIncompatibility,
     NumericalInstability,
@@ -142,12 +145,10 @@ def _centered_intercept_bread(
         mean_bread @ x_mean
     ) / (const_value * const_value)
     cross = -mean_bread / const_value
-    for pos, j in enumerate(other):
-        XtX_inv[const_col, j] = cross[pos]
-        XtX_inv[j, const_col] = cross[pos]
-    for pos_i, i in enumerate(other):
-        for pos_j, j in enumerate(other):
-            XtX_inv[i, j] = slope_xtx_inv[pos_i, pos_j]
+    idx = np.asarray(other, dtype=np.intp)
+    XtX_inv[const_col, idx] = cross
+    XtX_inv[idx, const_col] = cross
+    XtX_inv[np.ix_(idx, idx)] = slope_xtx_inv
     return XtX_inv
 
 
@@ -190,16 +191,31 @@ def _detect_perfect_collinearity(X: np.ndarray, var_names: List[str]) -> None:
     names = list(var_names) if var_names is not None else [f"x{i}" for i in range(k)]
 
     # 1) Zero-variance non-intercept regressor: no identifying variation, and
-    #    collinear with the intercept when one is present.
+    #    collinear with the intercept when one is present. Without an
+    #    intercept (``y ~ 0 + ...``) one constant column is the intercept in
+    #    all but name and is identified; a second one, or a column of zeros,
+    #    is not.
+    has_intercept = "Intercept" in names
+    stand_in: Optional[int] = None
     for j in range(k):
         if names[j] == "Intercept":
             continue
         col = X[:, j]
         if np.ptp(col) <= 1e-12 * max(1.0, float(np.max(np.abs(col)))):
+            if not has_intercept and stand_in is None and float(col[0]) != 0.0:
+                stand_in = j
+                continue
+            other = (
+                "the intercept"
+                if has_intercept
+                else (
+                    f"'{names[stand_in]}'" if stand_in is not None else "a zero column"
+                )
+            )
             raise NumericalInstability(
                 f"Regressor '{names[j]}' is constant (no variation); its "
                 f"coefficient is not identified — perfectly collinear with "
-                f"the intercept.",
+                f"{other}.",
                 recovery_hint=(
                     f"Drop '{names[j]}', or remove the intercept if it is the "
                     f"only regressor."
@@ -213,28 +229,214 @@ def _detect_perfect_collinearity(X: np.ndarray, var_names: List[str]) -> None:
     #    Keep this path lean: ``np.corrcoef`` is convenient but expensive on
     #    the hot ``sp.regress`` path, so compute only the small k x k Gram
     #    matrix needed for this structural check.
+    #    A correlation of one means ``x_j = a + b x_i``, which is a linear
+    #    dependence only when the constant is in the model. Through the
+    #    origin (``t ~ 0 + x + I(1 - x)``, Goodman's ecological regression)
+    #    the two columns span a plane, so the test there is proportionality:
+    #    the uncentred cosine.
+    through_origin = not has_intercept and stand_in is None
     if k >= 2 and n >= 3:
-        centered = X - X.mean(axis=0)
+        centered = np.asfortranarray(X if through_origin else X - X.mean(axis=0))
         norms = np.sqrt(np.sum(centered * centered, axis=0))
-        for i in range(k):
-            if norms[i] == 0:
+        # The first collinear pair in (i, j) order, found from the Gram
+        # matrix one block of columns at a time: with thousands of dummy
+        # columns a dot product per pair takes minutes.
+        first: Optional[Tuple[int, int, float]] = None
+        block = 256
+        for lo in range(1, k, block):
+            hi = min(k, lo + block)
+            with np.errstate(invalid="ignore", divide="ignore"):
+                corr = (centered[:, :hi].T @ centered[:, lo:hi]) / (
+                    norms[:hi, None] * norms[None, lo:hi]
+                )
+            hit = np.isfinite(corr) & (np.abs(corr) >= 1.0 - 1e-8)
+            hit &= np.arange(hi)[:, None] < np.arange(lo, hi)[None, :]
+            if hit.any():
+                rows, cols = np.nonzero(hit)
+                pick = np.lexsort((cols, rows))[0]
+                cand = (int(rows[pick]), int(cols[pick]) + lo)
+                if first is None or cand < first[:2]:
+                    first = (*cand, float(corr[rows[pick], cols[pick]]))
+        if first is not None:
+            i, j, c = first
+            raise NumericalInstability(
+                f"Regressors '{names[i]}' and '{names[j]}' are "
+                f"perfectly collinear (|{'cosine' if through_origin else 'correlation'}"
+                f"| = {abs(c):.10f}); "
+                f"the design matrix is rank-deficient and their "
+                f"coefficients are not separately identified.",
+                recovery_hint=(f"Drop one of '{names[i]}' or '{names[j]}'."),
+                diagnostics={
+                    "collinear_pair": [names[i], names[j]],
+                    "abs_correlation": float(abs(c)),
+                },
+            )
+
+
+def _written_column_order(
+    formula: Optional[str], design_info: Any, k: int
+) -> List[int]:
+    """Design columns in the order the formula writes its terms.
+
+    patsy moves categorical terms ahead of numeric ones, so ``d1 + C(g)``
+    arrives as ``C(g), d1``. Stata scans ``d1 i.g`` as written; the
+    collinearity scan follows the written order so the same member is
+    omitted. Falls back to the design order when the terms cannot be
+    matched.
+    """
+    identity = list(range(k))
+    if not formula or design_info is None:
+        return identity
+    try:
+        import patsy
+
+        written = list(patsy.ModelDesc.from_formula(formula).rhs_termlist)
+        slices = design_info.term_slices
+        keyed = []
+        for pos, (term, sl) in enumerate(slices.items()):
+            rank = written.index(term) if term in written else len(written) + pos
+            keyed.extend((rank, j) for j in range(sl.start, sl.stop))
+    except Exception:  # patsy absent or an unparsable formula: design order
+        return identity
+    order = [j for _, j in sorted(keyed, key=lambda t: t[0])]
+    return order if sorted(order) == identity else identity
+
+
+def _collinear_omissions(X: np.ndarray, var_names: List[str]) -> List[Tuple[int, str]]:
+    """Columns Stata's ``regress`` would omit, scanned left to right.
+
+    Returns ``(column index, reason)`` pairs. A column is omitted when it adds
+    nothing to the columns kept before it, so the *later* member of a
+    collinear set goes, as with Stata's ``_rmcoll``. Three structural cases
+    are covered:
+
+    * a zero column, or a constant column after the intercept;
+    * a column proportional to a kept one (``|corr| = 1``; through the origin
+      when the design has no constant);
+    * an exact dependence among discrete columns -- intercept and integer-
+      valued regressors such as dummies (the dummy-variable trap,
+      ``C(g)`` plus a hand-made level dummy). Integer data carry exact
+      dependencies, so a pivot-free Cholesky sweep of their cross-product in
+      column order separates them from full-rank columns by many orders of
+      magnitude.
+
+    Continuous columns are not swept against each other: a relative
+    tolerance that caught a three-way continuous dependence would also drop a
+    column of NIST's full-rank Filippelli design (``s_min / s_max ~ 6e-16``).
+    Those dependencies are caught after the cross-product fit fails (see
+    :func:`_detect_low_order_linear_dependence`).
+    """
+    n, k = X.shape
+    names = list(var_names)
+    omitted: List[Tuple[int, str]] = []
+    if k == 0 or n == 0:
+        return omitted
+
+    has_const = False
+    for j in range(k):
+        col = X[:, j]
+        if np.ptp(col) == 0 and col[0] != 0:
+            has_const = True
+            break
+
+    kept: List[int] = []
+    const_kept: Optional[int] = None
+    # Discrete sweep state: kept discrete columns and the Cholesky factor of
+    # their cross-product (grown one column at a time inside ``L``).
+    disc_kept = np.zeros(k, dtype=np.intp)
+    n_disc = 0
+    L = np.zeros((0, 0))
+    centered = np.asfortranarray(X - X.mean(axis=0)) if has_const else None
+    raw = np.asfortranarray(X)
+    if centered is None:
+        centered = raw
+    norms = np.sqrt(np.sum(centered * centered, axis=0))
+    # Columns a later one is compared with for proportionality.
+    pair_kept = np.zeros(k, dtype=np.intp)
+    n_pair = 0
+    # Cross-products with the columns to the left, one block of columns at a
+    # time: a dummy-variable design with thousands of columns (``C(firm)``)
+    # is scanned with a few matrix products instead of millions of dot
+    # products.
+    block = 256
+    lo = hi = 0
+    cross_c = cross_x = np.zeros((0, 0))
+    # Left-looking Cholesky by blocks: ``V`` is the part of the block's
+    # columns explained by the discrete columns kept before the block,
+    # ``S`` what is left of the block's own cross-product, swept as columns
+    # are accepted; ``swept`` holds (row of L, sweep vector) of this block.
+    m0 = 0
+    V = S = np.zeros((0, 0))
+    swept: List[Tuple[int, np.ndarray]] = []
+
+    for j in range(k):
+        if j >= hi:
+            lo, hi = j, min(k, j + block)
+            cross_c = centered[:, :hi].T @ centered[:, lo:hi]
+            cross_x = cross_c if centered is raw else raw[:, :hi].T @ raw[:, lo:hi]
+            m0, swept = n_disc, []
+            S = np.array(cross_x[lo:hi, :])
+            if m0:
+                V = solve_triangular(
+                    np.ascontiguousarray(L[:m0, :m0]),
+                    cross_x[disc_kept[:m0], :],
+                    lower=True,
+                    check_finite=False,
+                )
+                S -= V.T @ V
+            else:
+                V = np.zeros((0, hi - lo))
+        col = X[:, j]
+        scale = max(1.0, float(np.max(np.abs(col))))
+        if not np.any(col):
+            omitted.append((j, "zero column"))
+            continue
+        is_const = np.ptp(col) <= 1e-12 * scale
+        if is_const:
+            if const_kept is not None:
+                omitted.append((j, f"constant, collinear with '{names[const_kept]}'"))
                 continue
-            for j in range(i + 1, k):
-                if norms[j] == 0:
-                    continue
-                c = float(centered[:, i] @ centered[:, j]) / (norms[i] * norms[j])
-                if np.isfinite(c) and abs(c) >= 1.0 - 1e-8:
-                    raise NumericalInstability(
-                        f"Regressors '{names[i]}' and '{names[j]}' are "
-                        f"perfectly collinear (|correlation| = {abs(c):.10f}); "
-                        f"the design matrix is rank-deficient and their "
-                        f"coefficients are not separately identified.",
-                        recovery_hint=(f"Drop one of '{names[i]}' or '{names[j]}'."),
-                        diagnostics={
-                            "collinear_pair": [names[i], names[j]],
-                            "abs_correlation": float(abs(c)),
-                        },
-                    )
+            const_kept = j
+        elif n_pair and norms[j] != 0:
+            idx = pair_kept[:n_pair]
+            with np.errstate(invalid="ignore", divide="ignore"):
+                c = cross_c[idx, j - lo] / (norms[idx] * norms[j])
+            hit = np.flatnonzero(np.isfinite(c) & (np.abs(c) >= 1.0 - 1e-8))
+            if hit.size:
+                omitted.append((j, f"collinear with '{names[int(idx[hit[0]])]}'"))
+                continue
+
+        is_discrete = bool(
+            np.all(np.isfinite(col))
+            and np.all(col == np.round(col))
+            and float(np.max(np.abs(col))) <= 1e6
+        )
+        if is_discrete:
+            m, t = n_disc, j - lo
+            gjj = float(cross_x[j, t])
+            d = float(S[t, t])
+            if d <= 1e-9 * gjj:
+                omitted.append((j, "collinear with earlier discrete regressors"))
+                continue
+            if m >= L.shape[0]:
+                grown = np.zeros((max(8, 2 * m), max(8, 2 * m)))
+                grown[:m, :m] = L[:m, :m]
+                L = grown
+            root = np.sqrt(d)
+            sweep = S[t, :] / root
+            L[m, :m0] = V[:, t]
+            for row, earlier in swept:
+                L[m, row] = earlier[t]
+            L[m, m] = root
+            S[t + 1 :, t + 1 :] -= np.outer(sweep[t + 1 :], sweep[t + 1 :])
+            swept.append((m, sweep))
+            disc_kept[m] = j
+            n_disc += 1
+        kept.append(j)
+        if not is_const and norms[j] != 0:
+            pair_kept[n_pair] = j
+            n_pair += 1
+    return omitted
 
 
 def _detect_low_order_linear_dependence(
@@ -259,7 +461,9 @@ def _detect_low_order_linear_dependence(
 
     names = list(var_names) if var_names is not None else [f"x{i}" for i in range(k)]
     eps = np.finfo(float).eps
-    for target in range(k):
+    # Scan from the last column: the later member of a dependent set is the
+    # one reported (and omitted by ``collinear='omit'``), as in Stata.
+    for target in reversed(range(k)):
         y_col = X[:, target]
         y_norm = float(np.linalg.norm(y_col))
         others = [idx for idx in range(k) if idx != target]
@@ -309,6 +513,36 @@ def _numba_kernels() -> tuple[
         cast(_ClusterMeatKernel, cluster_meat),
         cast(_HacMeatKernel, hac_meat),
     )
+
+
+def _panel_hac_meat(
+    X: np.ndarray,
+    residuals: np.ndarray,
+    ids: np.ndarray,
+    periods: np.ndarray,
+    lags: int,
+) -> np.ndarray:
+    """Newey-West meat for a panel: autocovariances within units only.
+
+    The lag-``j`` term pairs each row with the row of the same unit ``j``
+    periods earlier; a pair with a gap in between is skipped. This is what
+    Stata's ``newey ..., lag(#) force`` computes on ``xtset`` data and, on
+    a panel without gaps, ``plm::vcovNW``.
+    """
+    order = np.lexsort((periods, ids))
+    moments = (X * residuals[:, None])[order]
+    ids_s, per_s = ids[order], periods[order]
+    total = moments.T @ moments
+    for j in range(1, int(lags) + 1):
+        # rows are sorted by period within unit, so the row j periods back,
+        # when it exists, is at most j positions back
+        gamma = np.zeros_like(total)
+        for back in range(1, j + 1):
+            same = (ids_s[back:] == ids_s[:-back]) & (per_s[back:] - per_s[:-back] == j)
+            if same.any():
+                gamma += moments[back:][same].T @ moments[:-back][same]
+        total += (1 - j / (lags + 1)) * (gamma + gamma.T)
+    return cast(np.ndarray, total)
 
 
 class OLSEstimator(BaseEstimator):
@@ -365,6 +599,7 @@ class OLSEstimator(BaseEstimator):
             )
         # Stata ``regress, vce(robust)`` is HC1; ``True`` means the same.
         robust_key = "hc1" if robust is True else str(robust).lower()
+        ewc_df: Optional[int] = None
         if robust_key == "robust":
             robust_key = "hc1"
         elif robust_key in ("false", "none", "ols", "oim", "iid", "classical"):
@@ -524,10 +759,47 @@ class OLSEstimator(BaseEstimator):
             var_cov = sigma2 * XtX_inv
         elif robust_key in ["hc0", "hc1", "hc2", "hc3"]:
             var_cov = _fast_sandwich_hc(X, residuals, XtX_inv, robust_key)
+        elif robust_key == "hc4":
+            var_cov = self._robust_cov_matrix(X, residuals, XtX_inv, "hc4")
         elif robust_key == "hac":
             lags = kwargs.get("lags", None)
-            meat = _fast_hac_meat(X, residuals, lags)
+            if lags is not None and lags >= n:
+                raise DataInsufficient(
+                    f"HAC: {lags} autocovariances need more than {n} " "observations.",
+                    recovery_hint="Lower hac_lags.",
+                )
+            panel = kwargs.get("hac_panel", None)
+            if panel is not None:
+                if lags is None:
+                    n_t = len(np.unique(panel[1]))
+                    lags = int(np.floor(4 * (n_t / 100) ** (2 / 9)))
+                meat = _panel_hac_meat(X, residuals, panel[0], panel[1], lags)
+            else:
+                meat = _fast_hac_meat(X, residuals, lags)
             var_cov = XtX_inv @ meat @ XtX_inv
+            if kwargs.get("hac_small"):
+                # Stata `newey` / sandwich::NeweyWest(adjust = TRUE)
+                var_cov = var_cov * (n / (n - k))
+        elif robust_key == "ewc":
+            # Equal-weighted cosine estimator of the long-run variance
+            # (Lazarus, Lewis, Stock and Watson 2018, eq. 10): the average of
+            # the outer products of the first nu Type II cosine transforms
+            # of z_t = x_t * u_t.
+            nu = kwargs.get("ewc_df", None)
+            if nu is None:
+                nu = int(np.floor(0.4 * n ** (2.0 / 3.0)))  # their eq. (4)
+            if not 1 <= nu < n:
+                raise DataInsufficient(
+                    f"EWC: {nu} cosine terms with {n} observations.",
+                    recovery_hint="ewc_df must be between 1 and N - 1.",
+                )
+            ewc_df = int(nu)
+            moments = X * residuals[:, None]
+            t_mid = np.arange(1, n + 1) - 0.5
+            cosines = np.cos(np.pi * np.outer(t_mid, np.arange(1, ewc_df + 1)) / n)
+            lam = np.sqrt(2.0 / n) * (cosines.T @ moments)  # (nu, k)
+            omega = lam.T @ lam / ewc_df
+            var_cov = XtX_inv @ (n * omega) @ XtX_inv
         else:
             raise MethodIncompatibility(f"Unknown robust option: {robust}")
 
@@ -535,26 +807,33 @@ class OLSEstimator(BaseEstimator):
 
         # Model diagnostics. For WLS, report fitted/residuals on the ORIGINAL
         # scale and use weighted TSS/RSS so R²/RMSE match Stata's aweight output.
+        # Without a constant the total sum of squares is taken about zero:
+        # R-squared, its adjustment and the F statistic are the uncentred
+        # ones (Stata `regress, noconstant`, R `lm(y ~ x - 1)`). Measured
+        # about the mean, a line through the origin can have a negative
+        # R-squared.
+        has_const = _detect_constant_column(X_orig) is not None
         if sw is not None:
             fitted_values = X_orig @ params
             residuals = y_orig - fitted_values
             wn = sw**2
-            ybar_w = np.sum(wn * y_orig) / np.sum(wn)
+            ybar_w = np.sum(wn * y_orig) / np.sum(wn) if has_const else 0.0
             tss = np.sum(wn * (y_orig - ybar_w) ** 2)
             rss = np.sum(wn * residuals**2)
         else:
-            tss = np.sum((y - np.mean(y)) ** 2)
+            tss = np.sum((y - np.mean(y)) ** 2) if has_const else np.sum(y**2)
             rss = np.sum(residuals**2)
+        df_model = k - 1 if has_const else k
         if tss <= 0:
             r_squared = np.nan
             adj_r_squared = np.nan
         else:
             r_squared = 1 - rss / tss
-            adj_r_squared = 1 - (rss / (n - k)) / (tss / (n - 1))
+            adj_r_squared = 1 - (rss / (n - k)) / (tss / (n - 1 if has_const else n))
 
-        # F-statistic (assuming constant in first column)
-        if k > 1 and np.isfinite(r_squared):
-            r_squared_restricted = 0  # R² from constant-only model
+        # F statistic: every slope is zero (with a constant), every
+        # coefficient is zero (without one).
+        if df_model > 0 and n > k and np.isfinite(r_squared):
             denom = (1 - r_squared) / (n - k)
             if denom <= 0:
                 # Exact fit (R² == 1): F diverges. NIST StRD certifies this as
@@ -563,10 +842,45 @@ class OLSEstimator(BaseEstimator):
                 f_stat = np.inf
                 f_pvalue = 0.0
             else:
-                f_stat = ((r_squared - r_squared_restricted) / (k - 1)) / denom
-                f_pvalue = stats.f.sf(f_stat, k - 1, n - k)
+                f_stat = (r_squared / df_model) / denom
+                f_pvalue = stats.f.sf(f_stat, df_model, n - k)
         else:
             f_stat = f_pvalue = np.nan
+
+        # With a robust, clustered or HAC covariance the classical F (a ratio
+        # of sums of squares) is not a test of anything: the model F is the
+        # Wald statistic b'V^{-1}b / q on that covariance, as Stata and
+        # R's lmtest::waldtest(vcov=) report it. Its denominator degrees of
+        # freedom are N - K, or G - 1 with G clusters.
+        if (
+            (robust_key != "nonrobust" or cluster is not None)
+            and df_model > 0
+            and n > k
+        ):
+            const_col = _detect_constant_column(X_orig)
+            tested = [j for j in range(k) if j != const_col]
+            df2 = n - k
+            if cluster is not None:
+                df2 = int(len(pd.unique(np.asarray(cluster).ravel()))) - 1
+            f_stat = f_pvalue = np.nan
+            if df2 >= len(tested):
+                b_t = params[tested]
+                v_t = var_cov[np.ix_(tested, tested)]
+                try:
+                    wald = float(b_t @ np.linalg.solve(v_t, b_t))
+                except np.linalg.LinAlgError:
+                    wald = np.nan
+                q = len(tested)
+                if np.isfinite(wald) and wald >= 0 and robust_key == "ewc":
+                    # B cosine terms: the Wald statistic is Hotelling's
+                    # T^2(q, B), and (B - q + 1) / (B q) W is F(q, B - q + 1)
+                    df_ewc = ewc_df - q + 1
+                    if df_ewc >= 1:
+                        f_stat = wald * df_ewc / (ewc_df * q)
+                        f_pvalue = float(stats.f.sf(f_stat, q, df_ewc))
+                elif np.isfinite(wald) and wald >= 0:
+                    f_stat = wald / q
+                    f_pvalue = float(stats.f.sf(f_stat, q, df2))
 
         return {
             "params": params,
@@ -579,10 +893,11 @@ class OLSEstimator(BaseEstimator):
             "f_statistic": f_stat,
             "f_pvalue": f_pvalue,
             "nobs": n,
-            "df_model": k - 1,
+            "df_model": df_model,
             "df_resid": n - k,
             "rss": rss,
             "tss": tss,
+            "ewc_df": ewc_df,
         }
 
     def _robust_cov_matrix(
@@ -609,6 +924,15 @@ class OLSEstimator(BaseEstimator):
             # Davidson and MacKinnon (1993)
             h = np.einsum("ij,jk,ik->i", X, XtX_inv, X)
             weights = residuals**2 / (1 - h) ** 2
+        elif robust_type == "hc4":
+            # Cribari-Neto (2004) [@cribari2004asymptotic]: the exponent grows with the leverage of
+            # the observation relative to the average leverage k / n, capped
+            # at 4, so high-leverage points are discounted harder than HC3.
+            h = np.einsum("ij,jk,ik->i", X, XtX_inv, X)
+            delta = np.minimum(4.0, n * h / k)
+            weights = residuals**2 / (1 - h) ** delta
+        else:
+            raise ValueError(f"Unknown robust type: {robust_type}")
 
         # Sandwich estimator
         meat = (X * (weights)[:, None]).T @ X
@@ -686,6 +1010,7 @@ class OLSRegression(BaseModel):
         y: Optional[np.ndarray] = None,
         X: Optional[np.ndarray] = None,
         var_names: Optional[List[str]] = None,
+        collinear: str = "omit",
     ) -> None:
         """
         Initialize OLS regression
@@ -702,8 +1027,17 @@ class OLSRegression(BaseModel):
             Independent variables (alternative to formula)
         var_names : List[str], optional
             Variable names when using y, X directly
+        collinear : {'omit', 'raise'}, default 'omit'
+            Rank-deficient design: omit the later member of each collinear
+            set with a warning (Stata ``regress``), or raise
+            :class:`NumericalInstability`.
         """
         super().__init__()
+        if collinear not in ("omit", "raise"):
+            raise MethodIncompatibility(
+                f"collinear must be 'omit' or 'raise', got {collinear!r}"
+            )
+        self.collinear = collinear
 
         self.formula = formula
         self.data = data
@@ -726,8 +1060,14 @@ class OLSRegression(BaseModel):
         or non-positive weights rather than silently producing wrong estimates.
         """
         if isinstance(weights, str):
-            if self.data is None or weights not in self.data.columns:
+            if self.data is None:
                 raise ValueError(f"weights='{weights}' is not a column in the data.")
+            if weights not in self.data.columns:
+                raise ColumnNotFound.from_missing(
+                    {"weights": weights},
+                    list(self.data.columns),
+                    message=f"weights='{weights}' is not a column in the data.",
+                )
             col = self.data[weights]
             if design_index is not None:
                 col = col.reindex(design_index)
@@ -743,6 +1083,62 @@ class OLSRegression(BaseModel):
             self.y.shape[0],
             context="OLS analytic weights",
         )
+
+    def _resolve_hac_panel(
+        self, panel: Any, design_index: Optional[pd.Index]
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """Panel codes and integer periods of the rows that are estimated."""
+        names = [panel] if isinstance(panel, str) else list(panel)
+        if len(names) != 2 or not all(isinstance(c, str) for c in names):
+            raise MethodIncompatibility(
+                "regress: hac_panel takes the panel and the time column, "
+                f"got {panel!r}.",
+                recovery_hint="hac_panel=('firm', 'year').",
+            )
+        columns = list(cast(pd.DataFrame, self.data).columns)
+        missing = [c for c in names if c not in columns]
+        if missing:
+            raise ColumnNotFound.from_missing(
+                {f"hac_panel[{names.index(c)}]": c for c in missing},
+                columns,
+                message=f"regress: hac_panel column(s) {missing} are not in the data.",
+            )
+        if names[0] == names[1]:
+            # Selecting the same column twice gives a frame with a repeated
+            # label, and what pandas then does with it depends on its version.
+            raise MethodIncompatibility(
+                f"regress: {names[0]!r} is given as both the panel and the "
+                "time column, so they do not identify the rows; a panel "
+                "Newey-West estimator needs one row per unit and period.",
+                recovery_hint="hac_panel=('firm', 'year').",
+            )
+        frame = self.data[names]
+        if design_index is not None:
+            frame = frame.reindex(design_index)
+        if frame.isna().any().any():
+            raise MethodIncompatibility(
+                "regress: the hac_panel columns have missing values on rows "
+                "that enter the regression.",
+                recovery_hint="Drop those rows or fill the identifiers.",
+            )
+        ids = pd.factorize(frame[names[0]])[0]
+        time = frame[names[1]]
+        if pd.api.types.is_numeric_dtype(time) and np.all(
+            np.asarray(time, dtype=float) == np.round(np.asarray(time, dtype=float))
+        ):
+            periods = np.asarray(time, dtype=np.int64)
+        else:
+            # dates and labels: consecutive distinct values are one period apart
+            periods = pd.factorize(time, sort=True)[0].astype(np.int64)
+        if pd.DataFrame({"i": ids, "t": periods}).duplicated().any():
+            raise MethodIncompatibility(
+                f"regress: {names[0]!r} and {names[1]!r} do not identify the "
+                "rows; a panel Newey-West estimator needs one row per unit "
+                "and period.",
+                recovery_hint="Cluster on the unit instead, or aggregate.",
+            )
+        self._hac_n_periods = int(len(np.unique(periods)))
+        return ids, periods
 
     def fit(
         self,
@@ -767,6 +1163,7 @@ class OLSRegression(BaseModel):
         EconometricResults
             Fitted model results
         """
+        _weights_as = kwargs.pop("weights_as", None)
         # Prepare data
         design_index: Optional[pd.Index] = None
         if self.formula is not None and self.data is not None:
@@ -793,8 +1190,31 @@ class OLSRegression(BaseModel):
                 f"entries but X has {self.X.shape[1]} columns"
             )
 
-        # Fail loudly on an exactly rank-deficient design rather than returning
-        # unidentified garbage coefficients.
+        # A rank-deficient design: omit the later member of each collinear set
+        # as Stata's ``regress`` does (``collinear='omit'``, the default), or
+        # fail loudly (``collinear='raise'``). Never return unidentified
+        # coefficients.
+        collinear = getattr(self, "collinear", "omit")
+        omitted: List[Dict[str, str]] = []
+        if collinear == "omit":
+            order = _written_column_order(
+                self.formula, self._design_info, self.X.shape[1]
+            )
+            drops = [
+                (order[j], r)
+                for j, r in _collinear_omissions(
+                    self.X[:, order], [self.var_names[i] for i in order]
+                )
+            ]
+            if drops:
+                omitted = [
+                    {"variable": self.var_names[j], "reason": r} for j, r in drops
+                ]
+                keep = [
+                    j for j in range(self.X.shape[1]) if j not in {d[0] for d in drops}
+                ]
+                self.X = self.X[:, keep]
+                self.var_names = [self.var_names[j] for j in keep]
         _detect_perfect_collinearity(self.X, self.var_names)
 
         # Resolve analytic regression weights (Stata ``aweight`` semantics).
@@ -806,24 +1226,102 @@ class OLSRegression(BaseModel):
 
         # Handle clustering
         cluster_var: Optional[pd.Series] = None
+        if isinstance(cluster, (list, tuple)):
+            # sp.regress handles cluster=[a, b] (two-way) before it gets
+            # here; anything longer used to end in "unhashable type: 'list'".
+            if len(cluster) == 1:
+                cluster = cluster[0]
+            else:
+                raise MethodIncompatibility(
+                    f"regress: cluster= takes one column, or two through "
+                    f"sp.regress(cluster=[a, b]) for two-way clustering; got "
+                    f"{len(cluster)} ({list(cluster)!r}).",
+                    recovery_hint=(
+                        "Cluster on one or two dimensions, or on their "
+                        "interaction built as a single column."
+                    ),
+                    diagnostics={"cluster": list(cluster)},
+                )
+        if self.data is None and (
+            cluster is not None or kwargs.get("hac_panel", None) is not None
+        ):
+            # The array interface has no frame to look a column name up in:
+            # cluster= was dropped (classical standard errors came back) and
+            # hac_panel= died on ``None.columns``.
+            raise MethodIncompatibility(
+                "OLSRegression(y=, X=).fit: cluster= and hac_panel= name "
+                "columns of a DataFrame, and this model was built from arrays.",
+                recovery_hint=(
+                    "Build the model from a formula and data "
+                    "(sp.regress('y ~ x', data, cluster='g'))."
+                ),
+                diagnostics={
+                    "cluster": repr(cluster),
+                    "hac_panel": repr(kwargs.get("hac_panel", None)),
+                },
+            )
         if cluster and self.data is not None:
             if cluster not in self.data.columns:
-                raise MethodIncompatibility(
-                    f"cluster='{cluster}' is not a column in the data."
+                raise ColumnNotFound.from_missing(
+                    {"cluster": cluster},
+                    list(self.data.columns),
+                    message=f"cluster='{cluster}' is not a column in the data.",
                 )
             cluster_var = self.data[cluster]
             if design_index is not None:
                 cluster_var = cluster_var.reindex(design_index)
 
+        if kwargs.get("hac_panel", None) is not None:
+            kwargs["hac_panel"] = self._resolve_hac_panel(
+                kwargs["hac_panel"], design_index
+            )
+
         # Estimate model
-        results = self.estimator.estimate(
-            self.y,
-            self.X,
-            robust=robust,
-            cluster=cluster_var,
-            var_names=self.var_names,
-            **kwargs,
-        )
+        while True:
+            try:
+                results = self.estimator.estimate(
+                    self.y,
+                    self.X,
+                    robust=robust,
+                    cluster=cluster_var,
+                    var_names=self.var_names,
+                    **kwargs,
+                )
+                break
+            except NumericalInstability as exc:
+                # A continuous exact dependence (``x3 = x1 + x2``) only shows
+                # once the cross-product fit fails; omit its later member.
+                dep = (getattr(exc, "diagnostics", None) or {}).get("linear_dependence")
+                if (
+                    collinear != "omit"
+                    or not dep
+                    or dep["target"] not in self.var_names
+                ):
+                    raise
+                j = self.var_names.index(dep["target"])
+                omitted.append(
+                    {
+                        "variable": dep["target"],
+                        "reason": "linear combination of '"
+                        + "', '".join(dep["basis"])
+                        + "'",
+                    }
+                )
+                self.X = np.delete(self.X, j, axis=1)
+                self.var_names = [v for i, v in enumerate(self.var_names) if i != j]
+
+        if omitted:
+            warnings.warn(
+                "regress: "
+                + "; ".join(
+                    f"note: {o['variable']} omitted because of collinearity "
+                    f"({o['reason']})"
+                    for o in omitted
+                )
+                + ". Pass collinear='raise' to fail instead.",
+                UserWarning,
+                stacklevel=3,
+            )
 
         # Create results object
         params = pd.Series(results["params"], index=self.var_names)
@@ -834,9 +1332,55 @@ class OLSRegression(BaseModel):
         # mirroring sp.panel — cluster-robust SEs are unreliable with few
         # clusters (Cameron-Gelbach-Miller 2008).
         if cluster_var is not None:
-            from ..core._agent_summary import _FEW_CLUSTERS_MIN
+            from ..core._agent_summary import (
+                _FEW_CLUSTERS_MIN,
+                FEW_CLUSTERS_HINT,
+                few_treated_cluster_columns,
+                warn_if_clusters_unequal,
+            )
 
             n_clusters_obs = int(pd.Series(cluster_var).nunique())
+            n_clusters_eff = warn_if_clusters_unequal(cluster_var, cluster)
+            few_treated = few_treated_cluster_columns(
+                self.X, self.var_names, cluster_var
+            )
+            # More than a few such columns is a hand-made set of cluster
+            # dummies, not a treatment: record them, do not warn.
+            for rec in few_treated if len(few_treated) <= 3 else ():
+                side = min(rec["clusters_at_one"], rec["clusters_at_zero"])
+                warnings.warn(
+                    AssumptionWarning(
+                        f"'{rec['variable']}' is a cluster-level 0/1 regressor "
+                        f"with {rec['clusters_at_one']} cluster(s) at 1 and "
+                        f"{rec['clusters_at_zero']} at 0. With {side} on one "
+                        "side its cluster-robust standard error is too small "
+                        "whatever the total number of clusters, and the wild "
+                        "cluster bootstrap can stop rejecting altogether.",
+                        recovery_hint=(
+                            "For a difference-in-differences design use "
+                            "sp.did_few_treated, which inverts a placebo "
+                            "distribution built from the control clusters; "
+                            "otherwise report the result as fragile. See "
+                            "tests/reliability/few_clusters_results.json."
+                        ),
+                        diagnostics=dict(rec, n_clusters=n_clusters_obs),
+                        alternative_functions=["sp.did_few_treated"],
+                    ),
+                    stacklevel=2,
+                )
+            # The same question for a 0/1 regressor that varies within its
+            # treated clusters (a difference-in-differences dummy with the
+            # unit and period effects written out as regressors).
+            from ..core._agent_summary import warn_if_few_ever_treated
+
+            few_treated = few_treated + warn_if_few_ever_treated(
+                self.X,
+                self.var_names,
+                cluster_var,
+                cluster,
+                stacklevel=2,
+                skip=[rec["variable"] for rec in few_treated],
+            )
             if n_clusters_obs < _FEW_CLUSTERS_MIN:
                 warnings.warn(
                     AssumptionWarning(
@@ -844,11 +1388,7 @@ class OLSRegression(BaseModel):
                         f"for cluster='{cluster}' — cluster-robust SEs are "
                         "downward-biased and t-tests over-reject with few "
                         "clusters.",
-                        recovery_hint=(
-                            "Report sp.wild_cluster_bootstrap (or "
-                            "sp.wild_cluster_ci_inv for CIs), correct with few "
-                            "clusters."
-                        ),
+                        recovery_hint=FEW_CLUSTERS_HINT,
                         diagnostics={
                             "n_clusters": n_clusters_obs,
                             "threshold": _FEW_CLUSTERS_MIN,
@@ -867,8 +1407,29 @@ class OLSRegression(BaseModel):
             "robust": robust,
             "cluster": cluster,
         }
+        if kwargs.get("weights", None) is not None:
+            model_info["weighted"] = True
+            from ..core._agent_summary import warn_if_weights_extreme
+
+            _kind = str(robust).lower() if isinstance(robust, str) else "other"
+            if cluster_var is not None:
+                _kind = "cluster"
+            elif _kind == "nonrobust":
+                _kind = "classical"
+            elif _kind == "robust":
+                _kind = "hc1"
+            model_info["n_effective_weights"] = warn_if_weights_extreme(
+                kwargs["weights"], _kind, declared=_weights_as is not None
+            )
+            if _weights_as is not None:
+                model_info["weights_as"] = _weights_as
+        if omitted:
+            model_info["omitted"] = omitted
         if cluster_var is not None:
             model_info["n_clusters"] = n_clusters_obs
+            model_info["n_clusters_effective"] = n_clusters_eff
+            if few_treated:
+                model_info["few_treated_clusters"] = few_treated
 
         data_info = {
             "nobs": results["nobs"],
@@ -881,13 +1442,35 @@ class OLSRegression(BaseModel):
             "y": self.y,
             "var_cov": results.get("var_cov"),
             "var_names": self.var_names,
+            # sums of squares on the scale the R-squared uses (weighted, with
+            # analytic weights normalised to sum to N)
+            "rss": float(results["rss"]),
+            "tss": float(results["tss"]),
         }
+        # The rows of ``data`` the fit used, and the analytic weights on
+        # them: a variance computed afterwards on the stored design has to
+        # align its cluster keys to these rows and weight the same way.
+        if design_index is not None:
+            data_info["sample_index"] = design_index
+        if self._design_info is not None and self.data is not None:
+            from ..postestimation._design import fitted_factor_levels
+
+            # for predict(): which values of each factor the fit saw
+            seen = fitted_factor_levels(self._design_info, self.data.columns)
+            if seen:
+                data_info["factor_levels"] = seen
+        if kwargs.get("weights", None) is not None:
+            data_info["analytic_weights"] = np.asarray(kwargs["weights"], dtype=float)
         if cluster_var is not None:
             # Stata ``regress, vce(cluster)``: t / F with G - 1 degrees of
             # freedom. p-values and intervals used t(N - K), which on 40
             # clusters and 1,200 observations understated a p-value by 17
             # orders of magnitude.
             data_info["df_inference"] = int(n_clusters_obs) - 1
+        if results.get("ewc_df"):
+            # the EWC t ratio is t(nu) and the rescaled Wald is F(m, nu-m+1)
+            data_info["df_inference"] = int(results["ewc_df"])
+            data_info["hotelling_df"] = int(results["ewc_df"])
 
         rss_per_obs = results["rss"] / results["nobs"]
         if rss_per_obs <= 0:
@@ -898,10 +1481,12 @@ class OLSRegression(BaseModel):
             log_likelihood = (
                 -0.5 * results["nobs"] * (np.log(2 * np.pi * rss_per_obs) + 1)
             )
-            aic = results["nobs"] * np.log(rss_per_obs) + 2 * (results["df_model"] + 1)
-            bic = results["nobs"] * np.log(rss_per_obs) + np.log(results["nobs"]) * (
-                results["df_model"] + 1
-            )
+            # -2 log L + 2k and -2 log L + k log N with k the number of
+            # coefficients: Stata's `estat ic`. (R's AIC() counts the error
+            # variance as one more parameter.)
+            n_coef = len(params)
+            aic = -2.0 * log_likelihood + 2 * n_coef
+            bic = -2.0 * log_likelihood + np.log(results["nobs"]) * n_coef
 
         diagnostics = {
             "R-squared": results["r_squared"],
@@ -1035,7 +1620,14 @@ class OLSRegression(BaseModel):
             var_names = list(self.var_names)
             # pandas >= 3.0 string columns are StringDtype, which patsy cannot
             # sniff; coerce to object so prediction rebuilds the same design.
-            data = _coerce_string_extension_dtypes(data)
+            data = _coerce_string_extension_dtypes(
+                data,
+                (
+                    self._design_info
+                    if self._design_info is not None
+                    else self.formula.split("~", 1)[1]
+                ),
+            )
             try:
                 if self._design_info is not None:
                     X_df = build_design_matrices(
@@ -1044,9 +1636,26 @@ class OLSRegression(BaseModel):
                         return_type="dataframe",
                     )[0]
                 else:
-                    rhs = self.formula.split("~", 1)[1].strip()
-                    X_df = dmatrix(rhs, data, return_type="dataframe")
+                    from ..core.utils import formula_eval_env, r_formula_idioms
+
+                    rhs = r_formula_idioms(self.formula.split("~", 1)[1].strip())
+
+                    X_df = dmatrix(
+                        rhs,
+                        data,
+                        eval_env=formula_eval_env(),
+                        return_type="dataframe",
+                    )
             except (PatsyError, KeyError, ValueError) as exc:
+                if isinstance(exc, PatsyError):
+                    from ..core.utils import raise_if_formula_names_missing
+
+                    raise_if_formula_names_missing(
+                        self.formula.split("~", 1)[1],
+                        data,
+                        exc,
+                        context="predict: the prediction design matrix",
+                    )
                 raise MethodIncompatibility(
                     "Could not build prediction design matrix from new data.",
                     recovery_hint=(
@@ -1135,6 +1744,50 @@ class OLSRegression(BaseModel):
         return out
 
 
+def _sample_codes(base: Any, data: pd.DataFrame, column: str) -> np.ndarray:
+    """Integer codes of ``data[column]`` on the rows ``base`` was fitted on.
+
+    The fit drops rows with a missing value in the formula; a cluster key
+    taken from ``data`` positionally would then belong to other rows.
+    """
+    if column not in data.columns:
+        raise ColumnNotFound.from_missing(
+            {"cluster": column},
+            list(data.columns),
+            message=f"cluster='{column}' is not a column in the data.",
+        )
+    keys = data[column]
+    idx = (getattr(base, "data_info", None) or {}).get("sample_index")
+    if idx is not None and len(idx) != len(data):
+        keys = keys.loc[idx]
+    if keys.isna().any():
+        raise MethodIncompatibility(
+            f"cluster='{column}' has missing values on the estimation sample.",
+            recovery_hint=f"Drop the rows where {column!r} is missing first.",
+        )
+    codes = np.asarray(pd.Categorical(keys).codes)
+    if len(codes) != len(base.data_info["y"]):
+        raise MethodIncompatibility(
+            f"cluster='{column}' cannot be aligned to the estimation sample "
+            f"({len(codes)} keys for {len(base.data_info['y'])} fitted rows).",
+            recovery_hint="Give the data a unique index, or drop missing rows "
+            "before calling sp.regress.",
+        )
+    return codes
+
+
+def _refuse_weights(weights: Any, what: str) -> None:
+    """``weights=`` with a variance that would ignore them is an error."""
+    if weights is not None:
+        raise MethodIncompatibility(
+            f"regress: weights= is not implemented with {what}.",
+            recovery_hint="Use vce='hc1', cluster=, vce='cr2' or two-way "
+            "clustering with weights, or drop weights=.",
+            diagnostics={"vce": what},
+        )
+
+
+@records_call("regress")
 @accepts_aliases(vce="robust")
 @markout_clusters
 def regress(
@@ -1149,6 +1802,14 @@ def regress(
     conley_lat: Optional[str] = None,
     conley_lon: Optional[str] = None,
     conley_cutoff: Optional[float] = None,
+    collinear: str = "omit",
+    hac_lags: Optional[int] = None,
+    hac_small: bool = False,
+    hac_panel: Optional[Sequence[str]] = None,
+    ewc_df: Optional[int] = None,
+    dfadjust: bool = False,
+    weights_as: Optional[str] = None,
+    design: Optional[Any] = None,
     **kwargs: Any,
 ) -> EconometricResults:
     """
@@ -1161,17 +1822,39 @@ def regress(
     data : pd.DataFrame
         Data containing variables
     robust : str, default 'nonrobust'
-        Type of standard errors ('nonrobust', 'hc0'–'hc3', 'hac';
-        case-insensitive)
-    cluster : str, optional
-        Variable name for clustering
+        Type of standard errors ('nonrobust', 'hc0'–'hc4', 'hac', 'ewc';
+        case-insensitive). ``'hac'`` is Newey-West with normal critical
+        values. ``'ewc'`` is the equal-weighted cosine estimator of
+        Lazarus, Lewis, Stock and Watson (2018), with t and F critical
+        values whose degrees of freedom are the number of cosine terms: in
+        time-series regressions it rejects a true null much less often than
+        Newey-West with a short lag length.
+    cluster : str or list of two str, optional
+        Variable name for clustering. A list of two names gives two-way
+        clustering by inclusion-exclusion, with the whole meat scaled by
+        ``G_min/(G_min - 1) * (N - 1)/(N - K)``. Stata 18's
+        ``regress, vce(cluster a b)`` and R ``sandwich::vcovCL`` scale each
+        of the three components by its own ``G/(G - 1)`` instead;
+        ``sp.twoway_cluster(result, data, a, b)`` returns that version.
     weights : str or array-like, optional
         Analytic regression weights (Stata ``aweight`` semantics). Pass a
         column name or an array of length ``nobs``. Fits WLS — point
-        estimates, classical / robust / clustered SEs and R² match
-        ``regress y x [aw=w]``. Weights must be strictly positive and finite;
+        estimates, classical / HC1-HC3 / clustered / CR2 SEs and R² match
+        ``regress y x [aw=w]``. Also honoured by ``vce='cr3'`` and two-way
+        clustering; refused with ``vce='wild'`` and ``vce='conley'``, which
+        do not implement them. Weights must be strictly positive and finite;
         invalid weights raise ``ValueError`` rather than being silently
         ignored.
+    weights_as : {'analytic', 'sampling'}, optional
+        What the weights are. ``'analytic'`` (Stata ``[aw=]``) is what
+        ``weights=`` alone already means: precisions, with the classical
+        weighted variance. ``'sampling'`` (Stata ``[pw=]``) is for sampling
+        and inverse-probability weights: the same coefficients with the
+        HC1 variance, unless ``robust=`` / ``vce=`` / ``cluster=`` asks for
+        another. Saying which also silences the warning about dispersed
+        weights under the classical variance. ``'frequency'`` is refused:
+        Stata's ``[fw=]`` changes ``N`` and the degrees of freedom, which
+        this function does not do.
     vcov : str or dict, optional
         pyfixest/``fixest``-style variance specification, accepted as a
         canonical alias so the same spelling works across ``sp.regress``
@@ -1179,6 +1862,66 @@ def regress(
         or a cluster dict such as ``{"CRV1": "firm"}`` (``CRV2`` /
         ``CRV3`` select the matching small-sample correction). Mutually
         exclusive with ``robust`` / ``cluster`` / ``vce``.
+    hac_lags : int, optional
+        With ``robust='hac'``: the number of autocovariances in the
+        Newey-West (Bartlett kernel) estimator, Stata's ``newey, lag(#)``
+        and R's ``sandwich::NeweyWest(lag = #)``. Default: the Newey-West
+        (1994) rule ``floor(4 * (T / 100) ** (2 / 9))``. The rows must be in
+        time order. Stock and Watson's truncation parameter
+        ``m = 0.75 * T ** (1 / 3)`` corresponds to ``hac_lags = m - 1``.
+    hac_small : bool, default False
+        With ``robust='hac'``: multiply the covariance by ``N / (N - K)``,
+        as Stata's ``newey`` and ``sandwich::NeweyWest(adjust = TRUE)`` do.
+        The default (no factor) is ``NeweyWest(adjust = FALSE)`` and
+        statsmodels' ``cov_type='HAC'``.
+    hac_panel : (str, str), optional
+        With ``robust='hac'`` on panel data: the unit and the time column.
+        Autocovariances are then taken within units only, at exact time
+        lags (a gap in a unit's series breaks the pairing), and the rows
+        need not be sorted. This is Stata's ``newey y x, lag(#) force``
+        after ``xtset`` and, without ``hac_small``, ``plm::vcovNW`` on a
+        panel without gaps. The default lag rule uses the number of
+        periods for ``T``. Without ``hac_panel`` the rows are read as one
+        time series, which on stacked panel data pairs the last period of
+        one unit with the first of the next.
+    dfadjust : bool, default False
+        With ``robust='hc2'``, or ``vce='cr2'`` and ``cluster=``: refer each
+        coefficient to a t distribution with its own Bell and McCaffrey
+        (2002) degrees of freedom, as Stata 18 ``regress, vce(hc2,
+        dfadjust)`` and ``vce(hc2 clustvar, dfadjust)`` do. The standard
+        errors are unchanged; p-values and intervals widen when few
+        observations (or clusters) carry the regressor's variation, which
+        is when the usual ``n - k`` or ``G - 1`` is too optimistic. The
+        degrees of freedom are in ``diagnostics['satterthwaite_dof']``.
+        Not available with weights.
+    ewc_df : int, optional
+        With ``robust='ewc'``: the number of cosine terms ``nu``, which is
+        also the degrees of freedom of the t distribution used for p-values
+        and intervals. Default ``floor(0.4 * T ** (2 / 3))``. The rows must
+        be in time order. Joint tests through :func:`statspai.test` use the
+        rescaled statistic ``(nu - m + 1) / (nu * m) * W``, which is
+        ``F(m, nu - m + 1)``.
+    conley_lat, conley_lon : str, optional
+        With ``vce='conley'``: the latitude and longitude columns, in
+        degrees. Required for that ``vce`` and ignored otherwise.
+    conley_cutoff : float, optional
+        With ``vce='conley'``: the distance cutoff in km for the Conley
+        spatial HAC standard errors (uniform kernel, Stata ``acreg``'s
+        planar 111 km-per-degree distance). Required for that ``vce``.
+    design : SurveyDesign, optional
+        A complex survey design from :func:`sp.svydesign` declared on
+        ``data`` (same rows). The coefficients are weighted least squares
+        with the design weights and the covariance is the survey
+        linearisation sandwich over strata, PSUs and the finite population
+        correction -- R ``svyglm`` and Stata ``svy: regress``. t statistics,
+        p-values and intervals use the design degrees of freedom
+        (#PSU - #strata, Stata's convention; R ``summary.svyglm`` uses
+        that minus #coefficients plus one). Cannot be combined with
+        ``weights=``, ``cluster=`` or another variance option.
+        A replicate-weight design (:func:`sp.svrepdesign`) is accepted
+        too: the estimator is refitted with every replicate's weights
+        and the replicate variance replaces the linearisation (R
+        ``svrepdesign`` / Stata ``svy brr`` / ``svy jackknife``).
     **kwargs
         Additional options. Unrecognised keywords raise ``TypeError``
         rather than being ignored — a misspelled option must not
@@ -1187,7 +1930,14 @@ def regress(
     Returns
     -------
     EconometricResults
-        Fitted model results
+        Fitted model results. With ``robust='hac'``,
+        ``model_info['hac_lags']`` is the lag length used; with
+        ``robust='ewc'``, ``model_info['ewc_df']`` the number of cosines.
+
+    References
+    ----------
+    [@newey1987simple],
+    [@lazarus2018har]
 
     Examples
     --------
@@ -1202,6 +1952,35 @@ def regress(
     >>> "education" in results.params.index
     True
     """
+    if design is not None:
+        _args = dict(locals())
+        from ..survey._regression_design import (
+            refuse_design_options,
+            regress_with_design,
+        )
+
+        refuse_design_options(
+            "regress",
+            robust=robust,
+            cluster=cluster,
+            weights=weights,
+            vce=vce,
+            vcov=vcov,
+            weights_as=weights_as,
+            hac_lags=hac_lags,
+            hac_small=hac_small,
+            hac_panel=hac_panel,
+            ewc_df=ewc_df,
+            dfadjust=dfadjust,
+            conley_cutoff=conley_cutoff,
+            **{k: v for k, v in kwargs.items()},
+        )
+        if getattr(design, "is_replicate_design", False):
+            from ..survey._replicate_refit import replicate_refit
+
+            return replicate_refit(regress, _args, design, function="sp.regress")
+        return regress_with_design(formula, data, design, collinear)
+
     # --- vcov= (pyfixest spelling) -> native robust=/cluster=/vce= ---
     # Accepted as a canonical cross-estimator alias; previously it fell
     # through **kwargs and was dropped, silently returning default SEs.
@@ -1241,7 +2020,9 @@ def regress(
                 "hc1",
                 "hc2",
                 "hc3",
+                "hc4",
                 "hac",
+                "ewc",
                 "cluster",
                 "cr2",
                 "cr3",
@@ -1267,7 +2048,17 @@ def regress(
     if "~" in formula:
         import re
 
-        lhs, rhs = formula.split("~", 1)
+        from ..core.utils import backticks_to_q
+
+        # `a b` is Q("a b"); the names inside are checked on their own, so
+        # that a missing one is reported whole and not as one of its words.
+        checked = backticks_to_q(formula) if "`" in formula else formula
+        quoted_names = [
+            m.group(2) for m in re.finditer(r"""Q\(\s*(["'])(.*?)\1\s*\)""", checked)
+        ]
+        missing_quoted = [v for v in quoted_names if v not in data.columns]
+        lhs, rhs = checked.split("~", 1)
+        lhs = re.sub(r"""Q\(\s*(["'])(.*?)\1\s*\)""", "", lhs)
         # Strip function calls: C(...), I(...), np.log(...), bs(...), etc.
         rhs_stripped = re.sub(r"[A-Za-z_][\w.]*\s*\([^)]*\)", "", rhs)
         # Split on operators
@@ -1282,13 +2073,18 @@ def regress(
         all_vars = (
             [dep_check] if re.match(r"^[A-Za-z_]\w*$", dep_check) else []
         ) + bare_vars
-        missing = [v for v in all_vars if v not in data.columns]
+        missing = missing_quoted + [v for v in all_vars if v not in data.columns]
         if missing:
-            available = ", ".join(sorted(data.columns)[:10])
-            raise ValueError(
-                f"Variable(s) not found in data: {missing}. "
-                f"Available columns: {available}"
-                + (" ..." if len(data.columns) > 10 else "")
+            available = ", ".join(sorted(map(str, data.columns))[:10])
+            raise ColumnNotFound.from_missing(
+                missing,
+                list(data.columns),
+                message=(
+                    f"Variable(s) not found in data: {missing}. "
+                    f"Available columns: {available}"
+                    + (" ..." if len(data.columns) > 10 else "")
+                ),
+                extra_diagnostics={"formula": formula},
             )
     # Check for all-NaN outcome
     dep_var = formula.split("~")[0].strip()
@@ -1304,10 +2100,83 @@ def regress(
     if weights is not None:
         kwargs["weights"] = weights
 
+    # --- weights_as=: sampling weights take the robust variance ---
+    from ..core._agent_summary import resolve_weights_as
+
+    weights_as = resolve_weights_as(
+        weights_as,
+        has_weights=weights is not None,
+        native="analytic",
+        entry="sp.regress",
+    )
+    if (
+        weights_as == "sampling"
+        and cluster is None
+        and str(kwargs.get("vce") or robust).lower() == "nonrobust"
+    ):
+        robust = "hc1"
+
     # --- vce= dispatch (canonical alias of robust=; vce='CR2'/'CR3'/'conley'
     # take the native efficient path on the stored design; vce=cluster=[a,b]
     # runs CGM-2011 two-way; vce='jackknife' is an alias of CR3).
     vce_kw = kwargs.pop("vce", None) or robust
+    if dfadjust:
+        kind_adj = vce_kw.lower() if isinstance(vce_kw, str) else ""
+        if kind_adj not in ("hc2", "cr2") or (kind_adj == "cr2" and cluster is None):
+            raise MethodIncompatibility(
+                "regress(dfadjust=True) is the Bell-McCaffrey degrees of "
+                "freedom of the HC2 / CR2 variance: use it with robust='hc2', "
+                "or with vce='cr2' and cluster=.",
+                diagnostics={"vce": vce_kw, "cluster": cluster},
+            )
+        _refuse_weights(weights, "dfadjust=True")
+        from ..inference.jackknife import cr2_se
+
+        work, cl_name = data, cluster
+        if cluster is None:
+            # HC2 is CR2 with every observation its own cluster.
+            work = data.copy()
+            cl_name = "_statspai_obs"
+            work[cl_name] = np.arange(len(work))
+        base = regress(
+            formula=formula,
+            data=work,
+            robust="nonrobust",
+            cluster=cl_name,
+            collinear=collinear,
+        )
+        out = cr2_se(base, data=work, cluster=cl_name)
+        # Joint tests need the full matrix, and use the fit's ordinary
+        # denominator degrees of freedom (n - k, or G - 1 when clustered),
+        # as Stata's ``test`` does after ``vce(hc2, dfadjust)``; only the
+        # single-coefficient t statistics get the Bell-McCaffrey df.
+        _di = base.data_info
+        if {"X", "y"} <= set(_di):
+            from ..inference.jackknife import cr_vcov_matrix
+
+            _codes = _sample_codes(base, work, cl_name)
+            _X = np.asarray(_di["X"], dtype=float)
+            _V = cr_vcov_matrix(
+                _X,
+                np.asarray(_di["y"], dtype=float).ravel(),
+                _codes,
+                power=0.5,
+                small_sample=False,
+            )
+            out.data_info = dict(out.data_info)
+            out.data_info["var_cov"] = _V
+            _g = len(np.unique(_codes))
+            if cluster is None or _g == _X.shape[0]:
+                out.data_info["df_resid"] = float(_X.shape[0] - _X.shape[1])
+            else:
+                out.data_info["df_resid"] = float(_g - 1)
+        out.model_info = dict(out.model_info)
+        out.model_info["vcov_type"] = (
+            "HC2" if cluster is None else "CR2 cluster-robust"
+        ) + ", Bell-McCaffrey degrees of freedom"
+        out.model_info["cluster"] = cluster
+        out.model_info["dfadjust"] = True
+        return out
     if isinstance(vce_kw, str) and vce_kw.lower() in ("cr2", "cr3", "jackknife"):
         if cluster is None:
             raise MethodIncompatibility(
@@ -1315,26 +2184,47 @@ def regress(
                 "small-sample adjustment)."
             )
         kind = "CR3" if vce_kw.lower() in ("cr3", "jackknife") else "CR2"
-        base = regress(formula=formula, data=data, robust="nonrobust", cluster=cluster)
-        from scipy import stats as _stats
-
+        base = regress(
+            formula=formula,
+            data=data,
+            robust="nonrobust",
+            cluster=cluster,
+            collinear=collinear,
+            weights=weights,
+        )
         from ..inference.jackknife import cr_vcov_ols
 
-        cl_codes = pd.Categorical(data[cluster]).codes
-        cl_codes = cl_codes[: len(base.data_info["y"])]  # align to fitted sample
+        cl_codes = _sample_codes(base, data, cluster)
         se = cr_vcov_ols(
             base, cl_codes, power=0.5 if kind == "CR2" else 1.0, small_sample=False
         )
         base.std_errors = se
-        z = base.params / se
-        base.pvalues = pd.Series(2 * _stats.norm.sf(np.abs(z)), index=base.params.index)
-        crit = _stats.norm.ppf(0.975)
-        base.conf_int_lower = base.params - crit * se
-        base.conf_int_upper = base.params + crit * se
+        # Reference distribution: t(G - 1), as Stata's vce(hc2 clustvar)
+        # and vce(jackknife, cluster()) use. Through 1.36.0 this was the
+        # normal, which at 6 clusters rejected a true null 12% (CR2) and
+        # 7% (CR3) of the time (tests/reliability/few_clusters.py).
+        from ..inference.jackknife import set_cluster_t_inference
+
+        set_cluster_t_inference(base, se, len(np.unique(cl_codes)))
+        # The full matrix, so that joint tests (sp.test) see the same
+        # variance as the standard errors.
+        if {"X", "y"} <= set(base.data_info):
+            from ..inference.jackknife import _weighted_design, cr_vcov_matrix
+
+            _Xw, _yw = _weighted_design(
+                np.asarray(base.data_info["X"], dtype=float),
+                np.asarray(base.data_info["y"], dtype=float).ravel(),
+                base.data_info.get("analytic_weights"),
+            )
+            base.data_info = dict(base.data_info)
+            base.data_info["var_cov"] = cr_vcov_matrix(
+                _Xw,
+                _yw,
+                cl_codes,
+                power=0.5 if kind == "CR2" else 1.0,
+                small_sample=False,
+            )
         base.model_info = dict(base.model_info)
-        # These SEs replace the fitted ones and their p-values are normal;
-        # mark the fit so conf_int() / tidy() / sp.test use z as well.
-        base.data_info = dict(base.data_info, inference="z")
         base.model_info["vcov_type"] = (
             f"{kind} cluster-robust (Pustejovsky-Tipton 2018; matches R "
             "sandwich::vcovCL)"
@@ -1348,7 +2238,14 @@ def regress(
                 "regress(vce='conley') requires conley_lat=, conley_lon=, and "
                 "conley_cutoff= (planar distance cutoff in km; matches Stata acreg)."
             )
-        base = regress(formula=formula, data=data, robust="nonrobust", cluster=None)
+        _refuse_weights(weights, "vce='conley'")
+        base = regress(
+            formula=formula,
+            data=data,
+            robust="nonrobust",
+            cluster=None,
+            collinear=collinear,
+        )
         from scipy import stats as _stats
 
         from ..inference.conley import ols_conley_vcov
@@ -1376,7 +2273,13 @@ def regress(
             raise MethodIncompatibility(
                 "regress(vce='jackknife') requires cluster=... ."
             )
-        base = regress(formula=formula, data=data, robust="nonrobust", cluster=cluster)
+        base = regress(
+            formula=formula,
+            data=data,
+            robust="nonrobust",
+            cluster=cluster,
+            collinear=collinear,
+        )
         from ..inference.jackknife import jackknife_se
 
         jk = jackknife_se(base, data, cluster=cluster)
@@ -1396,12 +2299,19 @@ def regress(
             )
         from ..inference.jackknife import wild_cluster_boot as _wcb
 
+        _refuse_weights(weights, "vce='wild'")
         base = regress(
             formula=formula,
             data=data,
             robust={"CRV1": cluster},
             cluster=cluster,
+            collinear=collinear,
         )
+        # The bootstrap reuses the stored design, which it can only align to
+        # the rows that were fitted.
+        _idx = base.data_info.get("sample_index")
+        if _idx is not None and len(_idx) != len(data):
+            data = data.loc[_idx]
         wild_reps = kwargs.pop("wild_reps", 999)
         wild_weight_type = kwargs.pop("wild_weight_type", "rademacher")
         seed = kwargs.pop("seed", None)
@@ -1442,30 +2352,41 @@ def regress(
     # sandwich on the projected-score meat.
     if isinstance(cluster, (list, tuple)) and len(cluster) == 2:
         c1, c2 = cluster
-        base = regress(formula=formula, data=data, robust="nonrobust", cluster=c1)
-        from scipy import stats as _stats
+        base = regress(
+            formula=formula,
+            data=data,
+            robust="nonrobust",
+            cluster=c1,
+            collinear=collinear,
+            weights=weights,
+        )
+        from ..inference.jackknife import two_way_vcov_ols
 
-        from ..inference.jackknife import two_way_correction_ols
-
-        c1_codes = pd.Categorical(data[c1]).codes
-        c2_codes = pd.Categorical(data[c2]).codes
+        c1_codes = _sample_codes(base, data, c1)
+        c2_codes = _sample_codes(base, data, c2)
         c12_codes = pd.factorize(
             pd.Series(list(zip(c1_codes.tolist(), c2_codes.tolist())))
         )[0]
-        c1_codes = c1_codes[: len(base.data_info["y"])]
-        c2_codes = c2_codes[: len(base.data_info["y"])]
-        c12_codes = c12_codes[: len(base.data_info["y"])]
-        se = two_way_correction_ols(base, c1_codes, c2_codes, c12_codes)
+        two_way_vcov, _names, n_negative = two_way_vcov_ols(
+            base, c1_codes, c2_codes, c12_codes
+        )
+        se = pd.Series(np.sqrt(np.maximum(np.diag(two_way_vcov), 0.0)), index=_names)
         base.std_errors = se
-        z = base.params / se
-        base.pvalues = pd.Series(2 * _stats.norm.sf(np.abs(z)), index=base.params.index)
-        crit = _stats.norm.ppf(0.975)
-        base.conf_int_lower = base.params - crit * se
-        base.conf_int_upper = base.params + crit * se
+        # the matrix behind the standard errors, so vcov() / sp.test /
+        # sp.lincom see the two-way covariance and not the one-way fit's
+        base.data_info = dict(base.data_info, var_cov=two_way_vcov)
+        if n_negative:
+            base.diagnostics = dict(base.diagnostics or {})
+            base.diagnostics["Two-way VCOV negative eigenvalues"] = n_negative
+        # t(G_min - 1), the degrees of freedom Stata 18's
+        # regress, vce(cluster a b) and fixest report; the normal was
+        # used through 1.36.0.
+        from ..inference.jackknife import set_cluster_t_inference
+
+        set_cluster_t_inference(
+            base, se, min(len(np.unique(c1_codes)), len(np.unique(c2_codes)))
+        )
         base.model_info = dict(base.model_info)
-        # These SEs replace the fitted ones and their p-values are normal;
-        # mark the fit so conf_int() / tidy() / sp.test use z as well.
-        base.data_info = dict(base.data_info, inference="z")
         base.model_info["vcov_type"] = "two-way cluster (CGM 2011)"
         base.model_info["cluster"] = list(cluster)
         return base
@@ -1476,25 +2397,111 @@ def regress(
     from ..core._vcov_spec import reject_unknown_kwargs
 
     reject_unknown_kwargs(kwargs, function="regress", known=("weights",))
+    if weights_as is not None:
+        kwargs["weights_as"] = weights_as
 
-    model = OLSRegression(formula=formula, data=data)
+    model = OLSRegression(formula=formula, data=data, collinear=collinear)
     robust_kw = vce_kw if vce_kw is not None else robust
+    is_hac = str(robust_kw).lower() == "hac" and cluster is None
+    if (hac_lags is not None or hac_small or hac_panel is not None) and not is_hac:
+        raise MethodIncompatibility(
+            "regress: hac_lags=, hac_small= and hac_panel= only apply to "
+            "robust='hac'; "
+            f"this call asks for {robust_kw!r}"
+            + (f" clustered on {cluster!r}." if cluster is not None else "."),
+            recovery_hint="Add robust='hac', or drop these options.",
+        )
+    if hac_lags is not None:
+        if isinstance(hac_lags, bool) or int(hac_lags) != hac_lags or hac_lags < 0:
+            raise MethodIncompatibility(
+                f"regress: hac_lags must be a non-negative integer, got "
+                f"{hac_lags!r}.",
+                recovery_hint="hac_lags=0 is the heteroskedasticity-robust "
+                "HC0 estimator.",
+            )
+        kwargs["lags"] = int(hac_lags)
+    if hac_small:
+        kwargs["hac_small"] = True
+    if hac_panel is not None:
+        kwargs["hac_panel"] = hac_panel
+    is_ewc = str(robust_kw).lower() == "ewc"
+    if is_ewc and cluster is not None:
+        raise MethodIncompatibility(
+            "regress: robust='ewc' is a time-series covariance estimator and "
+            "cannot be combined with cluster=.",
+            recovery_hint="Drop cluster= for a single time series, or use "
+            "cluster-robust standard errors for a panel.",
+        )
+    if ewc_df is not None:
+        if not is_ewc:
+            raise MethodIncompatibility(
+                f"regress: ewc_df= only applies to robust='ewc'; this call "
+                f"asks for {robust_kw!r}.",
+                recovery_hint="Add robust='ewc', or drop ewc_df.",
+            )
+        if isinstance(ewc_df, bool) or int(ewc_df) != ewc_df or ewc_df < 1:
+            raise MethodIncompatibility(
+                f"regress: ewc_df must be a positive integer, got {ewc_df!r}.",
+                recovery_hint="The default is floor(0.4 * T ** (2 / 3)).",
+            )
+        kwargs["ewc_df"] = int(ewc_df)
     _result = model.fit(robust=robust_kw, cluster=cluster, **kwargs)
+    if is_ewc:
+        _result.model_info["ewc_df"] = int(_result.data_info["df_inference"])
+    if is_hac:
+        n_used = int(_result.data_info["nobs"])
+        if hac_panel is not None:
+            names = [hac_panel] if isinstance(hac_panel, str) else list(hac_panel)
+            n_used = int(model._hac_n_periods)
+            _result.model_info["hac_panel"] = names
+        _result.model_info["hac_lags"] = (
+            int(hac_lags)
+            if hac_lags is not None
+            else int(np.floor(4 * (n_used / 100) ** (2 / 9)))
+        )
+        _result.model_info["hac_small"] = bool(hac_small)
+    from ..core._design_guardrails import check_design
+
+    check_design(
+        _result,
+        data,
+        formula=formula,
+        entry="sp.regress",
+        cluster=cluster,
+        vcov="hac" if is_hac else ("ewc" if is_ewc else robust_kw),
+        weights=weights,
+    )
     try:
         from ..output._lineage import attach_provenance as _attach_prov
 
         _attach_prov(
             _result,
             function="sp.regress",
+            # Every option that changes the numbers. ``weights`` is a named
+            # parameter, so the old ``kwargs`` filter never saw it and a
+            # weighted fit was recorded as unweighted.
             params={
                 "formula": formula,
                 "robust": robust,
                 "cluster": cluster,
                 **{
                     k: v
-                    for k, v in kwargs.items()
-                    if k in ("weights", "vcov", "se_type")
+                    for k, v in {
+                        "weights": weights,
+                        "weights_as": weights_as,
+                        "hac_lags": hac_lags,
+                        "hac_small": hac_small or None,
+                        "hac_panel": hac_panel,
+                        "ewc_df": ewc_df,
+                        "dfadjust": dfadjust or None,
+                        "conley_lat": conley_lat,
+                        "conley_lon": conley_lon,
+                        "conley_cutoff": conley_cutoff,
+                        "collinear": collinear if collinear != "omit" else None,
+                    }.items()
+                    if v is not None
                 },
+                **{k: v for k, v in kwargs.items() if k in ("vcov", "se_type")},
             },
             data=data,
             overwrite=False,

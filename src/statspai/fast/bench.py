@@ -10,7 +10,11 @@ Example
 -------
 >>> from statspai.fast import hdfe_bench
 >>> res = hdfe_bench(n_list=(1_000, 10_000), n_groups=50, seed=0)
->>> print(res.to_dataframe())
+>>> table = res.to_dataframe()
+>>> table.shape
+(6, 8)
+>>> sorted(table['backend'].unique())
+['numba', 'numpy', 'rust']
 
 The harness is **tool-agnostic**: a path is measured if its backend is
 installed, and quietly marked "unavailable" otherwise. This means the
@@ -27,10 +31,10 @@ from typing import Any, Callable, Dict, List, Sequence, Tuple, cast
 import numpy as np
 import pandas as pd
 
+from .._result_serialize import ResultProtocolMixin
 from ..exceptions import MethodIncompatibility
 from ._result_protocol import jsonable as _jsonable
 from ._validation import nonnegative_finite_float, positive_int
-from .._result_serialize import ResultProtocolMixin
 
 _BackendFn = Callable[[np.ndarray, np.ndarray, np.ndarray], np.ndarray]
 
@@ -84,7 +88,8 @@ def _detect_backends() -> Dict[str, _Backend]:
     # Numba path: delegate to the shipping statspai kernel so we measure
     # the exact code users run, not a re-implementation.
     try:
-        from ..panel._hdfe_kernels import sweep as _numba_sweep, _HAS_NUMBA
+        from ..panel._hdfe_kernels import _HAS_NUMBA
+        from ..panel._hdfe_kernels import sweep as _numba_sweep
 
         def _hdfe_numba(
             y: np.ndarray,
@@ -117,12 +122,12 @@ def _detect_backends() -> Dict[str, _Backend]:
             note="statspai.panel._hdfe_kernels missing",
         )
 
-    # Rust path: present for forward-compat but marked unavailable
-    # until the PyO3 wheel lands (see spec 2026-04-20-v095-rust-hdfe-spike).
-    try:
-        from statspai_hdfe import (  # type: ignore[import-untyped]
-            group_demean as _rust_group_demean,
-        )
+    # Rust path: the legacy single-FE kernel of the optional extension.
+    from .._rust_backend import info as _rust_info
+    from .._rust_backend import rust as _rust_mod
+
+    if _rust_mod is not None:
+        _rust_group_demean = _rust_mod.group_demean
 
         def _hdfe_rust(
             y: np.ndarray,
@@ -145,12 +150,12 @@ def _detect_backends() -> Dict[str, _Backend]:
             available=True,
             note="PyO3 + Rayon kernel (statspai_hdfe crate)",
         )
-    except Exception:
+    else:
         backends["rust"] = _Backend(
             name="rust",
             fn=_hdfe_numpy,
             available=False,
-            note="Rust kernel not built (expected pre-1.0)",
+            note=f"Rust kernels unavailable: {_rust_info()['reason']}",
         )
 
     return backends

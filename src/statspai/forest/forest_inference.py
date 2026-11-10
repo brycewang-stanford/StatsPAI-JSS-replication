@@ -54,6 +54,7 @@ import pandas as pd
 from scipy import stats
 
 from .._aliases import accepts_aliases
+from ..core._call_record import records_call
 from ..exceptions import (
     AssumptionWarning,
     DataInsufficient,
@@ -234,6 +235,8 @@ def _stored_training_nuisances(
 # ======================================================================
 
 
+@records_call("grf_calibration")
+@accepts_aliases(vcov_type="vce")
 def grf_calibration(
     *,
     Y: np.ndarray,
@@ -241,14 +244,16 @@ def grf_calibration(
     Y_hat: np.ndarray,
     W_hat: np.ndarray,
     tau_hat: np.ndarray,
-    vcov_type: str = "HC3",
+    vce: str = "HC3",
     alpha: float = 0.05,
     weights: Optional[np.ndarray] = None,
     clusters: Optional[np.ndarray] = None,
 ) -> pd.DataFrame:
-    r"""The ``grf::test_calibration`` regression, given forest outputs.
+    r"""Calibration test of any CATE predictions [@chernozhukov2025generic].
 
-    Fits, by (weighted) least squares without an intercept,
+    The ``grf::test_calibration`` regression, given its inputs rather than
+    a fitted forest. Fits, by (weighted) least squares without an
+    intercept,
 
     .. math::
         Y_i - \hat m(X_i) = \beta_1\,(W_i - \hat e(X_i))\,\bar\tau
@@ -258,12 +263,21 @@ def grf_calibration(
     with :math:`\bar\tau` the (observation-weighted) mean CATE prediction.
     ``beta_1 = 1`` says the mean prediction is calibrated; ``beta_2 = 1``
     says the heterogeneity is calibrated, and ``beta_2 > 0`` significantly
-    is evidence that the forest found heterogeneity at all.
+    is evidence that the predictions order units by their effect at all.
+
+    :func:`calibration_test` runs this regression on a fitted forest's own
+    out-of-bag predictions. Call this function when the predictions come
+    from somewhere else: a forest fitted on other folds, a meta-learner, or
+    a forest whose clustering should be imposed after the fact. The test
+    is only valid if ``tau_hat[i]`` (and ``Y_hat[i]``, ``W_hat[i]``) was
+    not fitted on row ``i`` -- or, with clustered data, on any row of
+    ``i``'s cluster. In-sample predictions have learned the noise in
+    ``Y`` and make ``beta_2`` look significant.
 
     ``t`` tests each coefficient against **0** and ``p`` is the
     **one-sided** p-value for the alternative ``beta > 0`` from Student's
     t with ``n - 2`` degrees of freedom -- ``grf``'s reporting rule
-    (``lmtest::coeftest`` then halving). ``vcov_type`` is ``grf``'s
+    (``lmtest::coeftest`` then halving). ``vce`` is ``grf``'s
     ``vcov.type`` (default ``"HC3"``); ``grf`` passes it to
     ``sandwich::vcovCL`` with ``clusters`` (one cluster per observation
     when there are none), which is what the covariance here reproduces
@@ -271,20 +285,73 @@ def grf_calibration(
     ``ci_low`` / ``ci_high`` use the same t quantile. ``t_vs_zero`` and
     ``p_one_sided`` repeat ``t`` and ``p`` under their earlier names.
 
+    Parameters
+    ----------
+    Y, W : array-like of shape (n,)
+        Outcome and treatment.
+    Y_hat, W_hat : array-like of shape (n,)
+        Out-of-sample predictions of ``E[Y | X]`` and ``E[W | X]``.
+    tau_hat : array-like of shape (n,)
+        Out-of-sample CATE predictions to grade.
+    vce : {'HC3', 'HC2', 'HC1', 'HC0'}
+        Sandwich covariance type, clustered when ``clusters`` is given.
+    alpha : float
+        Level for ``ci_low`` / ``ci_high``.
+    weights : array-like of shape (n,), optional
+        Non-negative observation weights; rows with weight 0 are left out.
+        ``1 / (size of the row's cluster)`` gives every cluster the same
+        total weight (``grf``'s ``equalize.cluster.weights``).
+    clusters : array-like of shape (n,), optional
+        Cluster labels for the covariance.
+
     Returns
     -------
     DataFrame
         Index ``mean_forest_prediction`` / ``differential_forest_prediction``;
         columns ``coef``, ``se``, ``t``, ``p``, ``ci_low``, ``ci_high``,
         ``t_vs_zero``, ``p_one_sided``.
+
+    Examples
+    --------
+    Grade forests that did not see a school when predicting for it: fit on
+    four folds of schools, predict the fifth, then test with a covariance
+    clustered by school.
+
+    >>> import numpy as np
+    >>> import statspai as sp
+    >>> rng = np.random.default_rng(0)
+    >>> n, n_schools = 600, 30
+    >>> school = rng.integers(0, n_schools, size=n)
+    >>> X = rng.normal(size=(n, 3))
+    >>> W = rng.binomial(1, 0.5, size=n).astype(float)
+    >>> Y = X[:, 1] + (1.0 + X[:, 0]) * W + rng.normal(size=n)
+    >>> kw = dict(n_estimators=100, random_state=0)
+    >>> fold = school % 5
+    >>> Y_hat, W_hat, tau_hat = np.empty(n), np.empty(n), np.empty(n)
+    >>> for k in range(5):
+    ...     tr, te = fold != k, fold == k
+    ...     my = sp.regression_forest(y=Y[tr], covariates=X[tr], **kw)
+    ...     mw = sp.regression_forest(y=W[tr], covariates=X[tr], **kw)
+    ...     Y_hat[te] = np.ravel(my.predict(X[te]))
+    ...     W_hat[te] = np.ravel(mw.predict(X[te]))
+    ...     cf = sp.causal_forest(Y=Y[tr], T=W[tr], X=X[tr], **kw)
+    ...     tau_hat[te] = cf.effect(X[te])
+    >>> out = sp.grf_calibration(Y=Y, W=W, Y_hat=Y_hat, W_hat=W_hat,
+    ...                          tau_hat=tau_hat, clusters=school)
+    >>> out.index.tolist()
+    ['mean_forest_prediction', 'differential_forest_prediction']
+
+    References
+    ----------
+    [@chernozhukov2025generic], [@athey2019generalized]
     """
     from ._grf_inference import cluster_robust_vcov
 
-    vcov_key = str(vcov_type).upper()
+    alpha = _validate_alpha(alpha, "calibration_test()")
+    vcov_key = str(vce).upper()
     if vcov_key not in ("HC0", "HC1", "HC2", "HC3"):
         raise MethodIncompatibility(
-            f"calibration_test(): vce must be HC0, HC1, HC2 or HC3; "
-            f"got {vcov_type!r}.",
+            f"calibration_test(): vce must be HC0, HC1, HC2 or HC3; " f"got {vce!r}.",
             recovery_hint="Use grf's default vce='HC3'.",
         )
     arrs = [
@@ -302,6 +369,21 @@ def grf_calibration(
         raise MethodIncompatibility(
             "calibration_test(): weights must have one entry per observation.",
             recovery_hint="Pass aligned per-observation weights.",
+        )
+    if not all(np.all(np.isfinite(a)) for a in arrs):
+        raise MethodIncompatibility(
+            "calibration_test(): Y, W, Y_hat, W_hat and tau_hat must be " "finite.",
+            recovery_hint="Drop rows without a prediction before the test.",
+        )
+    if not np.all(np.isfinite(w)) or np.any(w < 0):
+        raise MethodIncompatibility(
+            "calibration_test(): weights must be finite and non-negative.",
+            recovery_hint="Pass non-negative per-observation weights.",
+        )
+    if clusters is not None and len(np.asarray(clusters).ravel()) != n:
+        raise MethodIncompatibility(
+            "calibration_test(): clusters must have one label per observation.",
+            recovery_hint="Pass aligned per-observation cluster labels.",
         )
     n_pos = int(np.sum(w > 0))
     if n_pos < 3:
@@ -371,6 +453,7 @@ def _resolve_calibration_method(forest: "CausalForest", method: str) -> str:
     return "imputation" if binary and twoway else "within"
 
 
+@records_call("calibration_test")
 @accepts_aliases(_strict=True, controls="covariates")
 def calibration_test(
     forest: "CausalForest",
@@ -535,7 +618,7 @@ def calibration_test(
         Y_hat=Y_hat,
         W_hat=W_hat,
         tau_hat=tau_hat,
-        vcov_type=vce,
+        vce=vce,
         alpha=alpha_value,
     )
 
@@ -694,6 +777,156 @@ def rate_from_scores(
     return {"estimate": estimate, "toc_q": q_arr, "toc": toc_grid, "n": n}
 
 
+def _validated_rate_weights(weights: np.ndarray, n: int) -> np.ndarray:
+    w = np.asarray(weights, dtype=np.float64).ravel()
+    if len(w) != n:
+        raise MethodIncompatibility(
+            "rate(): weights must have one entry per unit.",
+            recovery_hint="Pass one weight per score.",
+            diagnostics={"n_scores": int(n), "n_weights": int(len(w))},
+        )
+    if not np.isfinite(w).all() or np.any(w <= 0.0):
+        raise MethodIncompatibility(
+            "rate(): observation weights must be finite and strictly "
+            "positive (a unit of zero weight has no place in the ranking).",
+            recovery_hint="Drop zero-weight rows before evaluating RATE.",
+        )
+    return w
+
+
+def _weighted_sorted(
+    scores: np.ndarray, priorities: np.ndarray, weights: np.ndarray
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Tie-averaged scores and weights in descending priority order.
+
+    Within a tie group the score is the *weighted* mean of the group, so
+    the group's weighted total is unchanged. Returns ``(scores, weights,
+    order)``; rows of equal priority keep their input order.
+    """
+    order, codes = _priority_order(priorities)
+    avg = np.bincount(codes, weights=weights * scores) / np.bincount(
+        codes, weights=weights
+    )
+    return avg[codes[order]], weights[order], order
+
+
+def _weighted_rate_from_scores(
+    scores: np.ndarray,
+    priorities: np.ndarray,
+    weights: np.ndarray,
+    target: str,
+    q: np.ndarray,
+) -> Dict[str, Any]:
+    r"""RATE and TOC curve with observation weights.
+
+    :func:`rate_from_scores` with every count replaced by a weight total.
+    With units in descending priority order, :math:`w_k` their weights,
+    :math:`C_k = \sum_{j \le k} w_j`, :math:`S_k = \sum_{j \le k} w_j
+    \Gamma_{(j)}` and :math:`W = C_n`,
+
+    .. math::
+        \mathrm{TOC}_k = S_k / C_k - S_n / W, \qquad
+        \mathrm{AUTOC} = \tfrac1W \sum_k w_k \mathrm{TOC}_k, \qquad
+        \mathrm{QINI} = \tfrac1W \sum_k w_k \tfrac{C_k}{W} \mathrm{TOC}_k ,
+
+    which is the unweighted estimator when the weights are equal. The curve
+    at ``q`` is the weighted mean score of the top ``q`` *share of weight*
+    (the unit straddling the cut enters fractionally) minus the overall
+    weighted mean. Agrees with ``grf::rank_average_treatment_effect.fit(
+    ..., sample.weights=)`` run on the same inputs to 1e-14 (committed
+    fixture ``grf_rate_weighted_R.json``).
+
+    With unequal weights *and* tied priorities AUTOC depends, in the fifth
+    digit on the fixture, on the order of the rows inside a tie group (the
+    partial sums :math:`C_k` inside the group do); rows keep their input
+    order, as the reference does. QINI does not depend on it.
+    """
+    s = np.asarray(scores, dtype=np.float64).ravel()
+    pr = np.asarray(priorities, dtype=np.float64).ravel()
+    n = len(s)
+    if n < 2 or len(pr) != n or not (np.isfinite(s).all() and np.isfinite(pr).all()):
+        raise DataInsufficient(
+            "rate(): need at least two units with finite scores and priorities.",
+            recovery_hint="Drop non-finite rows before evaluating RATE.",
+        )
+    w = _validated_rate_weights(weights, n)
+    s_sorted, w_sorted, _ = _weighted_sorted(s, pr, w)
+    cum_w = np.cumsum(w_sorted)
+    cum_s = np.cumsum(w_sorted * s_sorted)
+    total = float(cum_w[-1])
+    ate = float(cum_s[-1] / total)
+    toc = cum_s / cum_w - ate
+    if target == "AUTOC":
+        estimate = float(np.sum(w_sorted * toc) / total)
+    else:
+        estimate = float(np.sum(w_sorted * (cum_w / total) * toc) / total)
+
+    q_arr = np.asarray(q, dtype=np.float64).ravel()
+    mass = q_arr * total
+    k = np.minimum(np.searchsorted(cum_w, mass, side="right"), n)  # C_k <= mass
+    k_eff = np.maximum(k, 1)
+    nxt = np.minimum(k, n - 1)  # 0-based index of the unit straddling the cut
+    partial = (mass - cum_w[k_eff - 1]) * s_sorted[nxt]
+    toc_grid = (cum_s[k_eff - 1] + partial) / mass - ate
+    return {"estimate": estimate, "toc_q": q_arr, "toc": toc_grid, "n": n}
+
+
+def _weighted_rate_influence_se(
+    scores: np.ndarray,
+    priorities: np.ndarray,
+    weights: np.ndarray,
+    target: str,
+    clusters: Optional[np.ndarray] = None,
+) -> float:
+    r"""Weighted counterpart of :func:`_rate_influence_se`.
+
+    With :math:`p_k = w_k / W` and :math:`u_k = C_k / W` the weight share
+    ranked at or above unit :math:`k`, the weighted estimator is exactly
+    :math:`\hat\theta = \sum_k p_k \Gamma_{(k)} (\omega_k - c)` with
+
+    - AUTOC: :math:`\omega_k = \sum_{j \ge k} p_j / u_j`, :math:`c = 1`;
+    - QINI: :math:`\omega_k = 1 - u_k + p_k`, :math:`c = \sum_j p_j u_j`.
+
+    Its influence value adds the term from estimating the ranks, as in
+    :func:`_rate_influence_phi` with weighted expectations:
+    :math:`\phi_k = \Gamma_{(k)}(\omega_k - c) + \sum_j p_j a_j
+    (\mathbf 1\{j \le k\} - F_j)`, :math:`F_j = 1 - u_j + p_j` the weight
+    share at or below :math:`j` and :math:`a_j = \Gamma_{(j)} / u_j` (AUTOC)
+    or :math:`\Gamma_{(j)}` (QINI). The variance is that of the weighted
+    mean :math:`\sum_k p_k \phi_k` with the weights held fixed:
+    :math:`\sum_k p_k^2 (\phi_k - \hat\theta)^2 \, n / (n - 1)`, or, with
+    clusters, the squared cluster sums of :math:`p_k (\phi_k -
+    \hat\theta)` times :math:`G / (G - 1)`. Equal weights give
+    :func:`_rate_influence_se`.
+    """
+    s = np.asarray(scores, dtype=np.float64).ravel()
+    w = _validated_rate_weights(weights, len(s))
+    s_sorted, w_sorted, order = _weighted_sorted(
+        s, np.asarray(priorities, dtype=np.float64).ravel(), w
+    )
+    n = len(s_sorted)
+    p = w_sorted / w_sorted.sum()
+    u = np.cumsum(p)
+    if target == "AUTOC":
+        omega = np.cumsum((p / u)[::-1])[::-1]
+        c = 1.0
+        a = s_sorted / u
+    else:
+        omega = 1.0 - u + p
+        c = float(np.sum(p * u))
+        a = s_sorted.copy()
+    share_at_or_below = 1.0 - u + p
+    rank_term = np.cumsum(p * a) - float(np.sum(p * a * share_at_or_below))
+    phi = s_sorted * (omega - c) + rank_term
+    centred = p * (phi - float(np.sum(p * phi)))
+    if clusters is None:
+        return float(np.sqrt(np.sum(centred**2) * n / (n - 1)))
+    codes = np.asarray(clusters, dtype=np.int64)[order]
+    n_groups = int(codes.max()) + 1
+    summed = np.bincount(codes, weights=centred, minlength=n_groups)
+    return float(np.sqrt(float(summed @ summed) * n_groups / (n_groups - 1)))
+
+
 def _rate_influence_phi(
     scores: np.ndarray, priorities: np.ndarray, target: str
 ) -> Tuple[np.ndarray, np.ndarray]:
@@ -767,29 +1000,37 @@ def _rate_half_sample_se(
     R: int,
     seed: Optional[int],
     clusters: Optional[np.ndarray] = None,
+    weights: Optional[np.ndarray] = None,
 ) -> float:
     """``grf``'s half-sample bootstrap SE (``boot_grf(half.sample=TRUE)``).
 
-    With ``clusters`` whole clusters are drawn, as ``grf`` does.
+    With ``clusters`` whole clusters are drawn, as ``grf`` does. With
+    ``weights`` every draw is the weighted estimator on its rows.
     """
     rng = np.random.default_rng(seed)
     n = len(scores)
     draws = np.empty(R)
+
+    def _estimate(idx: np.ndarray) -> float:
+        if weights is None:
+            core = rate_from_scores(scores[idx], priorities[idx], target, q)
+        else:
+            core = _weighted_rate_from_scores(
+                scores[idx], priorities[idx], weights[idx], target, q
+            )
+        return float(core["estimate"])
+
     if clusters is None:
         for b in range(R):
             idx = rng.choice(n, size=n // 2, replace=False)
-            draws[b] = rate_from_scores(scores[idx], priorities[idx], target, q)[
-                "estimate"
-            ]
+            draws[b] = _estimate(idx)
     else:
         codes = np.asarray(clusters, dtype=np.int64)
         n_groups = int(codes.max()) + 1
         for b in range(R):
             chosen = rng.choice(n_groups, size=n_groups // 2, replace=False)
             idx = np.flatnonzero(np.isin(codes, chosen))
-            draws[b] = rate_from_scores(scores[idx], priorities[idx], target, q)[
-                "estimate"
-            ]
+            draws[b] = _estimate(idx)
     return float(np.std(draws, ddof=1))
 
 
@@ -882,12 +1123,14 @@ def rate(
     **Do not read the default ranking as a test.** With the forest's own
     out-of-bag predictions the ranking and the scores share
     ``gamma_hat_t``, so they stay correlated even though no unit predicts
-    itself.  On the null design above (200 replications, no heterogeneity
-    at all) AUTOC averaged -0.025 rather than 0 and a nominal 5% test
-    rejected 17.5% of the time, QINI 13.5%.  :func:`statspai.rate_split`,
+    itself.  On the null design above (400 replications, no heterogeneity
+    at all) AUTOC averaged -0.028 rather than 0 and a nominal 5% test
+    rejected 16.0% of the time, QINI 12.2%.  :func:`statspai.rate_split`,
     which refits the rule on one half of the units and scores it on the
-    other, averaged +0.0008 and rejected 7.5% and 4.0% with 99.5% and 100%
-    power against ``tau = 0.3 + 0.5 z``.  A warning fires on this path;
+    other, averaged -0.0002 and rejected 0.5% and 0.0%, with 100% power
+    against ``tau = 0.3 + 0.5 z``
+    (``tests/reliability/forest_split_evaluation.py``).  A warning fires on
+    this path;
     passing ``priorities=`` from a rule fitted elsewhere also silences it.
 
     .. versionchanged:: 1.31.0
@@ -1090,10 +1333,26 @@ def rate(
 
     q_targets = np.linspace(1.0 / q_grid_value, 1.0, q_grid_value)
     q_targets[-1] = 1.0
-    core = rate_from_scores(psi, prio, target_key, q_targets)
+    # The forest's observation weights (unequal only with
+    # equalize_cluster_weights=True and clusters of different sizes), the
+    # ones its ATE, best linear projection and calibration test use.
+    obs_w: Optional[np.ndarray] = None
+    if grf_forest:
+        w_all = _gi._weights(forest, n)
+        if float(np.ptp(w_all)) > 0.0:
+            obs_w = w_all
+    if obs_w is None:
+        core = rate_from_scores(psi, prio, target_key, q_targets)
+    else:
+        core = _weighted_rate_from_scores(psi, prio, obs_w, target_key, q_targets)
     estimate = core["estimate"]
     if se_method == "influence":
-        se = _rate_influence_se(psi, prio, target_key, clusters=cluster_codes)
+        if obs_w is None:
+            se = _rate_influence_se(psi, prio, target_key, clusters=cluster_codes)
+        else:
+            se = _weighted_rate_influence_se(
+                psi, prio, obs_w, target_key, clusters=cluster_codes
+            )
         method = "Rank-corrected influence-function SE"
     else:
         R = int(n_bootstrap)
@@ -1103,7 +1362,14 @@ def rate(
                 recovery_hint="Use grf's default of 200.",
             )
         se = _rate_half_sample_se(
-            psi, prio, target_key, q_targets, R, seed, clusters=cluster_codes
+            psi,
+            prio,
+            target_key,
+            q_targets,
+            R,
+            seed,
+            clusters=cluster_codes,
+            weights=obs_w,
         )
         method = f"Half-sample bootstrap SE (grf), R={R}"
     if cluster_codes is not None:
@@ -1115,6 +1381,20 @@ def rate(
         priority_source = "out_of_bag"
     else:
         priority_source = "in_sample"
+    if priorities is None:
+        warnings.warn(
+            "rate(): ranking units by this same forest's own CATE predictions "
+            "and scoring them with its own doubly-robust scores is not a valid "
+            "test of heterogeneity. On a design with no heterogeneity at all "
+            "(n = 800, 400 replications) AUTOC averaged -0.10 instead of 0 and "
+            "a nominal 5% test rejected 36% of the time; sp.rate_split(), which "
+            "fits the ranking on one half and scores it on the other, averaged "
+            "0.009 and rejected 0% (tests/reliability/rate_cross_section.py). "
+            "Use sp.rate_split(forest), or pass priorities= from a rule fitted "
+            "on other data.",
+            AssumptionWarning,
+            stacklevel=2,
+        )
     return {
         "estimate": estimate,
         "se": se,
@@ -1487,6 +1767,7 @@ def average_treatment_effect(
     clip: float = 0.01,
     variance: str = "forest",
     covariates: Any = "none",
+    subset: Any = None,
 ) -> Dict[str, Any]:
     """Aggregate CATE predictions into ATE/ATT/ATC/ATO targets.
 
@@ -1575,6 +1856,17 @@ def average_treatment_effect(
         effect modifiers and covariates that vary within units; use it when a
         time-varying covariate drives the untreated outcome and is not
         itself affected by the treatment.
+    subset : boolean mask or row positions, optional
+        Average over some of the training rows only, as
+        ``grf::average_treatment_effect(subset=)`` does. The forest, its
+        out-of-bag predictions and its nuisances stay those of the full
+        fit; the target is the effect among the selected rows. Choose the
+        rows from covariates. A subset built from the forest's own
+        predictions on these rows (``oob > median``) describes the fit but
+        its standard error does not account for the selection; see
+        :func:`statspai.rate_split` for a test of that kind. GRF-engine
+        forests without fixed effects only; for fixed-effects forests use
+        :func:`statspai.forest_group_effects`.
 
     Examples
     --------
@@ -1664,6 +1956,21 @@ def average_treatment_effect(
 
     from . import _grf_inference as _gi
 
+    if subset is not None and (
+        _gi.is_fe_forest(forest) or not _gi.is_grf_forest(forest)
+    ):
+        raise MethodIncompatibility(
+            "average_treatment_effect(): subset= is available for GRF-engine "
+            "forests without fixed effects.",
+            recovery_hint="Use sp.forest_group_effects(forest, by=...) for "
+            "averages within groups of a fixed-effects forest.",
+        )
+    if subset is not None and (X is not None or T is not None):
+        raise MethodIncompatibility(
+            "average_treatment_effect(): subset= selects training rows; do "
+            "not also pass X= or T=.",
+            recovery_hint="Drop X= / T=.",
+        )
     if _gi.is_fe_forest(forest):
         if X is not None or T is not None:
             _require_training_rows(forest, X, None, T, "average_treatment_effect()")
@@ -1774,7 +2081,15 @@ def average_treatment_effect(
     if grf_forest:
         _require_training_rows(forest, X, None, T, "average_treatment_effect()")
         if binary_treatment or target in ("all", "overlap"):
-            return _gi.average_effect(forest, target, alpha_value, clip_value)
+            return _gi.average_effect(
+                forest, target, alpha_value, clip_value, subset=subset
+            )
+        if subset is not None:
+            raise MethodIncompatibility(
+                "average_treatment_effect(): subset= with a continuous "
+                "treatment supports target_sample='all' or 'overlap'.",
+                recovery_hint="Use target_sample='all'.",
+            )
 
     # Outcome and propensity nuisances.  When aggregating on the training
     # sample we reuse the forest's own cross-fitted (cv=3) out-of-fold

@@ -209,8 +209,12 @@ def cont_did_cell(
     grad = np.concatenate([[0.0], dB_treated.mean(axis=0)])
     inf_1 = dB_treated @ slope - acrt_overall
     inf_2 = estfun @ bread @ grad
+    # inf_1 + inf_2 is the influence on the treated sample (the ACRT is a
+    # treated-sample mean); on the whole cell -- the scale the callers
+    # aggregate on -- it is multiplied by n / n_treated and is zero for the
+    # controls, so that mean(psi**2) / n is the treated-sample variance.
     influence = np.zeros(len(dose))
-    influence[treated] = inf_1 + inf_2
+    influence[treated] = (len(dose) / int(treated.sum())) * (inf_1 + inf_2)
 
     return ContDoseFit(
         dose_grid=dose_grid,
@@ -243,7 +247,7 @@ def default_dose_grid(
             diagnostics={},
         )
     probs = np.arange(round(lower_q * 100), round(upper_q * 100) + 1) / 100.0
-    return np.quantile(positive, probs)
+    return np.asarray(np.quantile(positive, probs))
 
 
 def knots_by_quantile(dose: np.ndarray, num_knots: int) -> List[float]:

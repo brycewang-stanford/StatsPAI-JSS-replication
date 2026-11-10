@@ -23,6 +23,7 @@ Trials." arXiv:2508.08418.
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Sequence
 
@@ -30,7 +31,9 @@ import numpy as np
 import pandas as pd
 
 from .._aliases import accepts_aliases
+from .._input_validation import check_columns
 from .._result_serialize import ResultProtocolMixin
+from ..exceptions import AssumptionWarning, IdentificationFailure
 
 # sklearn is imported lazily inside the helpers that need it so that
 # ``import statspai`` doesn't pull ~245 sklearn submodules through this
@@ -111,16 +114,27 @@ def _estimate_propensity(
     D: np.ndarray,
     random_state: int,
 ) -> np.ndarray:
+    """Out-of-fold propensity scores.
+
+    The score of a row must not be fitted on that row's own treatment:
+    an in-sample boosted classifier pushes treated rows above and control
+    rows below the truth, and anything built from ``e`` then differs by
+    arm for a reason that has nothing to do with the outcome.
+    """
     from sklearn.ensemble import GradientBoostingClassifier
+    from sklearn.model_selection import StratifiedKFold, cross_val_predict
 
     clf = GradientBoostingClassifier(
         n_estimators=100,
         max_depth=3,
         random_state=random_state,
     )
-    clf.fit(X, D)
-    p = np.asarray(clf.predict_proba(X)[:, 1], dtype=float)
-    return np.clip(p, 0.01, 0.99)
+    n_folds = int(min(5, np.bincount(D.astype(int)).min()))
+    if n_folds < 2:
+        return np.full(len(D), float(np.clip(D.mean(), 0.01, 0.99)))
+    cv = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=random_state)
+    p = cross_val_predict(clf, X, D, cv=cv, method="predict_proba")[:, 1]
+    return np.clip(np.asarray(p, dtype=float), 0.01, 0.99)
 
 
 def _fit_mu_tau_at_time(
@@ -187,7 +201,7 @@ def _fit_mu_tau_at_time(
     return mu_hat, tau_hat
 
 
-@accepts_aliases(id="unit", treat="treatment", y="outcome")
+@accepts_aliases(id="unit", treat="treatment", y="outcome", seed="random_state")
 def bcf_longitudinal(
     data: pd.DataFrame,
     *,
@@ -264,10 +278,17 @@ def bcf_longitudinal(
     """
     if not isinstance(data, pd.DataFrame):
         raise TypeError("`data` must be a pandas DataFrame.")
-    required = {outcome, treatment, unit, time, *covariates}
-    missing = required - set(data.columns)
-    if missing:
-        raise ValueError(f"Missing columns in data: {sorted(missing)}")
+    check_columns(
+        data,
+        {
+            "outcome": outcome,
+            "treatment": treatment,
+            "unit": unit,
+            "time": time,
+            "covariates": list(covariates),
+        },
+        function="sp.bcf_longitudinal",
+    )
     if int(data[outcome].notna().sum()) < 2:
         raise ValueError(
             f"outcome '{outcome}' has fewer than 2 non-missing values; "
@@ -290,6 +311,7 @@ def bcf_longitudinal(
         u_effect = {u: 0.0 for u in units}
         tau_panel: Dict = {}
         mu_panel: Dict = {}
+        e_panel: Dict = {}
         for pass_i in range(2):
             mu_panel, tau_panel = {}, {}
             for t in time_vals:
@@ -301,11 +323,18 @@ def bcf_longitudinal(
                 D_t = slice_t[treatment].to_numpy(dtype=int)
                 ue_t = np.array([u_effect[u] for u in slice_t[unit]])
                 if np.unique(D_t).size < 2:
-                    # No treatment variation at this time: ATE undefined.
-                    mu_panel[t] = np.zeros_like(Y_t)
-                    tau_panel[t] = np.zeros_like(Y_t)
+                    # No treatment variation at this time: the effect is
+                    # not identified. The period keeps its level (so the
+                    # unit effects are not loaded with it) and reports
+                    # NaN, which the averages skip.
+                    mu_panel[t] = np.full_like(Y_t, float(np.mean(Y_t - ue_t)))
+                    tau_panel[t] = np.full_like(Y_t, np.nan)
                     continue
-                e_t = _estimate_propensity(X_t, D_t, seed + int(hash(t)) % 1000)
+                if t not in e_panel:  # does not depend on the pass
+                    e_panel[t] = _estimate_propensity(
+                        X_t, D_t, seed + time_vals.index(t)
+                    )
+                e_t = e_panel[t]
                 mu_hat, tau_hat = _fit_mu_tau_at_time(
                     X_t,
                     Y_t,
@@ -329,7 +358,15 @@ def bcf_longitudinal(
                 D_t = slice_t[treatment].to_numpy(dtype=float)
                 mu_hat = mu_panel[t]
                 tau_hat = tau_panel[t]
-                r = Y_t - mu_hat - tau_hat * D_t
+                # mu_hat is the propensity-weighted mean (1-e)*mu0 + e*mu1,
+                # so the fitted value of a row is mu_hat + tau*(D - e).
+                # Subtracting tau*D instead leaves -e*tau in the residual,
+                # which loads the unit effect with the unit's treatment
+                # share and biases the second pass away from zero.
+                if t in e_panel:
+                    r = Y_t - mu_hat - tau_hat * (D_t - e_panel[t])
+                else:
+                    r = Y_t - mu_hat
                 resid_rows.append(
                     pd.DataFrame(
                         {
@@ -369,6 +406,20 @@ def bcf_longitudinal(
             )
         )
     per_time_ate = pd.DataFrame(per_time_ate_rows)
+    unidentified = per_time_ate.loc[per_time_ate["ate_point"].isna(), "time"].tolist()
+    if unidentified:
+        warnings.warn(
+            f"No treatment variation at time(s) {unidentified}; the effect "
+            "there is not identified. Those periods report NaN and are "
+            "left out of the average.",
+            AssumptionWarning,
+            stacklevel=2,
+        )
+    if len(unidentified) == len(per_time_ate):
+        raise IdentificationFailure(
+            "No time point has both treated and control observations; "
+            "the treatment effect is not identified."
+        )
     individual_cate = pd.concat(individual_rows, axis=0, ignore_index=True)
 
     # --- Cluster bootstrap for SEs ----------------------------------------
@@ -394,11 +445,22 @@ def bcf_longitudinal(
             if sb.empty or t not in tau_b:
                 continue
             mean_t = float(tau_b[t].mean())
+            if not np.isfinite(mean_t):
+                continue
             boot_per_time[t].append(mean_t)
             t_vals_b.append(mean_t)
         if t_vals_b:
             boot_point.append(float(np.mean(t_vals_b)))
 
+    if len(boot_point) < n_bootstrap:
+        from ..core._fallback import warn_fallback
+
+        warn_fallback(
+            f"{n_bootstrap - len(boot_point)} of {n_bootstrap} "
+            "bcf_longitudinal bootstrap draws",
+            None,
+            "the standard errors use the survivors only",
+        )
     if len(boot_point) < max(20, n_bootstrap // 4):
         raise RuntimeError(
             f"Only {len(boot_point)}/{n_bootstrap} bootstrap draws succeeded. "
@@ -436,7 +498,9 @@ def bcf_longitudinal(
     # per-time-point mean) so that average_ate and average_ci are
     # centred on the same sampling distribution.
     headline_avg = (
-        boot_mean if np.isfinite(boot_mean) else float(per_time_ate["ate_point"].mean())
+        boot_mean
+        if np.isfinite(boot_mean)
+        else float(np.nanmean(per_time_ate["ate_point"]))
     )
 
     return BCFLongResult(

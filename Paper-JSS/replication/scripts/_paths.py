@@ -151,7 +151,7 @@ def expected_stata_module_count() -> int:
 EDITOR_FACING_DOCS = frozenset({
     "Paper-JSS/cover-letter.md",
     "Paper-JSS/cover-letter.template.md",
-    "Paper-JSS/REVIEWER-HARDENING-AUDIT.md",
+    "Paper-JSS/RELEASE-CHECKLIST.md",
     "Paper-JSS/JOSS-JSS-OVERLAP.md",
 })
 PUBLIC_SNAPSHOT_MARKER = PAPER_ROOT / "PUBLIC_SNAPSHOT"

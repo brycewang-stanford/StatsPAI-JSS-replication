@@ -28,10 +28,13 @@ import pandas as pd
 from scipy import stats
 
 from .._aliases import accepts_aliases
+from .._input_validation import check_columns
+from ..core._call_record import records_call
+from ..core._vcov_spec import accepts_vce
 from ..core.results import CausalResult
 from ..exceptions import AssumptionWarning, DataInsufficient, MethodIncompatibility
 from .aggte import aggte
-from .callaway_santanna import callaway_santanna
+from .callaway_santanna import callaway_santanna, few_never_treated_cutoff
 
 _AGG_TYPES = ("simple", "dynamic", "group", "calendar")
 # Arguments that set the inference the jackknife replaces, or the data it
@@ -39,7 +42,9 @@ _AGG_TYPES = ("simple", "dynamic", "group", "calendar")
 _FORBIDDEN_KWARGS = ("bstrap", "cband", "se_method", "biters", "clustervars")
 
 
-@accepts_aliases(_strict=True, t="time", i="id")
+@records_call("cs_jackknife")
+@accepts_aliases(_strict=True, t="time", i="id", cohort="g", first_treat="g")
+@accepts_vce(default="cluster")
 def cs_jackknife(
     data: pd.DataFrame,
     y: str,
@@ -133,13 +138,17 @@ def cs_jackknife(
             diagnostics={"alpha": alpha},
         )
     cluster = id if cluster is None else cluster
-    for col in (y, g, time, id, cluster):
-        if col not in data.columns:
-            raise MethodIncompatibility(
-                f"cs_jackknife: column {col!r} not found in data.",
-                recovery_hint="Check the column names passed to cs_jackknife.",
-                diagnostics={"missing": col},
-            )
+    check_columns(
+        data,
+        {
+            "y": y,
+            "g": g,
+            "time": time,
+            "id": id,
+            "cluster": None if cluster == id else cluster,
+        },
+        function="sp.cs_jackknife",
+    )
     if cluster != id:
         varying = data.groupby(id)[cluster].nunique(dropna=False)
         if (varying > 1).any():
@@ -172,6 +181,31 @@ def cs_jackknife(
     treated_clusters = pd.unique(data.loc[treated_rows, cluster])
     single_treated = len(treated_clusters) < 2
     skipped = list(treated_clusters) if single_treated else []
+
+    # The refits are silenced for what the full fit already said. A
+    # never-treated group that only falls below R `did`'s minimum once a
+    # cluster is deleted is something the full fit never said, so say it here.
+    if cs_kwargs.get("control_group", "nevertreated") == "nevertreated":
+        never = pd.DataFrame(
+            {
+                "unit": data.loc[~treated_rows, id].to_numpy(),
+                "cluster": data.loc[~treated_rows, cluster].to_numpy(),
+            }
+        ).drop_duplicates()
+        n_never = int(never["unit"].nunique())
+        cutoff = few_never_treated_cutoff(cs_kwargs.get("x"))
+        if len(never) and n_never >= cutoff:
+            fewest = n_never - int(never.groupby("cluster")["unit"].nunique().max())
+            if fewest < cutoff:
+                warnings.warn(
+                    f"cs_jackknife: the {n_never} never-treated units fall to "
+                    f"{fewest} in some delete-one samples, below the {cutoff} "
+                    "at which R `did` refuses control_group='nevertreated'. "
+                    "The replicates are computed; R `didjack` on did >= 2.5.0 "
+                    "stops on this design.",
+                    AssumptionWarning,
+                    stacklevel=2,
+                )
 
     labels: List[Any] = []
     estimates: List[float] = []

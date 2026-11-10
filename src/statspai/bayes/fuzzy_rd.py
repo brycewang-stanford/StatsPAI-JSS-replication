@@ -6,6 +6,14 @@ D at the cutoff jointly, then forms the LATE as the ratio
 the posterior level means the resulting posterior on ``late``
 automatically inherits both noise channels and becomes heavy-tailed
 under weak compliance (``itt_D ≈ 0``).
+
+The errors of the two equations are modelled as jointly normal. They are
+correlated by construction: the outcome's reduced-form error contains
+``LATE * eps_D``, plus whatever makes take-up endogenous. Before 1.39 they
+were treated as independent, which left the posterior mean of the ratio
+unchanged but misstated its spread (too wide by 10 to 25 percent in typical
+designs, too narrow when the effect and the selection have opposite
+signs).
 """
 
 from __future__ import annotations
@@ -15,6 +23,8 @@ from typing import Optional, Tuple
 import numpy as np
 import pandas as pd
 
+from .._aliases import accepts_aliases
+from .._input_validation import check_columns
 from ._base import (
     BayesianCausalResult,
     _require_pymc,
@@ -41,6 +51,7 @@ def _local_poly_design(
     return np.column_stack(cols)
 
 
+@accepts_aliases(seed="random_state")
 def bayes_fuzzy_rd(
     data: pd.DataFrame,
     y: str,
@@ -73,6 +84,7 @@ def bayes_fuzzy_rd(
 
         Y_i = a_Y + itt_Y * I(x_i >= c) + poly_Y(x_i - c) + eps_Y
         D_i = a_D + itt_D * I(x_i >= c) + poly_D(x_i - c) + eps_D
+        (eps_Y, eps_D) jointly normal: eps_Y = lambda * eps_D + e
         LATE := itt_Y / itt_D   (deterministic posterior)
 
     Each polynomial gets independent slopes on each side (standard
@@ -129,11 +141,13 @@ def bayes_fuzzy_rd(
     >>> # First-stage strength diagnostics live in model_info:
     >>> res.model_info['first_stage_mean']  # doctest: +SKIP
     """
+    check_columns(
+        data,
+        {"y": y, "treat": treat, "running": running},
+        function="sp.bayes_fuzzy_rd",
+    )
     pm, _ = _require_pymc()
 
-    for c in (y, treat, running):
-        if c not in data.columns:
-            raise ValueError(f"Column '{c}' not found in data")
     if poly < 1:
         raise ValueError(f"poly must be >= 1, got {poly}")
 
@@ -201,11 +215,17 @@ def bayes_fuzzy_rd(
         mu_Y = a_Y + itt_Y * treated_side + poly_Y
         mu_D = a_D + itt_D * treated_side + poly_D
 
+        # Joint normal errors, factorised as eps_D and eps_Y | eps_D:
+        # eps_Y = lambda_YD * eps_D + e, with sigma_Y the sd of e. The
+        # two reduced-form errors are correlated whenever the effect is
+        # not zero (eps_Y contains LATE * eps_D), and that correlation
+        # enters the variance of the ratio itt_Y / itt_D.
+        lambda_YD = pm.Normal("lambda_YD", mu=0.0, sigma=prior_slope_sigma)
         sigma_Y = pm.HalfNormal("sigma_Y", sigma=prior_noise)
         sigma_D = pm.HalfNormal("sigma_D", sigma=prior_noise)
 
-        pm.Normal("y_obs", mu=mu_Y, sigma=sigma_Y, observed=Y)
         pm.Normal("d_obs", mu=mu_D, sigma=sigma_D, observed=D)
+        pm.Normal("y_obs", mu=mu_Y + lambda_YD * (D - mu_D), sigma=sigma_Y, observed=Y)
 
         # Deterministic LATE = itt_Y / itt_D. pm.Deterministic writes
         # it into the trace so the downstream summary machinery picks

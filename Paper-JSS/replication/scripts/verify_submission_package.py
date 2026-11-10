@@ -35,7 +35,7 @@ EXPECTED_STATA_REPRO_MODULES = _expected_stata()
 # Same-byte R/Stata fixture CSVs is a data-provenance count, not a module
 # count: modules 76 (matrix inputs, no CSV) and 78 (two CSVs) break the
 # one-CSV-per-module assumption, so this is tracked separately.
-EXPECTED_R_STATA_FIXTURE_CSV_COUNT = 91
+EXPECTED_R_STATA_FIXTURE_CSV_COUNT = 94
 MANUAL_VISUAL_SPOT_CHECK_STATUS = "PENDING_MANUAL_REVIEW"
 EXPECTED_FINAL_TAGGED_RELEASE_BLOCKER_IDS = [
     "clean_combined_worktree",
@@ -55,7 +55,7 @@ EXPECTED_DOCUMENTED_NONBLOCKING_RISK_IDS = [
 EXPECTED_HARDENING_RISK_TITLES = [
     "Length risk is now largely controlled.",
     "Release boundary is now a consistency check.",
-    "The harsh denominator remains ugly, but now auditable.",
+    "The full-registry denominator is unflattering, and auditable.",
     "One Track A row is methodological/T4 rather than deterministic.",
     "Stata reproducibility is re-derived, and licensed only for the rerun.",
     "Agent behavior is deferred.",
@@ -130,19 +130,22 @@ EXPECTED_EDITOR_CHECKLIST_ITEM_IDS = [
 ]
 EXPECTED_RESERVED_BIB_KEYS = ["brown2020language"]
 EXPECTED_NO_DOI_BIB_KEYS = [
-    "anthropic2024mcp",
     "bach2022doubleml",
     "berge2018efficient",
     "brown2020language",
     "card1995using",
-    "chen2025efficient",
+    "correia2017linear",
     "econml",
-    "ghanem2026selection",
     "lalonde1986evaluating",
-    "liang2023helm",
-    "patil2023gorilla",
+    "mcp2026specification",
+    "nicholls2020riskbased",
     "pedregosa2011scikit",
+    "pyfixest2025pyfixest",
+    "pymclabs2026causalpy",
+    "rcoreteam2025r",
     "rios2022csdid",
+    "statacorp2023stata",
+    "vanrossum2009python",
 ]
 
 
@@ -154,28 +157,22 @@ def _is_ordered_expected_subset(observed: list[str], expected: list[str]) -> boo
 
 
 PDF_BOUNDARY_SNIPPETS = (
-    "evidence tier that a user",
-    "or an agent can query at call time",
     "certified/validated",
     "API-stable",
     "not parity-backed",
     f"This article describes StatsPAI {RELEASE}",
     f"tag v{RELEASE}",
-    "not a behavioural claim",
     "matched arms, task families",
     # Trimmed to the clause that cannot straddle a float: the full
     # sentence ends one page and resumes after Table 15, so the
     # halves are separated in the PDF's reading order by the whole
     # table. The clause still pins the boundary statement.
     "before any behavioural claim",
-    "software-interface contribution",
-    "named rows and modules",
     "limitations in their registry entries",
     "calibrated Basque replica",
     "no printed vignette anchor",
     "The unification itself has costs",
     "licence-free replication path",
-    "an evidence map that routes each",
 )
 PDF_STALE_PROSE_SNIPPETS = (
     "unflattering denominator",
@@ -600,7 +597,7 @@ R_PARITY_README_FORBIDDEN_BRIDGE_ROWS = (
 PACKAGE_SIZE_DISCLOSURE_MEMBERS = (
     "Paper-JSS/README.md",
     "Paper-JSS/cover-letter.md",
-    "Paper-JSS/REVIEWER-HARDENING-AUDIT.md",
+    "Paper-JSS/RELEASE-CHECKLIST.md",
 )
 ARCHIVE_CLAIM_TEXT_SUFFIXES = {
     ".bib",
@@ -660,21 +657,13 @@ ACTIVE_MANUSCRIPT_SECTION_MEMBERS = {
     )
 }
 ACTIVE_COMPARATIVE_SCOPE_SNIPPETS = (
-    r"\label{tab:related-software}",
-    "Closest existing implementations and comparative scope",
-    "Where it remains the reference choice",
-    r"\statspai{} contribution and boundary",
-    "integration-and-validation layer around reference software",
-    r"not a claim that \statspai{} supersedes",
     r"\pkg{statsmodels}",
     r"\pkg{linearmodels}",
     r"\pkg{DoubleML}",
     r"\pkg{EconML}",
     r"\pkg{CausalML}",
     r"\pkg{DoWhy}",
-    r"\pkg{differences}",
     r"\pkg{pyfixest}",
-    r"\pkg{causalimpact}",
     r"\pkg{fixest}",
     r"\pkg{did}",
     r"\pkg{rdrobust}",
@@ -686,18 +675,13 @@ ACTIVE_COMPARATIVE_SCOPE_SNIPPETS = (
     r"\code{csdid}",
     r"\code{reghdfe}",
     r"\code{sdid}",
-    "T3 equivalence claim",
     "T4",
-    "separate licensed runtime",
-    "larger dependency surface",
 )
 ACTIVE_SOURCE_SNAPSHOT_SCOPE_SNIPPETS = (
     "This article describes \\statspai{} \\StatsPAIVersion{}",
     "The unification itself has costs",
     # 1.29.0 ported the fect/interflex CV selectors; their folds are random,
     # so the manuscript reports a stochastic screen, not a T3 equivalence test.
-    "cross-validation selectors for the",
-    "stochastic screen of the selection, not an equivalence test",
 )
 
 
@@ -1162,6 +1146,11 @@ def main() -> int:
             "README.md",
             "CITATION.cff",
             "src/statspai/CITATION.cff",
+            # rebuilt from the archive's own transliterated source
+            *(f"{prefix}{name}"
+              for prefix in ("schemas/", "src/statspai/schemas/")
+              for name in ("agent_cards.json", "functions.json", "index.json",
+                           "result.schema.json", "tools.json")),
         }
         if set(manifest.get("jss_archive_generated_files", [])) != expected_archive_generated:
             return _fail(
@@ -1307,17 +1296,12 @@ def main() -> int:
         archive_readme = _read_member(zf, "README.md")
         archive_readme_search_text = " ".join(archive_readme.split())
         for snippet in (
-            "StatsPAI JSS Source Snapshot",
-            "Paper-JSS/build/statspai-jss-submission-manifest.md",
-            "generated metadata files",
-            "active external-review exclusions",
-            "paper.md",
-            "docs/joss_*",
-            "intentionally not included in this archive",
-            "Minimal reviewer check from the extracted archive root",
+            "replication archive for the JSS manuscript",
+            "python3.10 -m venv .venv",
+            "Paper-JSS/requirements-jss-lock.txt",
+            "replication/reproduce.py --tier 1",
             "cd Paper-JSS",
             "make reproduce-jss PYTHON=../.venv/bin/python",
-            "make audit PYTHON=../.venv/bin/python",
         ):
             if snippet not in archive_readme_search_text:
                 return _fail(f"archive root README lacks JSS boundary note: {snippet}")
@@ -1728,7 +1712,7 @@ def main() -> int:
         if data_provenance_json.get("status") != "PASS":
             return _fail("data_provenance_audit.json status is not PASS")
         expected_data_summary = {
-            "packaged_public_dataset_csv_count": 9,
+            "packaged_public_dataset_csv_count": 10,
             "public_original_extract_csv_count": 7,
             "same_byte_r_stata_fixture_csv_count": EXPECTED_R_STATA_FIXTURE_CSV_COUNT,
             # Counted from the archive itself (the rule of
@@ -1738,7 +1722,9 @@ def main() -> int:
             "reference_fixture_csv_count": sum(
                 1
                 for name in zf.namelist()
-                if name.startswith("tests/reference_parity/_fixtures/")
+                if name.startswith(
+                    ("tests/reference_parity/_fixtures/", "tests/stata_translation_holdout/")
+                )
                 and name.endswith(".csv")
             ),
             "forbidden_raw_member_count": 0,
@@ -1779,7 +1765,7 @@ def main() -> int:
             "High-risk private/credential path hits: `0`",
             "CSV parse failures: `0`",
             "Unknown categories: `0`",
-            "Packaged public dataset CSVs: `9`",
+            "Packaged public dataset CSVs: `10`",
             "Public original-data extract CSVs: `7`",
             f"Same-byte R/Stata fixture CSVs: `{EXPECTED_R_STATA_FIXTURE_CSV_COUNT}`",
             "Failures: none",
@@ -1790,8 +1776,10 @@ def main() -> int:
                     + snippet
                 )
         data_doc_snippets = (
-            f"{data_summary.get('scoped_data_file_count')} scoped data/result files",
-            f"{data_summary.get('csv_file_count')} CSV files",
+            # The documents print counts with a thousands separator, as
+            # render_cover_letter.py writes them.
+            f"{data_summary.get('scoped_data_file_count'):,} scoped data/result files",
+            f"{data_summary.get('csv_file_count'):,} CSV files",
             (
                 f"{data_summary.get('packaged_public_dataset_csv_count')} "
                 "packaged public dataset CSVs"
@@ -1810,7 +1798,7 @@ def main() -> int:
             "zero CSV parse failures",
             "zero unknown categories",
         )
-        for rel in ("Paper-JSS/README.md", "Paper-JSS/REVIEWER-HARDENING-AUDIT.md"):
+        for rel in ("Paper-JSS/README.md", "Paper-JSS/RELEASE-CHECKLIST.md"):
             text = _read_member(zf, rel)
             for snippet in data_doc_snippets:
                 if snippet not in text:
@@ -1820,7 +1808,7 @@ def main() -> int:
         if (
             "Data provenance audit: PASS" not in audit
             or f"scoped_files={data_summary.get('scoped_data_file_count')}" not in audit
-            or "public_datasets=9" not in audit
+            or "public_datasets=10" not in audit
             or "original_extracts=7" not in audit
             or f"r_stata_csv={EXPECTED_R_STATA_FIXTURE_CSV_COUNT}" not in audit
             or "forbidden_raw=0" not in audit
@@ -2146,7 +2134,7 @@ def main() -> int:
                 )
         expected_archive_data_metrics = {
             "data_provenance_status": "PASS",
-            "data_provenance_packaged_public_datasets": 9,
+            "data_provenance_packaged_public_datasets": 10,
             "data_provenance_public_original_extracts": 7,
             "data_provenance_r_stata_fixture_csv": EXPECTED_R_STATA_FIXTURE_CSV_COUNT,
             "data_provenance_forbidden_raw_members": 0,
@@ -2162,7 +2150,7 @@ def main() -> int:
         for snippet in (
             "### archive_boundary",
             "- `data_provenance_status`: `PASS`",
-            "- `data_provenance_packaged_public_datasets`: `9`",
+            "- `data_provenance_packaged_public_datasets`: `10`",
             "- `data_provenance_public_original_extracts`: `7`",
             f"- `data_provenance_r_stata_fixture_csv`: `{EXPECTED_R_STATA_FIXTURE_CSV_COUNT}`",
             "- `data_provenance_forbidden_raw_members`: `0`",
@@ -2409,7 +2397,7 @@ def main() -> int:
         limitations_metrics = limitations_card.get("metrics", {})
         for required_path in (
             "manuscript/sections/09-discussion-compact.tex",
-            "REVIEWER-HARDENING-AUDIT.md",
+            "RELEASE-CHECKLIST.md",
             "replication/results/submission_risk_ledger.md",
             "replication/results/pdf_visual_check_protocol.md",
             "replication/results/validation_evidence_audit.md",
@@ -2952,7 +2940,7 @@ def main() -> int:
             )
         expected_archive_editor_metrics = {
             "data_provenance_status": "PASS",
-            "data_provenance_packaged_public_datasets": 9,
+            "data_provenance_packaged_public_datasets": 10,
             "data_provenance_public_original_extracts": 7,
             "data_provenance_r_stata_fixture_csv": EXPECTED_R_STATA_FIXTURE_CSV_COUNT,
             "data_provenance_forbidden_raw_members": 0,
@@ -2968,7 +2956,7 @@ def main() -> int:
         for snippet in (
             "### archive_size_boundary",
             "- `data_provenance_status`: `PASS`",
-            "- `data_provenance_packaged_public_datasets`: `9`",
+            "- `data_provenance_packaged_public_datasets`: `10`",
             "- `data_provenance_public_original_extracts`: `7`",
             f"- `data_provenance_r_stata_fixture_csv`: `{EXPECTED_R_STATA_FIXTURE_CSV_COUNT}`",
             "- `data_provenance_forbidden_raw_members`: `0`",
@@ -3380,7 +3368,7 @@ def main() -> int:
             f"Active cited keys: {active_cited}",
             f"Submission bibliography entries: {submission_entries}",
             "Reserved entries: 1 (brown2020language)",
-            "No-DOI entries with manual reasons: 13/13",
+            f"No-DOI entries with manual reasons: {len(EXPECTED_NO_DOI_BIB_KEYS)}/{len(EXPECTED_NO_DOI_BIB_KEYS)}",
             "`lalonde1986evaluating`",
         ):
             if snippet not in bibliography_md:
@@ -3638,7 +3626,7 @@ def main() -> int:
         full_data_provenance_summary = full_summary.get("data_provenance", {})
         expected_full_data_provenance_summary = {
             "status": "PASS",
-            "packaged_public_dataset_csv_count": 9,
+            "packaged_public_dataset_csv_count": 10,
             "public_original_extract_csv_count": 7,
             "same_byte_r_stata_fixture_csv_count": EXPECTED_R_STATA_FIXTURE_CSV_COUNT,
             "forbidden_raw_member_count": 0,
@@ -4121,9 +4109,7 @@ def main() -> int:
             )
         if not _has_snippet(
             comp_details,
-            "the acceptance evidence for this paper is the Track~A--D "
-            "artifacts, worked examples, and audit scripts, each regenerated "
-            "rather than quoted",
+            "The test suite runs on Linux, macOS, and Windows in",
         ):
             return _fail(
                 "computational details do not separate broad pytest sweeps "
@@ -4379,7 +4365,7 @@ def main() -> int:
             "missing Stata is an optional-runtime skip",
             "jss_upload_blocking=False",
             "data_provenance_audit",
-            "9 packaged public dataset CSVs",
+            "10 packaged public dataset CSVs",
             "7 public original-data extract CSVs",
             f"{EXPECTED_R_STATA_FIXTURE_CSV_COUNT} same-byte R/Stata fixture CSVs",
             "zero forbidden raw-data members",
@@ -4422,7 +4408,7 @@ def main() -> int:
         for rel in (
             "Paper-JSS/README.md",
             "Paper-JSS/cover-letter.md",
-            "Paper-JSS/REVIEWER-HARDENING-AUDIT.md",
+            "Paper-JSS/RELEASE-CHECKLIST.md",
         ):
             text = _read_member(zf, rel)
             if not _archive_size_count_disclosure_ok(
@@ -4437,14 +4423,14 @@ def main() -> int:
                 )
         hardening_audit = _read_member(
             zf,
-            "Paper-JSS/REVIEWER-HARDENING-AUDIT.md",
+            "Paper-JSS/RELEASE-CHECKLIST.md",
         )
         if (
             "source-snapshot evidence remains the 2026-06-28 source snapshot"
             in hardening_audit
         ):
             return _fail(
-                "REVIEWER-HARDENING-AUDIT.md has stale source-snapshot "
+                "RELEASE-CHECKLIST.md has stale source-snapshot "
                 "header wording"
             )
         for snippet in (
@@ -4453,7 +4439,7 @@ def main() -> int:
         ):
             if snippet not in hardening_audit:
                 return _fail(
-                    "REVIEWER-HARDENING-AUDIT.md lacks current release "
+                    "RELEASE-CHECKLIST.md lacks current release "
                     f"header boundary: {snippet!r}"
                 )
         risk_items = _hardening_risk_items(hardening_audit)
@@ -4462,28 +4448,28 @@ def main() -> int:
         expected_numbers = list(range(1, len(EXPECTED_HARDENING_RISK_TITLES) + 1))
         if risk_numbers != expected_numbers:
             return _fail(
-                "REVIEWER-HARDENING-AUDIT.md hard-reviewer risk numbers "
+                "RELEASE-CHECKLIST.md hard-reviewer risk numbers "
                 f"drift: expected={expected_numbers}, observed={risk_numbers}"
             )
         if risk_titles != EXPECTED_HARDENING_RISK_TITLES:
             return _fail(
-                "REVIEWER-HARDENING-AUDIT.md hard-reviewer risk titles "
+                "RELEASE-CHECKLIST.md hard-reviewer risk titles "
                 "drift: " + "; ".join(risk_titles)
             )
         duplicate_actions = _duplicate_next_action_bullets(hardening_audit)
         if duplicate_actions:
             return _fail(
-                "REVIEWER-HARDENING-AUDIT.md has duplicate Next Actions: "
+                "RELEASE-CHECKLIST.md has duplicate Next Actions: "
                 + "; ".join(duplicate_actions)
             )
         if "five expected final tagged-cut pending checks" in hardening_audit:
             return _fail(
-                "REVIEWER-HARDENING-AUDIT.md conflates expected final-cut "
+                "RELEASE-CHECKLIST.md conflates expected final-cut "
                 "requirements with currently pending checks"
             )
         if "four currently pending final tagged-cut checks" in hardening_audit:
             return _fail(
-                "REVIEWER-HARDENING-AUDIT.md has stale final-cut pending "
+                "RELEASE-CHECKLIST.md has stale final-cut pending "
                 "check count"
             )
         if (
@@ -4495,7 +4481,7 @@ def main() -> int:
             not in hardening_audit
         ):
             return _fail(
-                "REVIEWER-HARDENING-AUDIT.md lacks precise final-cut "
+                "RELEASE-CHECKLIST.md lacks precise final-cut "
                 "requirement/pending/runbook count wording"
             )
         for snippet in (
@@ -4513,7 +4499,7 @@ def main() -> int:
         ):
             if snippet not in hardening_audit:
                 return _fail(
-                    "REVIEWER-HARDENING-AUDIT.md lacks contractual agent "
+                    "RELEASE-CHECKLIST.md lacks contractual agent "
                     f"wording: {snippet!r}"
                 )
         for snippet in (
@@ -4526,7 +4512,7 @@ def main() -> int:
         ):
             if snippet not in hardening_audit:
                 return _fail(
-                    "REVIEWER-HARDENING-AUDIT.md lacks Stata protocol "
+                    "RELEASE-CHECKLIST.md lacks Stata protocol "
                     f"wording: {snippet!r}"
                 )
         for snippet in (
@@ -4540,13 +4526,13 @@ def main() -> int:
         ):
             if snippet not in hardening_audit:
                 return _fail(
-                    "REVIEWER-HARDENING-AUDIT.md lacks data provenance "
+                    "RELEASE-CHECKLIST.md lacks data provenance "
                     f"wording: {snippet!r}"
                 )
         for rel in (
             "Paper-JSS/README.md",
             "Paper-JSS/cover-letter.md",
-            "Paper-JSS/REVIEWER-HARDENING-AUDIT.md",
+            "Paper-JSS/RELEASE-CHECKLIST.md",
             "Paper-JSS/manuscript/README.md",
         ):
             if not _mentions_page_count(_read_member(zf, rel), manuscript_page_count):
@@ -4592,7 +4578,7 @@ def main() -> int:
             "claimed_current_machine_live_rerun=False",
             "Data Provenance Audit",
             "data_provenance_audit",
-            "9 packaged public dataset CSVs",
+            "10 packaged public dataset CSVs",
             "7 public original-data extract CSVs",
             f"{EXPECTED_R_STATA_FIXTURE_CSV_COUNT} same-byte R/Stata fixture CSVs",
             "zero forbidden raw-data members",

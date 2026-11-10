@@ -45,6 +45,7 @@ import numpy as np
 import pandas as pd
 
 from .._aliases import accepts_aliases
+from .._input_validation import check_columns
 from ..exceptions import DataInsufficient
 
 __all__ = [
@@ -144,7 +145,7 @@ class DiDClusterDiagnostics:
         }
 
 
-@accepts_aliases(id="unit")
+@accepts_aliases(id="unit", cohort="first_treat", g="first_treat")
 def did_cluster_diagnostics(
     data: pd.DataFrame,
     unit: str,
@@ -194,12 +195,11 @@ def did_cluster_diagnostics(
     >>> diag.n_cohorts
     3
     """
-    for col in (unit, first_treat) + ((cluster,) if cluster else ()):
-        if col not in data.columns:
-            raise ValueError(
-                f"Column {col!r} not found in data. Available: "
-                f"{sorted(data.columns)[:12]}..."
-            )
+    check_columns(
+        data,
+        {"unit": unit, "first_treat": first_treat, "cluster": cluster or None},
+        function="sp.did_cluster_diagnostics",
+    )
 
     cluster_is_unit = cluster is None
     cluster_col = cluster or unit

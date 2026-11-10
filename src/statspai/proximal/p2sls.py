@@ -60,6 +60,7 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 
+from .._input_validation import check_columns
 from ..core.results import CausalResult
 from ..exceptions import NumericalInstability
 
@@ -153,9 +154,17 @@ def proximal(
 
     covariates = list(covariates or [])
     all_cols = [y, treat] + list(proxy_z) + list(proxy_w) + covariates
-    missing = [c for c in all_cols if c not in data.columns]
-    if missing:
-        raise ValueError(f"Columns not found in data: {missing}")
+    check_columns(
+        data,
+        {
+            "y": y,
+            "treat": treat,
+            "proxy_z": list(proxy_z),
+            "proxy_w": list(proxy_w),
+            "covariates": covariates,
+        },
+        function="sp.proximal",
+    )
 
     df = data[all_cols].dropna().reset_index(drop=True)
     n = len(df)
@@ -414,7 +423,14 @@ def _linear_iv_fit(
             df_denom = n - full.shape[1]
             if rss_full > 0 and q > 0 and df_denom > 0:
                 first_stage_F = ((rss_restr - rss_full) / q) / (rss_full / df_denom)
-        except Exception:
+        except Exception as exc:
+            from ..core._fallback import warn_fallback
+
+            warn_fallback(
+                "proximal 2SLS first-stage F statistic",
+                exc,
+                "it is not reported",
+            )
             first_stage_F = None
 
     return beta, vcov, first_stage_F

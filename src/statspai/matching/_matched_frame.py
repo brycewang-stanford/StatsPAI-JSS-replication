@@ -56,7 +56,7 @@ Rosenbaum, P.R. and Rubin, D.B. (1983). Biometrika, 70(1), 41-55.
 
 from __future__ import annotations
 
-from typing import Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence
 
 import numpy as np
 import pandas as pd
@@ -131,25 +131,27 @@ def psmatch2_se(
 ) -> float:
     """Stata ``psmatch2`` default analytic ATT standard error.
 
-    Reproduces, digit for digit, the formula in ``psmatch2.ado``
-    (Leuven & Sianesi 2003)::
+    The formula is the one the ``psmatch2`` help file states for its
+    default standard error (independent observations, fixed matching
+    weights, homoskedastic outcomes within each arm; Lechner 2001)::
 
-        seatt = sqrt(var1 / N1  +  var0 * wtot / N1^2)
+        se = sqrt( Var(Y | matched treated) / N1
+                   + sum_j w_j^2 / N1^2 * Var(Y | matched controls) )
 
-    where
+    Clean-room implementation; the reading of each term below was pinned
+    by running ``psmatch2`` as a black box and rebuilding ``r(seatt)``
+    from the variables it leaves behind (``docs/dev/cleanroom/psmatch2.md``):
 
-    * ``var1`` is the (ddof=1) outcome variance among the **treated on
-      support**,
-    * ``var0`` is the (ddof=1) outcome variance among the **controls that
-      were actually used as matches** (``_weight`` not missing),
-    * ``wtot`` is the sum of squared control ``_weight``\\ s, and
-    * ``N1`` is the number of treated units on support.
+    * the matched treated are the treated units on common support, and
+      ``N1`` is their number;
+    * the matched controls are the controls with a non-missing matching
+      weight (a weight of zero still counts), whatever their support flag;
+    * both variances are the unweighted sample variances (divisor
+      ``n - 1``), and ``w_j`` is the control's total matching weight.
 
-    This treats the matching weights as fixed and assumes homoskedastic,
-    independent outcomes within group (Lechner 2001).  It does **not**
-    account for the estimation of the propensity score — exactly matching
-    Stata's note.  It applies identically to nearest-neighbour, kernel and
-    radius matching because all three feed it the same ``_weight`` column.
+    It conditions on the matching weights and on the propensity score, so
+    it ignores the estimation of either.  Nearest-neighbour, kernel and
+    radius matching all reach it through the same weight column.
 
     Parameters
     ----------
@@ -165,24 +167,28 @@ def psmatch2_se(
     Returns
     -------
     float
-        The analytic SE, or ``nan`` if it cannot be formed (e.g. fewer than
-        two treated, or no used controls).
+        The analytic SE, or ``nan`` when it cannot be formed: fewer than
+        two matched treated or fewer than two matched controls, or a
+        missing outcome among them.
+
+    References
+    ----------
+    [@lechner2001identification]
     """
     y = np.asarray(outcome, dtype=float)
-    t = np.asarray(treated)
-    s = np.asarray(support).astype(bool)
+    arm = np.asarray(treated, dtype=float)
+    on_support = np.asarray(support).astype(bool)
     w = np.asarray(weight, dtype=float)
 
-    treated_on = (t == 1) & s
-    n1 = int(np.sum(treated_on))
-    used_c = (t == 0) & np.isfinite(w)
-    if n1 < 2 or np.sum(used_c) < 2:
+    matched_treated = (arm == 1) & on_support
+    matched_controls = (arm == 0) & np.isfinite(w)
+    n1 = int(np.sum(matched_treated))
+    if n1 < 2 or int(np.sum(matched_controls)) < 2:
         return float("nan")
-
-    var1 = float(np.var(y[treated_on], ddof=1))
-    var0 = float(np.var(y[used_c], ddof=1))
-    wtot = float(np.sum(w[used_c] ** 2))
-    return float(np.sqrt(var1 / n1 + var0 * wtot / n1**2))
+    var_treated = np.var(y[matched_treated], ddof=1)
+    var_controls = np.var(y[matched_controls], ddof=1)
+    sum_sq_weights = np.sum(w[matched_controls] ** 2)
+    return float(np.sqrt(var_treated / n1 + var_controls * sum_sq_weights / n1**2))
 
 
 def _within_group_self_outcome_reference(
@@ -283,6 +289,33 @@ def _within_group_self_outcome(
         n_grp = len(starts)
         take = min(j, m - 1)
 
+        if take == 1 and bool(np.all(np.isfinite(s_ps))):
+            # One neighbour needs no walk: it is the first other unit of the
+            # unit's own score group or, for a unit alone at its score, the
+            # first unit of the nearer adjacent group -- of the two, the one
+            # earlier in the data when they are equally far.
+            g_of = grp_of
+            own = starts[g_of]
+            rank = np.arange(m)
+            in_group = np.where(rank != own, own, np.minimum(own + 1, m - 1))
+            g_left = np.maximum(g_of - 1, 0)
+            g_right = np.minimum(g_of + 1, n_grp - 1)
+            gap_l = np.where(g_of > 0, vals[g_of] - vals[g_left], np.inf)
+            gap_r = np.where(g_of < n_grp - 1, vals[g_right] - vals[g_of], np.inf)
+            first_l, first_r = starts[g_left], starts[g_right]
+            beside = np.where(
+                gap_l < gap_r,
+                first_l,
+                np.where(
+                    gap_r < gap_l,
+                    first_r,
+                    np.where(s_idx[first_l] < s_idx[first_r], first_l, first_r),
+                ),
+            )
+            pick = np.where((ends - starts)[g_of] > 1, in_group, beside)
+            self_y[s_idx] = s_y[pick]
+            continue
+
         for r in range(m):
             gi = int(grp_of[r])
             need = take
@@ -341,6 +374,142 @@ def _within_group_self_outcome(
     return self_y
 
 
+def _within_group_self_outcome_all_ties(
+    outcome: np.ndarray,
+    treated: np.ndarray,
+    pscore: np.ndarray,
+    n_ai_matches: int,
+) -> np.ndarray:
+    """``_self_y`` keeping every same-arm unit tied with the ``J``-th nearest.
+
+    The neighbours of a unit are all other units of its arm whose distance
+    is at most that of its ``J``-th nearest, so no unit is left out by its
+    position in the data and the result does not depend on row order. With
+    ``J = 1`` this is ``psmatch2 , ai(1) ties``: on ``MatchIt::lalonde`` the
+    per-unit means equal its ``_self_re78`` to 2e-16
+    (``tests/reference_parity/test_psm_ties_se_parity.py``). For ``J > 1``
+    psmatch2 counts the ``J``-th neighbour twice when it is tied; this keeps
+    each tied unit once.
+
+    Units with the same score share every neighbour outside their own score
+    group, so the outward walk runs once per group.
+    """
+    y = np.asarray(outcome, dtype=float)
+    t = np.asarray(treated)
+    ps = np.asarray(pscore, dtype=float)
+    self_y = np.full(len(y), np.nan)
+    j = max(int(n_ai_matches), 1)
+    for g in (0, 1):
+        idx = np.where(t == g)[0]
+        m = len(idx)
+        if m < 2:
+            continue
+        order = np.argsort(ps[idx], kind="stable")
+        s_idx = idx[order]
+        s_ps = ps[s_idx]
+        s_y = y[s_idx]
+        is_new = np.empty(m, dtype=bool)
+        is_new[0] = True
+        np.not_equal(s_ps[1:], s_ps[:-1], out=is_new[1:])
+        starts = np.flatnonzero(is_new)
+        ends = np.append(starts[1:], m)
+        vals = s_ps[starts]
+        sizes = ends - starts
+        sums = np.add.reduceat(s_y, starts)
+        n_grp = len(starts)
+        for gi in range(n_grp):
+            own = int(sizes[gi]) - 1
+            need = min(j, m - 1) - own
+            ext_sum, ext_n = 0.0, 0
+            left, right = gi - 1, gi + 1
+            while need > 0:
+                d_left = (vals[gi] - vals[left]) if left >= 0 else np.inf
+                d_right = (vals[right] - vals[gi]) if right < n_grp else np.inf
+                if d_left <= d_right:
+                    ext_sum += sums[left]
+                    ext_n += int(sizes[left])
+                    need -= int(sizes[left])
+                    left -= 1
+                if d_right <= d_left:
+                    ext_sum += sums[right]
+                    ext_n += int(sizes[right])
+                    need -= int(sizes[right])
+                    right += 1
+            rows = slice(int(starts[gi]), int(ends[gi]))
+            self_y[s_idx[rows]] = (sums[gi] - s_y[rows] + ext_sum) / (own + ext_n)
+    return self_y
+
+
+def _self_outcome_distinct_origin(
+    outcome: np.ndarray,
+    treated: np.ndarray,
+    pscore: np.ndarray,
+    n_ai_matches: int,
+    origin: np.ndarray,
+    ties: str = "first",
+) -> np.ndarray:
+    """``_self_y`` when rows are replicas of fewer original observations.
+
+    Frequency weights are computed by repeating rows. A replica of a row
+    has the same score and the same outcome, so the nearest same-arm
+    "neighbour" of every row would be its own copy and the squared gap that
+    estimates :math:`\\sigma^2(X)` would be zero. The neighbours are
+    therefore taken among the rows that stem from a *different* original
+    observation (``origin`` labels the observation each row is a copy of),
+    in the order of :func:`_within_group_self_outcome`: distance ascending,
+    then position ascending, a replica counting as one neighbour. With one
+    row per observation the two functions select the same neighbours.
+    """
+    y = np.asarray(outcome, dtype=float)
+    t = np.asarray(treated)
+    ps = np.asarray(pscore, dtype=float)
+    origin = np.asarray(origin)
+    self_y = np.full(len(y), np.nan)
+    j = max(int(n_ai_matches), 1)
+
+    for g in (0, 1):
+        idx = np.where(t == g)[0]
+        if len(idx) == 0:
+            continue
+        # one entry per original observation, in order of first appearance
+        _, first, inverse, freq = np.unique(
+            origin[idx], return_index=True, return_inverse=True, return_counts=True
+        )
+        order = np.argsort(first, kind="stable")
+        rank = np.empty(len(order), dtype=int)
+        rank[order] = np.arange(len(order))
+        u_ps, u_y = ps[idx[first[order]]], y[idx[first[order]]]
+        u_freq = freq[order].astype(float)
+        m = len(order)
+        if m < 2:
+            continue
+        u_self = np.full(m, np.nan)
+        for r in range(m):
+            d = np.abs(u_ps - u_ps[r])
+            d[r] = np.inf
+            take = min(j, m - 1)
+            kth = np.partition(d, take - 1)[take - 1]
+            cand = np.flatnonzero(d <= kth)
+            cand = cand[np.argsort(d[cand], kind="stable")]
+            need = float(min(j, u_freq.sum() - u_freq[r]))
+            if ties == "all":
+                # every observation within the distance at which the
+                # replicas reach J, each with all its replicas
+                reach = int(np.searchsorted(np.cumsum(u_freq[cand]), need))
+                keep = cand[d[cand] <= d[cand[min(reach, len(cand) - 1)]]]
+                u_self[r] = float(
+                    np.sum(u_freq[keep] * u_y[keep]) / np.sum(u_freq[keep])
+                )
+                continue
+            got = np.minimum(
+                u_freq[cand],
+                np.maximum(need - np.cumsum(u_freq[cand]) + u_freq[cand], 0.0),
+            )
+            u_self[r] = float(np.sum(got * u_y[cand]) / need)
+        self_y[idx] = u_self[rank[np.ravel(inverse)]]
+    return self_y
+
+
 def abadie_imbens_se(
     outcome: np.ndarray,
     treated: np.ndarray,
@@ -348,15 +517,22 @@ def abadie_imbens_se(
     support: np.ndarray,
     weight: np.ndarray,
     n_ai_matches: int = 1,
+    origin: Optional[np.ndarray] = None,
+    self_outcome: Optional[np.ndarray] = None,
+    ties: str = "first",
 ) -> float:
     """Abadie-Imbens (2006) heteroskedasticity-robust ATT standard error.
 
-    Reproduces, digit for digit, Stata ``psmatch2 , ai(J)`` (Leuven &
-    Sianesi 2003; Abadie & Imbens 2006, eq. 14, p. 250 for the sample ATT)::
+    The variance of the sample ATT in Abadie and Imbens (2006, eq. 14;
+    ``abadie2006large``), with the conditional variance estimated from the
+    ``J`` nearest same-arm units::
 
-        shat_i  = (J / (J+1)) · (Y_i − Ȳ_self_i)²          # σ²(X_i) estimate
-        VhatEt_i = shat_i · (D_i − (1 − D_i)·w_i)²          # on support
-        seatt    = sqrt(Σ_i VhatEt_i) / N1
+        sigma2_i = (J / (J+1)) · (Y_i − Ȳ_self_i)²          # σ²(X_i) estimate
+        term_i   = sigma2_i · (D_i − (1 − D_i)·w_i)²        # on support
+        se       = sqrt(Σ_i term_i) / N1
+
+    Its output matches Stata ``psmatch2 , ai(J)`` digit for digit, with
+    psmatch2 used as a black box (reference parity tests).
 
     where ``Ȳ_self_i`` is the mean outcome of the ``J`` nearest *same-arm*
     neighbours (:func:`_within_group_self_outcome`), ``w_i = max(_weight_i,
@@ -373,11 +549,29 @@ def abadie_imbens_se(
         ``_weight`` column (``NaN`` outside the matched sample).
     n_ai_matches : int, default 1
         Number of within-arm matches ``J`` (Stata's ``ai(J)``).
+    origin : ndarray, optional
+        The original observation each row is a replica of (frequency
+        weights computed by repeating rows). The within-arm neighbours are
+        then rows of other observations; see
+        :func:`_self_outcome_distinct_origin`.
+    self_outcome : ndarray, optional
+        The mean outcome of each unit's ``J`` nearest same-arm units, found
+        by the caller in the metric the matching ran on (a Mahalanobis or
+        Euclidean distance). Omitted, they are found on ``pscore``, which
+        is the matching metric of ``psmatch2 , ai(J)``.
+    ties : {'first', 'all'}, default 'first'
+        Same-arm units tied with the ``J``-th nearest: ``'first'`` keeps
+        the earliest rows, as ``psmatch2 , ai(J)`` does, so the result
+        depends on row order when there are ties; ``'all'`` keeps every
+        tied unit (``psmatch2 , ai(J) ties``; see
+        :func:`_within_group_self_outcome_all_ties`).
 
     Returns
     -------
     float
-        The robust SE, or ``nan`` if it cannot be formed.
+        The robust SE, or ``nan`` if it cannot be formed: no treated unit
+        on support, or a unit that enters the estimate has no other unit in
+        its arm to estimate its outcome variance from.
 
     References
     ----------
@@ -396,14 +590,88 @@ def abadie_imbens_se(
     if n1 < 1:
         return float("nan")
 
-    self_y = _within_group_self_outcome(y, t, pscore, j)
-    shat = (j / (j + 1.0)) * (y - self_y) ** 2
+    if self_outcome is None:
+        shat = _conditional_variance(y, t, pscore, j, origin, ties)
+    else:
+        shat = (j / (j + 1.0)) * (y - np.asarray(self_outcome, dtype=float)) ** 2
     w_pos = np.where(np.isfinite(w), np.maximum(w, 0.0), 0.0)
-    vhat = shat * (t - (1 - t) * w_pos) ** 2
+    coef = t - (1 - t) * w_pos
+    # A unit that enters the estimate but is alone in its arm has no
+    # same-arm neighbour, so its sigma^2(X) is not estimable; summing the
+    # other terms would report the variance without it.
+    if np.any(~np.isfinite(shat[s]) & (coef[s] != 0)):
+        return float("nan")
+    vhat = shat * coef**2
     total = float(np.nansum(vhat[s]))
     if not np.isfinite(total) or total < 0:
         return float("nan")
     return float(np.sqrt(total) / n1)
+
+
+def _conditional_variance(
+    y: np.ndarray,
+    t: np.ndarray,
+    pscore: np.ndarray,
+    j: int,
+    origin: Optional[np.ndarray],
+    ties: str = "first",
+) -> np.ndarray:
+    """``J/(J+1) (Y_i - mean of the J nearest same-arm outcomes)^2``.
+
+    The Abadie-Imbens (2006, eq. 14) estimate of :math:`\\sigma^2(X_i)`.
+    """
+    if origin is not None:
+        self_y = _self_outcome_distinct_origin(y, t, pscore, j, origin, ties)
+    elif ties == "all":
+        self_y = _within_group_self_outcome_all_ties(y, t, pscore, j)
+    else:
+        self_y = _within_group_self_outcome(y, t, pscore, j)
+    return np.asarray((j / (j + 1.0)) * (y - self_y) ** 2, dtype=float)
+
+
+def abadie_imbens_linear_se(
+    outcome: np.ndarray,
+    treated: np.ndarray,
+    pscore: np.ndarray,
+    coef: np.ndarray,
+    n_ai_matches: int = 1,
+    origin: Optional[np.ndarray] = None,
+    self_outcome: Optional[np.ndarray] = None,
+    ties: str = "first",
+) -> float:
+    """Abadie-Imbens (2006) conditional standard error of ``sum_i c_i Y_i``.
+
+    A matching estimator is linear in the outcomes given the matches,
+    ``tau = sum_i c_i Y_i``, and its variance given the covariates and the
+    treatment is ``sum_i c_i^2 sigma^2(X_i, W_i)`` (Abadie & Imbens 2006,
+    Theorem 6 and eq. 14, where ``c_i = (2 W_i - 1)(1 + K_M(i)) / N`` for
+    the average treatment effect). ``sigma^2`` is estimated from the ``J``
+    nearest same-arm units as in :func:`abadie_imbens_se`, which is this
+    function with the ATT's ``c_i``. The two arms enter symmetrically, so
+    the result does not depend on which arm is labelled treated.
+
+    ``self_outcome``, when given, is the mean outcome of each unit's ``J``
+    nearest same-arm units found by the caller (in the metric the matching
+    ran on); otherwise they are found on ``pscore``.
+
+    Returns ``nan`` when a unit with ``c_i != 0`` is alone in its arm.
+
+    References
+    ----------
+    abadie2006large
+    """
+    y = np.asarray(outcome, dtype=float)
+    t = np.asarray(treated)
+    c = np.asarray(coef, dtype=float)
+    j = max(int(n_ai_matches), 1)
+    if self_outcome is None:
+        shat = _conditional_variance(y, t, pscore, j, origin, ties)
+    else:
+        shat = (j / (j + 1.0)) * (y - np.asarray(self_outcome, dtype=float)) ** 2
+    used = c != 0
+    if not np.any(used) or np.any(~np.isfinite(shat[used])):
+        return float("nan")
+    return float(np.sqrt(np.sum(shat[used] * c[used] ** 2)))
 
 
 def build_matched_frame(
@@ -486,7 +754,53 @@ def build_matched_frame(
     k = max(int(n_matches), 1)
     neighbor = np.full((n, k), np.nan, dtype=float)
 
-    for i, (m, w) in enumerate(zip(matches, weights)):
+    # Targets with a single match, and the weight every pool unit collects,
+    # need no per-target work when no position is both a target and a
+    # match: the loop then visits only the targets with several matches.
+    n_rows = min(len(matches), len(weights))
+    size = np.fromiter((len(matches[i]) for i in range(n_rows)), dtype=np.intp)
+    idx_t = np.asarray(idx_t)
+    idx_c = np.asarray(idx_c)
+    flat_pos = np.zeros(0, dtype=np.intp)
+    flat_w = np.zeros(0, dtype=float)
+    batched = len(matches) == len(weights) == len(idx_t) and bool(np.any(size > 0))
+    if batched:
+        flat_pos = idx_c[np.concatenate([np.asarray(m, dtype=int) for m in matches])]
+        flat_w = np.concatenate([np.asarray(w, dtype=float) for w in weights])
+        is_target = np.zeros(n, dtype=bool)
+        is_target[idx_t] = True
+        batched = (
+            len(flat_w) == len(flat_pos)
+            and len(np.unique(idx_t)) == len(idx_t)
+            and bool(np.all(np.isfinite(flat_w)))
+            and not bool(np.any(is_target[flat_pos]))
+        )
+    if batched:
+        share_sum = np.zeros(n, dtype=float)
+        # unbuffered, so each unit's shares are added in the order met
+        np.add.at(share_sum, flat_pos, flat_w)
+        batched = not bool(np.any(np.isnan(share_sum)))
+    if batched:
+        got = np.zeros(n, dtype=bool)
+        got[flat_pos] = True
+        weight[got] = share_sum[got]
+        weight[idx_t[size > 0]] = 1.0
+        one = np.flatnonzero(size == 1)
+        at = (np.cumsum(size) - size)[one]
+        t_one, c_one, w_one = idx_t[one], flat_pos[at], flat_w[at]
+        if neighbors:
+            nn[t_one] = 1.0
+            neighbor[t_one, 0] = obs_id[c_one]
+            pdif[t_one] = np.abs(pscore[t_one] - pscore[c_one])
+        if outcome_arr is not None:
+            ok = np.abs(w_one) > 1e-12 * np.maximum(1.0, np.abs(w_one))
+            matched_y[t_one[ok]] = (outcome_arr[c_one[ok]] * w_one[ok]) / w_one[ok]
+        rows: Any = np.flatnonzero(size > 1).tolist()
+    else:
+        rows = range(n_rows)
+
+    for i in rows:
+        m, w = matches[i], weights[i]
         t_pos = int(idx_t[i])
         if len(m) == 0:
             # Treated unit found no match (caliper bound, or trimmed off
@@ -509,8 +823,16 @@ def build_matched_frame(
             pdif[t_pos] = float(abs(pscore[t_pos] - pscore[ctrl_pos[0]]))
 
         if outcome_arr is not None:
-            matched_y[t_pos] = float(np.average(outcome_arr[ctrl_pos], weights=w_arr))
+            # Local linear weights can be negative and, on a thin
+            # neighbourhood, cancel to zero: the matched outcome is then
+            # undefined for this unit. np.average raises ZeroDivisionError
+            # there, which took down every bootstrap replicate that hit it.
+            total = float(w_arr.sum())
+            if abs(total) > 1e-12 * max(1.0, float(np.abs(w_arr).sum())):
+                matched_y[t_pos] = float(np.dot(outcome_arr[ctrl_pos], w_arr) / total)
 
+        if batched:
+            continue
         # Accumulate each matched control's frequency weight.
         for pos, share in zip(ctrl_pos, w_arr):
             pos = int(pos)

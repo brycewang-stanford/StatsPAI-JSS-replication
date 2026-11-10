@@ -1,0 +1,1123 @@
+"""Predictions, comparisons, slopes and hypotheses in the marginaleffects style.
+
+``sp.predictions`` / ``sp.comparisons`` / ``sp.slopes`` (and their ``avg_``
+versions) and ``sp.hypotheses`` follow R ``marginaleffects``'s vocabulary and
+conventions, so a user or agent arriving from R gets the numbers they expect:
+
+* unit-level quantities by default, averaged by the ``avg_`` functions,
+  optionally ``by=`` groups;
+* averages are **unweighted** unless ``wts=`` asks for weights, and inference
+  uses the **normal** distribution unless ``df=`` says otherwise --
+  marginaleffects' defaults. ``sp.margins`` follows Stata instead (the fit's
+  weights, t after ``regress``); the two agree when neither applies;
+* a numeric variable whose values are all 0 / 1 is contrasted 1 - 0, other
+  numeric variables by +1, and a factor's levels against its first level.
+
+Everything is built on the machinery ``sp.margins`` uses (``_design.py``:
+the design matrix rebuilt from the fitted formula, so interactions and
+transformations are differentiated through), and standard errors are delta
+method with the full coefficient covariance and an analytic Jacobian.
+Each returned table carries the Jacobian of its estimates in
+``.attrs['jacobian']``, which is how ``sp.hypotheses`` tests functions of
+several rows (``"b1 - b2 = 0"``) with their joint covariance.
+
+R ``marginaleffects`` (GPL-3) is used as a black-box reference only.
+"""
+
+from __future__ import annotations
+
+import re
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
+
+import numpy as np
+import pandas as pd
+from scipy import stats
+
+from ..exceptions import MethodIncompatibility
+from ._covariance import AttrArray, inference_df, require_covariance
+from ._design import design_for
+from ._hypotheses_core import (
+    _hypothesis_list,
+    _joint_wald,
+    _parse_restriction,
+    _table_jacobian,
+)
+from .margins import (
+    _estimation_sample,
+    _IndexScaleView,
+    _link_derivatives,
+    _mu_and_slope,
+    _offset,
+    _response_link,
+)
+
+__all__ = [
+    "predictions",
+    "avg_predictions",
+    "comparisons",
+    "avg_comparisons",
+    "slopes",
+    "avg_slopes",
+    "hypotheses",
+]
+
+_COLUMNS = ["estimate", "std_error", "statistic", "p_value", "conf_low", "conf_high"]
+
+
+# ---------------------------------------------------------------------------
+# Model context
+# ---------------------------------------------------------------------------
+
+
+def _fitted_frame(result: Any) -> Optional[pd.DataFrame]:
+    """The DataFrame the model was fitted on, if the result still reaches it."""
+    from ..core._call_record import get_call_record
+
+    record = get_call_record(result)
+    if record is None:
+        return None
+    for ref in record.frames().values():
+        frame = ref.get()
+        if frame is not None:
+            return frame
+    return None
+
+
+class _Model:
+    def __init__(
+        self,
+        result: Any,
+        newdata: Optional[pd.DataFrame],
+        fn: str,
+        vcov: bool = True,
+    ) -> None:
+        from ..fixest._fixef import has_fixed_effects
+        from ._ldv_margins import ldv_model
+
+        if ldv_model(result) is not None:
+            raise MethodIncompatibility(
+                f"{fn}: not available after limited-dependent-variable models "
+                "(mlogit, ologit, oprobit, tobit, heckman, heckprobit, "
+                "ivprobit, intreg), whose predictions are not a single index.",
+                recovery_hint="Use sp.margins (dy/dx) or sp.margins_at "
+                "(predictive margins) with predict=, Stata's margins "
+                "conventions.",
+            )
+        self.result = result
+        self.fn = fn
+        self.vcov = bool(vcov)
+        self.fe = has_fixed_effects(result)
+        # whether the estimates are free of the absorbed fixed effects (set
+        # by the caller; a contrast or slope of a linear index is)
+        self.fe_free = False
+        # set by prepare_fe when the effects count as parameters
+        self.fe_delta: Any = None
+        self.link = _response_link(result)
+        params = getattr(result, "params", None)
+        if not isinstance(params, pd.Series):
+            raise MethodIncompatibility(
+                f"{fn}: needs a regression-type result with a params Series.",
+                recovery_hint="Use it after sp.regress / sp.logit / sp.probit / "
+                "sp.poisson / sp.glm / sp.nbreg.",
+            )
+        self.beta = params.to_numpy(dtype=float)
+        self.cov_source = result
+        if (getattr(result, "model_info", None) or {}).get("irr"):
+            self.beta = np.log(self.beta)
+            self.cov_source = _IndexScaleView(result)
+        self._source = _fitted_frame(result)
+        self._newdata = newdata
+        if newdata is None:
+            frame = self._source
+            if frame is None:
+                raise MethodIncompatibility(
+                    f"{fn}: the data the model was fitted on is no longer "
+                    "available; pass newdata=.",
+                    recovery_hint="Pass newdata=<the estimation data>.",
+                )
+            self.design = design_for(result, frame)
+            frame, _ = _estimation_sample(result, frame, self.design, restrict=True)
+        else:
+            frame = newdata
+            self.design = design_for(result, frame)
+            needed = [v for v in self.design.variables if v in frame.columns]
+            frame = frame.loc[frame[needed].notna().all(axis=1)] if needed else frame
+        if len(frame) == 0:
+            raise MethodIncompatibility(f"{fn}: no complete rows to evaluate.")
+        self.frame = frame.reset_index(drop=True)
+        self.V = require_covariance(self.cov_source, np.ones((1, self.beta.size)), fn)
+
+    def check_fe_inference(self) -> None:
+        """Refuse standard errors that would ignore the effects' uncertainty.
+
+        As R marginaleffects does on a fixest model: a prediction, or any
+        quantity of a non-linear model, depends on the estimated fixed
+        effects, whose sampling variance the coefficient covariance does
+        not carry. Contrasts and slopes of a linear index do not.
+        """
+        if self.fe and self.vcov and not self.fe_free and self.fe_delta is None:
+            raise MethodIncompatibility(
+                f"{self.fn}: the fit absorbed fixed effects, and this quantity "
+                "depends on their estimates, whose uncertainty the coefficient "
+                "covariance does not carry (marginaleffects refuses the same "
+                "standard errors on a fixest model).",
+                recovery_hint="Pass vcov=False for the estimates without "
+                "standard errors, or include the effects as C() terms in a "
+                "model without absorption.",
+            )
+
+    def prepare_fe(self, averaged: bool) -> None:
+        """Count the absorbed effects as parameters for an average that
+        depends on them, as Stata's ``margins`` after ``poisson y x i.g``
+        (``_fe_delta.py``). The Jacobian then carries one more column, the
+        derivative with respect to the row's linear index, which
+        :func:`_average` spreads over the evaluation rows."""
+        if not (self.fe and self.vcov and not self.fe_free):
+            return
+        if not averaged:
+            self.check_fe_inference()
+        from ._fe_delta import build_fe_delta
+
+        source = self._source if self._source is not None else self._newdata
+        self.fe_delta = build_fe_delta(self.result, source, self.design, self.fn)
+        self._D_eval = self.fe_delta.eval_codes(self.frame, self.fn)
+
+    def _with_index(self, jac: np.ndarray, slope: np.ndarray) -> np.ndarray:
+        if self.fe_delta is None:
+            return jac
+        return np.column_stack([jac, np.broadcast_to(slope, (jac.shape[0],))])
+
+    # -- predictions on the response or link scale -----------------------
+    def predict(self, frame: pd.DataFrame, type: str) -> Tuple[np.ndarray, np.ndarray]:
+        """Unit predictions and their Jacobian wrt the coefficients (n x k)."""
+        X = self.design.build(frame)
+        eta = X @ self.beta + _offset(self.result, frame)
+        if type == "link":
+            return eta, self._with_index(X, np.ones(len(eta)))
+        mu, dmu = _mu_and_slope(self.link, eta)
+        return mu, self._with_index(dmu[:, None] * X, dmu)
+
+    def dydx(
+        self, frame: pd.DataFrame, var: str, eps: float, type: str
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """Unit derivative d prediction / d var and its Jacobian."""
+        X = self.design.build(frame)
+        D = self.design.derivative(frame, var, eps)
+        eta = X @ self.beta + _offset(self.result, frame)
+        deta = D @ self.beta
+        if type == "link":
+            return deta, self._with_index(D, np.zeros(len(deta)))
+        f1, f2 = _link_derivatives(self.link, eta)
+        value = f1 * deta
+        jac = (f2 * deta)[:, None] * X + f1[:, None] * D
+        return value, self._with_index(jac, f2 * deta)
+
+
+# ---------------------------------------------------------------------------
+# Tables
+# ---------------------------------------------------------------------------
+
+
+def _resolve_df(df: Any, result: Any) -> float:
+    if df is None:
+        return np.inf
+    if isinstance(df, str):
+        if df != "model":
+            raise MethodIncompatibility("df must be None, 'model' or a number.")
+        return inference_df(result)
+    return float(df)
+
+
+def _table(
+    model: _Model,
+    est: np.ndarray,
+    jac: np.ndarray,
+    meta: pd.DataFrame,
+    *,
+    df: float,
+    conf_level: float,
+    fn: str,
+) -> pd.DataFrame:
+    if not model.vcov:
+        out = meta.reset_index(drop=True).copy()
+        out["estimate"] = est
+        out.attrs.update(
+            {"function": fn, "conf_level": conf_level, "prediction_scale": model.link}
+        )
+        return out
+    model.check_fe_inference()
+    V_coef = model.V
+    if model.fe_delta is not None:
+        from ._fe_delta import factor
+
+        k = model.beta.size
+        cov = model.fe_delta.cov(jac[:, :k], jac[:, k:], model._D_eval)
+        # the hypotheses() attrs: a factor of the estimates' covariance
+        jac, V_coef = factor(cov), np.eye(cov.shape[0])
+    se = np.sqrt(np.maximum(np.einsum("ij,jk,ik->i", jac, V_coef, jac), 0.0))
+    with np.errstate(divide="ignore", invalid="ignore"):
+        stat = est / se
+    dist = stats.norm if not np.isfinite(df) else stats.t(df)
+    p = 2 * dist.sf(np.abs(stat))
+    q = dist.ppf(0.5 + conf_level / 2)
+    out = meta.reset_index(drop=True).copy()
+    out["estimate"] = est
+    out["std_error"] = se
+    out["statistic"] = stat
+    out["p_value"] = p
+    out["conf_low"] = est - q * se
+    out["conf_high"] = est + q * se
+    out.attrs.update(
+        {
+            "function": fn,
+            # wrapped: a bare ndarray in attrs breaks print / pd.concat
+            "jacobian": AttrArray(jac),
+            "vcov_coefficients": AttrArray(V_coef),
+            # the rows the Jacobian describes, so a subset of the table
+            # is tested with its own rows
+            "jacobian_index": tuple(out.index),
+            "df": df,
+            "conf_level": conf_level,
+            "prediction_scale": model.link,
+        }
+    )
+    return out
+
+
+def _weights(model: _Model, wts: Any) -> Optional[np.ndarray]:
+    if wts is None or wts is False:
+        return None
+    if wts is True:
+        from ._design import model_setting
+
+        spec = model_setting(model.result, "weights")
+        if not isinstance(spec, str) or spec not in model.frame.columns:
+            raise MethodIncompatibility(
+                f"{model.fn}: wts=True asks for the fit's weights, but the fit "
+                "had no weight column in this data.",
+                recovery_hint="Pass wts='<column>' instead.",
+            )
+        wts = spec
+    if isinstance(wts, str):
+        if wts not in model.frame.columns:
+            raise MethodIncompatibility(f"{model.fn}: weight column {wts!r} not found.")
+        return np.asarray(model.frame[wts], dtype=float)
+    w = np.asarray(wts, dtype=float).ravel()
+    if w.size != len(model.frame):
+        raise MethodIncompatibility(f"{model.fn}: wts has the wrong length.")
+    return w
+
+
+def _average(
+    est: np.ndarray,
+    jac: np.ndarray,
+    meta: pd.DataFrame,
+    by: Optional[Sequence[str]],
+    w: Optional[np.ndarray],
+    keys: Sequence[str],
+    fe: bool = False,
+) -> Tuple[np.ndarray, np.ndarray, pd.DataFrame]:
+    """Average unit quantities within ``keys`` (+ ``by``) groups.
+
+    With ``fe`` the last Jacobian column is the derivative with respect to
+    each row's linear index; it is returned per evaluation row (weighted),
+    so the averaged Jacobian has ``k + n`` columns (``_fe_delta.py``).
+    """
+    groups = list(keys) + list(by or [])
+    frame = meta[groups].copy() if groups else pd.DataFrame(index=meta.index)
+    weights = np.ones(len(meta)) if w is None else w
+
+    def avg(ww: np.ndarray, idx: Any) -> np.ndarray:
+        if not fe:
+            return np.asarray(ww @ jac[idx])
+        u = np.zeros(len(meta))
+        u[idx] = ww * jac[idx, -1]
+        return np.concatenate([ww @ jac[idx, :-1], u])
+
+    if not groups:
+        ww = weights / weights.sum()
+        idx_all = np.arange(len(meta))
+        return np.array([ww @ est]), avg(ww, idx_all)[None, :], pd.DataFrame(index=[0])
+    rows_e, rows_j, rows_m = [], [], []
+    for key, idx in frame.groupby(groups, sort=True, dropna=False).groups.items():
+        idx = np.asarray(list(idx))
+        ww = weights[idx] / weights[idx].sum()
+        rows_e.append(ww @ est[idx])
+        rows_j.append(avg(ww, idx))
+        key = key if isinstance(key, tuple) else (key,)
+        rows_m.append(dict(zip(groups, key)))
+    return np.array(rows_e), np.vstack(rows_j), pd.DataFrame(rows_m)
+
+
+def _check_by(model: _Model, by: Optional[Union[str, Sequence[str]]]) -> List[str]:
+    if by is None:
+        return []
+    by = [by] if isinstance(by, str) else list(by)
+    missing = [b for b in by if b not in model.frame.columns]
+    if missing:
+        raise MethodIncompatibility(
+            f"{model.fn}: by= column(s) {missing} not in the data."
+        )
+    return by
+
+
+# ---------------------------------------------------------------------------
+# predictions
+# ---------------------------------------------------------------------------
+
+
+def predictions(
+    result: Any,
+    newdata: Optional[pd.DataFrame] = None,
+    *,
+    by: Optional[Union[str, Sequence[str]]] = None,
+    type: str = "response",
+    wts: Any = None,
+    df: Any = None,
+    conf_level: float = 0.95,
+    vcov: bool = True,
+) -> pd.DataFrame:
+    """Unit-level predictions with delta-method standard errors.
+
+    ``marginaleffects::predictions``: one row per row of ``newdata`` (default:
+    the estimation sample), with the data's columns and ``estimate``,
+    ``std_error``, ``statistic``, ``p_value``, ``conf_low``, ``conf_high``.
+    With ``by=`` the predictions are averaged within groups (what
+    :func:`avg_predictions` does).
+
+    Parameters
+    ----------
+    result : fitted result
+        From ``sp.regress``, ``sp.logit``, ``sp.probit``, ``sp.cloglog``,
+        ``sp.poisson``, ``sp.nbreg`` or ``sp.glm`` (identity, logit, probit,
+        cloglog or log link).
+    newdata : DataFrame, optional
+        Rows to predict for. Default: the estimation sample of the fitted data.
+    by : str or list of str, optional
+        Average within groups of these columns.
+    type : {'response', 'link'}, default 'response'
+        Prediction scale.
+    wts : None, True, str or array, optional
+        Weights for averages: None (unweighted, the marginaleffects default),
+        True (the fit's weight column), a column name or an array.
+    df : None, 'model' or float, optional
+        Reference distribution: None is normal (marginaleffects), 'model'
+        the fit's own (t after ``regress``), or a number.
+    conf_level : float, default 0.95
+    vcov : bool, default True
+        False returns the estimates alone (no standard errors), as
+        marginaleffects' ``vcov = FALSE``. A switch, not a variance type:
+        the variance is the fit's own. After a fit
+        with absorbed fixed effects (``sp.feols`` / ``fepois`` / ``feglm``
+        with ``| fe``) the effects enter at their estimates. An average
+        (or ``by=`` average) that depends on them after a Poisson fit
+        (``sp.fepois``) has standard errors that count the effects as
+        parameters, as Stata's ``margins`` after ``poisson y x i.g``;
+        unit-level quantities and other models then need ``vcov=False``
+        (marginaleffects refuses all of them on a fixest model).
+        Contrasts and slopes of a linear model do not depend on the
+        effects and keep their standard errors.
+
+    Returns
+    -------
+    DataFrame
+
+    Examples
+    --------
+    >>> import numpy as np, pandas as pd
+    >>> import statspai as sp
+    >>> rng = np.random.default_rng(0)
+    >>> d = pd.DataFrame({"x": rng.normal(size=300), "g": rng.integers(0, 2, 300)})
+    >>> d["y"] = (rng.uniform(size=300) < 1 / (1 + np.exp(-d.x))).astype(int)
+    >>> fit = sp.logit("y ~ x + g", data=d)
+    >>> p = sp.predictions(fit)
+    >>> bool(((p.estimate > 0) & (p.estimate < 1)).all())
+    True
+    """
+    model = _Model(result, newdata, "predictions", vcov)
+    by = _check_by(model, by)
+    model.prepare_fe(averaged=bool(by))
+    est, jac = model.predict(model.frame, type)
+    dfv = _resolve_df(df, result)
+    if by:
+        fe = model.fe_delta is not None
+        e, j, meta = _average(
+            est, jac, model.frame, by, _weights(model, wts), [], fe=fe
+        )
+        return _table(
+            model, e, j, meta, df=dfv, conf_level=conf_level, fn="predictions"
+        )
+    return _table(
+        model, est, jac, model.frame, df=dfv, conf_level=conf_level, fn="predictions"
+    )
+
+
+def avg_predictions(
+    result: Any,
+    newdata: Optional[pd.DataFrame] = None,
+    *,
+    by: Optional[Union[str, Sequence[str]]] = None,
+    type: str = "response",
+    wts: Any = None,
+    df: Any = None,
+    conf_level: float = 0.95,
+    vcov: bool = True,
+) -> pd.DataFrame:
+    """Average prediction, overall or ``by=`` group (``marginaleffects::avg_predictions``).
+
+    Parameters are those of :func:`predictions`.
+
+    Examples
+    --------
+    >>> import numpy as np, pandas as pd
+    >>> import statspai as sp
+    >>> rng = np.random.default_rng(1)
+    >>> d = pd.DataFrame({"x": rng.normal(size=200), "g": rng.integers(0, 3, 200)})
+    >>> d["y"] = 1 + d.x + d.g + rng.normal(size=200)
+    >>> fit = sp.regress("y ~ x + C(g)", data=d)
+    >>> sp.avg_predictions(fit, by="g").shape[0]
+    3
+    """
+    model = _Model(result, newdata, "avg_predictions", vcov)
+    by = _check_by(model, by)
+    model.prepare_fe(averaged=True)
+    est, jac = model.predict(model.frame, type)
+    fe = model.fe_delta is not None
+    e, j, meta = _average(est, jac, model.frame, by, _weights(model, wts), [], fe=fe)
+    return _table(
+        model,
+        e,
+        j,
+        meta,
+        df=_resolve_df(df, result),
+        conf_level=conf_level,
+        fn="avg_predictions",
+    )
+
+
+# ---------------------------------------------------------------------------
+# comparisons
+# ---------------------------------------------------------------------------
+
+_COMPARISONS = (
+    "difference",
+    "ratio",
+    "lnratio",
+    "ratioavg",
+    "lnratioavg",
+    "differenceavg",
+)
+
+
+def _variable_kind(model: _Model, var: str) -> str:
+    if model.design.is_factor(var):
+        return "factor"
+    col = model.frame[var]
+    if not pd.api.types.is_numeric_dtype(col) or pd.api.types.is_bool_dtype(col):
+        return "factor"
+    values = set(pd.unique(col.dropna()))
+    return "binary" if values <= {0, 1} and len(values) == 2 else "numeric"
+
+
+def _counterfactuals(
+    model: _Model, var: str, spec: Any
+) -> List[Tuple[str, pd.DataFrame, pd.DataFrame]]:
+    """``(label, lo_frame, hi_frame)`` for one variable."""
+    fr = model.frame
+    kind = _variable_kind(model, var)
+    out = []
+    if kind == "factor":
+        levels = (
+            list(model.design.factors.get(var, (None,))[0])
+            if getattr(model.design, "factors", None) and var in model.design.factors
+            else sorted(pd.unique(fr[var].dropna()), key=lambda v: (str(type(v)), v))
+        )
+        ref = levels[0]
+        for lev in levels[1:]:
+            lo, hi = fr.copy(), fr.copy()
+            lo[var], hi[var] = ref, lev
+            out.append((f"{lev} - {ref}", lo, hi))
+        return out
+    if kind == "binary" and spec is None:
+        lo, hi = fr.copy(), fr.copy()
+        lo[var], hi[var] = 0, 1
+        return [("1 - 0", lo, hi)]
+    x = fr[var].astype(float)
+    lo, hi = fr.copy(), fr.copy()
+    if spec is None or (isinstance(spec, (int, float)) and not isinstance(spec, bool)):
+        step = 1.0 if spec is None else float(spec)
+        hi[var] = x + step
+        return [(f"+{step:g}", lo, hi)]
+    if isinstance(spec, str) and spec in ("sd", "2sd"):
+        # Centred on the sample mean for every row (marginaleffects' rule,
+        # whatever its "x + sd/2" label suggests).
+        half = float(x.std(ddof=1)) * (0.5 if spec == "sd" else 1.0)
+        lo[var], hi[var] = float(x.mean()) - half, float(x.mean()) + half
+        tag = "sd/2" if spec == "sd" else "sd"
+        return [(f"(x + {tag}) - (x - {tag})", lo, hi)]
+    if isinstance(spec, str) and spec in ("iqr", "minmax"):
+        a, b = np.quantile(x, [0.25, 0.75]) if spec == "iqr" else (x.min(), x.max())
+        lo[var], hi[var] = float(a), float(b)
+        return [("Q3 - Q1" if spec == "iqr" else "Max - Min", lo, hi)]
+    if (
+        isinstance(spec, (list, tuple))
+        and len(spec) == 2
+        and all(isinstance(v, (int, float)) for v in spec)
+    ):
+        lo[var], hi[var] = float(spec[0]), float(spec[1])
+        return [(f"{spec[1]:g} - {spec[0]:g}", lo, hi)]
+    raise MethodIncompatibility(
+        f"comparisons: the change for {var!r} must be a number, a pair "
+        f"(low, high), or one of 'sd', '2sd', 'iqr', 'minmax'; got {spec!r}.",
+        recovery_hint="E.g. variables={'x': 5}, {'x': 'sd'} or {'x': (0, 10)}.",
+    )
+
+
+def _label(label: str, comparison: str) -> str:
+    """marginaleffects' contrast label for ``comparison``."""
+    if comparison in ("difference", "differenceavg"):
+        return label
+    pair = re.fullmatch(r"(.+) - (.+)", label) if not label.startswith("(") else None
+    if pair is None:  # "+1", centred and fixed-value numeric changes
+        return f"mean({label})" if comparison.endswith("avg") else label
+    hi, lo = pair.groups()
+    return {
+        "ratio": f"{hi} / {lo}",
+        "lnratio": f"ln({hi} / {lo})",
+        "ratioavg": f"mean({hi}) / mean({lo})",
+        "lnratioavg": f"ln(mean({hi}) / mean({lo}))",
+    }[comparison]
+
+
+def _contrast(
+    model: _Model, lo: pd.DataFrame, hi: pd.DataFrame, comparison: str, type: str
+) -> Tuple[np.ndarray, np.ndarray]:
+    m0, j0 = model.predict(lo, type)
+    m1, j1 = model.predict(hi, type)
+    if comparison in ("difference", "differenceavg"):
+        return m1 - m0, j1 - j0
+    if comparison == "ratio":
+        return m1 / m0, (j1 * m0[:, None] - j0 * m1[:, None]) / (m0**2)[:, None]
+    if comparison == "lnratio":
+        return np.log(m1 / m0), j1 / m1[:, None] - j0 / m0[:, None]
+    raise AssertionError(comparison)  # pragma: no cover - handled by caller
+
+
+def _comparisons(
+    result: Any,
+    variables: Any,
+    newdata: Optional[pd.DataFrame],
+    by: Any,
+    comparison: str,
+    type: str,
+    wts: Any,
+    df: Any,
+    conf_level: float,
+    average: bool,
+    fn: str,
+    vcov: bool = True,
+) -> pd.DataFrame:
+    if comparison not in _COMPARISONS:
+        raise MethodIncompatibility(
+            f"{fn}: comparison must be one of {list(_COMPARISONS)}, got {comparison!r}."
+        )
+    model = _Model(result, newdata, fn, vcov)
+    model.fe_free = (model.link == "identity" or type == "link") and comparison in (
+        "difference",
+        "differenceavg",
+    )
+    by = _check_by(model, by)
+    specs = _variable_specs(model, variables, fn)
+    w = _weights(model, wts)
+    model.prepare_fe(averaged=bool(average or by))
+    fe = model.fe_delta is not None
+    if average or by:
+        # Averaged ratios are ratios of average predictions, as in
+        # marginaleffects (the mean of unit ratios is rarely the target).
+        comparison = {"ratio": "ratioavg", "lnratio": "lnratioavg"}.get(
+            comparison, comparison
+        )
+    pieces: List[Tuple[np.ndarray, np.ndarray, pd.DataFrame]] = []
+    for var, spec in specs.items():
+        for label, lo, hi in _counterfactuals(model, var, spec):
+            meta = model.frame.copy()
+            meta.insert(0, "contrast", _label(label, comparison))
+            meta.insert(0, "term", var)
+            if comparison in ("ratioavg", "lnratioavg"):
+                m0, j0 = model.predict(lo, type)
+                m1, j1 = model.predict(hi, type)
+                a0, ja0, gm = _average(m0, j0, meta, by, w, ["term", "contrast"], fe)
+                a1, ja1, _ = _average(m1, j1, meta, by, w, ["term", "contrast"], fe)
+                if comparison == "ratioavg":
+                    e = a1 / a0
+                    j = (ja1 * a0[:, None] - ja0 * a1[:, None]) / (a0**2)[:, None]
+                else:
+                    e = np.log(a1 / a0)
+                    j = ja1 / a1[:, None] - ja0 / a0[:, None]
+                pieces.append((e, j, gm))
+                continue
+            est, jac = _contrast(model, lo, hi, comparison, type)
+            if average or by:
+                pieces.append(_average(est, jac, meta, by, w, ["term", "contrast"], fe))
+            else:
+                pieces.append((est, jac, meta))
+    est = np.concatenate([p[0] for p in pieces])
+    jac = np.vstack([p[1] for p in pieces])
+    meta = pd.concat([p[2] for p in pieces], ignore_index=True)
+    return _table(
+        model, est, jac, meta, df=_resolve_df(df, result), conf_level=conf_level, fn=fn
+    )
+
+
+def _variable_specs(model: _Model, variables: Any, fn: str) -> Dict[str, Any]:
+    if variables is None:
+        names = list(model.design.variables)
+        return {v: None for v in names if v in model.frame.columns}
+    if isinstance(variables, str):
+        variables = [variables]
+    if isinstance(variables, dict):
+        specs = dict(variables)
+    else:
+        specs = {v: None for v in variables}
+    unknown = [v for v in specs if v not in model.design.variables]
+    if unknown:
+        raise MethodIncompatibility(
+            f"{fn}: {unknown} are not variables of the model.",
+            recovery_hint=f"Model variables: {list(model.design.variables)}.",
+        )
+    return specs
+
+
+def comparisons(
+    result: Any,
+    variables: Any = None,
+    newdata: Optional[pd.DataFrame] = None,
+    *,
+    by: Optional[Union[str, Sequence[str]]] = None,
+    comparison: str = "difference",
+    type: str = "response",
+    wts: Any = None,
+    df: Any = None,
+    conf_level: float = 0.95,
+    vcov: bool = True,
+) -> pd.DataFrame:
+    """Unit-level contrasts of predictions (``marginaleffects::comparisons``).
+
+    For each variable, predictions at a "high" and a "low" value of it, every
+    other column held at the row's own value, contrasted per row:
+
+    * a factor (``C(g)``, strings, categories): each level against the first;
+    * a numeric 0/1 variable: 1 against 0;
+    * another numeric variable: an increase of 1 from the row's value, or as
+      given in ``variables=``: a number (that increase), ``"sd"`` /
+      ``"2sd"`` (mean +/- sd/2, mean +/- sd), ``"iqr"`` (third against
+      first quartile), ``"minmax"`` (maximum against minimum) or a pair
+      ``(low, high)`` of fixed values.
+
+    Parameters
+    ----------
+    result : fitted result
+        As in :func:`predictions`.
+    variables : str, list or dict, optional
+        Variables to contrast (default: every model variable); a dict maps a
+        numeric variable to its change.
+    newdata : DataFrame, optional
+        Rows to evaluate (default: the estimation sample).
+    by : str or list of str, optional
+        Average within groups.
+    comparison : str, default 'difference'
+        'difference', 'ratio', 'lnratio' (per row); 'ratioavg',
+        'lnratioavg' (ratio of the average predictions). When the contrasts
+        are averaged (``avg_comparisons`` or ``by=``), 'ratio' and 'lnratio'
+        mean 'ratioavg' and 'lnratioavg', as in marginaleffects.
+    type, wts, df, conf_level, vcov
+        As in :func:`predictions`.
+
+    Returns
+    -------
+    DataFrame
+        ``term``, ``contrast``, the data's columns (unit level) or the
+        ``by`` columns, and the estimate columns.
+
+    Examples
+    --------
+    >>> import numpy as np, pandas as pd
+    >>> import statspai as sp
+    >>> rng = np.random.default_rng(2)
+    >>> d = pd.DataFrame({"x": rng.normal(size=300), "d": rng.integers(0, 2, 300)})
+    >>> d["y"] = 1 + 2 * d.d + d.x + rng.normal(size=300)
+    >>> fit = sp.regress("y ~ d + x", data=d)
+    >>> sp.comparisons(fit, "d").shape[0] == len(d)
+    True
+    """
+    return _comparisons(
+        result,
+        variables,
+        newdata,
+        by,
+        comparison,
+        type,
+        wts,
+        df,
+        conf_level,
+        average=False,
+        fn="comparisons",
+        vcov=vcov,
+    )
+
+
+def avg_comparisons(
+    result: Any,
+    variables: Any = None,
+    newdata: Optional[pd.DataFrame] = None,
+    *,
+    by: Optional[Union[str, Sequence[str]]] = None,
+    comparison: str = "difference",
+    type: str = "response",
+    wts: Any = None,
+    df: Any = None,
+    conf_level: float = 0.95,
+    vcov: bool = True,
+) -> pd.DataFrame:
+    """Average contrasts (``marginaleffects::avg_comparisons``).
+
+    The average over rows of the unit-level contrasts of :func:`comparisons`
+    (``comparison='ratioavg'`` gives the ratio of average predictions
+    instead). For a binary treatment on the response scale this is the
+    average treatment effect implied by the model (the g-formula).
+
+    Parameters are those of :func:`comparisons`.
+
+    Examples
+    --------
+    >>> import numpy as np, pandas as pd
+    >>> import statspai as sp
+    >>> rng = np.random.default_rng(3)
+    >>> d = pd.DataFrame({"x": rng.normal(size=400), "d": rng.integers(0, 2, 400)})
+    >>> d["y"] = (rng.uniform(size=400) < 1 / (1 + np.exp(-(d.x + d.d)))).astype(int)
+    >>> fit = sp.logit("y ~ d + x", data=d)
+    >>> ate = sp.avg_comparisons(fit, "d")
+    >>> bool(0 < ate.estimate.iloc[0] < 1)
+    True
+    """
+    return _comparisons(
+        result,
+        variables,
+        newdata,
+        by,
+        comparison,
+        type,
+        wts,
+        df,
+        conf_level,
+        average=True,
+        fn="avg_comparisons",
+        vcov=vcov,
+    )
+
+
+# ---------------------------------------------------------------------------
+# slopes
+# ---------------------------------------------------------------------------
+
+_SLOPES = ("dydx", "eyex", "eydx", "dyex")
+
+
+def _slopes(
+    result: Any,
+    variables: Any,
+    newdata: Optional[pd.DataFrame],
+    by: Any,
+    slope: str,
+    type: str,
+    wts: Any,
+    df: Any,
+    conf_level: float,
+    eps: float,
+    average: bool,
+    fn: str,
+    vcov: bool = True,
+) -> pd.DataFrame:
+    if slope not in _SLOPES:
+        raise MethodIncompatibility(f"{fn}: slope must be one of {list(_SLOPES)}.")
+    model = _Model(result, newdata, fn, vcov)
+    model.fe_free = (model.link == "identity" or type == "link") and slope == "dydx"
+    by = _check_by(model, by)
+    specs = _variable_specs(model, variables, fn)
+    w = _weights(model, wts)
+    model.prepare_fe(averaged=bool(average or by))
+    fe = model.fe_delta is not None
+    pieces = []
+    for var in specs:
+        if _variable_kind(model, var) in ("factor", "binary"):
+            # Factors and 0/1 variables are reported as contrasts, as
+            # marginaleffects does.
+            for label, lo, hi in _counterfactuals(model, var, None):
+                est, jac = _contrast(model, lo, hi, "difference", type)
+                meta = model.frame.copy()
+                meta.insert(0, "contrast", label)
+                meta.insert(0, "term", var)
+                pieces.append(
+                    _average(est, jac, meta, by, w, ["term", "contrast"], fe)
+                    if (average or by)
+                    else (est, jac, meta)
+                )
+            continue
+        s, js = model.dydx(model.frame, var, eps, type)
+        if slope != "dydx":
+            mu, jmu = model.predict(model.frame, type)
+            x = model.frame[var].to_numpy(dtype=float)
+            if slope == "eyex":
+                s, js = (
+                    s * x / mu,
+                    (js * x[:, None]) / mu[:, None] - (s * x / mu**2)[:, None] * jmu,
+                )
+            elif slope == "eydx":
+                s, js = s / mu, js / mu[:, None] - (s / mu**2)[:, None] * jmu
+            else:  # dyex
+                s, js = s * x, js * x[:, None]
+        meta = model.frame.copy()
+        meta.insert(
+            0,
+            "contrast",
+            {"dydx": "dY/dX", "eyex": "eY/eX", "eydx": "eY/dX", "dyex": "dY/eX"}[slope],
+        )
+        meta.insert(0, "term", var)
+        pieces.append(
+            _average(s, js, meta, by, w, ["term", "contrast"], fe)
+            if (average or by)
+            else (s, js, meta)
+        )
+    est = np.concatenate([p[0] for p in pieces])
+    jac = np.vstack([p[1] for p in pieces])
+    meta = pd.concat([p[2] for p in pieces], ignore_index=True)
+    return _table(
+        model, est, jac, meta, df=_resolve_df(df, result), conf_level=conf_level, fn=fn
+    )
+
+
+def slopes(
+    result: Any,
+    variables: Any = None,
+    newdata: Optional[pd.DataFrame] = None,
+    *,
+    by: Optional[Union[str, Sequence[str]]] = None,
+    slope: str = "dydx",
+    type: str = "response",
+    wts: Any = None,
+    df: Any = None,
+    conf_level: float = 0.95,
+    eps: float = 1e-5,
+    vcov: bool = True,
+) -> pd.DataFrame:
+    """Unit-level partial derivatives (``marginaleffects::slopes``).
+
+    ``dY/dX`` of the prediction with respect to each numeric variable,
+    differentiating through interactions and formula transformations;
+    ``slope='eyex'`` / ``'eydx'`` / ``'dyex'`` give elasticities and
+    semi-elasticities. Factor and 0/1 variables are reported as contrasts,
+    as marginaleffects does.
+
+    Parameters
+    ----------
+    result, variables, newdata, by, type, wts, df, conf_level, vcov
+        As in :func:`comparisons`.
+    slope : {'dydx', 'eyex', 'eydx', 'dyex'}, default 'dydx'
+    eps : float, default 1e-5
+        Relative step of the central difference used on transformed terms.
+
+    Returns
+    -------
+    DataFrame
+
+    Examples
+    --------
+    >>> import numpy as np, pandas as pd
+    >>> import statspai as sp
+    >>> rng = np.random.default_rng(4)
+    >>> d = pd.DataFrame({"x": rng.normal(size=300)})
+    >>> d["y"] = 1 + 2 * d.x + 0.5 * d.x**2 + rng.normal(size=300)
+    >>> fit = sp.regress("y ~ x + I(x**2)", data=d)
+    >>> s = sp.slopes(fit, "x")
+    >>> bool(np.allclose(s.estimate, fit.params.iloc[1] + 2 * fit.params.iloc[2] * d.x))
+    True
+    """
+    return _slopes(
+        result,
+        variables,
+        newdata,
+        by,
+        slope,
+        type,
+        wts,
+        df,
+        conf_level,
+        eps,
+        average=False,
+        fn="slopes",
+        vcov=vcov,
+    )
+
+
+def avg_slopes(
+    result: Any,
+    variables: Any = None,
+    newdata: Optional[pd.DataFrame] = None,
+    *,
+    by: Optional[Union[str, Sequence[str]]] = None,
+    slope: str = "dydx",
+    type: str = "response",
+    wts: Any = None,
+    df: Any = None,
+    conf_level: float = 0.95,
+    eps: float = 1e-5,
+    vcov: bool = True,
+) -> pd.DataFrame:
+    """Average partial derivatives (``marginaleffects::avg_slopes``).
+
+    The average marginal effect; with ``wts=True`` and ``df='model'`` it is
+    Stata's ``margins, dydx()`` after a weighted fit.
+
+    Parameters are those of :func:`slopes`.
+
+    Examples
+    --------
+    >>> import numpy as np, pandas as pd
+    >>> import statspai as sp
+    >>> rng = np.random.default_rng(5)
+    >>> d = pd.DataFrame({"x": rng.normal(size=300)})
+    >>> d["y"] = (rng.uniform(size=300) < 1 / (1 + np.exp(-d.x))).astype(int)
+    >>> fit = sp.logit("y ~ x", data=d)
+    >>> ame = sp.avg_slopes(fit, "x")
+    >>> bool(0 < ame.estimate.iloc[0] < fit.params["x"])
+    True
+    """
+    return _slopes(
+        result,
+        variables,
+        newdata,
+        by,
+        slope,
+        type,
+        wts,
+        df,
+        conf_level,
+        eps,
+        average=True,
+        fn="avg_slopes",
+        vcov=vcov,
+    )
+
+
+# ---------------------------------------------------------------------------
+# hypotheses
+# ---------------------------------------------------------------------------
+
+
+def hypotheses(
+    result: Any,
+    hypothesis: Union[str, Sequence[str], None] = None,
+    *,
+    df: Any = None,
+    conf_level: float = 0.95,
+    joint: Union[bool, Sequence[str]] = False,
+    joint_test: str = "f",
+) -> pd.DataFrame:
+    """Delta-method test of a function of estimates (``marginaleffects::hypotheses``).
+
+    ``result`` is a fitted model (the estimates are its coefficients) or a
+    table returned by :func:`predictions`, :func:`comparisons` or
+    :func:`slopes` (the estimates are its rows, with their joint covariance
+    from the table's Jacobian). ``b1``, ``b2`` ... refer to the estimates by
+    position; a model's coefficients can also be named. ``"lhs = rhs"`` tests
+    ``lhs - rhs = 0``; an expression without ``=`` is tested against 0.
+
+    Parameters
+    ----------
+    result : fitted result or marginaleffects-style table
+    hypothesis : str or list of str, optional
+        E.g. ``"b1 - b2 = 0"``, ``"b2 / b3 = 1"``, ``"x1 = 2 * x2"``. Only
+        arithmetic and the functions ``sp.nlcom`` accepts. A list gives one
+        row per hypothesis (or, with ``joint=True``, one joint test of all of
+        them). May be omitted when ``joint`` names the estimates.
+    df : None, 'model' or float, optional
+        Reference distribution of the one-at-a-time tests (None: normal).
+    conf_level : float, default 0.95
+    joint : bool or list of str, default False
+        Joint Wald test instead of one row per hypothesis.
+        ``True`` with ``hypothesis`` tests all of them at once -- linear or
+        not, as Stata ``testnl`` does (the restrictions' Jacobian enters
+        ``W = g' (G V G')^-1 g``); ``True`` without ``hypothesis`` tests that
+        every estimate is 0; a list of coefficient names (or ``b1`` ...)
+        tests that those are 0 (``marginaleffects::hypotheses(joint=)``).
+    joint_test : {"f", "chisq"}, default "f"
+        ``"f"``: ``F = W / q`` on ``(q, df2)`` degrees of freedom, ``df2`` the
+        fit's residual degrees of freedom (marginaleffects' convention, also
+        after a logit) or ``df`` when given; ``"chisq"``: ``W`` on ``q``.
+
+    Returns
+    -------
+    DataFrame
+        One row per hypothesis: ``term`` (the hypothesis), ``estimate``
+        (lhs - rhs) and the inference columns. A joint test returns one
+        row: ``hypothesis`` (the restrictions joined by ``"; "``),
+        ``statistic``, ``p_value``, ``df1`` and (F) ``df2``, ``test``.
+
+    Examples
+    --------
+    >>> import numpy as np, pandas as pd
+    >>> import statspai as sp
+    >>> rng = np.random.default_rng(6)
+    >>> d = pd.DataFrame({"x1": rng.normal(size=300), "x2": rng.normal(size=300)})
+    >>> d["y"] = 1 + d.x1 + d.x2 + rng.normal(size=300)
+    >>> fit = sp.regress("y ~ x1 + x2", data=d)
+    >>> h = sp.hypotheses(fit, "b2 = b3")
+    >>> bool(h.p_value.iloc[0] > 0.01)
+    True
+    >>> sp.hypotheses(fit, ["x1 = 1", "x2 = 1"]).shape[0]
+    2
+    >>> j = sp.hypotheses(fit, ["x1 = 1", "x2 = 1"], joint=True)
+    >>> list(j.columns[:3])
+    ['hypothesis', 'statistic', 'p_value']
+    """
+    if isinstance(result, pd.DataFrame):
+        jac, V = _table_jacobian(result)
+        beta = result["estimate"].to_numpy(dtype=float)
+        cov = jac @ V @ jac.T
+        names: List[str] = []
+        dfv = _resolve_df(df, None) if df != "model" else result.attrs.get("df", np.inf)
+    else:
+        params = result.params
+        beta = params.to_numpy(dtype=float)
+        cov = require_covariance(result, np.ones((1, beta.size)), "hypotheses")
+        names = [str(n) for n in params.index]
+        dfv = _resolve_df(df, result)
+
+    if joint is not False and joint is not None:
+        return _joint_wald(result, hypothesis, joint, joint_test, df, beta, cov, names)
+    if hypothesis is None:
+        raise MethodIncompatibility(
+            "hypotheses: pass a hypothesis (or joint=True / joint=[names]).",
+            recovery_hint='E.g. sp.hypotheses(fit, "x1 = 0") or '
+            "sp.hypotheses(fit, joint=['x1', 'x2']).",
+        )
+    texts = _hypothesis_list(hypothesis)
+    dist = stats.norm if not np.isfinite(dfv) else stats.t(dfv)
+    q = dist.ppf(0.5 + conf_level / 2)
+    rows = []
+    for h in texts:
+        value, grad = _parse_restriction(h, beta, names)
+        se = float(np.sqrt(max(float(grad @ cov @ grad), 0.0)))
+        stat = value / se if se > 0 else np.nan
+        rows.append(
+            {
+                "term": h,
+                "estimate": value,
+                "std_error": se,
+                "statistic": stat,
+                "p_value": float(2 * dist.sf(abs(stat))) if se > 0 else np.nan,
+                "conf_low": value - q * se,
+                "conf_high": value + q * se,
+            }
+        )
+    return pd.DataFrame(rows)

@@ -38,13 +38,15 @@ doi:10.1111/j.1468-0262.2004.00555.x.
 """
 
 import warnings
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 import pandas as pd
 from scipy import stats as sp_stats
 from scipy.optimize import brentq
 
+from .._aliases import accepts_aliases
+from .._input_validation import check_columns
 from ..core.results import CausalResult
 from ..exceptions import AssumptionViolation, MethodIncompatibility
 
@@ -60,9 +62,7 @@ def _imbens_manski_cn(delta: float, sigma_max: float, alpha: float = 0.05) -> fl
 
     References
     ----------
-    Imbens, G. W. & Manski, C. F. (2004). "Confidence Intervals for Partially
-    Identified Parameters." Econometrica, 72(6), 1845-1857.
-    doi:10.1111/j.1468-0262.2004.00555.x.
+    [@imbens2004confidence]
     """
     z_one = float(sp_stats.norm.ppf(1 - alpha))
     z_two = float(sp_stats.norm.ppf(1 - alpha / 2))
@@ -85,17 +85,19 @@ def _imbens_manski_cn(delta: float, sigma_max: float, alpha: float = 0.05) -> fl
 # ======================================================================
 
 
+@accepts_aliases(seed="random_state")
 def lee_bounds(
     data: pd.DataFrame,
     y: str,
     treat: str,
-    selection: str,
+    selection: Optional[str] = None,
     covariates: Optional[List[str]] = None,
     n_bootstrap: int = 500,
     alpha: float = 0.05,
     random_state: int = 42,
     se_method: str = "bootstrap",
     trimming: str = "quantile",
+    weights: Optional[str] = None,
 ) -> CausalResult:
     """
     Compute Lee (2009) bounds for ATE under sample selection.
@@ -108,12 +110,21 @@ def lee_bounds(
         Outcome variable (may have NaN for selected-out units).
     treat : str
         Binary treatment variable (0/1).
-    selection : str
+    selection : str, optional
         Binary selection/retention indicator (1 = observed, 0 = missing).
+        ``None`` (Stata ``leebounds`` without ``select()``) counts a unit as
+        selected when its outcome is observed. Rows with a missing
+        treatment or selection indicator, or selected with a missing
+        outcome, are dropped with a warning, as ``leebounds`` drops them.
     covariates : list of str, optional
-        Reserved for covariate-tightened bounds, which are not
-        implemented; a non-empty list is ignored with a ``UserWarning``
-        (it used to be ignored silently).
+        Discrete covariates for Lee's (2009) tightened bounds (Stata
+        ``leebounds, tight()``): each covariate cell is trimmed by its own
+        share and the trimmed means are averaged over the covariate
+        distribution of the always-observed (the retained units of the
+        less-retained arm). Continuous covariates must be binned first.
+        Cell-level results are in ``model_info['cells']``. Analytic SEs of
+        tightened bounds follow ``leebounds``' approximation and need
+        ``trimming='leebounds'``; the bootstrap works with every trimming.
     n_bootstrap : int, default 500
         Bootstrap iterations for inference.
     alpha : float, default 0.05
@@ -121,19 +132,40 @@ def lee_bounds(
     random_state : int, default 42
     se_method : {'bootstrap', 'analytic'}, default 'bootstrap'
         Standard errors of the two bounds. ``'analytic'`` is the
-        asymptotic variance of Lee (2009, Proposition 3) exactly as
-        Stata's ``leebounds`` (default ``vce(analytic)``) computes it;
-        ``'bootstrap'`` resamples units ``n_bootstrap`` times.
+        asymptotic variance of Lee (2009, Proposition 3) with sample
+        analogues; with ``trimming='leebounds'`` it equals Stata
+        ``leebounds``' default ``vce(analytic)``. ``'bootstrap'`` resamples
+        units ``n_bootstrap`` times.
 
-    trimming : {'quantile', 'exact'}, default 'quantile'
+    trimming : {'quantile', 'exact', 'leebounds'}, default 'quantile'
         How the ``p = |p1 - p0| / max(p1, p0)`` share is trimmed from the
         arm with higher retention. ``'quantile'`` is Lee's (2009) sample
         estimator: keep every retained outcome at or beyond the sample
-        ``p``-quantile (Stata ``_pctile`` definition), which is what
-        Stata's ``leebounds`` returns for continuous outcomes.
-        ``'exact'`` keeps exactly ``(1 - p) n`` units of mass by giving
-        the observations tied at the quantile a fractional weight -- the
-        branch ``leebounds`` is written to take at a tie (see Notes).
+        ``p``-quantile (Stata ``_pctile`` definition).
+        ``'exact'`` keeps exactly ``(1 - p) n`` units of mass: the
+        observations tied at the quantile share the mass still needed, the
+        rule Tauchmann describes for ``leebounds`` with tied outcomes.
+        On a binary or coarsely discrete outcome use ``'exact'``: the
+        quantile rule keeps every observation tied at the quantile, so
+        it trims too little and the two bounds collapse (a warning says
+        so when that happens).
+        ``'leebounds'`` reproduces Stata ``leebounds`` (Tauchmann) number
+        for number, floating-point artefacts included -- use it to match a
+        published ``leebounds`` table (see Notes).
+    weights : str, optional
+        Sampling (probability) weights, Stata ``leebounds [pw=]``: the
+        retention rates, the trimming quantile, the kept mass, the means
+        and the analytic variance are all weighted (weights rescaled to
+        mean one). Needs ``trimming='leebounds'`` (which also holds the
+        weights in single precision, as ``leebounds`` does) or
+        ``'exact'``; not available with ``covariates``. The bootstrap
+        resamples units together with their weights. One difference from
+        ``leebounds``: when no observation sits at the threshold of the
+        tail that keeps the upper outcomes, ``leebounds``' standard error
+        of that bound uses the unweighted variance of the untrimmed arm;
+        here that variance is weighted for both bounds
+        (``tests/reference_parity/test_lee_bounds_weights_Stata_parity.py``
+        rebuilds Stata's number).
 
     Notes
     -----
@@ -141,13 +173,18 @@ def lee_bounds(
     one fewer than Lee's quantile rule whenever ``p n`` is not an
     integer, so each bound was off by one observation's worth of mass.
 
-    ``leebounds`` (Tauchmann, v1.5) tests ``y == threshold`` against the
-    quantile after storing it in a local macro, which does not
-    round-trip a double exactly. For continuous outcomes the tie branch
-    therefore never fires and ``leebounds`` computes the quantile rule;
-    holding the threshold in a scalar instead makes it compute
-    ``trimming='exact'``. Both are reproduced exactly by the reference
-    tests.
+    Run as a black box, ``leebounds`` behaves as if the trimming
+    percentage and the quantile threshold were rounded to the 16 or fewer
+    significant digits Stata keeps when it stores a number in a macro.
+    When the rounded threshold still equals an observed outcome, the
+    tied observations share the remaining mass (``trimming='exact'``);
+    when it does not -- common for continuous outcomes stored as
+    ``float`` -- every outcome at or beyond the rounded value is kept,
+    which can drop the quantile observation itself. On the UCT
+    replication (QJE 2016, Table III assets) that moves the lower bound
+    from -2.51 (Lee's rule) to Stata's -3.38. ``trimming='leebounds'``
+    reproduces this; ``docs/dev/cleanroom/leebounds.md`` records the
+    experiments.
     Returns
     -------
     CausalResult
@@ -174,28 +211,73 @@ def lee_bounds(
     >>> bool(result.model_info['lower_bound'] <= result.model_info['upper_bound'])
     True
     """
-    cols = [treat, selection]
-    missing = [c for c in cols if c not in data.columns]
-    if missing:
-        raise ValueError(f"Columns not found in data: {missing}")
-    if covariates:
-        warnings.warn(
-            "lee_bounds: covariate-tightened Lee bounds are not implemented; "
-            "`covariates` is ignored and the unconditional bounds are "
-            "returned (it used to be ignored silently).",
-            UserWarning,
-            stacklevel=2,
-        )
+    check_columns(
+        data,
+        {
+            "y": y,
+            "treat": treat,
+            "selection": selection,
+            "covariates": list(covariates) if covariates else None,
+        },
+        function="sp.lee_bounds",
+    )
     if se_method not in ("bootstrap", "analytic"):
         raise MethodIncompatibility(
             f"se_method must be 'bootstrap' or 'analytic', got {se_method!r}"
         )
-    if trimming not in ("quantile", "exact"):
+    if trimming not in ("quantile", "exact", "leebounds"):
         raise MethodIncompatibility(
-            f"trimming must be 'quantile' or 'exact', got {trimming!r}"
+            "trimming must be 'quantile', 'exact' or 'leebounds', got " f"{trimming!r}"
         )
 
-    df = data.copy()
+    from ._lee_sample import lee_estimation_sample
+
+    selection_arg = selection
+    df, selection = lee_estimation_sample(data, y, treat, selection)
+    if weights is not None:
+        check_columns(df, {"weights": weights}, function="sp.lee_bounds")
+        n_w = int(df[weights].isna().sum())
+        if n_w:
+            warnings.warn(
+                f"lee_bounds: dropped {n_w} row(s) with a missing weight (as "
+                "Stata leebounds does).",
+                UserWarning,
+                stacklevel=2,
+            )
+            df = df[df[weights].notna()]
+        # Zero-weight rows are not in the estimation sample (Stata drops
+        # them for every weight type); left in, they entered the mean-one
+        # rescaling and the N of the analytic SE, which shrank by
+        # sqrt(n_positive / n) (2026-10-20 probe).
+        n_zero = int((df[weights] == 0).sum())
+        if n_zero:
+            warnings.warn(
+                f"lee_bounds: dropped {n_zero} row(s) with a zero weight.",
+                UserWarning,
+                stacklevel=2,
+            )
+            df = df[df[weights] != 0]
+    covariates = list(covariates) if covariates else []
+    if covariates:
+        n_before = len(df)
+        df = df.dropna(subset=covariates)
+        if len(df) < n_before:
+            warnings.warn(
+                f"lee_bounds: dropped {n_before - len(df)} row(s) with missing "
+                "covariates. Stata leebounds, tight() keeps such rows in the "
+                "untrimmed arm's mean while leaving them out of every cell, so "
+                "its bounds differ here; drop the rows before calling it to "
+                "compare.",
+                UserWarning,
+                stacklevel=2,
+            )
+        if se_method == "analytic" and trimming != "leebounds":
+            raise MethodIncompatibility(
+                "lee_bounds: analytic SEs of covariate-tightened bounds are "
+                "available as Stata's leebounds approximates them "
+                "(trimming='leebounds'); otherwise use the bootstrap.",
+                recovery_hint="Use se_method='bootstrap', or trimming='leebounds'.",
+            )
     D = df[treat].values.astype(float)
     S = df[selection].values.astype(float)
 
@@ -208,8 +290,6 @@ def lee_bounds(
 
     # Observed outcomes
     observed = S == 1
-    if y not in df.columns:
-        raise ValueError(f"Column '{y}' not found in data")
 
     Y_obs = df.loc[observed, y].values.astype(float)
     D_obs = D[observed]
@@ -217,51 +297,136 @@ def lee_bounds(
     Y1 = Y_obs[D_obs == 1]
     Y0 = Y_obs[D_obs == 0]
 
-    lb, ub = _compute_lee_bounds(Y1, Y0, p1, p0, trimming)
+    if weights is not None:
+        from ._lee_weighted import weighted_bounds
 
-    if se_method == "analytic":
-        se_lb, se_ub = _lee_analytic_se(Y_obs, D_obs, D, S, trimming)
+        if covariates:
+            raise MethodIncompatibility(
+                "lee_bounds: weights with covariate-tightened bounds are not "
+                "implemented.",
+                recovery_hint="Drop covariates= or weights=.",
+            )
+        W = df[weights].to_numpy(dtype=float)
+        wres = weighted_bounds(
+            df[y].to_numpy(dtype=float),
+            D,
+            S,
+            W,
+            trimming,
+            se_method,
+            n_bootstrap,
+            random_state,
+        )
+        lb, ub = wres["lower"], wres["upper"]
+        se_lb, se_ub = wres["se_lower"], wres["se_upper"]
+        p1, p0 = wres["p1"], wres["p0"]
+        weighted_ties = wres["tie_branch"]
+        tight = None
     else:
-        rng = np.random.RandomState(random_state)
-        n = len(D)
-        boot_lb = np.zeros(n_bootstrap)
-        boot_ub = np.zeros(n_bootstrap)
+        tight: Optional[Dict[str, Any]] = None
+        if covariates:
+            from ._lee_tight import cell_codes, tightened_lee_bounds
 
-        for b in range(n_bootstrap):
-            idx = rng.choice(n, size=n, replace=True)
-            D_b = D[idx]
-            S_b = S[idx]
-
-            p1_b = np.mean(S_b[D_b == 1]) if np.sum(D_b == 1) > 0 else p1
-            p0_b = np.mean(S_b[D_b == 0]) if np.sum(D_b == 0) > 0 else p0
-
-            obs_b = S_b == 1
-            Y_b_col = df[y].values[idx]
-            Y_obs_b = Y_b_col[obs_b].astype(float)
-            D_obs_b = D_b[obs_b]
-
-            Y1_b = Y_obs_b[D_obs_b == 1]
-            Y0_b = Y_obs_b[D_obs_b == 0]
-
-            if len(Y1_b) > 0 and len(Y0_b) > 0 and p1_b > 0 and p0_b > 0:
-                boot_lb[b], boot_ub[b] = _compute_lee_bounds(
-                    Y1_b, Y0_b, p1_b, p0_b, trimming
+            cells = cell_codes(df, covariates)
+            Y_all = df[y].to_numpy(dtype=float)
+            tight = tightened_lee_bounds(
+                Y_all, D, S, cells, trimming, analytic=(se_method == "analytic")
+            )
+            lb, ub = tight["lower"], tight["upper"]
+            if tight["hetero"]:
+                warnings.warn(
+                    "lee_bounds: retention differs in opposite directions across "
+                    "covariate cells; monotonicity is doubtful and the tightened "
+                    "bounds may fail (Stata: 'heterogenous selection direction')."
+                    + (
+                        " Cells where the trimmed arm is less retained are "
+                        "not trimmed."
+                        if trimming != "leebounds"
+                        else ""
+                    ),
+                    UserWarning,
+                    stacklevel=2,
                 )
-            else:
-                boot_lb[b], boot_ub[b] = lb, ub
+        else:
+            lb, ub = _compute_lee_bounds(Y1, Y0, p1, p0, trimming)
+            if trimming == "quantile" and p1 != p0:
+                _warn_quantile_ties(
+                    "lee_bounds", Y1 if p1 > p0 else Y0, abs(p1 - p0) / max(p1, p0)
+                )
 
-        # Imbens & Manski (2004) confidence interval for the *parameter* (not
-        # the whole identified set). The critical value C_n solves
-        #     Phi(C_n + Delta / sigma_max) - Phi(-C_n) = 1 - alpha,
-        # where Delta = ub - lb is the estimated width of the identified set
-        # and sigma_max = max(se_lb, se_ub). C_n interpolates between the
-        # one-sided z_{1-alpha} (wide bounds, width >> SE) and the two-sided
-        # z_{1-alpha/2} (point-identified, width -> 0). Applying the
-        # two-sided z to *both* endpoints instead -- the previous code --
-        # yields the Horowitz-Manski CI that covers the identified SET and
-        # therefore over-covers the parameter.
-        se_lb = float(np.std(boot_lb, ddof=1))
-        se_ub = float(np.std(boot_ub, ddof=1))
+        if se_method == "analytic" and tight is not None:
+            se_lb, se_ub = float(np.sqrt(tight["var_lower"])), float(
+                np.sqrt(tight["var_upper"])
+            )
+        elif se_method == "analytic":
+            se_lb, se_ub = _lee_analytic_se(Y_obs, D_obs, D, S, trimming)
+        else:
+            rng = np.random.RandomState(random_state)
+            n = len(D)
+            boot_lb = np.zeros(n_bootstrap)
+            boot_ub = np.zeros(n_bootstrap)
+
+            for b in range(n_bootstrap):
+                idx = rng.choice(n, size=n, replace=True)
+                D_b = D[idx]
+                S_b = S[idx]
+
+                p1_b = np.mean(S_b[D_b == 1]) if np.sum(D_b == 1) > 0 else p1
+                p0_b = np.mean(S_b[D_b == 0]) if np.sum(D_b == 0) > 0 else p0
+
+                obs_b = S_b == 1
+                Y_b_col = df[y].values[idx]
+                Y_obs_b = Y_b_col[obs_b].astype(float)
+                D_obs_b = D_b[obs_b]
+
+                Y1_b = Y_obs_b[D_obs_b == 1]
+                Y0_b = Y_obs_b[D_obs_b == 0]
+
+                if tight is not None:
+                    try:
+                        tb = tightened_lee_bounds(
+                            df[y].to_numpy(dtype=float)[idx],
+                            D_b,
+                            S_b,
+                            cells[idx],
+                            trimming,
+                        )
+                        boot_lb[b], boot_ub[b] = tb["lower"], tb["upper"]
+                    except MethodIncompatibility:
+                        # A draw that empties a cell arm has no tightened bound.
+                        boot_lb[b] = boot_ub[b] = np.nan
+                elif len(Y1_b) > 0 and len(Y0_b) > 0 and p1_b > 0 and p0_b > 0:
+                    boot_lb[b], boot_ub[b] = _compute_lee_bounds(
+                        Y1_b, Y0_b, p1_b, p0_b, trimming
+                    )
+                else:
+                    boot_lb[b], boot_ub[b] = lb, ub
+
+            # Imbens & Manski (2004) confidence interval for the *parameter* (not
+            # the whole identified set). The critical value C_n solves
+            #     Phi(C_n + Delta / sigma_max) - Phi(-C_n) = 1 - alpha,
+            # where Delta = ub - lb is the estimated width of the identified set
+            # and sigma_max = max(se_lb, se_ub). C_n interpolates between the
+            # one-sided z_{1-alpha} (wide bounds, width >> SE) and the two-sided
+            # z_{1-alpha/2} (point-identified, width -> 0). Applying the
+            # two-sided z to *both* endpoints instead -- the previous code --
+            # yields the Horowitz-Manski CI that covers the identified SET and
+            # therefore over-covers the parameter.
+            n_failed = int(np.isnan(boot_lb).sum())
+            if n_failed:
+                warnings.warn(
+                    f"lee_bounds: {n_failed} of {n_bootstrap} bootstrap draws left "
+                    "a covariate cell without one arm and were skipped.",
+                    UserWarning,
+                    stacklevel=2,
+                )
+                if n_bootstrap - n_failed < 20:
+                    raise MethodIncompatibility(
+                        "lee_bounds: too few usable bootstrap draws; use coarser "
+                        "covariates."
+                    )
+            se_lb = float(np.nanstd(boot_lb, ddof=1))
+            se_ub = float(np.nanstd(boot_ub, ddof=1))
     c_n = _imbens_manski_cn(float(ub - lb), max(se_lb, se_ub), alpha)
     ci_lower = float(lb - c_n * se_lb)
     ci_upper = float(ub + c_n * se_ub)
@@ -289,7 +454,24 @@ def lee_bounds(
         "imbens_manski_cn": float(c_n),
         "se_method": se_method,
         "trimming": trimming,
+        "weights": weights,
     }
+    if weights is not None:
+        # which side had observations tied at its threshold (they share the
+        # mass still to keep; docs/dev/cleanroom/leebounds.md)
+        model_info["threshold_tie"] = weighted_ties
+    if tight is not None:
+        model_info["covariates"] = covariates
+        model_info["tightened"] = True
+        model_info["cells"] = tight["cells"]
+        model_info["n_cells"] = int(len(tight["cells"]))
+        model_info["cell_selection_direction"] = "hetero" if tight["hetero"] else "homo"
+        if "between_cell_divisor" in tight:
+            # K in the between-cell term of the tightened analytic variance
+            model_info["between_cell_divisor"] = tight["between_cell_divisor"]
+            # Deprecated name of the same number, kept for one minor
+            # version (MIGRATION.md).
+            model_info["leebounds_ntall"] = tight["between_cell_divisor"]
 
     _result = CausalResult(
         method="Lee Bounds (Lee 2009)",
@@ -313,13 +495,14 @@ def lee_bounds(
             params={
                 "y": y,
                 "treat": treat,
-                "selection": selection,
+                "selection": selection_arg,
                 "covariates": list(covariates) if covariates else None,
                 "n_bootstrap": n_bootstrap,
                 "alpha": alpha,
                 "random_state": random_state,
                 "se_method": se_method,
                 "trimming": trimming,
+                "weights": weights,
             },
             data=data,
             overwrite=False,
@@ -332,21 +515,11 @@ def lee_bounds(
 def _sample_quantile(y_sorted: np.ndarray, prop: float) -> float:
     """Sample ``prop``-quantile with Stata's ``_pctile`` definition.
 
-    With ``P = prop * n``: ``x_(floor(P) + 1)`` when ``P`` is not an
-    integer, ``(x_(P) + x_(P + 1)) / 2`` when it is (1-based order
-    statistics).
+    With ``P = prop * n``: ``x_(floor(P) + 1)`` when ``P`` is not a whole
+    number, ``(x_(P) + x_(P + 1)) / 2`` when it is (1-based order
+    statistics; whole up to a relative ``_LEE_RULE_TOL``).
     """
-    n = len(y_sorted)
-    P = prop * n
-    k = int(np.floor(P + 1e-9))
-    if abs(P - round(P)) <= 1e-9 * max(1.0, P):
-        k = int(round(P))
-        if k <= 0:
-            return float(y_sorted[0])
-        if k >= n:
-            return float(y_sorted[-1])
-        return float(0.5 * (y_sorted[k - 1] + y_sorted[k]))
-    return float(y_sorted[min(k, n - 1)])
+    return _stata_pctile(y_sorted, 100.0 * prop, tol=_LEE_RULE_TOL)
 
 
 def _lee_trimmed(y: np.ndarray, p_trim: float, top: bool, trimming: str) -> tuple:
@@ -359,26 +532,239 @@ def _lee_trimmed(y: np.ndarray, p_trim: float, top: bool, trimming: str) -> tupl
     observation at or beyond the sample ``p_trim`` (resp. ``1 - p_trim``)
     quantile. ``trimming='exact'`` keeps exactly ``(1 - p_trim) n`` units
     of mass, giving the observations tied at the quantile the fractional
-    weight that makes the kept mass exact.
+    weight that makes the kept mass exact. ``trimming='leebounds'`` is
+    Stata ``leebounds`` (``_leebounds_trimmed``).
 
-    Returns ``(mean, threshold, kept_values, kept_weights)``.
+    Returns ``(mean, threshold, kept_values, kept_weights)``; the threshold
+    is the sample quantile.
+    """
+    if trimming == "leebounds":
+        return _leebounds_trimmed(y, p_trim, top)[:4]
+    y = np.sort(np.asarray(y, dtype=float))
+    n = len(y)
+    if n == 0:
+        return float("nan"), float("nan"), y, np.ones(0)
+    quantile = _sample_quantile(y, p_trim if top else 1.0 - p_trim)
+    if trimming == "exact" and np.any(y == quantile):
+        vals, wts = _share_tied_mass(y, quantile, (1.0 - p_trim) * n, top)
+    else:
+        vals = y[y >= quantile] if top else y[y <= quantile]
+        wts = np.ones(len(vals))
+    return float(np.sum(wts * vals) / np.sum(wts)), quantile, vals, wts
+
+
+def _share_tied_mass(
+    y: np.ndarray,
+    threshold: float,
+    keep: float,
+    top: bool,
+    w: Optional[np.ndarray] = None,
+) -> tuple:
+    """Observations strictly beyond ``threshold`` with their full weight, plus
+    those equal to it sharing the mass still needed to reach ``keep`` in
+    proportion to their weights (Tauchmann's tie rule, generalised to a
+    fractional share). Returns ``(values, weights)``."""
+    w = np.ones(len(y)) if w is None else np.asarray(w, dtype=float)
+    inside = y > threshold if top else y < threshold
+    tied = y == threshold
+    share = (keep - w[inside].sum()) / w[tied].sum()
+    return np.r_[y[inside], y[tied]], np.r_[w[inside], w[tied] * share]
+
+
+def _quantile_ties_block_trimming(y: np.ndarray, p_trim: float) -> bool:
+    """Whether ties at the trimming quantile defeat the ``'quantile'`` rule.
+
+    The rule keeps every observation tied at the quantile. On a continuous
+    outcome that is one observation; on a binary or coarsely discrete one it
+    can be most of the arm, and then little or nothing is trimmed and the
+    two bounds collapse onto each other. True when, at either end, fewer
+    than half of the ``p_trim * n`` observations that should go are removed
+    (and at least two should).
+    """
+    y = np.asarray(y, dtype=float)
+    n = len(y)
+    if n == 0 or p_trim * n < 2:
+        return False
+    for top in (True, False):
+        kept = len(_lee_trimmed(y, p_trim, top=top, trimming="quantile")[2])
+        if n - kept < 0.5 * p_trim * n:
+            return True
+    return False
+
+
+def _warn_quantile_ties(
+    context: str, y_arm: np.ndarray, p_trim: float, stacklevel: int = 3
+) -> bool:
+    """Warn when ``trimming='quantile'`` cannot trim because of ties."""
+    if not _quantile_ties_block_trimming(y_arm, p_trim):
+        return False
+    warnings.warn(
+        f"{context}: the outcome is tied at the trimming quantile (binary or "
+        f"discrete outcome), so trimming='quantile' removes far less than the "
+        f"{p_trim:.1%} share it should and the bounds are too narrow -- on a "
+        "binary outcome they collapse to a single number. Use "
+        "trimming='exact', which splits the tied observations and gives the "
+        "sharp bounds.",
+        UserWarning,
+        stacklevel=stacklevel,
+    )
+    return True
+
+
+def _stata_local_macro(v: float) -> float:
+    """The number Stata holds after ``local m = v``, read back as a double.
+
+    Stata prints a number into a macro in at most 17 characters (the sign
+    not counted): fixed notation with at most 16 significant digits when it
+    shows at least as many digits as scientific notation would (the leading
+    zero of ``0.x`` dropped, trailing zeros removed), otherwise scientific
+    notation ``d.ddd...e+XX`` filling the 17 characters. Decimal ties are
+    rounded half away from zero on the exact binary value. Established by
+    black-box runs of Stata 18 on 2,067 doubles, every one reproduced; see
+    ``docs/dev/cleanroom/leebounds.md``.
+    """
+    from decimal import ROUND_HALF_UP, Decimal
+
+    v = float(v)
+    if v == 0.0 or not np.isfinite(v):
+        return v
+    width, max_digits = 17, 16
+    exact = Decimal(abs(v))
+    exponent = exact.adjusted()
+    fixed = None
+    fixed_digits = max_digits if exponent >= 0 else min(max_digits, width + exponent)
+    if exponent < max_digits and fixed_digits >= 1:
+        step = Decimal(1).scaleb(exponent - fixed_digits + 1)
+        fixed = exact.quantize(step, rounding=ROUND_HALF_UP)
+    exponent_chars = 2 + max(2, len(str(abs(exponent))))
+    sci_digits = width - exponent_chars - 1
+    if fixed is not None and fixed_digits >= sci_digits:
+        shown = fixed
+    else:
+        mantissa = exact.scaleb(-exponent).quantize(
+            Decimal(1).scaleb(-(sci_digits - 1)), rounding=ROUND_HALF_UP
+        )
+        shown = mantissa.scaleb(exponent)
+    return float(-shown if v < 0 else shown)
+
+
+def _stata_pctile(y_sorted: np.ndarray, pct: float, tol: float = 1e-15) -> float:
+    """Stata ``_pctile`` of sorted values at ``pct`` percent (no weights).
+
+    [D] pctile, Methods and formulas: with ``P = n pct / 100``, the
+    ``(floor(P) + 1)``-th order statistic, or the average of the ``P``-th and
+    ``(P + 1)``-th when ``P`` is a whole number. Stata treats ``P`` as whole
+    when it lies within about ``1e-15 P`` of one (black-box runs, see
+    ``docs/dev/cleanroom/leebounds.md``); ``tol`` sets that relative
+    distance. A percentage at or beyond 0 / 100 gives the smallest /
+    largest value.
+    """
+    y = np.asarray(y_sorted, dtype=float)
+    n = len(y)
+    if n == 0:
+        return float("nan")
+    P = n * pct / 100.0
+    whole = _whole_number(P, tol)
+    if whole is not None:
+        if whole <= 0:
+            return float(y[0])
+        if whole >= n:
+            return float(y[-1])
+        return float((y[whole - 1] + y[whole]) / 2.0)
+    rank = int(np.floor(P)) + 1
+    return float(y[min(max(rank, 1), n) - 1])
+
+
+def _whole_number(P: float, tol: float = 1e-15) -> Optional[int]:
+    """``round(P)`` when ``P`` is a whole number up to relative ``tol``."""
+    nearest = round(P)
+    if abs(P - nearest) <= tol * max(abs(P), 1.0):
+        return int(nearest)
+    return None
+
+
+# Lee's rule ('quantile' / 'exact') treats n p as whole up to this relative
+# error: p comes from differences of retention rates, whose rounding can
+# reach ~1e-14 relative, and a whole n p must not move to the next order
+# statistic because of it. Stata's own _pctile is tighter (1e-15).
+_LEE_RULE_TOL = 1e-12
+
+
+def _leebounds_trimmed(y: np.ndarray, p_trim: float, top: bool) -> tuple:
+    """Trimmed mean as Stata ``leebounds`` returns it (a black-box spec).
+
+    The percentage ``100 p_trim`` (``100 (1 - p_trim)`` for the lower tail)
+    and the ``_pctile`` threshold it gives both pass through a local macro
+    (``_stata_local_macro``). When some observation equals the held
+    threshold, the mass ``(1 - p_trim) n`` is kept exactly: observations
+    strictly beyond the threshold in full, the tied ones sharing the rest
+    (Tauchmann's rule for ties). Otherwise every observation at or beyond the
+    held threshold is kept, which drops the quantile observation itself when
+    rounding moved the threshold past it. See
+    ``docs/dev/cleanroom/leebounds.md``.
+
+    Returns ``(mean, quantile, kept_values, kept_weights, tie, threshold)``:
+    ``quantile`` is the ``_pctile`` value, ``threshold`` the value held in
+    the macro and ``tie`` whether the tie rule applied.
     """
     y = np.sort(np.asarray(y, dtype=float))
     n = len(y)
-    thr = _sample_quantile(y, p_trim if top else 1.0 - p_trim)
-    beyond = y > thr if top else y < thr
-    at = y == thr
-    if trimming == "quantile" or not at.any():
-        keep = beyond | at
-        vals = y[keep]
-        w = np.ones(len(vals))
+    if n == 0:
+        return float("nan"), float("nan"), y, np.ones(0), False, float("nan")
+    pct = 100.0 * p_trim if top else 100.0 * (1.0 - p_trim)
+    quantile = _stata_pctile(y, _stata_local_macro(pct))
+    threshold = _stata_local_macro(quantile)
+    tie = bool(np.any(y == threshold))
+    if tie:
+        vals, wts = _share_tied_mass(y, threshold, (1.0 - p_trim) * n, top)
     else:
-        n_beyond = int(beyond.sum())
-        frac = (n * (1.0 - p_trim) - n_beyond) / int(at.sum())
-        vals = np.concatenate([y[beyond], y[at]])
-        w = np.concatenate([np.ones(n_beyond), np.full(int(at.sum()), frac)])
-    mean = float(np.sum(vals * w) / np.sum(w))
-    return mean, thr, vals, w
+        vals = y[y >= threshold] if top else y[y <= threshold]
+        wts = np.ones(len(vals))
+    mean = float(np.sum(wts * vals) / np.sum(wts))
+    return mean, quantile, vals, wts, tie, threshold
+
+
+def _trimmed_arm_variance(
+    y_trim: np.ndarray,
+    q: float,
+    top: bool,
+    S: np.ndarray,
+    T: np.ndarray,
+    trimming: str,
+) -> tuple:
+    """``n`` times the trimmed-arm part of Lee's (2009, eq. 7) variance.
+
+    ``T`` marks the trimmed (more retained) arm and ``S`` the selected units
+    of the sample of size ``n``; ``y_trim`` holds the selected trimmed-arm
+    outcomes. With the kept distribution (values ``v``, weights ``w``,
+    ``W = sum(w)``), its mean ``mu`` and the threshold ``y_q``::
+
+        V = s2 n / W + (y_q - mu)^2 q / (E[ST] (1 - q))
+            + (y_q - mu)^2 ((1 - E[S|T=0]) - q (1 - E[T]))
+              / (E[T] E[S|T=0] (1 - E[T]))
+
+    ``s2`` divides by ``W - 1`` for a plain kept set and by ``W`` when the
+    observations at the threshold carry a fractional share (black-box
+    ``leebounds``; spec section "Analytic variance"). Returns ``(V, mu)``.
+    """
+    n = len(S)
+    if trimming == "leebounds":
+        mu, _, vals, wts, tie, y_q = _leebounds_trimmed(y_trim, q, top)
+        fractional = tie
+    else:
+        mu, y_q, vals, wts = _lee_trimmed(y_trim, q, top, trimming)
+        fractional = bool(np.any(wts != 1.0))
+    # numpy scalars: a degenerate cell (one kept observation, an arm
+    # without units) gives inf / NaN with a RuntimeWarning, not an exception
+    W = np.float64(np.sum(wts))
+    s2 = np.sum(wts * (vals - mu) ** 2) / (W - (0.0 if fractional else 1.0))
+    e_st = np.float64(np.mean(S * T))
+    e_t = np.float64(np.mean(T))
+    s_other = np.float64(np.mean(S[T == 0]))
+    gap2 = (np.float64(y_q) - mu) ** 2
+    share_term = ((1.0 - s_other) - q * (1.0 - e_t)) / (e_t * s_other * (1.0 - e_t))
+    V = s2 * n / W + gap2 * q / (e_st * (1.0 - q)) + gap2 * share_term
+    return float(V), float(mu)
 
 
 def _lee_analytic_se(
@@ -390,53 +776,38 @@ def _lee_analytic_se(
 ) -> tuple:
     """Lee (2009, Proposition 3) standard errors of (lower, upper).
 
-    Transcribes Stata ``leebounds``' ``leesbound`` routine term by term
-    (unit weights): ``V = vb1 + (vb2 + vb3 + vc) / N`` with
-    ``vp = (1-q)^2 (odds_t / e_t + odds_c / (1 - e_t))``,
-    ``vb1`` the variance of the kept outcomes over the kept count (sample
-    variance for ``trimming='quantile'``; the fractionally weighted
-    population variance over the kept mass for ``'exact'``, Stata's
-    tie branch), ``vb2 = (y_q - mu)^2 q / (P(S=1,T=1)(1-q))``,
-    ``vb3 = ((y_q - mu) / (1-q))^2 vp`` and ``vc`` the sample variance of
-    the untrimmed arm's outcomes over its cell share. When the control
-    arm has the higher retention the roles of the arms swap.
+    ``Var = (V_trim + Var(Y | S=1, other arm) / E[S (1 - T)]) / n`` with
+    ``V_trim`` from ``_trimmed_arm_variance``, ``T`` the more retained
+    (trimmed) arm and ``n`` the full sample including the non-selected.
+    The untrimmed arm's variance divides by its count minus one. Lee's
+    estimator replaces each population quantity by its sample analogue;
+    the choices where that leaves room (divisors, the threshold value)
+    follow Stata ``leebounds``' outputs (``docs/dev/cleanroom/leebounds.md``).
     """
-    N = len(D)
-    p1 = np.mean(S[D == 1])
-    p0 = np.mean(S[D == 0])
-    if p1 >= p0:
-        t = D
-        yt, yc = Y_obs[D_obs == 1], Y_obs[D_obs == 0]
-    else:
-        t = 1 - D
-        yt, yc = Y_obs[D_obs == 0], Y_obs[D_obs == 1]
-    est = np.mean((S == 1) & (t == 1))
-    esnt = np.mean((S == 1) & (t == 0))
-    et = np.mean(t == 1)
-    oddsc = np.mean((S == 0) & (t == 0)) / esnt
-    oddst = np.mean((S == 0) & (t == 1)) / est
-    pt, pc = max(p1, p0), min(p1, p0)
-    q = (pt - pc) / pt
-    vp = (1 - q) ** 2 * (oddst / et + oddsc / (1 - et))
-    vc = np.var(yc, ddof=1) / esnt
-
-    def _var(top: bool) -> float:
-        mu, thr, vals, w = _lee_trimmed(yt, q, top=top, trimming=trimming)
-        mass = np.sum(w)
-        if np.all(w == 1.0):
-            vb1 = np.var(vals, ddof=1) / mass
-        else:
-            vb1 = (np.sum(w * vals**2) / mass - mu**2) / mass
-        vb2 = (thr - mu) ** 2 * q / (est * (1 - q))
-        vb3 = ((thr - mu) / (1 - q)) ** 2 * vp
-        return float(vb1 + (vb2 + vb3 + vc) / N)
-
-    # Top-kept mean -> upper bound of the treated-trimmed contrast.
-    v_top, v_bottom = _var(True), _var(False)
-    if p1 >= p0:
-        return float(np.sqrt(v_bottom)), float(np.sqrt(v_top))
-    # Control trimmed: lower bound uses the control's top-kept mean.
-    return float(np.sqrt(v_top)), float(np.sqrt(v_bottom))
+    D = np.asarray(D, dtype=float)
+    S = np.asarray(S, dtype=float)
+    Y_obs = np.asarray(Y_obs, dtype=float)
+    D_obs = np.asarray(D_obs, dtype=float)
+    n = len(D)
+    p1 = float(np.mean(S[D == 1]))
+    p0 = float(np.mean(S[D == 0]))
+    treated_trimmed = p1 >= p0
+    T = D if treated_trimmed else 1.0 - D
+    T_obs = D_obs if treated_trimmed else 1.0 - D_obs
+    hi, lo = (p1, p0) if treated_trimmed else (p0, p1)
+    q = (hi - lo) / hi
+    y_trim = Y_obs[T_obs == 1]
+    y_other = Y_obs[T_obs == 0]
+    v_other = float(np.var(y_other, ddof=1)) / float(np.mean(S * (1.0 - T)))
+    se = {}
+    for top in (False, True):
+        v_trim, _ = _trimmed_arm_variance(y_trim, q, top, S, T, trimming)
+        se[top] = float(np.sqrt((v_trim + v_other) / n))
+    # treated trimmed: lower bound keeps the bottom; control trimmed: the
+    # lower bound subtracts the control mean that keeps the top
+    if treated_trimmed:
+        return se[False], se[True]
+    return se[True], se[False]
 
 
 def _compute_lee_bounds(
@@ -474,6 +845,7 @@ def _compute_lee_bounds(
 # ======================================================================
 
 
+@accepts_aliases(seed="random_state")
 def manski_bounds(
     data: pd.DataFrame,
     y: str,
@@ -544,9 +916,7 @@ def manski_bounds(
     True
     """
     cols = [y, treat]
-    missing = [c for c in cols if c not in data.columns]
-    if missing:
-        raise ValueError(f"Columns not found in data: {missing}")
+    check_columns(data, {"y": y, "treat": treat}, function="sp.manski_bounds")
 
     clean = data[cols].dropna()
     Y = clean[y].values.astype(np.float64)

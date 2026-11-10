@@ -1,0 +1,33 @@
+\begin{table}[!ht]
+\centering\scriptsize
+\begingroup\setlength{\tabcolsep}{2.5pt}
+\begin{tabular}{@{}lcccccccccccc@{}}
+\toprule
+Package & OLS/IV & HDFE & Stag.\ DiD & RD & SCM & DML & Forest & PSM & Honest-DiD & Tables & Evidence & Agent \\
+\midrule
+\statspai{} 1.40.2                     & Y & Y & Y & Y & Y & Y & Y & Y & Y & Y & Y & Y \\
+\pkg{statsmodels} 0.15.0               & P & N & N & N & N & N & N & N & N & Y & N & N \\
+\pkg{linearmodels} 7.1                 & Y & Y & N & N & N & N & N & N & N & Y & N & N \\
+\pkg{pyfixest} 0.60.0                  & Y & Y & Y & N & N & N & N & N & N & Y & N & N \\
+\pkg{DoubleML} 0.11.4                  & N & N & Y & P & N & Y & N & N & N & N & N & N \\
+\pkg{EconML} 0.17.0                    & P & N & N & N & N & Y & Y & N & N & P & N & N \\
+\pkg{CausalML} 0.18.0                  & P & N & N & N & N & P & Y & Y & N & N & N & N \\
+\pkg{DoWhy} 0.14                       & P & N & N & P & N & P & P & Y & N & N & N & N \\
+\pkg{diff-diff} 3.13.0                 & P & P & Y & Y & Y & P & N & P & Y & P & N & P \\
+\pkg{CausalPy} 0.9.0                   & P & P & Y & Y & Y & N & N & N & N & P & N & N \\
+\pkg{fixest} 0.14.2 (\proglang{R})     & Y & Y & Y & N & N & N & N & N & N & Y & N & N \\
+\pkg{did} 2.5.1 (\proglang{R})         & N & N & Y & N & N & N & N & N & N & N & N & N \\
+\bottomrule
+\end{tabular}
+\endgroup
+\caption{Scope of the closest implementations, checked on 2 November 2026 against
+the latest release of each by inspecting and running its public API. Y yes, P
+partial, N not found in the package. A Y records that a feature exists, not its
+depth: several alternatives go further in their home domains (\pkg{DoubleML} and
+\pkg{EconML} on DML model classes, \pkg{CausalML} on uplift, \pkg{DoWhy} on
+graphical models, \pkg{diff-diff} on DiD variants, \pkg{fixest} on formula syntax).
+OLS/IV: robust and cluster standard errors (P, estimators without cluster errors or
+without IV). Evidence: per-function machine-readable validation status. Agent: MCP
+server or package-shipped tool schemas (P, an LLM guide and report schemas).}
+\label{tab:related-software}
+\end{table}

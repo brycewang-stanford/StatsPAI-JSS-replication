@@ -18,6 +18,9 @@ Two flavours are implemented:
   bounds. Works for continuous outcomes.
 * ``method="sign"`` — Binomial / sign-test bounds. Works for binary
   or any paired data; simpler and distribution-free.
+* ``method="t"`` — the permutational t-test on the pair differences
+  [@rosenbaum2007sensitivity], the sensitivity analysis of the mean
+  difference.
 
 References
 ----------
@@ -34,6 +37,7 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 
+from .._input_validation import check_columns
 from .._result_serialize import ResultProtocolMixin
 from ..exceptions import MethodIncompatibility
 
@@ -143,11 +147,50 @@ def _wilcoxon_ranks(diffs: np.ndarray, zero_method: str) -> np.ndarray:
     """
     ad = np.abs(diffs)
     if zero_method == "pratt":
-        return stats.rankdata(ad, method="average") * (ad > 0)
+        _ret: np.ndarray = stats.rankdata(ad, method="average") * (ad > 0)
+        return _ret
     ranks = np.zeros_like(ad)
     nz = ad > 0
     ranks[nz] = stats.rankdata(ad[nz], method="average")
-    return ranks
+    _ret = ranks
+    return _ret
+
+
+def _shift_solving(
+    diffs: np.ndarray, p: float, z_target: float, zero_method: str
+) -> float:
+    """The shift ``tau`` at which the signed-rank deviate of ``diffs - tau``,
+    taken at assignment probability ``p``, equals ``z_target``.
+
+    The deviate is a step function of ``tau`` that only goes down, so it
+    rarely equals the target at one point: it either jumps across it or
+    sits on it over a stretch. Both ends are found by bisection -- the last
+    shift with the deviate above the target and the last with it not below
+    -- and their midpoint is returned, which is the Hodges-Lehmann
+    convention (the median of the Walsh averages when ``p = 1/2``).
+    """
+
+    def deviate(tau: float) -> float:
+        shifted = diffs - tau
+        ranks = _wilcoxon_ranks(shifted, zero_method)
+        return _wilcoxon_z(ranks, shifted > 0, p)
+
+    span = float(np.max(diffs) - np.min(diffs))
+    ends = []
+    for strict in (True, False):
+        lo = float(np.min(diffs)) - 1.0 - span
+        hi = float(np.max(diffs)) + 1.0 + span
+        for _ in range(200):
+            mid = 0.5 * (lo + hi)
+            value = deviate(mid)
+            if (value > z_target) if strict else (value >= z_target):
+                lo = mid
+            else:
+                hi = mid
+            if hi - lo <= 1e-13 * max(1.0, abs(lo), abs(hi)):
+                break
+        ends.append(0.5 * (lo + hi))
+    return 0.5 * (ends[0] + ends[1])
 
 
 # --------------------------------------------------------------------
@@ -168,6 +211,7 @@ def rosenbaum_bounds(
     gamma_grid: Optional[Sequence[float]] = None,
     alpha: float = 0.05,
     zero_method: str = "pratt",
+    estimates: bool = False,
 ) -> RosenbaumResult:
     """
     Compute Rosenbaum bounds on a paired observational study.
@@ -184,9 +228,15 @@ def rosenbaum_bounds(
     data : pd.DataFrame, optional
         Long-format data. Must contain exactly two rows per ``pair_id``,
         one with ``treat=1`` and one with ``treat=0``.
-    method : {"wilcoxon", "sign"}, default "wilcoxon"
-        Wilcoxon signed-rank bound (continuous) or binomial sign test
-        (robust / binary).
+    method : {"wilcoxon", "sign", "t"}, default "wilcoxon"
+        Wilcoxon signed-rank bound (continuous), binomial sign test
+        (robust / binary), or ``"t"``, the permutational t-test: the
+        statistic is the sum of the positive pair differences, whose
+        null distribution under bias ``Gamma`` has mean
+        ``p * sum(|d|)`` and variance ``p (1 - p) * sum(d**2)`` with
+        ``p = Gamma / (1 + Gamma)``. It is the test of the mean difference
+        (R ``sensitivitymw::senmw(method="t")`` on pairs) and, unlike the
+        rank tests, is driven by the largest differences.
     alternative : {"greater", "less", "two-sided"}, default "greater"
         Direction of the alternative hypothesis for the treatment effect.
     gamma_grid : sequence of float, optional
@@ -202,12 +252,32 @@ def rosenbaum_bounds(
         difference is zero. Ignored by the sign test, which always drops
         zeros.
 
+    estimates : bool, default False
+        Also bound the effect itself (``method="wilcoxon"`` only). For each
+        Gamma the ``detail`` table gains the range of the Hodges-Lehmann
+        point estimate of an additive effect, ``hl_lower`` to ``hl_upper``,
+        and the outer ends of its ``1 - alpha`` confidence interval,
+        ``ci_lower`` and ``ci_upper``. At ``Gamma = 1`` these are the usual
+        Hodges-Lehmann estimate and interval. They are the columns
+        ``t-hat+``, ``t-hat-``, ``CI+`` and ``CI-`` of Stata ``rbounds``;
+        where the signed-rank statistic equals its target over a stretch
+        of shifts, the middle of the stretch is reported, as there.
+
     Returns
     -------
     RosenbaumResult
         ``gamma_critical`` is the smallest Gamma in the grid at which the
         upper-bound p-value exceeds ``alpha``. It is ``inf`` if the study
         is insensitive across the grid, and ``1.0`` if already sensitive.
+
+    See Also
+    --------
+    weighted_rank : matched sets with several controls or several treated
+        individuals, weights with higher design sensitivity, and the exact
+        Gamma at which the bound crosses ``alpha``.
+    rosenbaum_stratified : strata of any size.
+    noether_test : sign test on the pairs with the largest differences.
+    amplify : reading Gamma as two odds ratios.
 
     Examples
     --------
@@ -230,8 +300,8 @@ def rosenbaum_bounds(
     >>> bool(np.all(bounds.pvalue_upper >= bounds.pvalue_lower))
     True
     """
-    if method not in {"wilcoxon", "sign"}:
-        raise ValueError("method must be 'wilcoxon' or 'sign'")
+    if method not in {"wilcoxon", "sign", "t"}:
+        raise ValueError("method must be 'wilcoxon', 'sign' or 't'")
     if zero_method not in {"pratt", "wilcox"}:
         raise MethodIncompatibility("zero_method must be 'pratt' or 'wilcox'")
     if alternative not in {"greater", "less", "two-sided"}:
@@ -241,17 +311,49 @@ def rosenbaum_bounds(
     if data is not None:
         if not all([y, treat, pair_id]):
             raise ValueError("When `data` is given, y/treat/pair_id are required")
-        _miss = [c for c in (y, treat, pair_id) if c not in data.columns]
-        if _miss:
-            raise ValueError(
-                f"rosenbaum_bounds: columns {_miss} not found in data "
-                f"(available: {list(data.columns)})."
-            )
+        check_columns(
+            data,
+            {"y": y, "treat": treat, "pair_id": pair_id},
+            function="sp.rosenbaum_bounds",
+        )
+        from ..core._validate import require_binary_treatment
+
         d = data[[y, treat, pair_id]].dropna().copy()
+        require_binary_treatment(d[treat], function="rosenbaum_bounds", argument=treat)
+        cell_size = d.groupby([pair_id, treat]).size()
+        crowded = cell_size[cell_size > 1]
+        if len(crowded):
+            bad_pairs = pd.Index(pd.unique(crowded.index.get_level_values(0))).tolist()
+            raise MethodIncompatibility(
+                f"rosenbaum_bounds: pair_id={pair_id!r} must hold exactly one "
+                f"treated and one control row per pair; {len(bad_pairs)} "
+                f"pair(s) hold more than one row in an arm, e.g. "
+                f"{[repr(v) for v in bad_pairs[:5]]}.",
+                recovery_hint=(
+                    "Fix the pair identifiers, or for matched sets with "
+                    "several treated or several controls use "
+                    "sp.weighted_rank (Rosenbaum's matched-set statistic)."
+                ),
+                diagnostics={
+                    "n_bad_pairs": int(len(bad_pairs)),
+                    "bad_pairs": [repr(v) for v in bad_pairs[:20]],
+                },
+                alternative_functions=["sp.weighted_rank"],
+            )
         wide = d.pivot(index=pair_id, columns=treat, values=y)
         if 0 not in wide.columns or 1 not in wide.columns:
             raise ValueError("treat column must contain both 0 and 1 values")
+        n_incomplete = int(wide.isna().any(axis=1).sum())
         wide = wide.dropna()
+        if n_incomplete:
+            import warnings
+
+            warnings.warn(
+                f"rosenbaum_bounds: {n_incomplete} pair(s) have no complete "
+                "treated or control row and are dropped.",
+                UserWarning,
+                stacklevel=2,
+            )
         diffs = (wide[1].values - wide[0].values).astype(float)
     else:
         if treated is None or control is None:
@@ -290,6 +392,12 @@ def rosenbaum_bounds(
             ranks = _wilcoxon_ranks(d, zero_method)
             z = _wilcoxon_z(ranks, d > 0, p)
             return float(stats.norm.sf(z)), float(np.sum(ranks[d > 0]))
+        if method == "t":
+            # The signed-rank computation with the absolute differences
+            # themselves as scores: T = sum of the positive differences.
+            scores = np.abs(d)
+            z = _wilcoxon_z(scores, d > 0, p)
+            return float(stats.norm.sf(z)), float(np.sum(scores[d > 0]))
         nonzero = d[d != 0]
         t_plus = int(np.sum(nonzero > 0))
         return _sign_test_bound(t_plus, int(nonzero.size), p), float(t_plus)
@@ -326,6 +434,31 @@ def rosenbaum_bounds(
             "reject_upper": uppers <= alpha,
         }
     )
+    if estimates:
+        if method != "wilcoxon":
+            raise MethodIncompatibility(
+                "rosenbaum_bounds: estimates=True bounds the Hodges-Lehmann "
+                "estimate, which belongs to the signed-rank test.",
+                recovery_hint="Use method='wilcoxon', or drop estimates=True.",
+                diagnostics={"method": method},
+            )
+        z_crit = float(stats.norm.ppf(1.0 - alpha / 2.0))
+        columns: dict = {
+            k: [] for k in ("hl_lower", "hl_upper", "ci_lower", "ci_upper")
+        }
+        for gamma in gamma_grid_arr:
+            p_high = gamma / (1.0 + gamma)
+            p_low = 1.0 / (1.0 + gamma)
+            columns["hl_lower"].append(_shift_solving(diffs, p_high, 0.0, zero_method))
+            columns["hl_upper"].append(_shift_solving(diffs, p_low, 0.0, zero_method))
+            columns["ci_lower"].append(
+                _shift_solving(diffs, p_high, z_crit, zero_method)
+            )
+            columns["ci_upper"].append(
+                _shift_solving(diffs, p_low, -z_crit, zero_method)
+            )
+        for name, values in columns.items():
+            detail[name] = values
 
     return RosenbaumResult(
         gamma_grid=gamma_grid_arr,

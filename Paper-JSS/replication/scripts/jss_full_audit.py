@@ -66,6 +66,12 @@ def _normalize_command_output(text: str) -> str:
     return re.sub(r"in \d+(?:\.\d+)?s", "in <elapsed>s", text)
 
 
+def _portable(text: str) -> str:
+    """Drop this machine's interpreter and checkout paths from a stored log."""
+    text = text.replace(sys.executable, "python")
+    return text.replace(f"{ROOT}/", "").replace(str(ROOT), ".")
+
+
 def _run(cmd: list[str], *, cwd: Path = ROOT) -> dict[str, Any]:
     start = time.perf_counter()
     proc = subprocess.run(
@@ -76,10 +82,10 @@ def _run(cmd: list[str], *, cwd: Path = ROOT) -> dict[str, Any]:
         stderr=subprocess.STDOUT,
         check=False,
     )
-    output = _normalize_command_output(proc.stdout)
+    output = _portable(_normalize_command_output(proc.stdout))
     return {
-        "cmd": " ".join(cmd),
-        "cwd": str(cwd),
+        "cmd": _portable(" ".join(cmd)),
+        "cwd": _portable(str(cwd)),
         "returncode": proc.returncode,
         "seconds": _elapsed_seconds(start),
         "output": output,
@@ -1133,8 +1139,8 @@ def main() -> int:
     audit = {
         "generated_at_unix": _generated_at_unix(),
         "python": sys.version.split()[0],
-        "root": str(ROOT),
-        "paper_dir": str(PAPER_DIR),
+        "root": ".",
+        "paper_dir": PAPER_DIR.relative_to(ROOT).as_posix(),
         "commands": commands,
         "summary": {
             "ok": not failures,

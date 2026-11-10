@@ -16,16 +16,19 @@ macro (Ramey 2016; Plagborg-Møller & Wolf 2021).
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any, List, Optional
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional, Union
 
 import numpy as np
 import pandas as pd
 from scipy import stats
 
 from .._aliases import accepts_aliases
+from .._input_validation import check_columns
 from .._result_serialize import ResultProtocolMixin
-from ..exceptions import DataInsufficient
+from ..core._call_record import records_call
+from ..core._collinear import independent_columns
+from ..exceptions import DataInsufficient, MethodIncompatibility
 
 # --------------------------------------------------------------------- #
 #  Newey-West HAC for a single regression
@@ -92,6 +95,8 @@ class LocalProjectionsResult(ResultProtocolMixin):
     shock_name: str
     outcome_name: str
     n_obs_per_horizon: np.ndarray  # (H+1,)  — usable sample per horizon
+    method: str = "direct"  # design that produced the responses
+    diagnostics: Dict[str, Any] = field(default_factory=dict)
 
     def to_frame(self) -> pd.DataFrame:
         return pd.DataFrame(
@@ -172,9 +177,11 @@ def _lpirfs_cholesky(
         raise ValueError("endog_order must include shock")
     if len(order) != len(set(order)):
         raise ValueError("endog_order must not contain duplicate variables")
-    missing = [col for col in order if col not in data.columns]
-    if missing:
-        raise KeyError(f"endog_order columns not found in data: {missing}")
+    check_columns(
+        data,
+        {"endog_order": order},
+        function="sp.local_projections",
+    )
     if len(data) <= horizons + 2:
         raise DataInsufficient("too few observations for Cholesky local projections")
 
@@ -232,7 +239,11 @@ def _lpirfs_cholesky(
         lower = (coef - half_width) @ shock_vec
         upper = (coef + half_width) @ shock_vec
         irf[h] = float(point[response_idx])
-        se[h] = float((upper[response_idx] - lower[response_idx]) / 2.0)
+        # Half the distance between the two mapped limits, sum_j s_j w_j.
+        # lpirfs keeps its sign, so when the negative weights dominate its
+        # "lower" limit lies above its "upper" one; the band is the same
+        # interval either way, and a standard error is its half-width.
+        se[h] = abs(float((upper[response_idx] - lower[response_idx]) / 2.0))
         n_used[h] = int(len(xx))
 
     z_crit = stats.norm.ppf(1 - alpha / 2)
@@ -254,6 +265,7 @@ def _lpirfs_cholesky(
 # --------------------------------------------------------------------- #
 
 
+@records_call("local_projections")
 @accepts_aliases(covariates="controls", y="outcome")
 def local_projections(
     data: pd.DataFrame,
@@ -267,8 +279,27 @@ def local_projections(
     auto_lag: bool = True,
     identification: str = "direct",
     endog_order: Optional[List[str]] = None,
-) -> LocalProjectionsResult:
+    lags: Optional[Union[int, List[int]]] = None,
+    instruments: Optional[List[str]] = None,
+    vce: Optional[str] = None,
+    dfk: Optional[bool] = None,
+    trend: int = 0,
+    common_sample: bool = False,
+    state: Optional[str] = None,
+    state_transform: str = "logistic",
+    gamma: Optional[float] = None,
+    hp_lambda: Optional[float] = None,
+    lag_state: bool = True,
+    id: Optional[str] = None,
+    time: Optional[str] = None,
+    panel_effect: str = "individual",
+    diff_shock: bool = False,
+) -> Any:
     """Estimate impulse responses via Jordà (2005) local projections.
+
+    One entry for the single-series projection with an observed shock, its
+    instrumental-variable form (``instruments=``), the state-dependent form
+    (``state=``) and the panel form (``id=``, ``time=``).
 
     Parameters
     ----------
@@ -290,14 +321,17 @@ def local_projections(
     horizons : int, default 20
         Number of horizons h = 0, 1, …, H to estimate.
     nw_lags : int, optional
-        Newey-West truncation lag. Defaults to ``round(1.5 * horizons)``
+        Newey-West truncation lag, used at every horizon (for
+        ``identification='direct'``). Defaults to ``round(1.5 * horizons)``
         per Kilian & Kim (2011) recommendation.
     alpha : float, default 0.05
         Significance level for the confidence band.
     cumulative : bool, default False
         If ``True``, return the cumulative response
         ``y_{t+h} - y_{t-1}``. Default (False) returns ``y_{t+h}``
-        directly.
+        directly. With ``auto_lag=True`` the regression already holds
+        ``y_{t-1}`` fixed, so the two give the same response and the same
+        standard error; they differ only with ``auto_lag=False``.
     auto_lag : bool, default True
         If ``True`` (the legacy default), also adds ``y_{t-1}`` and
         ``shock_{t-1}`` as automatic regressors. Set ``False`` for a
@@ -311,9 +345,90 @@ def local_projections(
         ``endog_order`` define the Cholesky ordering, and the reported
         response is the unit structural shock for ``shock``.
     endog_order : list of str, optional
-        Endogenous variable order used only when
-        ``identification='lpirfs_cholesky'``. Defaults to
+        With ``identification='lpirfs_cholesky'``: the Cholesky order of the
+        system. With ``lags=``: the variables whose lags enter every
+        projection (``lpirfs``' ``endog_data``). Defaults to
         ``[outcome, shock]``.
+    lags : int or list of int, optional
+        Lags of the ``endog_order`` variables included as controls; an int
+        ``p`` means lags 1..p (``lpirfs`` ``lags_endog_lin``, Stata
+        ``lpirf, lags(1/p)``). Passing ``lags``, ``instruments``, ``vce``,
+        ``trend``, ``common_sample`` or ``dfk`` selects this explicit
+        design in place of ``auto_lag`` (``lags=1`` with the default
+        ``endog_order`` is the ``auto_lag=True`` design), and the default
+        Newey-West lag becomes the ``lpirfs`` rule ``h + 1`` at horizon
+        ``h``. Unset, it is 1 if ``auto_lag`` else 0.
+    instruments : list of str, optional
+        External instruments for the shock: ``shock`` is treated as
+        endogenous and each horizon is fitted by two-stage least squares
+        with every other regressor as its own instrument (``lpirfs::
+        lp_lin_iv(use_twosls=TRUE)``; panel: ``lp_lin_panel(iv_reg=TRUE)``).
+        The first-stage F of every horizon is in ``diagnostics``; below 10
+        an ``AssumptionWarning`` is raised.
+    vce : {'hac', 'robust', 'ols', 'cluster', 'driscoll_kraay'}, optional
+        Variance of the explicit design: ``'hac'`` Newey-West (default),
+        ``'robust'`` HC0, or ``'ols'`` homoskedastic. Panel projections take
+        ``'cluster'`` (by unit, default), ``'driscoll_kraay'`` or ``'ols'``.
+    dfk : bool, optional
+        Small-sample adjustment. Unset: the ``lpirfs`` convention, ``n - k``
+        divisor for ``vce='ols'`` and none for the sandwiches. ``True``:
+        Stata ``lpirf, dfk`` (``n - k`` divisor, robust and HAC variances
+        times ``n / (n - k)``). ``False``: Stata ``lpirf`` without ``dfk``
+        (divisor ``n``, no factor).
+    trend : {0, 1, 2}, default 0
+        Deterministic trend: none, linear, or linear and quadratic
+        (``lpirfs`` ``trend``).
+    common_sample : bool, default False
+        Fit every horizon on the observations available at the longest
+        horizon (Stata ``lpirf``); the default uses each horizon's own
+        sample (``lpirfs``).
+    state : str, optional
+        Column of the state variable for a state-dependent projection
+        (``lpirfs::lp_nl_iv`` with an observed shock, ``lp_nl`` with
+        ``identification='lpirfs_cholesky'``). Returns a
+        ``StateDependentLPResult`` with the responses in the regimes
+        ``F = 1`` and ``F = 0`` and a per-horizon test of their equality.
+    state_transform : {'logistic', 'none'}, default 'logistic'
+        ``'logistic'``: ``F = exp(-gamma z) / (1 + exp(-gamma z))`` (near 1
+        when ``z`` is low). ``'none'``: the state is already the weight and
+        must lie in [0, 1].
+    gamma : float, optional
+        Steepness of the logistic transition; required with
+        ``state_transform='logistic'``.
+    hp_lambda : float, optional
+        If given, ``z`` is the standardised Hodrick-Prescott cycle of the
+        state with this smoothing parameter (``lpirfs`` ``use_hp``).
+    lag_state : bool, default True
+        Use ``F_{t-1}`` so the regime is fixed before the shock.
+    id, time : str, optional
+        Unit and period columns: a panel local projection
+        (``lpirfs::lp_lin_panel``). Leads, lags and differences are taken
+        within unit by period.
+    panel_effect : {'individual', 'time', 'twoways', 'none'}, default 'individual'
+        Fixed effects swept out by the within transformation; ``'none'`` is
+        pooled OLS (``plm`` ``effect`` / ``model='pooling'``).
+    diff_shock : bool, default False
+        Panel only: use the first difference of the shock (and of the
+        instruments), the ``lpirfs`` default ``diff_shock=TRUE``.
+
+    Returns
+    -------
+    LocalProjectionsResult or StateDependentLPResult
+        One response path with standard errors and bands
+        (``to_frame()``); ``method`` names the design and ``diagnostics``
+        holds the settings and, for IV, the first-stage F by horizon. With
+        ``state=`` the regime-specific result.
+
+    Notes
+    -----
+    Horizon ``h`` here is ``lpirfs``' ``h + 1``. ``lpirfs`` builds the
+    cumulative outcome ``y_{t+h} - y_{t-1}`` after trimming the lag rows, so
+    it drops one more observation at the start than this function; on
+    ``data.iloc[1:]`` the two agree. Panel leads and lags are by period;
+    ``lpirfs`` shifts by row, which differs only when a unit skips periods.
+    The panel default ``vce='cluster'`` departs from ``lpirfs``'
+    homoskedastic default (``robust_cov = NULL``) because projection
+    residuals are serially correlated by construction.
 
     Examples
     --------
@@ -330,12 +445,58 @@ def local_projections(
     ...     y[t] = 0.5 * y[t - 1] + 0.8 * shock[t] + rng.normal(0, 0.5)
     >>> df = pd.DataFrame({"y": y, "shock": shock})
     >>> res = sp.local_projections(df, outcome="y", shock="shock", horizons=8)
-    >>> print(round(float(res.irf[0]), 2))  # 0.75 — impact response, truth 0.8
-    >>> print(res.to_frame().head())        # horizon, irf, se, ci bands, n
+    >>> print(round(float(res.irf[0]), 2))  # impact response, truth 0.8
+    0.75
+    >>> list(res.to_frame().columns)        # one row per horizon 0..8
+    ['horizon', 'irf', 'se', 'ci_lower', 'ci_upper', 'n']
     >>> ax = res.plot()                     # IRF with Newey-West CI band
     """
     if controls is None:
         controls = []
+    if not 0 < alpha < 1:
+        raise MethodIncompatibility(
+            f"alpha must lie strictly between 0 and 1, got {alpha!r}.",
+            recovery_hint="Pass the significance level, e.g. alpha=0.05 for "
+            "a 95% band.",
+        )
+    check_columns(
+        data,
+        {"outcome": outcome, "shock": shock, "controls": controls},
+        function="sp.local_projections",
+    )
+    from ._lpx_route import route
+
+    _result = route(
+        data,
+        outcome=outcome,
+        shock=shock,
+        controls=list(controls),
+        horizons=horizons,
+        nw_lags=nw_lags,
+        alpha=alpha,
+        cumulative=cumulative,
+        auto_lag=auto_lag,
+        identification=identification,
+        endog_order=endog_order,
+        lags=lags,
+        instruments=instruments,
+        vce=vce,
+        dfk=dfk,
+        trend=trend,
+        common_sample=common_sample,
+        state=state,
+        state_transform=state_transform,
+        gamma=gamma,
+        hp_lambda=hp_lambda,
+        lag_state=lag_state,
+        id=id,
+        time=time,
+        panel_effect=panel_effect,
+        diff_shock=diff_shock,
+    )
+    if _result is not None:
+        _attach_explicit_provenance(_result, data, _result.method, locals())
+        return _result
     identification_norm = identification.lower().replace("-", "_")
     if identification_norm not in {"direct", "lpirfs_cholesky", "cholesky"}:
         raise ValueError("identification must be 'direct' or 'lpirfs_cholesky'")
@@ -390,6 +551,12 @@ def local_projections(
     n = len(df)
     if nw_lags is None:
         nw_lags = max(1, int(round(1.5 * horizons)))
+    elif nw_lags < 0:
+        raise MethodIncompatibility(
+            f"nw_lags must be a non-negative integer, got {nw_lags!r}.",
+            recovery_hint="nw_lags=0 is the heteroskedasticity-robust "
+            "(White) covariance; leave it unset for round(1.5 * horizons).",
+        )
 
     y = df[outcome].to_numpy(dtype=float)
     s = df[shock].to_numpy(dtype=float)
@@ -410,20 +577,24 @@ def local_projections(
     n_used = np.empty(horizons + 1, dtype=int)
 
     for h in range(horizons + 1):
-        # LHS: y_{t+h} (or y_{t+h} - y_{t-1} if cumulative)
         if t_end := n - h:
             y_lhs = y[h:]
-            lhs = y_lhs - lag_y[h:] if cumulative else y_lhs
+            # cumulative: y_{t+h} - y_{t-1}, the change since the period
+            # before the shock (lag_y[t] is y_{t-1}, so the row t = 0 drops)
+            lhs = y_lhs - lag_y[:t_end] if cumulative else y_lhs
         else:
             raise DataInsufficient("too few observations for horizon")
         shock_t = s[:t_end]
         extras_t = [arr[:t_end] for arr in extra_cols]
 
         cols = [np.ones(t_end), shock_t]
+        names = ["_cons", shock]
         if auto_lag:
             cols.append(lag_y[:t_end])
             cols.append(lag_s[:t_end])
+            names += [f"L.{outcome}", f"L.{shock}"]
         cols.extend(extras_t)
+        names += [str(c) for c in controls]
         X = np.column_stack(cols)
         valid = ~np.isnan(lhs) & ~np.any(np.isnan(X), axis=1)
         X_use = X[valid]
@@ -433,9 +604,23 @@ def local_projections(
             se[h] = np.nan
             n_used[h] = int(valid.sum())
             continue
+        _, dependent = independent_columns(X_use, names)
+        if dependent:
+            raise MethodIncompatibility(
+                f"local_projections: at horizon {h} the regressors are "
+                "perfectly collinear ("
+                + "; ".join(f"{o['variable']}: {o['reason']}" for o in dependent)
+                + "), so the coefficient on the shock is not identified.",
+                recovery_hint="Drop the redundant control (a constant shock "
+                "is collinear with the intercept), or pass auto_lag=False "
+                "if a control duplicates the automatic lags.",
+                diagnostics={"horizon": h, "omitted": dependent},
+            )
         beta, *_ = np.linalg.lstsq(X_use, lhs_use, rcond=None)
         e = lhs_use - X_use @ beta
-        V = _newey_west(X_use, e, lags=max(h, nw_lags))
+        # nw_lags is the Bartlett truncation lag at every horizon; the
+        # default round(1.5 H) is never below h, a user's choice may be.
+        V = _newey_west(X_use, e, lags=nw_lags)
         irf[h] = float(beta[1])  # coefficient on shock
         se[h] = float(np.sqrt(max(V[1, 1], 0)))
         n_used[h] = int(valid.sum())
@@ -476,3 +661,32 @@ def local_projections(
     except Exception:  # pragma: no cover
         pass
     return _result
+
+
+def _attach_explicit_provenance(
+    result: Any, data: pd.DataFrame, method: str, args: Dict[str, Any]
+) -> None:
+    """Record the call of an explicit design on ``result`` (best effort)."""
+    keys = (
+        "outcome", "shock", "controls", "horizons", "nw_lags", "alpha",
+        "cumulative", "endog_order", "lags", "instruments", "vce", "dfk",
+        "trend", "common_sample", "state", "state_transform", "gamma",
+        "hp_lambda", "lag_state", "id", "time", "panel_effect", "diff_shock",
+    )  # fmt: skip
+    params = {k: args.get(k) for k in keys}
+    params["identification"] = args.get("identification")
+    params["method"] = method
+    try:
+        from ..output._lineage import attach_provenance as _attach_prov
+
+        _attach_prov(
+            result,
+            function="sp.timeseries.local_projections",
+            params=params,
+            data=data,
+            overwrite=False,
+        )
+    except Exception as exc:  # pragma: no cover - lineage is best effort
+        from ..workflow._degradation import record_degradation
+
+        record_degradation(result, section="provenance", exc=exc)

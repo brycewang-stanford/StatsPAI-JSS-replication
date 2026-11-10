@@ -32,9 +32,15 @@ deterministic simulated replica.
 Usage
 -----
 >>> import statspai as sp
->>> sp.list_replications()
+>>> reps = sp.list_replications()
+>>> reps['key'].tolist()[:3]
+['card_1995', 'abadie_2010', 'castle_2013']
 >>> data, guide = sp.replicate('card_1995')
->>> print(guide)
+>>> data.shape
+(3010, 9)
+>>> print(guide)  # doctest: +ELLIPSIS
+========...
+REPLICATION GUIDE: Card (1995) ...
 """
 
 from __future__ import annotations
@@ -214,7 +220,7 @@ _REPLICATIONS: Dict[str, Dict[str, Any]] = {
             "golden_numbers": [
                 (
                     "Average post-1989 ATT (packs/capita)",
-                    -19.7605,
+                    -19.5136,
                     -19.0,
                     "ADH (2010) Figure 2 (qualitative ≈ -19)",
                 ),
@@ -543,13 +549,14 @@ _REPLICATIONS: Dict[str, Dict[str, Any]] = {
                 ),
                 (
                     "Outcome-only classic ATT",
-                    21482.1,
-                    "V fixed to identity -> convex in W -> unique solution",
+                    21013.2,
+                    "least squares on the pre-treatment path: convex in W, "
+                    "unique solution",
                 ),
                 (
                     "Outcome-only donor weights",
-                    0.476,
-                    "New York .476, Illinois .340, Florida .184 (reproducible)",
+                    0.3725,
+                    "Florida .372, New York .356, Illinois .272 (reproducible)",
                 ),
             ],
         },
@@ -953,7 +960,7 @@ _REPLICATIONS: Dict[str, Dict[str, Any]] = {
                 ("Adjusted OLS ATT ($)", 1548.2, 1548.2, "StatsPAI vs R parity"),
                 (
                     "1:1 NN PSM ATT ($)",
-                    1963.4,
+                    1968.8,
                     1794.0,
                     "StatsPAI vs DW (1999) Table 4 experimental benchmark",
                 ),
@@ -1066,7 +1073,8 @@ _REPLICATIONS: Dict[str, Dict[str, Any]] = {
                 "    kernel='triangular', bwselect='cct')",
                 "conv = rd.diagnostics['conventional']",
                 "print(f'Conventional jump: {conv[\"estimate\"]:.3f} '",
-                '      f\'(SE {conv["se"]:.3f}) at h={rd.diagnostics["bandwidth_h"]:.2f}\')',
+                '      f\'(SE {conv["se"]:.3f}) at '
+                'h={rd.diagnostics["bandwidth_h"]:.2f}\')',
             ],
             "golden_numbers": [
                 (
@@ -1189,7 +1197,11 @@ def list_replications() -> pd.DataFrame:
     Examples
     --------
     >>> import statspai as sp
-    >>> sp.list_replications()
+    >>> reps = sp.list_replications()
+    >>> list(reps.columns)[:4]
+    ['key', 'title', 'design', 'journal']
+    >>> 'card_1995' in set(reps['key'])
+    True
     """
     rows = []
     for key, info in _REPLICATIONS.items():
@@ -1242,7 +1254,10 @@ def replicate(
     --------
     >>> import statspai as sp
     >>> data, guide = sp.replicate('card_1995')
-    >>> print(guide)
+    >>> data.shape
+    (3010, 9)
+    >>> guide.splitlines()[1]  # doctest: +ELLIPSIS
+    'REPLICATION GUIDE: Card (1995) ...'
     """
     if key not in _REPLICATIONS:
         available = ", ".join(_REPLICATIONS.keys())

@@ -1,41 +1,54 @@
 {
   "active_archival_only_keys": [],
-  "active_cited_key_count": 73,
+  "active_cited_key_count": 101,
   "active_cited_keys": [
     "abadie2003economic",
     "abadie2010synthetic",
     "abadie2011synth",
+    "abadie2016matching",
+    "ahrens2024ddml",
     "ahrens2025model",
     "andrews2023inference",
     "angrist2009mostly",
-    "anthropic2024mcp",
+    "arelbundock2022modelsummary",
+    "arelbundock2024marginaleffects",
     "arkhangelsky2021synthetic",
     "athey2019generalized",
     "bach2022doubleml",
     "bach2024doubleml",
     "baker2026difference",
-    "benmichael2021augmented",
+    "barrett2026datatable",
+    "bates2015lme4",
     "berge2018efficient",
+    "berge2026fixest",
     "blackwell2014selection",
     "borusyak2024revisiting",
     "brodersen2015inferring",
+    "butts2022stage",
     "callaway2021difference",
     "calonico2014robust",
     "calonico2015rdrobust",
     "cameron2008bootstrap",
     "card1995using",
     "cattaneo2018manipulation",
+    "cattaneo2020analysis",
     "cattaneo2020simple",
     "chen2020causalml",
     "chen2025efficient",
     "chernozhukov2018double",
     "clarke2024synthetic",
+    "colella2023acreg",
     "conley1999estimation",
+    "correia2017linear",
     "correia2020fast",
     "dehejia1999causal",
     "econml",
+    "filliben1999strd",
+    "gerber2026diffdiff",
     "ghanem2026selection",
     "goodmanbacon2021difference",
+    "gould2001statistical",
+    "greifer2026weightit",
     "hainmueller2012entropy",
     "hainmueller2019much",
     "hansen2006optimal",
@@ -45,19 +58,30 @@
     "imai2014covariate",
     "imbens2009recent",
     "kleiber2008applied",
+    "koenker2025quantreg",
+    "kolesar2022shiftsharese",
     "lalonde1986evaluating",
     "lam2015numba",
     "lee2008randomized",
     "li2025benchmarking",
     "liang2023helm",
     "liu2024practical",
+    "mccullough1999numerical",
     "mckinney2010data",
+    "mcp2026specification",
     "mou2023panel",
-    "patil2023gorilla",
+    "nicholls2020riskbased",
+    "padgham2021statistical",
+    "patil2024gorilla",
     "pedregosa2011scikit",
     "pustejovsky2018small",
+    "pustejovsky2026clubsandwich",
+    "pyfixest2025pyfixest",
+    "pymclabs2026causalpy",
     "rambachan2023more",
+    "rcoreteam2025r",
     "rios2022csdid",
+    "robinson2026broom",
     "roodman2019fast",
     "roth2023whats",
     "roth2026interpreting",
@@ -65,15 +89,19 @@
     "seabold2010statsmodels",
     "sekhon2011multivariate",
     "sharma2020dowhy",
+    "shea2024wooldridge",
+    "sheppard2025linearmodels",
     "staiger1997instrumental",
+    "statacorp2023stata",
     "stock2005testing",
     "sun2021estimating",
+    "ushey2026renv",
+    "vanrossum2009python",
     "virtanen2020scipy",
     "wager2018estimation",
     "wang2020minimal",
     "wang2026statspaijoss",
     "wing2024designing",
-    "xu2017generalized",
     "zeileis2020sandwich"
   ],
   "active_missing_from_submission_bib": [],
@@ -81,25 +109,28 @@
     "manuscript/main.tex",
     "manuscript/generated_claims.tex",
     "manuscript/sections/01-introduction-compact.tex",
+    "manuscript/tables/related_software.tex",
     "manuscript/sections/02-architecture-compact.tex",
     "manuscript/sections/03-agent-facing-compact.tex",
+    "manuscript/sections/07-agent-eval.tex",
+    "replication/tables/ex07_agent_trace.tex",
     "manuscript/sections/04-examples-compact.tex",
+    "replication/tables/ex03_handoff.tex",
     "replication/tables/ex08_three_way.tex",
     "manuscript/sections/05-parity-compact.tex",
     "manuscript/tables/track_a_cross_language_snapshot.tex",
     "manuscript/tables/headline_parity.tex",
     "manuscript/tables/forest_seed_mc.tex",
+    "manuscript/tables/dml_plr_designs.tex",
     "manuscript/tables/track_b_monte_carlo.tex",
     "manuscript/sections/06-performance.tex",
     "manuscript/tables/track_c_perf.tex",
-    "manuscript/sections/07-agent-eval.tex",
-    "replication/tables/ex07_agent_trace.tex",
     "manuscript/sections/08-computational-details-compact.tex",
     "manuscript/sections/09-discussion-compact.tex",
     "manuscript/sections/appendix.tex",
     "manuscript/tables/appendix_b_parity.tex"
   ],
-  "archival_bib_entry_count": 59,
+  "archival_bib_entry_count": 60,
   "checks": [
     {
       "evidence": "missing=[]",
@@ -132,17 +163,17 @@
       "requirement": "no-DOI entries have manual verification reasons"
     },
     {
-      "evidence": "bbl_present=True; bibitems=73; active_citations=73",
+      "evidence": "bbl_present=True; bibitems=101; active_citations=101",
       "ok": true,
       "requirement": "compiled bibliography count matches active citations when main.bbl exists"
     }
   ],
   "compiled_bibliography": {
-    "bibitem_count": 73,
+    "bibitem_count": 101,
     "present": true,
-    "thebibliography_count": 73
+    "thebibliography_count": 101
   },
-  "doi_entry_count": 61,
+  "doi_entry_count": 86,
   "duplicate_keys": [],
   "expected_reserved_entry_keys": [
     "brown2020language"
@@ -150,17 +181,9 @@
   "failures": [],
   "field_failures": [],
   "generated_at_unix": 1780185600,
-  "locator_entry_count": 72,
+  "locator_entry_count": 100,
   "missing_no_doi_reasons": [],
   "no_doi_entries": [
-    {
-      "active_cited": true,
-      "has_locator": true,
-      "key": "anthropic2024mcp",
-      "manual_verification": "Software/web specification citation; URL and access date are rendered from howpublished/note fields.",
-      "reserved": false,
-      "type": "misc"
-    },
     {
       "active_cited": true,
       "has_locator": true,
@@ -171,7 +194,7 @@
     },
     {
       "active_cited": true,
-      "has_locator": false,
+      "has_locator": true,
       "key": "berge2018efficient",
       "manual_verification": "CREA discussion paper for the fixest implementation lineage; URL to the institution-hosted PDF is present, and no DOI is recorded.",
       "reserved": false,
@@ -195,25 +218,17 @@
     },
     {
       "active_cited": true,
-      "has_locator": true,
-      "key": "chen2025efficient",
-      "manual_verification": "arXiv preprint (2506.17729) with no journal publication as of verification; the eprint field is the identifier and the note says so.",
+      "has_locator": false,
+      "key": "correia2017linear",
+      "manual_verification": "Author-hosted working paper behind the reghdfe command; URL to the author's PDF is present, and no DOI is registered.",
       "reserved": false,
-      "type": "misc"
+      "type": "techreport"
     },
     {
       "active_cited": true,
       "has_locator": true,
       "key": "econml",
       "manual_verification": "Software repository citation; URL is rendered from the howpublished field rather than a DOI.",
-      "reserved": false,
-      "type": "misc"
-    },
-    {
-      "active_cited": true,
-      "has_locator": true,
-      "key": "ghanem2026selection",
-      "manual_verification": "arXiv preprint (2203.09001, v15 dated 2026-07-24) with no journal publication as of verification; the eprint field is the identifier.",
       "reserved": false,
       "type": "misc"
     },
@@ -228,18 +243,18 @@
     {
       "active_cited": true,
       "has_locator": true,
-      "key": "liang2023helm",
-      "manual_verification": "Transactions on Machine Learning Research article; TMLR issues no DOI, so the entry carries the arXiv eprint (2211.09110) whose journal_ref names the TMLR publication.",
+      "key": "mcp2026specification",
+      "manual_verification": "Web specification, revision 2026-07-28; URL and access date are rendered, verified 2026-11-02 against the specification site.",
       "reserved": false,
-      "type": "article"
+      "type": "manual"
     },
     {
       "active_cited": true,
       "has_locator": true,
-      "key": "patil2023gorilla",
-      "manual_verification": "arXiv preprint (2305.15334) cited as such; the eprint field is the identifier and no DOI is fabricated.",
+      "key": "nicholls2020riskbased",
+      "manual_verification": "R Validation Hub white paper with no DOI, verified 2026-11-02 against the dated PDF and the project's white-paper page.",
       "reserved": false,
-      "type": "misc"
+      "type": "techreport"
     },
     {
       "active_cited": true,
@@ -252,19 +267,59 @@
     {
       "active_cited": true,
       "has_locator": true,
+      "key": "pyfixest2025pyfixest",
+      "manual_verification": "Python package citation in the form its own CITATION.cff requests; the repository URL is present, and the package registers no DOI.",
+      "reserved": false,
+      "type": "manual"
+    },
+    {
+      "active_cited": true,
+      "has_locator": true,
+      "key": "pymclabs2026causalpy",
+      "manual_verification": "Software with no DOI yet (its README says one is planned), verified 2026-11-02 against the README and the 0.9.0 wheel metadata.",
+      "reserved": false,
+      "type": "misc"
+    },
+    {
+      "active_cited": true,
+      "has_locator": true,
+      "key": "rcoreteam2025r",
+      "manual_verification": "The citation R itself prints from citation(); organization, address, version, and project URL are present, and R registers no DOI.",
+      "reserved": false,
+      "type": "manual"
+    },
+    {
+      "active_cited": true,
+      "has_locator": true,
       "key": "rios2022csdid",
       "manual_verification": "Reserved software documentation citation; URL and access date are rendered from howpublished/note fields.",
       "reserved": false,
       "type": "misc"
+    },
+    {
+      "active_cited": true,
+      "has_locator": true,
+      "key": "statacorp2023stata",
+      "manual_verification": "Software citation in the form StataCorp's citing FAQ prescribes; publisher, address, and URL are present, and no DOI exists.",
+      "reserved": false,
+      "type": "manual"
+    },
+    {
+      "active_cited": true,
+      "has_locator": true,
+      "key": "vanrossum2009python",
+      "manual_verification": "Printed reference manual; publisher, address, year, and ISBN are present. ACM lists it under its non-resolving 10.5555 prefix, so no DOI is attached.",
+      "reserved": false,
+      "type": "book"
     }
   ],
-  "no_doi_entry_count": 13,
-  "no_doi_manual_verification_count": 13,
+  "no_doi_entry_count": 16,
+  "no_doi_manual_verification_count": 16,
   "reserved_entry_keys": [
     "brown2020language"
   ],
   "stale_no_doi_reasons": [],
   "status": "PASS",
-  "submission_bib_entry_count": 74,
-  "url_entry_count": 5
+  "submission_bib_entry_count": 102,
+  "url_entry_count": 16
 }

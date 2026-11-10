@@ -25,18 +25,35 @@ Hansen, C., Newey, W. and Robins, J. (2018).
 """
 
 import warnings
-from typing import List, Optional
+from typing import Any, List, Optional, Tuple, Union
 
 import numpy as np
 import pandas as pd
 from scipy import stats
 
 from .._aliases import accepts_aliases
+from .._input_validation import missing_named_columns
+from ..core._call_record import records_call
+from ..core._covariates import expands_categorical_covariates as _expands_categorical
+from ..core._validate import require_binary_treatment
+from ..core._validate import treatment_as_float as _treatment_as_float
+from ..core._vcov_spec import accepts_vce
 from ..core.results import CausalResult
-from ..exceptions import ConvergenceWarning, MethodIncompatibility
+from ..exceptions import (
+    ColumnNotFound,
+    ConvergenceWarning,
+    DataInsufficient,
+    MethodIncompatibility,
+)
+from .basic_tests import _check_alpha
+
+_OUTCOME_MODELS = ("linear", "logit", "probit", "poisson")
 
 
+@records_call("aipw")
 @accepts_aliases(_strict=True, controls="covariates")
+@accepts_vce(default="robust", native={"robust": {"se_method": "influence"}})
+@_expands_categorical("covariates")
 def aipw(
     data: pd.DataFrame,
     y: str,
@@ -50,6 +67,12 @@ def aipw(
     se_method: str = "influence",
     weights: Optional[str] = None,
     cluster: Optional[str] = None,
+    propensity: Optional[Union[float, str]] = None,
+    trim: float = 0.01,
+    outcome_model: str = "linear",
+    design: Optional[Any] = None,
+    ps_learner: Optional[Any] = None,
+    outcome_learner: Optional[Any] = None,
 ) -> CausalResult:
     """
     Augmented Inverse Probability Weighting (AIPW) estimator.
@@ -121,6 +144,76 @@ def aipw(
     cluster : str, optional
         Column identifying clusters. Standard errors sum the influence
         function within clusters (Stata ``vce(cluster c)``).
+    propensity : float or str, optional
+        Known probability of treatment: one number (a trial randomised
+        with that probability) or the name of a column holding each
+        unit's design probability (stratified or covariate-adaptive
+        randomisation). No propensity model is fitted and nothing is
+        clipped; only the outcome regressions are estimated. Knowing the
+        treatment mechanism does not change the efficiency bound of the
+        ATE, so the estimator has the same influence function as with an
+        estimated propensity, but it is then consistent whatever the
+        outcome regressions are, and the influence-function standard
+        error needs no correction for a first-stage propensity fit. Not
+        combinable with ``se_method='sandwich'``.
+    trim : float, default 0.01
+        Fitted propensity scores are clipped to ``[trim, 1 - trim]`` before
+        they enter the inverse-probability terms. A known ``propensity`` is
+        used as given and never clipped. Rows are kept, so the
+        target population does not change, but the estimate is no longer
+        the textbook AIPW formula on the rows that were clipped. ``trim=0``
+        applies no clipping and gives that formula exactly (what a
+        hand-written ``mean(psi)``, Stata ``teffects aipw`` and R ``AIPW``
+        without truncation compute). The number of clipped scores is in
+        ``model_info['n_propensity_clipped']`` and a warning is issued
+        when it is not zero. To drop rows with extreme scores instead,
+        subset the data first (:func:`statspai.trimming`).
+
+        .. versionchanged:: 1.39.0
+           The bound was fixed at 0.01 and could not be changed, and
+           ``n_propensity_clipped`` always read 0.
+    outcome_model : {'linear', 'logit', 'probit', 'poisson'}, default 'linear'
+        The per-arm outcome regression: least squares, a logit or probit
+        for a binary (or fractional) outcome, or a Poisson regression with
+        a log link for a non-negative one, each fitted by maximum
+        likelihood. These are the ``logit``, ``probit`` and ``poisson``
+        outcome models of Stata ``teffects aipw (y x, logit) (d x)``. With
+        a binary outcome the linear model can predict outside [0, 1]; the
+        logit cannot, though
+        the AIPW estimate itself is still not a plug-in and is not
+        confined to the range (``sp.tmle`` is). ``se_method='sandwich'``
+        stacks the score of the chosen model.
+    design : SurveyDesign, optional
+        A complex survey design from :func:`sp.svydesign` declared on
+        ``data`` (same rows). The nuisance models and the AIPW mean are
+        fitted with the design weights, and every standard error is the
+        Taylor-linearisation variance of the influence rows the chosen
+        ``se_method`` uses (the efficient influence function, or the
+        stacked sandwich rows with ``se_method='sandwich'``) over strata,
+        PSUs and the finite population correction -- R
+        ``survey::svyrecvar`` on those rows. The interval and p-value use
+        the t distribution with the design degrees of freedom
+        (#PSU - #strata), as Stata ``svy``. ``weights=`` and ``cluster=``
+        must not be given; ``design=None`` changes nothing.
+        A replicate-weight design (:func:`sp.svrepdesign`) is accepted
+        too: the estimator is refitted with every replicate's weights
+        and the replicate variance replaces the linearisation (R
+        ``svrepdesign`` / Stata ``svy brr`` / ``svy jackknife``).
+
+    ps_learner : classifier, optional
+        Any estimator with ``fit`` / ``predict_proba`` (scikit-learn style,
+        e.g. ``GradientBoostingClassifier()`` or
+        ``sp.SuperLearner(task='classification')``) for the propensity
+        score in place of the logit, fitted on the covariates in each
+        cross-fitting fold (with ``sample_weight`` when ``weights`` is
+        given).
+    outcome_learner : regressor, optional
+        Any regressor for the two per-arm outcome regressions in place of
+        ``outcome_model``. With either learner the standard error is the
+        influence-function one, valid under cross-fitting
+        (``cross_fit=False`` warns: flexible learners fitted and evaluated
+        on the same rows bias the estimate); ``se_method='sandwich'`` is
+        refused.
 
     Returns
     -------
@@ -178,6 +271,27 @@ def aipw(
     See Glynn & Quinn (2010) for an introduction, and
     Chernozhukov et al. (2018) for the cross-fitting procedure.
     """
+    if design is not None and getattr(design, "is_replicate_design", False):
+        _args = dict(locals())
+        from ..survey._replicate_refit import replicate_refit
+
+        return replicate_refit(aipw, _args, design, function="sp.aipw")
+    if (
+        ps_learner is not None or outcome_learner is not None
+    ) and se_method != "influence":
+        raise MethodIncompatibility(
+            "aipw: se_method='sandwich' stacks parametric nuisance scores; "
+            "with ps_learner / outcome_learner use se_method='influence'.",
+            recovery_hint="Use se_method='influence' (with cross_fit=True).",
+        )
+    if (ps_learner is not None or outcome_learner is not None) and not cross_fit:
+        warnings.warn(
+            "aipw: learners fitted and evaluated on the same rows "
+            "(cross_fit=False) overfit the nuisances and bias the estimate; "
+            "the influence-function standard error assumes cross-fitting.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
     if se_method not in ("influence", "sandwich"):
         raise MethodIncompatibility(
             f"se_method must be 'influence' or 'sandwich', got {se_method!r}"
@@ -189,28 +303,96 @@ def aipw(
             "cross_fit=False and estimand='ATE'.",
             recovery_hint="Use se_method='influence'.",
         )
+    if outcome_model not in _OUTCOME_MODELS:
+        raise MethodIncompatibility(
+            f"aipw: outcome_model must be one of {_OUTCOME_MODELS}, got "
+            f"{outcome_model!r}"
+        )
+    if propensity is not None and se_method == "sandwich":
+        raise MethodIncompatibility(
+            "aipw: se_method='sandwich' stacks the score of a fitted "
+            "propensity logit; with a known propensity there is none.",
+            recovery_hint="Use se_method='influence'.",
+        )
+    if not (isinstance(trim, (int, float)) and 0.0 <= float(trim) < 0.5):
+        raise MethodIncompatibility(
+            f"aipw: trim must lie in [0, 0.5), got {trim!r}.",
+            recovery_hint="Use trim=0.01 (the default) or trim=0 for no clipping.",
+        )
+    trim = float(trim)
+    _check_alpha(alpha, "aipw")
+    if cross_fit and not n_folds >= 2:
+        raise MethodIncompatibility(
+            f"aipw: cross-fitting needs n_folds >= 2, got {n_folds!r}; with "
+            "one fold the nuisance models would be trained on no data.",
+            recovery_hint="Use n_folds=5 (the default), or cross_fit=False "
+            "to fit the nuisance models on the full sample.",
+        )
     rng = np.random.default_rng(seed)
+    svy: Any = None
+    if design is not None:
+        from ..survey.linearization import check_design
+
+        svy = check_design(
+            design, data, function="aipw", weights=weights, cluster=cluster
+        )
 
     extra = [c for c in (weights, cluster) if c is not None]
-    missing_cols = [c for c in [y, treat] + list(covariates) + extra if c not in data]
+    if isinstance(propensity, str):
+        extra.append(propensity)
+    named_cols = {
+        "y": y,
+        "treat": treat,
+        "covariates": list(covariates),
+        "weights": weights,
+        "cluster": cluster,
+        "propensity": propensity if isinstance(propensity, str) else None,
+    }
+    missing_cols = missing_named_columns(named_cols, data.columns)
     if missing_cols:
-        raise MethodIncompatibility(
-            f"aipw: columns not found in data: {missing_cols}",
-            diagnostics={"missing": missing_cols},
+        raise ColumnNotFound.from_missing(
+            missing_cols,
+            data.columns,
+            context="aipw",
+            extra_diagnostics={"missing": list(missing_cols.values())},
         )
-    df = data[list(dict.fromkeys([y, treat] + list(covariates) + extra))].dropna()
+    used_cols = list(dict.fromkeys([y, treat] + list(covariates) + extra))
+    df = data[used_cols].dropna()
     Y = df[y].values.astype(float)
-    D = df[treat].values.astype(float)
+    D = _treatment_as_float(df[treat], function="aipw")
     X = df[covariates].values.astype(float)
     n = len(Y)
 
-    if not set(np.unique(D)).issubset({0, 1}):
-        raise ValueError("Treatment must be binary (0/1)")
+    require_binary_treatment(D, function="aipw", argument=treat)
+    n_arm1 = int(D.sum())
+    if n_arm1 == 0 or n_arm1 == n:
+        raise DataInsufficient(
+            f"aipw: {treat!r} has {n_arm1} treated and {n - n_arm1} control "
+            "units on the complete rows; the estimator needs an outcome "
+            "model for each arm.",
+            diagnostics={"n_treated": n_arm1, "n_control": n - n_arm1},
+        )
+    if outcome_model in ("logit", "probit") and (Y.min() < 0 or Y.max() > 1):
+        raise MethodIncompatibility(
+            f"aipw: outcome_model={outcome_model!r} needs an outcome in [0, 1].",
+            diagnostics={"min": float(Y.min()), "max": float(Y.max())},
+        )
+    if outcome_model == "poisson" and Y.min() < 0:
+        raise MethodIncompatibility(
+            "aipw: outcome_model='poisson' needs a non-negative outcome.",
+            diagnostics={"min": float(Y.min())},
+        )
 
     # Sampling weights normalised to mean one (their scale is irrelevant);
     # ``None`` keeps the unweighted path byte-identical to earlier releases.
     omega: Optional[np.ndarray] = None
-    if weights is not None:
+    svy_rows = None
+    if svy is not None:
+        from ..survey.linearization import design_rows
+
+        svy_rows = design_rows(svy, data, used_cols)
+        omega = svy_rows.weights * (n / svy_rows.weights.sum())
+    elif weights is not None:
         wv = df[weights].to_numpy(dtype=float)
         if not np.all(np.isfinite(wv)) or np.any(wv <= 0):
             raise MethodIncompatibility(
@@ -225,6 +407,20 @@ def aipw(
             raise MethodIncompatibility(
                 "aipw: cluster= needs at least two clusters.",
                 diagnostics={"cluster": cluster},
+            )
+    e_known: Optional[np.ndarray] = None
+    if propensity is not None:
+        if isinstance(propensity, str):
+            e_known = df[propensity].to_numpy(dtype=float)
+        else:
+            e_known = np.full(n, float(propensity))
+        if not np.all(np.isfinite(e_known)) or np.any((e_known <= 0) | (e_known >= 1)):
+            raise MethodIncompatibility(
+                "aipw: a known propensity must lie strictly between 0 and 1.",
+                diagnostics={
+                    "min": float(np.nanmin(e_known)),
+                    "max": float(np.nanmax(e_known)),
+                },
             )
     design_based = omega is not None or groups is not None
     om = np.ones(n) if omega is None else omega
@@ -246,21 +442,57 @@ def aipw(
         X_te = X[test_mask]
         w_tr = None if omega is None else omega[train_mask]
 
-        # Propensity score (logistic regression)
-        e_hat[test_mask] = _fit_propensity(X_tr, D_tr, X_te, w_tr)
+        # Propensity score (logistic regression), unless it is known
+        if e_known is None:
+            if ps_learner is None:
+                e_hat[test_mask] = _fit_propensity(X_tr, D_tr, X_te, w_tr)
+            else:
+                e_hat[test_mask] = _learner_predict(
+                    ps_learner, X_tr, D_tr, X_te, w_tr, proba=True
+                )
 
         # Outcome regressions (OLS on treated and control separately)
         t1, t0 = D_tr == 1, D_tr == 0
-        mu1_hat[test_mask] = _fit_outcome(
-            X_tr[t1], Y_tr[t1], X_te, None if w_tr is None else w_tr[t1]
-        )
-        mu0_hat[test_mask] = _fit_outcome(
-            X_tr[t0], Y_tr[t0], X_te, None if w_tr is None else w_tr[t0]
-        )
+        for arm, out in ((t1, mu1_hat), (t0, mu0_hat)):
+            w_arm = None if w_tr is None else w_tr[arm]
+            if outcome_learner is None:
+                out[test_mask] = _fit_outcome(
+                    X_tr[arm], Y_tr[arm], X_te, w_arm, outcome_model
+                )
+            else:
+                out[test_mask] = _learner_predict(
+                    outcome_learner, X_tr[arm], Y_tr[arm], X_te, w_arm, proba=False
+                )
 
-    # Clip propensity scores
-    n_clipped = int(np.sum((e_hat < 0.01) | (e_hat > 0.99)))
-    np.clip(e_hat, 0.01, 0.99, out=e_hat)
+    # Clip propensity scores (a design probability is used as given)
+    if e_known is not None:
+        e_hat = e_known
+        n_clipped = 0
+    else:
+        # Kept unclipped so result.violations() can judge overlap from the
+        # fitted scores themselves, as it does for sp.ipw.
+        e_raw = e_hat.copy()
+        n_clipped = int(np.sum((e_hat < trim) | (e_hat > 1.0 - trim)))
+        if trim > 0:
+            np.clip(e_hat, trim, 1.0 - trim, out=e_hat)
+        elif np.any((e_hat <= 0.0) | (e_hat >= 1.0)):
+            raise MethodIncompatibility(
+                "aipw: a fitted propensity score is exactly 0 or 1, so the "
+                "inverse-probability term is undefined with trim=0.",
+                recovery_hint="Use trim > 0, or restrict the sample to the "
+                "region of overlap with sp.trimming.",
+            )
+        if n_clipped:
+            warnings.warn(
+                f"aipw: {n_clipped} of {n} fitted propensity scores "
+                f"({100.0 * n_clipped / n:.1f}%) lie outside "
+                f"[{trim:g}, {1.0 - trim:g}] and were clipped to it. The "
+                "estimate differs from the unclipped AIPW formula on those "
+                "rows; pass trim=0 for no clipping, or restrict the sample "
+                "with sp.trimming.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
 
     def _se_of(u: np.ndarray) -> float:
         """SE of a mean from its (already weight-scaled) influence rows.
@@ -268,6 +500,10 @@ def aipw(
         ``sqrt(sum u_i^2) / n``, or with clusters the sum over clusters of
         the within-cluster totals squared (Stata ``vce(cluster)``).
         """
+        if svy_rows is not None:
+            from ..survey.linearization import design_vcov
+
+            return float(np.sqrt(design_vcov(u / n, svy, svy_rows.rows)[0, 0]))
         if groups is not None:
             u = np.bincount(groups, weights=u)
         return float(np.sqrt(np.sum(u**2)) / n)
@@ -290,13 +526,23 @@ def aipw(
             if n_clipped:
                 warnings.warn(
                     f"aipw: {n_clipped} propensity score(s) were clipped to "
-                    "[0.01, 0.99]; the stacked sandwich differentiates the "
+                    f"[{trim:g}, {1.0 - trim:g}]; the stacked sandwich "
+                    "differentiates the "
                     "unclipped logit and is only approximate for those rows.",
                     RuntimeWarning,
                     stacklevel=2,
                 )
             if_1, if_0 = _aipw_stacked_if(
-                X, D, Y, e_hat, mu1_hat, mu0_hat, phi1 - m1, phi0 - m0, omega
+                X,
+                D,
+                Y,
+                e_hat,
+                mu1_hat,
+                mu0_hat,
+                phi1 - m1,
+                phi0 - m0,
+                omega,
+                outcome_model,
             )
             if design_based:
                 se = _se_of(if_1 - if_0)
@@ -340,6 +586,12 @@ def aipw(
     z = tau / se if se > 0 else 0
     pvalue = float(2 * stats.norm.sf(abs(z)))
     ci = (tau - z_crit * se, tau + z_crit * se)
+    svy_df: Optional[float] = None
+    if svy_rows is not None:
+        from ..survey.linearization import design_df, design_inference
+
+        svy_df = design_df(svy, svy_rows.rows)
+        ci, pvalue = design_inference(tau, se, svy_df, alpha)
 
     model_info = {
         "estimator": "AIPW (Doubly Robust)",
@@ -350,16 +602,35 @@ def aipw(
         "cross_fit": bool(cross_fit),
         "se_method": se_method,
         "n_propensity_clipped": n_clipped,
+        "trim": float(trim),
+        # Unclipped fitted propensity and the bound it is judged against,
+        # read by result.violations() (the overlap check sp.ipw already
+        # gets). A known design probability is not a fitted score.
+        "_pscore": None if e_known is not None else e_raw,
+        "trimming_threshold": float(trim),
         "potential_outcome_means": po_means,
         "potential_outcome_means_se": po_means_se,
         "weights": weights,
         "cluster": cluster,
+        "propensity": (
+            "known"
+            if e_known is not None
+            else ("logit" if ps_learner is None else type(ps_learner).__name__)
+        ),
+        "outcome_model": (
+            outcome_model if outcome_learner is None else type(outcome_learner).__name__
+        ),
         "n_clusters": None if groups is None else int(groups.max() + 1),
         # Provenance for the cross-fitting split: None means the caller
         # explicitly opted into a fresh entropy-seeded split, so this
         # estimate is not reproducible by re-running.
         "seed": seed,
     }
+    if svy is not None:
+        from ..survey.linearization import design_info
+
+        assert svy_df is not None
+        model_info["survey_design"] = design_info(svy, svy_df)
 
     _result = CausalResult(
         method="AIPW (Doubly Robust)",
@@ -391,6 +662,9 @@ def aipw(
                 "se_method": se_method,
                 "weights": weights,
                 "cluster": cluster,
+                "propensity": propensity,
+                "outcome_model": outcome_model,
+                "design": None if design is None else repr(design),
             },
             data=data,
             overwrite=False,
@@ -410,6 +684,7 @@ def _aipw_stacked_if(
     phi1_c: np.ndarray,
     phi0_c: np.ndarray,
     omega: Optional[np.ndarray] = None,
+    outcome_model: str = "linear",
 ) -> tuple:
     """Influence functions of the two AIPW potential-outcome means.
 
@@ -426,32 +701,127 @@ def _aipw_stacked_if(
     is ``mean(omega_i psi_i) = 0``: each Jacobian becomes an
     ``omega``-weighted mean and each influence row carries its
     ``omega_i`` (the pweight sandwich of Stata ``teffects ... [pw=]``).
+
+    For a logit or Poisson outcome model the link is canonical, so the
+    score is still ``x (Y - mu)``; the Hessian and the derivative of the
+    AIPW moment with respect to the coefficients pick up the variance
+    function ``d mu / d eta`` (``mu (1 - mu)`` and ``mu``). A probit is
+    not canonical: its own score and observed Hessian are used, and
+    ``d mu / d eta`` is the normal density at the index.
     """
     n = len(Y)
     om = np.ones(n) if omega is None else omega
     Xc = np.column_stack([np.ones(n), X])
     r1, r0 = Y - mu1, Y - mu0
     w = e * (1 - e)
+    # Per arm: s is the score multiplier (score = s x), h the weight of
+    # minus its derivative (Hessian = mean(h x x')), v = d mu / d eta.
+    s1, s0 = r1, r0
+    if outcome_model == "logit":
+        v1, v0 = mu1 * (1 - mu1), mu0 * (1 - mu0)
+        h1, h0 = v1, v0
+    elif outcome_model == "poisson":
+        v1, v0 = mu1, mu0
+        h1, h0 = v1, v0
+    elif outcome_model == "probit":
+        # Not a canonical link: the score is lam x with
+        # lam = (Y - mu) phi / (mu (1 - mu)) and the observed Hessian
+        # weight is lam (lam + eta).
+        eta1, eta0 = stats.norm.ppf(mu1), stats.norm.ppf(mu0)
+        v1, v0 = stats.norm.pdf(eta1), stats.norm.pdf(eta0)
+        s1, s0 = r1 * v1 / (mu1 * (1 - mu1)), r0 * v0 / (mu0 * (1 - mu0))
+        h1, h0 = s1 * (s1 + eta1), s0 * (s0 + eta0)
+    else:
+        v1 = v0 = h1 = h0 = np.ones(n)
     if_gamma = np.linalg.solve(
         (Xc * (om * w)[:, None]).T @ Xc / n, (Xc * (om * (D - e))[:, None]).T
     ).T
     if_b1 = np.linalg.solve(
-        (Xc * (om * D)[:, None]).T @ Xc / n, (Xc * (om * D * r1)[:, None]).T
+        (Xc * (om * D * h1)[:, None]).T @ Xc / n, (Xc * (om * D * s1)[:, None]).T
     ).T
     if_b0 = np.linalg.solve(
-        (Xc * (om * (1 - D))[:, None]).T @ Xc / n,
-        (Xc * (om * (1 - D) * r0)[:, None]).T,
+        (Xc * (om * (1 - D) * h0)[:, None]).T @ Xc / n,
+        (Xc * (om * (1 - D) * s0)[:, None]).T,
     ).T
     # d/d gamma of D r1 / e is -D r1 (1 - e) / e * x; of (1-D) r0 / (1-e)
     # it is (1-D) r0 e / (1 - e) * x. d/d beta of the AIPW moments is
     # x (1 - D / e) and x (1 - (1-D) / (1-e)).
     g1 = (Xc * (om * -D * r1 * (1 - e) / e)[:, None]).mean(axis=0)
     g0 = (Xc * (om * (1 - D) * r0 * e / (1 - e))[:, None]).mean(axis=0)
-    b1 = (Xc * (om * (1 - D / e))[:, None]).mean(axis=0)
-    b0 = (Xc * (om * (1 - (1 - D) / (1 - e)))[:, None]).mean(axis=0)
+    b1 = (Xc * (om * v1 * (1 - D / e))[:, None]).mean(axis=0)
+    b0 = (Xc * (om * v0 * (1 - (1 - D) / (1 - e)))[:, None]).mean(axis=0)
     if_1 = om * phi1_c + if_gamma @ g1 + if_b1 @ b1
     if_0 = om * phi0_c + if_gamma @ g0 + if_b0 @ b0
     return if_1, if_0
+
+
+def _nuisance_designs(
+    X_train: np.ndarray, X_test: np.ndarray
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Training and prediction designs with the same columns.
+
+    An intercept is prepended to both. ``sm.add_constant`` on each matrix
+    separately skips the intercept wherever a covariate happens to be
+    constant, which need not be the same on the two samples (a rare dummy
+    is constant in a small test fold): the prediction design then has one
+    column fewer than the fit.
+
+    A covariate that is constant on the training rows is collinear with
+    the intercept there, so its coefficient is not identified and it is
+    left out of both designs. The one exception keeps a case that already
+    worked unchanged: a single non-zero constant covariate that takes the
+    same value on the prediction rows serves as the intercept itself.
+    """
+    import statsmodels.api as sm
+
+    X_train = np.asarray(X_train, dtype=float)
+    X_test = np.asarray(X_test, dtype=float)
+    if X_train.ndim != 2 or X_train.shape[0] == 0 or X_train.shape[1] == 0:
+        return (
+            sm.add_constant(X_train, has_constant="add"),
+            sm.add_constant(X_test, has_constant="add"),
+        )
+    fixed = np.all(X_train == X_train[0], axis=0)
+    if not fixed.any():
+        return (
+            sm.add_constant(X_train, has_constant="add"),
+            sm.add_constant(X_test, has_constant="add"),
+        )
+    j = np.flatnonzero(fixed)
+    if (
+        j.size == 1
+        and X_train[0, j[0]] != 0
+        and X_test.shape[0] > 0
+        and np.all(X_test[:, j[0]] == X_train[0, j[0]])
+    ):
+        return X_train, X_test
+    return (
+        sm.add_constant(X_train[:, ~fixed], has_constant="add"),
+        sm.add_constant(X_test[:, ~fixed], has_constant="add"),
+    )
+
+
+def _learner_predict(
+    learner: Any,
+    X_train: np.ndarray,
+    y_train: np.ndarray,
+    X_test: np.ndarray,
+    w_train: Optional[np.ndarray],
+    *,
+    proba: bool,
+) -> np.ndarray:
+    """Fit a clone of a user learner and predict (probability of 1 for a
+    classifier)."""
+    from ..core._learners import clone_learner, positive_class_proba
+
+    m = clone_learner(learner)
+    if w_train is None:
+        m.fit(X_train, y_train)
+    else:
+        m.fit(X_train, y_train, sample_weight=w_train)
+    if proba:
+        return positive_class_proba(m, X_test, context="ps_learner")
+    return np.asarray(m.predict(X_test), dtype=float)
 
 
 def _fit_propensity(
@@ -464,8 +834,7 @@ def _fit_propensity(
     try:
         import statsmodels.api as sm
 
-        X_tr = sm.add_constant(X_train)
-        X_te = sm.add_constant(X_test)
+        X_tr, X_te = _nuisance_designs(X_train, X_test)
         if w_train is None:
             logit = sm.Logit(D_train, X_tr)
             res = logit.fit(disp=0, maxiter=300, warn_convergence=False)
@@ -476,7 +845,7 @@ def _fit_propensity(
             res = sm.GLM(
                 D_train, X_tr, family=sm.families.Binomial(), freq_weights=w_train
             ).fit(tol=1e-12, maxiter=300)
-        return np.asarray(np.clip(res.predict(X_te), 0.01, 0.99), dtype=float)
+        return np.asarray(res.predict(X_te), dtype=float)
     except Exception as exc:
         # A constant propensity turns AIPW into regression-adjustment-only,
         # and the influence-function SE (which assumes both nuisances were
@@ -498,15 +867,25 @@ def _fit_outcome(
     Y_train: np.ndarray,
     X_test: np.ndarray,
     w_train: Optional[np.ndarray] = None,
+    model: str = "linear",
 ) -> np.ndarray:
-    """OLS outcome regression (WLS if ``w_train``)."""
+    """Outcome regression: OLS, or a logit / Poisson GLM (weighted if given)."""
     if len(X_train) < 3:
         return np.full(len(X_test), np.mean(Y_train) if len(Y_train) > 0 else 0)
     try:
         import statsmodels.api as sm
 
-        X_tr = sm.add_constant(X_train)
-        X_te = sm.add_constant(X_test)
+        X_tr, X_te = _nuisance_designs(X_train, X_test)
+        if model != "linear":
+            family = {
+                "logit": sm.families.Binomial,
+                "probit": lambda: sm.families.Binomial(link=sm.families.links.Probit()),
+                "poisson": sm.families.Poisson,
+            }[model]()
+            glm = sm.GLM(Y_train, X_tr, family=family, freq_weights=w_train).fit(
+                tol=1e-13, maxiter=300
+            )
+            return np.asarray(glm.predict(X_te), dtype=float)
         ols = (
             sm.OLS(Y_train, X_tr)
             if w_train is None

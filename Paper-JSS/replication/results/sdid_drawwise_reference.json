@@ -1,0 +1,21 @@
+{
+  "design": "run_b1000.coverage_sdid: 1 treated, 20 controls, 12 + 6 periods",
+  "n_draws": 1000,
+  "truth": 3.0,
+  "statspai_version": "1.40.2",
+  "synthdid_version": "0.0.9",
+  "max_abs_diff_estimate": 5.861977570020827e-14,
+  "max_rel_diff_estimate": 1.7473879947990728e-14,
+  "coverage_statspai_placebo100_normal": 0.928,
+  "coverage_synthdid_placebo100_normal": 0.933,
+  "coverage_exhaustive_placebo_normal": 0.932,
+  "coverage_exhaustive_placebo_t19": 0.946,
+  "mean_se_statspai_placebo100": 0.3071302670840763,
+  "mean_se_synthdid_placebo100": 0.30804618703031283,
+  "mean_se_exhaustive": 0.3117996698409055,
+  "mc_sd_estimate": 0.3094855799795658,
+  "critical_values": {
+    "normal": 1.959963984540054,
+    "t19": 2.093024054408263
+  }
+}

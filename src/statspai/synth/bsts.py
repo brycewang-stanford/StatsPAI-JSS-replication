@@ -43,6 +43,7 @@ import numpy as np
 import pandas as pd
 from scipy import optimize
 
+from .._input_validation import check_columns
 from ..core.results import CausalResult
 from ..exceptions import DataInsufficient, MethodIncompatibility
 
@@ -181,14 +182,12 @@ def _require_period_pair(value: Any, name: str) -> Tuple[Any, Any]:
 
 
 def _raise_missing_columns(
-    data: pd.DataFrame, columns: List[str], context: str
+    data: pd.DataFrame, columns: Dict[str, Any], function: str, context: str
 ) -> None:
-    missing = [col for col in columns if col not in data.columns]
-    if missing:
-        raise MethodIncompatibility(
-            f"{context} missing columns: {missing}",
-            diagnostics={"missing_columns": missing, "context": context},
-        )
+    """``ColumnNotFound`` for absent columns (``columns`` is label -> name)."""
+    check_columns(
+        data, columns, function=function, extra_diagnostics={"context": context}
+    )
 
 
 # ====================================================================== #
@@ -488,11 +487,14 @@ def _fit_model(
     -------
     dict with fitted parameters and smoother output.
     """
-    beta = _estimate_beta_ridge(y_pre, X_pre)
+    # periods with a missing outcome carry no information on the regression
+    # coefficients; the Kalman filter skips their update step
+    seen = ~np.isnan(y_pre)
+    beta = _estimate_beta_ridge(y_pre[seen], X_pre[seen])
 
     # Residual variance as initial guess
     resid = y_pre - X_pre @ beta if len(beta) > 0 else y_pre.copy()
-    resid_std = max(float(np.std(resid)), 1e-6)
+    resid_std = max(float(np.std(resid[seen])), 1e-6)
 
     # MLE for noise variances
     n_hyper = 3 if use_trend else 2
@@ -678,13 +680,27 @@ def causal_impact(
 
     Examples
     --------
+    This wide-format interface is not re-exported as ``sp.causal_impact``
+    (that name is the long-format estimator); import it from its module:
+
+    >>> import numpy as np
     >>> import pandas as pd
-    >>> import statspai as sp
+    >>> from statspai.synth.bsts import causal_impact
+    >>> rng = np.random.default_rng(0)
+    >>> x1 = 100 + np.cumsum(rng.normal(0, 1, 100))
+    >>> x2 = 50 + np.cumsum(rng.normal(0, 1, 100))
+    >>> y = 1.2 * x1 + 0.8 * x2 + rng.normal(0, 1, 100)
+    >>> y[70:] += 10                             # intervention at t = 70
     >>> # Wide-format: columns = [outcome, control1, control2, ...]
-    >>> result = sp.synth.causal_impact(
-    ...     data, pre_period=(1, 70), post_period=(71, 100)
+    >>> data = pd.DataFrame({"y": y, "x1": x1, "x2": x2})
+    >>> result = causal_impact(
+    ...     data, pre_period=(0, 69), post_period=(70, 99),
+    ...     n_simulations=200, seed=0,
     ... )
-    >>> print(result.summary())
+    >>> result.method
+    'Bayesian Structural Time Series (CausalImpact)'
+    >>> bool(result.estimate > 0)
+    True
 
     References
     ----------
@@ -724,8 +740,12 @@ def causal_impact(
     else:
         covariates = _coerce_optional_column_list(covariates, "covariates")
 
-    _raise_missing_columns(data, [outcome], "causal_impact outcome")
-    _raise_missing_columns(data, list(covariates), "causal_impact covariates")
+    _raise_missing_columns(
+        data,
+        {"outcome": outcome, "covariates": list(covariates)},
+        "statspai.synth.causal_impact",
+        "causal_impact",
+    )
 
     # ------------------------------------------------------------------
     # Period slicing
@@ -766,6 +786,21 @@ def causal_impact(
     if np.any(np.isinf(y_pre)) or np.any(np.isinf(y_post)):
         raise DataInsufficient(
             "Outcome column contains non-finite values.",
+            diagnostics={"outcome": outcome},
+        )
+    n_post_missing = int(np.isnan(y_post).sum())
+    if n_post_missing:
+        # a missing pre-period outcome is a skipped filter update; a missing
+        # post-period outcome is an effect that was not observed
+        raise DataInsufficient(
+            f"The outcome is missing in {n_post_missing} post-period row(s), "
+            "so the effect in those periods is not observed. Remove them "
+            "from the post-period or supply the outcome.",
+            diagnostics={"outcome": outcome, "n_post_missing": n_post_missing},
+        )
+    if int((~np.isnan(y_pre)).sum()) < 3:
+        raise DataInsufficient(
+            "Fewer than 3 pre-period rows have an observed outcome.",
             diagnostics={"outcome": outcome},
         )
     if covariates:
@@ -1003,12 +1038,18 @@ def bsts_synth(
 
     Examples
     --------
+    Called through the ``sp.synth`` dispatcher:
+
     >>> import statspai as sp
-    >>> result = sp.synth.bsts_synth(
-    ...     data, outcome='gdp', unit='country', time='year',
-    ...     treated_unit='West Germany', treatment_time=1990,
+    >>> df = sp.dgp_synth(n_units=10, n_periods=20, treatment_time=15,
+    ...                   effect=2.0, seed=0)
+    >>> result = sp.synth(
+    ...     df, outcome='y', unit='unit', time='time',
+    ...     treated_unit=0, treatment_time=15, method='bsts',
+    ...     n_simulations=200, seed=0,
     ... )
-    >>> print(result.summary())
+    >>> result.method
+    'Bayesian Structural Time Series (CausalImpact)'
 
     See Also
     --------
@@ -1022,7 +1063,12 @@ def bsts_synth(
     unit = _require_column_name(unit, "unit")
     time = _require_column_name(time, "time")
     covariates = _coerce_optional_column_list(covariates, "covariates")
-    _raise_missing_columns(data, [outcome, unit, time], "bsts_synth")
+    _raise_missing_columns(
+        data,
+        {"outcome": outcome, "unit": unit, "time": time, "covariates": covariates},
+        "sp.synth(method='bsts')",
+        "bsts_synth",
+    )
     if treated_unit not in data[unit].values:
         raise DataInsufficient(
             f"Treated unit '{treated_unit}' not found in '{unit}' column.",
@@ -1076,14 +1122,6 @@ def bsts_synth(
     extra_cov_names: List[str] = []
     if covariates:
         for cov in covariates:
-            if cov not in data.columns:
-                raise MethodIncompatibility(
-                    f"Covariate column '{cov}' not found in data.",
-                    diagnostics={
-                        "missing_column": cov,
-                        "available_columns": list(data.columns),
-                    },
-                )
             cov_panel = data.pivot_table(
                 index=time,
                 columns=unit,

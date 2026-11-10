@@ -32,8 +32,10 @@ from typing import Any, Dict, Optional, Sequence, Union
 import numpy as np
 import pandas as pd
 
-from .bcf import bcf as _bcf_binary
+from .._aliases import accepts_aliases
+from .._input_validation import check_columns
 from .._result_serialize import ResultProtocolMixin
+from .bcf import _bcf_fit as _bcf_binary
 
 __all__ = ["bcf_factor_exposure", "BCFFactorExposureResult"]
 
@@ -86,7 +88,8 @@ class BCFFactorExposureResult(ResultProtocolMixin):
 
     def summary(self) -> str:
         lines = [
-            "BCF with Factor-based Exposure Mapping (Zorzetto et al. 2026, arXiv:2601.16595)",
+            "BCF with Factor-based Exposure Mapping (Zorzetto et al. 2026, "
+            "arXiv:2601.16595)",
             "-" * 68,
             f"  Exposures       : {len(self.factor_loadings.index)}",
             f"  Factors kept    : {len(self.factor_loadings.columns)}",
@@ -121,6 +124,7 @@ def _svd_factors(Z: np.ndarray, n_factors: int) -> tuple:
     return scores, loadings, evr
 
 
+@accepts_aliases(seed="random_state")
 def bcf_factor_exposure(
     data: pd.DataFrame,
     *,
@@ -199,9 +203,11 @@ def bcf_factor_exposure(
     True
     """
     # --- Validation --------------------------------------------------------
-    missing = [c for c in (y, *exposures, *covariates) if c not in data.columns]
-    if missing:
-        raise ValueError(f"columns not in data: {missing}")
+    check_columns(
+        data,
+        {"y": y, "exposures": list(exposures), "covariates": list(covariates)},
+        function="sp.bcf_factor_exposure",
+    )
     if int(data[y].notna().sum()) < 2:
         # Otherwise the inner BCF's dropna empties the frame and the failure
         # surfaces as a misleading "Treatment must be binary" error.

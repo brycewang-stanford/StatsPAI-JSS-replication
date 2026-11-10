@@ -26,16 +26,28 @@ Interactive Fixed Effects." *Econometrica*, 83(4), 1543-1579. [@moon2015linear]
 """
 
 import warnings
-from typing import List
+from typing import Any, List
 
 import numpy as np
 import pandas as pd
 
+from ..core._call_record import records_call
 from ..core._validate import require_bool_flag
+from ..core._vcov_spec import accepts_vce
 from ..core.results import EconometricResults
 from ..exceptions import MethodIncompatibility
 
 
+@records_call("interactive_fe")
+@accepts_vce(
+    default="cluster",
+    cluster=None,
+    native={
+        "robust": {"robust": True},
+        "cluster": {"robust": True},
+        "nonrobust": {"robust": False},
+    },
+)
 def interactive_fe(
     data: pd.DataFrame,
     y: str,
@@ -145,7 +157,13 @@ def interactive_fe(
     N = len(units)
     T = len(times)
     k = len(x)
-    r = n_factors
+    if isinstance(n_factors, bool) or n_factors != int(n_factors) or n_factors < 0:
+        # a negative number was used as a slice bound and returned estimates
+        raise MethodIncompatibility(
+            f"n_factors must be a non-negative integer; got {n_factors!r}.",
+            recovery_hint="Pass the number of latent factors, e.g. n_factors=1.",
+        )
+    r = int(n_factors)
 
     # Create unit and time indices
     unit_map = {u: i for i, u in enumerate(units)}
@@ -180,7 +198,7 @@ def interactive_fe(
         X_mats = [xm[valid] for xm in X_mats]
         N = Y_mat.shape[0]
 
-    def _factors(beta_):
+    def _factors(beta_: Any) -> Any:
         E_ = Y_mat.copy()
         for j_ in range(k):
             E_ -= beta_[j_] * X_mats[j_]

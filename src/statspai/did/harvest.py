@@ -49,8 +49,10 @@ import numpy as np
 import pandas as pd
 
 from .._aliases import accepts_aliases
+from .._input_validation import missing_named_columns
 from .._result_serialize import ResultProtocolMixin
 from ..core.results import CausalResult
+from ..exceptions import ColumnNotFound
 
 __all__ = [
     "harvest_did",
@@ -258,7 +260,8 @@ def _share_wif(
     sp_ = p.sum()
     if1 = (ind - p) / sp_
     if2 = np.sum(ind - p, axis=1, keepdims=True) * (p / sp_**2)[None, :]
-    return if1 - if2
+    infl: np.ndarray = if1 - if2
+    return infl
 
 
 # ---------------------------------------------------------------------------
@@ -351,9 +354,22 @@ def harvest_did(
     ... )
     >>> out.estimate  # doctest: +SKIP
     """
-    for col in (unit, time, outcome):
-        if col not in data.columns:
-            raise ValueError(f"column {col!r} not in data")
+    missing = missing_named_columns(
+        {
+            "unit": unit,
+            "time": time,
+            "outcome": outcome,
+            "treat": treat,
+            "cohort": cohort,
+        },
+        data.columns,
+    )
+    if missing:
+        raise ColumnNotFound.from_missing(
+            missing,
+            list(data.columns),
+            message=f"column {next(iter(missing.values()))!r} not in data",
+        )
     if treat is None and cohort is None:
         raise ValueError("either `treat` or `cohort` must be supplied")
     if horizons is None:
@@ -400,7 +416,7 @@ def harvest_did(
     from scipy.stats import norm as _norm
 
     event_rows = []
-    horizon_if = []
+    horizon_if_cols: List[np.ndarray] = []
     for e in sorted(tbl["horizon"].unique()):
         idx = np.flatnonzero(tbl["horizon"].to_numpy() == e)
         sub = tbl.iloc[idx]
@@ -425,9 +441,9 @@ def harvest_did(
                 n_comparisons=int(len(sub)),
             )
         )
-        horizon_if.append(if_e)
+        horizon_if_cols.append(if_e)
     event_study = pd.DataFrame(event_rows)
-    horizon_if = np.column_stack(horizon_if)
+    horizon_if = np.column_stack(horizon_if_cols)
 
     # --- Aggregate ATT over non-negative horizons -------------------------
     # Inverse-variance weights across horizons (treated as fixed); the

@@ -14,15 +14,18 @@ Princeton University Press. [@angrist2009mostly]
 """
 
 import warnings
-from typing import Any, List, Optional, cast
+from typing import Any, List, Literal, Optional, cast
 
 import numpy as np
 import pandas as pd
 from scipy import stats
 
 from .._aliases import accepts_aliases
+from ..core._call_record import records_call
+from ..core._vcov_spec import cluster_from_vce
 from ..core.results import CausalResult
-from ..exceptions import AssumptionWarning
+from ..exceptions import AssumptionWarning, MethodIncompatibility
+from . import _crit
 from ._core import drop_unusable_rows as _drop_unusable_rows
 from ._core import require_bool
 
@@ -75,6 +78,7 @@ def _did2x2_bayes_engine(
     )
 
 
+@records_call("did_2x2")
 @accepts_aliases(_strict=True, controls="covariates")
 def did_2x2(
     data: pd.DataFrame,
@@ -92,6 +96,9 @@ def did_2x2(
     wild_weight_type: str = "rademacher",
     seed: Optional[int] = None,
     d: Optional[str] = None,
+    design: Optional[Any] = None,
+    parity: Optional[Literal["r", "stata"]] = None,
+    crit_dist: Optional[Literal["t", "residual"]] = None,
     **kwargs: Any,
 ) -> CausalResult:
     """
@@ -132,6 +139,47 @@ def did_2x2(
         Column name for analytical weights (e.g. population weights).
         Observations are weighted proportionally — equivalent to Stata's
         ``[aweight=...]`` or R's ``weights=`` in ``lm()``.
+    design : SurveyDesign, optional
+        A complex survey design from :func:`sp.svydesign` declared on
+        ``data`` (same rows). The DID regression is fitted with the design
+        weights and its covariance is the survey linearisation sandwich
+        over strata, PSUs and the finite population correction (R
+        ``svyglm`` on ``y ~ treat * time``, Stata ``svy: regress``), with t
+        inference on the design degrees of freedom. With panel rows, the
+        unit (or a coarser unit containing it) must be the design's PSU so
+        that a unit's two periods fall in one PSU. Not with ``weights=``,
+        ``cluster=``, ``vce=`` or ``engine='bayes'``.
+        A replicate-weight design (:func:`sp.svrepdesign`) is accepted
+        too: the estimator is refitted with every replicate's weights
+        and the replicate variance replaces the linearisation (R
+        ``svrepdesign`` / Stata ``svy brr`` / ``svy jackknife``).
+    parity : {'stata', 'r'}, optional
+        Critical-value convention for the p-values and confidence
+        intervals; coefficients and SEs do not change. ``None`` (default)
+        uses Student t with ``N - K`` degrees of freedom in every case.
+        ``'stata'`` (``regress ..., vce(cluster c)``) and ``'r'``
+        (``fixest::feols(y ~ treat * time, cluster = ~c)``) use t with
+        ``G - 1`` degrees of freedom when ``cluster`` is given, and the
+        same ``N - K`` as the default otherwise. With ``design=`` the
+        design degrees of freedom are used under every setting (Stata
+        ``svy``, R ``survey``). The convention used is in
+        ``model_info['conventions']``.
+    crit_dist : {'t', 'residual'}, optional
+        The same choice named by convention rather than by program.
+        ``'t'``: t with ``G - 1`` degrees of freedom when ``cluster`` is
+        given and ``N - K`` otherwise (the critical values of
+        ``parity='stata'`` / ``'r'``). ``'residual'``: t with the residual
+        degrees of freedom ``N - K`` in every case, also under clustering,
+        which is what this function has always reported (R ``lm`` with
+        ``lmtest::coeftest(vcov = vcovCL)`` does the same; the two values
+        agree without ``cluster``). ``None`` (default) is ``'residual'`` in this
+        release and warns (``FutureWarning``) when ``cluster`` is given,
+        the one case where the numbers differ: the default becomes ``'t'``
+        in 1.41, as Stata ``regress, vce(cluster)`` and fixest. The
+        p-values of the full coefficient table in ``detail`` follow the
+        same rule. ``design=`` uses the design degrees of freedom under
+        every setting. ``'residual'`` together with ``parity=`` raises.
+        See MIGRATION.md.
     engine : {'ols', 'bayes'}, default 'ols'
         Inference backend for the same 2×2 design. ``'ols'`` (default) is the
         frequentist OLS estimator above. ``'bayes'`` routes to
@@ -171,6 +219,16 @@ def did_2x2(
     >>> bool(abs(result.estimate - 5.0) < 1.0)
     True
     """
+    if design is not None and getattr(design, "is_replicate_design", False):
+        _args = dict(locals())
+        from ..survey._replicate_refit import replicate_refit
+
+        return replicate_refit(did_2x2, _args, design, function="sp.did_2x2")
+    vce, cluster = cluster_from_vce(vce, cluster, function="did_2x2", native=None)
+    parity = _crit.check_parity(parity, "did_2x2")
+    crit_arg = _crit.check_crit_dist(
+        crit_dist, parity, function="did_2x2", legacy="residual"
+    )
     from ..core._param_aliases import resolve_alias
 
     treat = resolve_alias("treat", treat, "d", d)
@@ -179,9 +237,30 @@ def did_2x2(
     if time is None:
         raise TypeError("did_2x2() missing required argument: 'time'")
     robust = require_bool(robust, argument="robust")
+    svy: Any = None
+    if design is not None:
+        from ..survey.linearization import check_design
+
+        svy = check_design(
+            design, data, function="did_2x2", weights=weights, cluster=cluster
+        )
+        if vce is not None or engine != "ols":
+            raise MethodIncompatibility(
+                "did_2x2: design= gives the survey linearisation variance; "
+                "it cannot be combined with vce= or engine='bayes'.",
+                recovery_hint="Drop vce= / engine=.",
+            )
+        data = data.assign(__svy_weight__=svy.weights, __svy_row__=np.arange(len(data)))
+        weights = "__svy_weight__"
     if engine not in ("ols", "bayes"):
         raise ValueError(f"engine must be 'ols' or 'bayes'; got {engine!r}.")
     if engine == "bayes":
+        if parity is not None or crit_arg is not None:
+            raise MethodIncompatibility(
+                "did_2x2: parity= / crit_dist= set frequentist critical "
+                "values and do not apply to engine='bayes'.",
+                recovery_hint="Drop parity= / crit_dist= or use engine='ols'.",
+            )
         return _did2x2_bayes_engine(
             data,
             y=y,
@@ -211,8 +290,6 @@ def did_2x2(
     )
 
     # Validate binary variables
-    from statspai.exceptions import MethodIncompatibility
-
     treat_vals = sorted(df[treat].dropna().unique())
     time_vals = sorted(df[time].dropna().unique())
     if len(treat_vals) != 2:
@@ -373,6 +450,16 @@ def did_2x2(
             sigma2 = np.sum(resid**2) / (n - k)
         vcov = sigma2 * XtX_inv
 
+    svy_df: Optional[float] = None
+    if svy is not None:
+        from ..survey.linearization import design_df, design_vcov
+
+        assert w is not None
+        svy_rows = df.loc[valid, "__svy_row__"].to_numpy()
+        scores = (w * resid)[:, None] * X
+        vcov = XtX_inv @ design_vcov(scores, svy, svy_rows) @ XtX_inv
+        svy_df = design_df(svy, svy_rows)
+
     se = np.sqrt(np.diag(vcov))
 
     # DID coefficient is the interaction term
@@ -380,7 +467,19 @@ def did_2x2(
     att = float(beta[did_idx])
     att_se = float(se[did_idx])
     t_stat = att / att_se if att_se > 0 else np.nan
-    df_resid = n - k
+    df_resid = n - k if svy_df is None else svy_df
+    if cluster is not None and svy_df is None:
+        if parity is not None or crit_arg == "t":
+            # Stata ``regress, vce(cluster)`` and fixest both refer the
+            # cluster-robust t statistic to t(G - 1), not t(N - K).
+            df_resid = n_cl - 1
+        elif crit_arg is None:
+            _crit.warn_default_change(
+                "sp.did_2x2",
+                old=("t", float(n - k)),
+                new=("t", float(n_cl - 1)) if n_cl >= 2 else None,
+                legacy="residual",
+            )
     pvalue = float(2 * stats.t.sf(abs(t_stat), df_resid))
     t_crit = stats.t.ppf(1 - alpha / 2, df_resid)
     ci = (att - t_crit * att_se, att + t_crit * att_se)
@@ -394,8 +493,6 @@ def did_2x2(
     _vce = vce.lower() if isinstance(vce, str) else None
     wild_note: Optional[str] = None
     if _vce in ("wild", "wildbootstrap", "wild_cluster", "wcr", "boottest"):
-        from ..exceptions import MethodIncompatibility
-
         if cluster is None:
             raise MethodIncompatibility(
                 "did_2x2(vce='wild') requires cluster=... — the wild "
@@ -432,8 +529,6 @@ def did_2x2(
             f"{wild_reps} reps, {wild_weight_type})"
         )
     elif _vce is not None:
-        from ..exceptions import MethodIncompatibility
-
         raise MethodIncompatibility(
             f"did_2x2 vce={vce!r} not recognised; use vce='wild' (or the "
             "cluster=/robust= parameters for analytic SEs).",
@@ -472,9 +567,23 @@ def did_2x2(
         "cluster": cluster,
         "weights": weights,
     }
+    if svy is not None:
+        from ..survey.linearization import design_info
+
+        assert svy_df is not None
+        model_info["weights"] = None
+        model_info["robust_se"] = None
+        model_info["se_method"] = "survey_linearization"
+        model_info["survey_design"] = design_info(svy, svy_df)
     if wild_note is not None:
         model_info["inference"] = wild_note
         model_info["n_boot"] = wild_reps
+    model_info["conventions"] = _crit.conventions(
+        parity,
+        # The ATT p-value and CI come from the bootstrap under vce='wild'.
+        "bootstrap" if wild_note is not None else "t",
+        None if wild_note is not None else df_resid,
+    )
 
     _result = CausalResult(
         method="Difference-in-Differences (2x2)",
@@ -504,6 +613,8 @@ def did_2x2(
                 "robust": robust,
                 "alpha": alpha,
                 "weights": weights,
+                **({"parity": parity} if parity is not None else {}),
+                **({"crit_dist": crit_arg} if crit_arg is not None else {}),
             },
             data=data,
             overwrite=False,

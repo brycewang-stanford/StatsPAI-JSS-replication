@@ -170,9 +170,12 @@ def event_study_vcov(result: Any, *, allow_diagonal: bool = True) -> EventStudyV
     -----
     ``did_imputation`` with ``pretrend_method='bjs'`` estimates its leads
     in an auxiliary regression on the untreated sample and its horizons by
-    imputation; neither the construction nor Stata ``did_imputation``
-    provides their cross-covariance, so the matrix is block diagonal and
-    ``joint`` is ``False`` (the post-period block is exact).
+    imputation. Both are linear in the outcome, so their cross-covariance is
+    the sum over clusters of the products of their scores -- Stata
+    ``did_imputation``'s ``e(V)`` -- and the matrix is joint (through 1.39
+    it was block diagonal with ``joint=False``). An estimator that still
+    stores a block-diagonal matrix flags it with
+    ``attrs['block_diagonal'] = True`` and is reported with ``joint=False``.
 
     Examples
     --------
@@ -304,6 +307,14 @@ def _sup_t_critical(
     return float(np.quantile(np.max(np.abs(z), axis=1), 1.0 - alpha))
 
 
+def _sup_t_draws(corr: np.ndarray, n_draws: int, rng: np.random.Generator) -> Any:
+    """Draws of ``max_j |Z_j|``, ``Z ~ N(0, corr)`` (same stream as above)."""
+    w, U = np.linalg.eigh(0.5 * (corr + corr.T))
+    root = U * np.sqrt(np.clip(w, 0.0, None))
+    z = rng.standard_normal((n_draws, corr.shape[0])) @ root.T
+    return np.max(np.abs(z), axis=1)
+
+
 def uniform_bands(
     result: Any,
     *,
@@ -312,15 +323,26 @@ def uniform_bands(
     window: Optional[Sequence[int]] = None,
     n_draws: int = 100_000,
     seed: Optional[int] = 0,
+    terms: Optional[Sequence[str]] = None,
 ) -> pd.DataFrame:
-    """Sup-t simultaneous confidence band for an event study.
+    """Sup-t simultaneous confidence band and test for an event study.
 
     .. versionadded:: 1.30.0
 
     Parameters
     ----------
     result : CausalResult
-        Any event-study fit accepted by :func:`event_study_vcov`.
+        Any event-study fit accepted by :func:`event_study_vcov`. With
+        ``terms=``, any fit that has ``params`` and their full covariance
+        (``sp.regress``, ``sp.feols``, ...).
+    terms : sequence of str, optional
+        Names of the coefficients to cover, for an event study written by
+        hand as a regression on lead and lag dummies:
+        ``sp.uniform_bands(fit, terms=["lead3", "lead2", "lead1"])``. The
+        rows are then labelled by ``term`` and ``which`` / ``window`` do
+        not apply.
+
+        .. versionadded:: 1.39.0
     alpha : float, default 0.05
         One minus the simultaneous coverage.
     which : {'all', 'post', 'pre'}, default 'all'
@@ -333,8 +355,10 @@ def uniform_bands(
         critical value depends on how many coefficients are covered, so a
         band must be computed on the window it is drawn on.
     n_draws : int, default 100_000
-        Gaussian draws for the critical value (Monte Carlo error of the
-        quantile is ~1e-3 at the default).
+        Gaussian draws for the critical value. At the default the
+        seed-to-seed SD of the quantile is about 5e-3 (measured 0.004 to
+        0.006 on the mpdta event studies), roughly 0.2 percent of the
+        critical value; raise ``n_draws`` for a steadier band.
     seed : int or None, default 0
         Seed for the draws.
 
@@ -345,7 +369,12 @@ def uniform_bands(
         pointwise ``ci_lower`` / ``ci_upper`` and simultaneous
         ``cband_lower`` / ``cband_upper``. ``.attrs`` carries
         ``crit_pointwise``, ``crit_uniform``, ``joint`` (whether the full
-        covariance was used), ``source`` and ``alpha``.
+        covariance was used), ``source`` and ``alpha``, and the sup-t test
+        of the hypothesis that every covered coefficient is zero:
+        ``max_t`` (the largest absolute t statistic) and ``supt_pvalue``
+        (the share of draws of ``max_j |Z_j|`` at or above it). With many
+        correlated pre-trend coefficients this test stays reliable where
+        the Wald test's covariance is close to singular.
 
     Notes
     -----
@@ -384,6 +413,16 @@ def uniform_bands(
             recovery_hint="Use n_draws >= 1000 (default 100000).",
             diagnostics={"n_draws": n_draws},
         )
+    if terms is not None:
+        if which != "all" or window is not None:
+            raise MethodIncompatibility(
+                "terms= names the coefficients to cover; which= and window= "
+                "select event times and do not apply with it.",
+                diagnostics={"which": which, "window": repr(window)},
+            )
+        return _uniform_bands_terms(
+            result, list(terms), float(alpha), int(n_draws), seed
+        )
     es = event_study_vcov(result)
     sel: np.ndarray = np.ones(es.times.size, dtype=bool)
     if which == "post":
@@ -417,7 +456,9 @@ def uniform_bands(
         )
     corr = V / np.outer(se, se)
     rng = np.random.default_rng(seed)
-    crit_u = _sup_t_critical(corr, float(alpha), int(n_draws), rng)
+    sup = _sup_t_draws(corr, int(n_draws), rng)
+    crit_u = float(np.quantile(sup, 1.0 - float(alpha)))
+    max_t = float(np.max(np.abs(beta / se)))
     crit_p = float(stats.norm.ppf(1.0 - float(alpha) / 2.0))
     out = pd.DataFrame(
         {
@@ -434,6 +475,8 @@ def uniform_bands(
         {
             "crit_pointwise": crit_p,
             "crit_uniform": crit_u,
+            "max_t": max_t,
+            "supt_pvalue": float(np.mean(sup >= max_t)),
             "joint": bool(es.joint),
             "source": es.source,
             "note": es.note,
@@ -441,6 +484,76 @@ def uniform_bands(
             "which": which,
             "window": None if window is None else (int(window[0]), int(window[1])),
             "n_draws": int(n_draws),
+        }
+    )
+    return out
+
+
+def _uniform_bands_terms(
+    result: Any, terms: list, alpha: float, n_draws: int, seed: Optional[int]
+) -> pd.DataFrame:
+    """Sup-t band and test for named coefficients of any fit."""
+    from ..postestimation._covariance import coefficient_covariance
+
+    params = getattr(result, "params", None)
+    if not isinstance(params, pd.Series) or not terms:
+        raise MethodIncompatibility(
+            "terms= needs a fit with named coefficients (result.params) and "
+            "at least one name.",
+            recovery_hint="Pass e.g. an sp.regress fit and its lead dummies.",
+        )
+    missing = [t for t in terms if t not in params.index]
+    if missing or len(set(terms)) != len(terms):
+        raise MethodIncompatibility(
+            f"terms not among the coefficients, or repeated: {missing or terms}.",
+            recovery_hint=f"Coefficients: {list(params.index)[:20]}",
+            diagnostics={"missing": missing},
+        )
+    V_full, _ = coefficient_covariance(result)
+    if V_full is None:
+        raise MethodIncompatibility(
+            "This fit carries standard errors but not the covariance of its "
+            "coefficients, which a simultaneous band needs.",
+            recovery_hint="Refit with an estimator that stores the covariance "
+            "(sp.regress, sp.feols).",
+        )
+    pos = [list(params.index).index(t) for t in terms]
+    beta = params.to_numpy(dtype=float)[pos]
+    V = np.asarray(V_full, dtype=float)[np.ix_(pos, pos)]
+    se = np.sqrt(np.clip(np.diag(V), 0.0, None))
+    if np.any(se <= 0) or not np.all(np.isfinite(se)):
+        raise MethodIncompatibility(
+            "A covered coefficient has zero or undefined variance.",
+            recovery_hint="Leave omitted (collinear) terms out of terms=.",
+            diagnostics={"terms": terms},
+        )
+    corr = V / np.outer(se, se)
+    sup = _sup_t_draws(corr, n_draws, np.random.default_rng(seed))
+    crit_u = float(np.quantile(sup, 1.0 - alpha))
+    crit_p = float(stats.norm.ppf(1.0 - alpha / 2.0))
+    max_t = float(np.max(np.abs(beta / se)))
+    out = pd.DataFrame(
+        {
+            "term": terms,
+            "estimate": beta,
+            "se": se,
+            "ci_lower": beta - crit_p * se,
+            "ci_upper": beta + crit_p * se,
+            "cband_lower": beta - crit_u * se,
+            "cband_upper": beta + crit_u * se,
+        }
+    )
+    out.attrs.update(
+        {
+            "crit_pointwise": crit_p,
+            "crit_uniform": crit_u,
+            "max_t": max_t,
+            "supt_pvalue": float(np.mean(sup >= max_t)),
+            "joint": True,
+            "source": "coefficient covariance of the fit",
+            "note": "",
+            "alpha": alpha,
+            "n_draws": n_draws,
         }
     )
     return out

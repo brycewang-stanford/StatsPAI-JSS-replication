@@ -1,7 +1,7 @@
 """``sp.harvest_did``, ``sp.spillover_did`` and ``sp.causal_impact`` vs R.
 
 Reference: ``_fixtures/did_synth_misc_R.json`` written by
-``_generate_did_synth_misc_R.R`` (R 4.5, did 2.3.0 / DRDID, fixest 0.14.0,
+``_generate_did_synth_misc_R.R`` (R 4.5, did 2.5.1 / DRDID 1.3.0, fixest 0.14.0,
 KFAS 1.6.0, CausalImpact 1.4.1 / bsts 0.9.11 -- exact versions are stored in
 the fixture's ``meta``) from the CSVs written by
 ``_generate_did_synth_misc_data.py`` (fixed seeds, ``%.17g``), so both sides
@@ -279,8 +279,15 @@ def test_causal_impact_se_is_dense_gaussian_conditional(impact):
         (X @ mp["beta"])[~pre] + cond_mean,
         rtol=1e-10,
     )
-    _close(res.model_info["se_total"] ** 2, cond_cov.sum(), rtol=1e-10)
-    _close(res.se, np.sqrt(cond_cov.sum()) / (~pre).sum(), rtol=1e-10)
+    # The conditional variance is kept as se_total_conditional; the headline
+    # SE adds parameter uncertainty since 2026-10-19
+    # (tests/reference_parity/test_causal_impact_uncertainty.py).
+    _close(res.model_info["se_total_conditional"] ** 2, cond_cov.sum(), rtol=1e-10)
+    _close(
+        res.model_info["se_avg_conditional"],
+        np.sqrt(cond_cov.sum()) / (~pre).sum(),
+        rtol=1e-10,
+    )
 
 
 def test_causal_impact_reference_is_a_different_model():

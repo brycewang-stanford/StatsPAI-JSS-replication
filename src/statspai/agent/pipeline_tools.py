@@ -142,13 +142,55 @@ def pipeline_tool_manifest() -> List[Dict[str, Any]]:
 # ----------------------------------------------------------------------
 
 
+class _StageError(str):
+    """Error message that also carries the structured error payload.
+
+    It *is* the ``"<Class>: <message>"`` string every stage summary used
+    before (so substring checks and string rendering are unchanged), and
+    ``.payload`` holds the machine-readable form: ``StatsPAIError.to_dict()``
+    (``kind`` / ``recovery_hint`` / ``diagnostics`` /
+    ``alternative_functions``) for taxonomy errors, and the
+    :func:`~statspai.agent.remediation.remediate` suggestion for any other
+    exception.  :func:`_stage` and the pipeline ``error`` envelopes lift
+    ``.payload`` into the JSON output.
+    """
+
+    payload: Dict[str, Any]
+
+    def __new__(cls, text: str, payload: Dict[str, Any]) -> "_StageError":
+        obj = super().__new__(cls, text)
+        obj.payload = payload
+        return obj
+
+
+def _error_payload(e: BaseException, *, stage: Optional[str] = None) -> Dict[str, Any]:
+    """Structured payload for a caught exception (never a bare string)."""
+    from ..exceptions import StatsPAIError
+    from .remediation import remediate
+
+    context = {"tool": stage} if stage else None
+    if isinstance(e, StatsPAIError):
+        payload = e.to_dict()
+        payload["remediation"] = remediate(e, context=context)
+        return payload
+    rem = remediate(e, context=context)
+    return {
+        "kind": rem.get("category", "unknown"),
+        "class": type(e).__name__,
+        "message": str(e),
+        "remediation": rem,
+    }
+
+
 def _stage(
     name: str,
     status: str = "ok",
     summary: str = "",
     **extra: Any,
 ) -> Dict[str, Any]:
-    out = {"name": name, "status": status, "summary": summary}
+    out: Dict[str, Any] = {"name": name, "status": status, "summary": str(summary)}
+    if isinstance(summary, _StageError):
+        out["error"] = summary.payload
     out.update(extra)
     return out
 
@@ -158,11 +200,35 @@ def _safe_call(
     *args: Any,
     **kwargs: Any,
 ) -> Tuple[Any, Optional[str]]:
-    """Invoke ``fn`` and return ``(result, error_msg_or_none)``."""
+    """Invoke ``fn`` and return ``(result, error_or_none)``.
+
+    The error is a :class:`_StageError`: the familiar ``"<Class>: <msg>"``
+    string plus a ``.payload`` with the structured error (recovery hint,
+    diagnostics, alternatives, remediation) so a failed stage keeps
+    everything the agent needs to repair the call.
+    """
     try:
         return fn(*args, **kwargs), None
     except Exception as e:
-        return None, f"{type(e).__name__}: {e}"
+        name = getattr(fn, "__name__", None)
+        return None, _StageError(
+            f"{type(e).__name__}: {e}", _error_payload(e, stage=name)
+        )
+
+
+def _failed_pipeline(
+    pipeline: str, stages: List[Dict[str, Any]], err: Optional[str]
+) -> Dict[str, Any]:
+    """Envelope for a pipeline whose primary estimator failed."""
+    out: Dict[str, Any] = {
+        "pipeline": pipeline,
+        "stages": stages,
+        "error": str(err) if err else "estimator failed",
+    }
+    if isinstance(err, _StageError):
+        out["error_kind"] = err.payload.get("kind")
+        out["error_payload"] = err.payload
+    return out
 
 
 def _iv_endog_summary(result: Any, formula: str) -> str:
@@ -182,7 +248,9 @@ def _iv_endog_summary(result: Any, formula: str) -> str:
     return " ".join(bits)
 
 
-def _honest_did_summary(honest: Any) -> str:
+def _honest_did_summary(
+    honest: Any, degradations: Optional[List[Dict[str, Any]]] = None
+) -> str:
     """Breakdown M for a Rambachan-Roth sensitivity curve.
 
     The stage used to report the string "computed", which tells a reader
@@ -190,7 +258,7 @@ def _honest_did_summary(honest: Any) -> str:
     parallel trends can be violated before the effect stops being
     distinguishable from zero.
     """
-    payload = _light_serialize(honest)
+    payload = _light_serialize(honest, degradations)
     if not isinstance(payload, dict):
         return "computed"
     grid, rejects = payload.get("M"), payload.get("rejects_zero")
@@ -206,9 +274,11 @@ def _honest_did_summary(honest: Any) -> str:
     return f"breakdown M={breakdown:.3g} (rejects zero up to there)"
 
 
-def _bacon_summary(bacon: Any) -> str:
+def _bacon_summary(
+    bacon: Any, degradations: Optional[List[Dict[str, Any]]] = None
+) -> str:
     """Negative-weight share — the reason to run Goodman-Bacon at all."""
-    payload = _light_serialize(bacon)
+    payload = _light_serialize(bacon, degradations)
     if not isinstance(payload, dict):
         return "computed weight decomposition"
     bits = []
@@ -224,13 +294,28 @@ def _bacon_summary(bacon: Any) -> str:
     return "; ".join(bits) or "computed weight decomposition"
 
 
-def _short_estimate(obj: Any) -> str:
-    """Return a one-line ``estimate (SE) [CI]`` summary for ``obj``."""
+def _short_estimate(
+    obj: Any, degradations: Optional[List[Dict[str, Any]]] = None
+) -> str:
+    """Return a one-line ``estimate (SE) [CI]`` summary for ``obj``.
+
+    A serializer failure is not swallowed: it is recorded via
+    :func:`~statspai.workflow._degradation.record_degradation` (warning +
+    entry appended to ``degradations``) and the summary is empty.
+    """
     try:
         from .tools import _default_serializer
 
         d = _default_serializer(obj, detail="standard")
-    except Exception:
+    except Exception as exc:
+        from ..workflow._degradation import record_degradation
+
+        record_degradation(
+            degradations,
+            section="pipeline estimate summary",
+            exc=exc,
+            detail=f"could not serialise {type(obj).__name__}",
+        )
         return ""
     if not isinstance(d, dict):
         return ""
@@ -251,6 +336,27 @@ def _short_estimate(obj: Any) -> str:
 # ----------------------------------------------------------------------
 # pipeline_did
 # ----------------------------------------------------------------------
+
+
+def _evalue_followup(
+    rid: Optional[str], data: Optional[pd.DataFrame], y: Optional[str]
+) -> Dict[str, Any]:
+    """``sensitivity_from_result(method='evalue')`` with the outcome SD filled in.
+
+    The E-value of a mean difference depends on the outcome's SD; the
+    pipeline holds the data, so it supplies it rather than leaving the
+    agent a call that refuses without it.
+    """
+    args: Dict[str, Any] = {"result_id": rid, "method": "evalue", "measure": "SMD"}
+    if data is not None and y in getattr(data, "columns", ()):
+        sd = pd.to_numeric(data[y], errors="coerce").std()
+        if pd.notna(sd) and float(sd) > 0:
+            args["sd"] = float(sd)
+    return {
+        "tool": "sensitivity_from_result",
+        "arguments": args,
+        "rationale": "E-value bound on omitted-confounder strength.",
+    }
 
 
 def _pipeline_did(
@@ -274,8 +380,11 @@ def _pipeline_did(
         return {"error": "pipeline_did requires y / treat / time"}
 
     stages: List[Dict[str, Any]] = []
+    degradations: List[Dict[str, Any]] = []
 
-    # Stage 1: preflight
+    staggered = bool(cohort and unit_id)
+
+    # Stage 1: preflight (the staggered table checks the cohort coding)
     preflight_fn = getattr(sp, "preflight", None)
     if preflight_fn is not None:
         verdict_args = {"y": y, "treatment": treat, "time": time}
@@ -283,7 +392,14 @@ def _pipeline_did(
             verdict_args["id"] = unit_id
         if covariates:
             verdict_args["covariates"] = covariates
-        result, err = _safe_call(preflight_fn, data, "did", **verdict_args)
+        if staggered:
+            verdict_args["cohort"] = cohort
+        result, err = _safe_call(
+            preflight_fn,
+            data,
+            "callaway_santanna" if staggered else "did",
+            **verdict_args,
+        )
         if err:
             stages.append(_stage("preflight", "failed", err))
         else:
@@ -301,10 +417,12 @@ def _pipeline_did(
         stages.append(_stage("preflight", "skipped", "sp.preflight not available"))
 
     # Stage 2: estimator dispatch
-    if cohort and unit_id:
+    if staggered:
         fit_fn = getattr(sp, "callaway_santanna", None)
         if fit_fn is not None:
-            est_args = {"y": y, "g": cohort, "t": time, "i": unit_id}
+            est_args: Dict[str, Any] = {"y": y, "g": cohort, "t": time, "i": unit_id}
+            if covariates:
+                est_args["x"] = list(covariates)
             primary, err = _safe_call(fit_fn, data, **est_args)
             method = "callaway_santanna"
         else:
@@ -313,7 +431,14 @@ def _pipeline_did(
     else:
         fit_fn = getattr(sp, "did", None)
         if fit_fn is not None:
+            # ``id`` lets sp.did see the panel: without it a multi-period
+            # panel was fitted as a 2x2 design and failed on the 5 periods
+            # of mpdta.
             est_args = {"y": y, "treat": treat, "time": time}
+            if unit_id:
+                est_args["id"] = unit_id
+            if covariates:
+                est_args["covariates"] = list(covariates)
             primary, err = _safe_call(fit_fn, data, **est_args)
             method = "did"
         else:
@@ -322,13 +447,9 @@ def _pipeline_did(
 
     if err or primary is None:
         stages.append(_stage("estimate", "failed", err or "no result"))
-        return {
-            "pipeline": "pipeline_did",
-            "stages": stages,
-            "error": err or "estimator failed",
-        }
+        return _failed_pipeline("pipeline_did", stages, err)
 
-    primary_summary = _short_estimate(primary)
+    primary_summary = _short_estimate(primary, degradations)
     stages.append(
         _stage("estimate", "ok", f"{method}: {primary_summary}", method=method)
     )
@@ -401,17 +522,18 @@ def _pipeline_did(
                     _stage("honest_did", "skipped" if inapplicable else "failed", err)
                 )
             else:
-                honest_payload = _light_serialize(honest)
+                honest_payload = _light_serialize(honest, degradations)
                 stages.append(
                     _stage(
                         "honest_did",
                         "ok",
-                        _short_estimate(honest) or _honest_did_summary(honest),
+                        _short_estimate(honest, degradations)
+                        or _honest_did_summary(honest, degradations),
                     )
                 )
 
     # Stage 5: Bacon decomposition (only meaningful for staggered TWFE)
-    if cohort and unit_id:
+    if staggered:
         bacon_fn = getattr(sp, "bacon_decomposition", None)
         if bacon_fn is not None:
             bacon, err = _safe_call(
@@ -429,7 +551,7 @@ def _pipeline_did(
                     _stage(
                         "bacon_decomposition",
                         "ok",
-                        _bacon_summary(bacon),
+                        _bacon_summary(bacon, degradations),
                     )
                 )
         else:
@@ -483,11 +605,7 @@ def _pipeline_did(
             "arguments": {"result_id": primary_rid, "kind": "event_study"},
             "rationale": "Event-study plot for the executive summary.",
         },
-        {
-            "tool": "sensitivity_from_result",
-            "arguments": {"result_id": primary_rid, "method": "evalue"},
-            "rationale": "E-value bound on omitted-confounder strength.",
-        },
+        _evalue_followup(primary_rid, data, y),
         {
             "tool": "spec_curve",
             "arguments": {
@@ -515,6 +633,8 @@ def _pipeline_did(
         out["citations"] = {"keys": keys}
         if bib_present:
             out["citations"]["bibtex"] = bib_present
+    if degradations:
+        out["degradations"] = degradations
     return out
 
 
@@ -544,16 +664,39 @@ def _count_missing(audit_payload: Dict[str, Any]) -> int:
     )
 
 
-def _light_serialize(obj: Any) -> Dict[str, Any]:
+def _light_serialize(
+    obj: Any, degradations: Optional[List[Dict[str, Any]]] = None
+) -> Dict[str, Any]:
+    """Serialise a stage result; a fallback to ``repr`` is recorded, not silent.
+
+    When the default serializer raises or returns a non-dict, the payload
+    degrades to ``{"value": str(obj)[:200], "degraded": True}`` and the
+    failure is recorded via ``record_degradation`` (warning + entry in
+    ``degradations``).
+    """
+    from ..workflow._degradation import record_degradation
+
     try:
         from .tools import _default_serializer
 
         d = _default_serializer(obj, detail="standard")
-        if isinstance(d, dict):
-            return d
-    except Exception:
-        pass
-    return {"value": str(obj)[:200]}
+    except Exception as exc:
+        record_degradation(
+            degradations,
+            section="pipeline stage serialisation",
+            exc=exc,
+            detail=f"fell back to str() of {type(obj).__name__}",
+        )
+        return {"value": str(obj)[:200], "degraded": True}
+    if isinstance(d, dict):
+        return d
+    record_degradation(
+        degradations,
+        section="pipeline stage serialisation",
+        exc=TypeError(f"serializer returned {type(d).__name__}, expected dict"),
+        detail=f"fell back to str() of {type(obj).__name__}",
+    )
+    return {"value": str(obj)[:200], "degraded": True}
 
 
 def _did_narrative(
@@ -632,6 +775,7 @@ def _pipeline_iv(
     import statspai as sp
 
     stages: List[Dict[str, Any]] = []
+    degradations: List[Dict[str, Any]] = []
 
     fit_fn = getattr(sp, "ivreg", None) or getattr(sp, "iv", None)
     if fit_fn is None:
@@ -640,17 +784,13 @@ def _pipeline_iv(
     primary, err = _safe_call(fit_fn, formula, data=data)
     if err or primary is None:
         stages.append(_stage("estimate", "failed", err or "no result"))
-        return {
-            "pipeline": "pipeline_iv",
-            "stages": stages,
-            "error": err or "estimator failed",
-        }
+        return _failed_pipeline("pipeline_iv", stages, err)
     # An ivreg fit exposes a params vector, not a scalar `.estimate`, so
     # the generic one-liner came back empty and the stage read
     # "ivreg: " — an ok status with no number in it. Report the
     # endogenous regressor's coefficient, which is the estimate the whole
     # pipeline exists to produce.
-    summary = _short_estimate(primary)
+    summary = _short_estimate(primary, degradations)
     if not summary:
         summary = _iv_endog_summary(primary, formula)
     stages.append(_stage("estimate", "ok", f"ivreg: {summary}".rstrip()))
@@ -739,7 +879,7 @@ def _pipeline_iv(
         if err:
             stages.append(_stage("anderson_rubin_test", "failed", err))
         else:
-            ar_payload = _light_serialize(ar)
+            ar_payload = _light_serialize(ar, degradations)
             stages.append(_stage("anderson_rubin_test", "ok", "computed"))
     else:
         stages.append(
@@ -763,7 +903,7 @@ def _pipeline_iv(
             status = "skipped" if "expects a CausalResult" in str(err) else "failed"
             stages.append(_stage("evalue", status, err))
         else:
-            ev_payload = _light_serialize(ev)
+            ev_payload = _light_serialize(ev, degradations)
             stages.append(
                 _stage(
                     "evalue",
@@ -797,12 +937,9 @@ def _pipeline_iv(
         "effective_F": fF,
         "stages": stages,
         "narrative": "\n".join(narrative_lines).strip(),
-        "next_calls": [
-            {
-                "tool": "sensitivity_from_result",
-                "arguments": {"result_id": rid, "method": "evalue"},
-            },
-        ],
+        # No E-value follow-up: an IV fit carries a coefficient vector,
+        # not the single causal estimate evalue_from_result takes.
+        "next_calls": [],
     }
     if ar_payload:
         out["anderson_rubin"] = ar_payload
@@ -824,6 +961,8 @@ def _pipeline_iv(
         out["citations"] = {"keys": keys}
         if bib_present:
             out["citations"]["bibtex"] = bib_present
+    if degradations:
+        out["degradations"] = degradations
     return out
 
 
@@ -851,6 +990,7 @@ def _pipeline_rd(
     import statspai as sp
 
     stages: List[Dict[str, Any]] = []
+    degradations: List[Dict[str, Any]] = []
 
     fit_fn = getattr(sp, "rdrobust", None)
     if fit_fn is None:
@@ -861,12 +1001,8 @@ def _pipeline_rd(
     primary, err = _safe_call(fit_fn, data, **kwargs)
     if err or primary is None:
         stages.append(_stage("estimate", "failed", err or "no result"))
-        return {
-            "pipeline": "pipeline_rd",
-            "stages": stages,
-            "error": err or "estimator failed",
-        }
-    summary = _short_estimate(primary)
+        return _failed_pipeline("pipeline_rd", stages, err)
+    summary = _short_estimate(primary, degradations)
     stages.append(_stage("estimate", "ok", f"rdrobust: {summary}"))
 
     rid = RESULT_CACHE.put(primary, tool="rdrobust", arguments=arguments)
@@ -965,12 +1101,7 @@ def _pipeline_rd(
         "primary_summary": summary,
         "stages": stages,
         "narrative": "\n".join(narrative_lines).strip(),
-        "next_calls": [
-            {
-                "tool": "sensitivity_from_result",
-                "arguments": {"result_id": rid, "method": "evalue"},
-            },
-        ],
+        "next_calls": [_evalue_followup(rid, data, y)],
     }
     if plot_png is not None:
         out["_plot_png"] = plot_png
@@ -985,6 +1116,8 @@ def _pipeline_rd(
         out["citations"] = {"keys": keys}
         if bib_present:
             out["citations"]["bibtex"] = bib_present
+    if degradations:
+        out["degradations"] = degradations
     return out
 
 

@@ -12,12 +12,12 @@
   ],
   "true_avg_effect": 4.2,
   "estimated_avg_effect": 4.305563804845598,
-  "se_avg_effect": 0.13952821634773624,
+  "se_avg_effect": 0.12467603549779496,
   "ci95": [
-    4.032093525976922,
-    4.579034083714275
+    4.055383036546191,
+    4.555744573145006
   ],
-  "pvalue": 4.373228950961626e-209,
+  "pvalue": 0.005,
   "estimated_cumulative_effect": 129.16691414536794,
   "true_cumulative_effect": 126.0,
   "relative_effect_pct": 5.313537574528818,

@@ -47,6 +47,7 @@ from typing import Any, Optional, Sequence, Tuple
 import numpy as np
 import pandas as pd
 
+from .._aliases import accepts_aliases
 from ..core.results import CausalResult
 from ..exceptions import DataInsufficient, MethodIncompatibility
 
@@ -116,6 +117,11 @@ class _BaseHAL:
         params = self.get_params(deep=False)
         items = ", ".join(f"{k}={v!r}" for k, v in params.items())
         return f"{type(self).__name__}({items})"
+
+    def __sklearn_tags__(self) -> Any:
+        from ..core._sklearn_tags import duck_typed_tags
+
+        return duck_typed_tags(self)
 
 
 def _hal_basis(
@@ -346,6 +352,7 @@ class HALRegressor(_BaseHAL):
             max_anchors_per_col=max_anchors,
         )
         from sklearn.linear_model import Lasso, LassoCV
+
         from ..compat.sklearn import lasso_cv_alphas_kwargs
 
         if self.lambda_ is None:
@@ -518,6 +525,7 @@ class HALClassifier(_BaseHAL):
         return np.asarray(self._model.predict_proba(B))
 
 
+@accepts_aliases(seed="random_state")
 def hal_tmle(
     data: pd.DataFrame,
     y: str,
@@ -563,7 +571,9 @@ def hal_tmle(
         quantile anchors are substituted.
     n_folds : int, default 5
         Cross-fitting folds passed to :func:`sp.tmle`.
-    estimand : {"ATE", "ATT"}, default "ATE"
+    estimand : str, default "ATE"
+        Any estimand of :func:`sp.tmle`: ``"ATE"``, ``"ATT"``, ``"ATC"``,
+        ``"EY1"``, ``"EY0"``, ``"RR"``, ``"OR"``.
     alpha : float, default 0.05
     propensity_bounds : tuple, default (0.025, 0.975)
         Truncation bounds for the propensity score.
@@ -594,7 +604,7 @@ def hal_tmle(
 
     References
     ----------
-    [@benkeser2016highly] [@vanderlaan2023efficient] [@li2025regularized]
+    [@benkeser2016highly], [@vanderlaan2023efficient], [@li2025regularized]
     """
     if variant == "projection":
         # The projection-variant block in v1.11.x and earlier shrunk the
@@ -621,8 +631,11 @@ def hal_tmle(
             f"variant must be 'delta' (got {variant!r}); "
             "'projection' is currently NotImplemented."
         )
-    if estimand not in {"ATE", "ATT"}:
-        raise ValueError("estimand must be 'ATE' or 'ATT'")
+    estimand = str(estimand).upper()
+    if estimand not in {"ATE", "ATT", "ATC", "EY1", "EY0", "RR", "OR"}:
+        raise ValueError(
+            "estimand must be one of 'ATE', 'ATT', 'ATC', 'EY1', 'EY0', 'RR', 'OR'"
+        )
 
     # Lazy import to avoid circular dependency at module load.
     from .tmle import tmle as _tmle

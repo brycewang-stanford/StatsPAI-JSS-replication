@@ -28,16 +28,21 @@ arXiv preprint arXiv:2107.07942 v5. [@noack2025flexible]
 
 from __future__ import annotations
 
-from typing import Optional, List, Any, Tuple
 import warnings
+from typing import Any, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
 
+from .._aliases import accepts_aliases
+from .._input_validation import check_columns
+from ..core._call_record import records_call
 from ..core.results import CausalResult
 from .rdrobust import rdrobust
 
 
+@records_call("rd_flex")
+@accepts_aliases(seed="random_state")
 def rd_flex(
     data: pd.DataFrame,
     y: str,
@@ -53,6 +58,7 @@ def rd_flex(
     kernel: str = "triangular",
     p: int = 1,
     cluster: Optional[str] = None,
+    vce: str = "nn",
     alpha: float = 0.05,
     random_state: Optional[int] = None,
 ) -> CausalResult:
@@ -97,6 +103,10 @@ def rd_flex(
         indicator (numerator and denominator of the Wald ratio).
     bwselect, kernel, p, cluster, alpha
         Forwarded to :func:`rdrobust`.
+    vce : {'nn', 'hc0', 'hc1', 'hc2', 'hc3'}, default 'nn'
+        Variance estimator of every ``rdrobust`` fit, as in ``sp.rdrobust``
+        (it also enters the bandwidth selection). With ``cluster=``,
+        ``'nn'`` / ``'hc0'`` / ``'hc1'`` become R's ``'cr1'``.
     random_state : int, optional
         Seed for the cross-fit splitter and for built-in learners.
 
@@ -152,6 +162,7 @@ def rd_flex(
             kernel=kernel,
             bwselect=bwselect,
             cluster=cluster,
+            vce=vce,
             alpha=alpha,
         )
 
@@ -161,9 +172,11 @@ def rd_flex(
         needed.append(fuzzy)
     if cluster is not None:
         needed.append(cluster)
-    missing = [c_ for c_ in needed if c_ not in data.columns]
-    if missing:
-        raise ValueError(f"Columns not found in data: {missing}")  # pragma: no cover
+    check_columns(
+        data,
+        {"y": y, "x": x, "W": list(W), "fuzzy": fuzzy, "cluster": cluster},
+        function="sp.rd_flex",
+    )
 
     df = data.dropna(subset=needed).copy()
     Y = df[y].to_numpy(dtype=float)
@@ -205,6 +218,7 @@ def rd_flex(
             kernel=kernel,
             bwselect=bwselect,
             cluster=cluster,
+            vce=vce,
             alpha=alpha,
         )
     else:
@@ -217,6 +231,7 @@ def rd_flex(
             kernel=kernel,
             bwselect=bwselect,
             cluster=cluster,
+            vce=vce,
             alpha=alpha,
         )
 
@@ -231,6 +246,7 @@ def rd_flex(
         kernel=kernel,
         bwselect=bwselect,
         cluster=cluster,
+        vce=vce,
         alpha=alpha,
     )
     se_plain = float(r_plain.se) if r_plain.se else np.nan
@@ -355,6 +371,7 @@ def _make_learner(name: str, random_state: Optional[int]) -> Any:
             return RidgeCV(alphas=np.logspace(-3, 3, 21))
         if name == "lasso":
             from sklearn.linear_model import LassoCV
+
             from ..compat.sklearn import lasso_cv_alphas_kwargs
 
             return LassoCV(

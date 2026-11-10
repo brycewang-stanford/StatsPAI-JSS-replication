@@ -24,6 +24,8 @@ import pandas as pd
 from scipy import stats
 
 from .._aliases import accepts_aliases
+from ..core._call_record import records_call
+from ..core._vcov_spec import accepts_vce
 from ..core.results import CausalResult
 from ._core import _kernel_fn
 
@@ -35,10 +37,21 @@ class RKDResult(CausalResult):
         super().__init__(**kwargs)
         self._rkd_plot_data = rkd_plot_data
 
-    def summary(self, alpha: Optional[float] = None) -> str:
+    # Own layout without the base class's digits= / fmt= precision options;
+    # passing them raises TypeError rather than being ignored.
+    def summary(self, alpha: Optional[float] = None) -> str:  # type: ignore[override]
         return _rkd_summary(self, alpha)
 
     def plot(self, type: str = "main", **kwargs: Any) -> Any:
+        if type not in ("main", "auto"):
+            # ``type`` used to be ignored, so any value drew the main plot.
+            from ..exceptions import MethodIncompatibility
+
+            raise MethodIncompatibility(
+                f"plot(type={type!r}) is not a plot an RKD result can draw.",
+                recovery_hint="Use type='main' (or 'auto').",
+                diagnostics={"type": type},
+            )
         return _rkd_plot(self, **kwargs)
 
 
@@ -47,7 +60,9 @@ class RKDResult(CausalResult):
 # ======================================================================
 
 
+@records_call("rkd")
 @accepts_aliases(treat="treatment", _strict=True, running="x", cutoff="c")
+@accepts_vce(default=("hc1", "robust"))
 def rkd(
     data: pd.DataFrame,
     y: str,

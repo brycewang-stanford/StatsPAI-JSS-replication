@@ -39,6 +39,7 @@ import pandas as pd
 from scipy import stats as sp_stats
 
 from .._aliases import accepts_aliases
+from .._input_validation import check_columns
 from ..core.results import CausalResult
 from ..exceptions import NumericalInstability
 from ._common import embed_texts
@@ -125,7 +126,9 @@ class TextTreatmentResult(CausalResult):
         self.embedding_dim = int(embedding_dim)
         self.embedder_name = str(embedder_name)
 
-    def summary(
+    # Own layout without the base class's digits= / fmt= precision options;
+    # passing them raises TypeError rather than being ignored.
+    def summary(  # type: ignore[override]
         self,
         alpha: Optional[float] = None,
     ) -> str:  # pragma: no cover (cosmetic)
@@ -186,6 +189,19 @@ def text_treatment_effect(
     -------
     TextTreatmentResult
 
+    Notes
+    -----
+    The ``'hash'`` embedder drops tokens into ``n_components`` buckets, and
+    two tokens that share a bucket cannot be told apart by the adjustment.
+    When the confounding runs through such tokens, part of it stays in the
+    estimate and the standard error does not account for it. On a design
+    with an eight-word vocabulary, a text-borne confounder and a true
+    effect of 1.0, 20 buckets gave a mean of 1.08 with 57% coverage of the
+    nominal 95% interval; 256 buckets gave 1.02 and every interval
+    covered. Raise
+    ``n_components`` well above the vocabulary that matters, or pass a
+    dense embedder.
+
     Examples
     --------
     >>> import statspai as sp, numpy as np, pandas as pd
@@ -197,15 +213,22 @@ def text_treatment_effect(
     ... })
     >>> r = sp.text_treatment_effect(df, text_col="text", outcome="outcome",
     ...                              treatment="treatment", n_components=2)
-    >>> r.estimate
+    >>> r.estimand, r.embedding_dim
+    ('ATE', 2)
+    >>> bool(np.isfinite(r.estimate) and r.se > 0)
+    True
     """
-    for col in (text_col, outcome, treatment):
-        if col not in data.columns:
-            raise ValueError(f"Column {col!r} not in data.")
     cov = list(covariates or [])
-    for c in cov:
-        if c not in data.columns:
-            raise ValueError(f"Covariate {c!r} not in data.")
+    check_columns(
+        data,
+        {
+            "text_col": text_col,
+            "outcome": outcome,
+            "treatment": treatment,
+            "covariates": cov,
+        },
+        function="sp.text_treatment_effect",
+    )
 
     # Drop rows with NaN in any required column.
     use = data[[text_col, outcome, treatment, *cov]].copy()

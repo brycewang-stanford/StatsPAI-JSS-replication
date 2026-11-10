@@ -26,6 +26,35 @@ from __future__ import annotations
 from typing import Any, Callable, Tuple
 
 import numpy as np
+import pandas as pd
+
+from ..exceptions import DataInsufficient
+
+
+def require_two_clusters(clusters: Any, function: str) -> int:
+    """Refuse a cluster-robust variance with fewer than two clusters.
+
+    At the MLE the scores sum to zero over the sample, so with a single
+    cluster the clustered meat ``sum_g s_g s_g'`` is zero up to rounding and
+    ``G/(G-1)`` is undefined: the variance is not estimable. ``sp.regress``,
+    ``sp.glm`` and ``sp.iv`` refuse this input; the likelihood estimators
+    used to report standard errors of order 1e-16 (or a 1e-10 floor).
+    Returns the number of clusters.
+    """
+    n_clusters = int(len(pd.unique(np.asarray(clusters).ravel())))
+    if n_clusters < 2:
+        raise DataInsufficient(
+            f"{function}: cluster-robust standard errors need at least two "
+            f"clusters; the cluster variable has {n_clusters} distinct value"
+            f"{'' if n_clusters == 1 else 's'} in the estimation sample.",
+            recovery_hint=(
+                "Cluster on a variable with several groups, or use "
+                "robust='robust' for heteroskedasticity-robust standard "
+                "errors."
+            ),
+            diagnostics={"n_clusters": n_clusters},
+        )
+    return n_clusters
 
 
 def robust_convergence(opt_result: Any, grad_tol: float = 1e-3) -> Tuple[bool, float]:
@@ -295,6 +324,28 @@ def ml_newton_polish(
         if np.max(np.abs(step)) < tol * (1.0 + np.max(np.abs(theta))):
             break
     return theta, scores, H, steps
+
+
+def newton_converged(scores: np.ndarray, H: np.ndarray, tol: float = 1e-5) -> bool:
+    """Stata's Newton-Raphson convergence rule at a polished optimum.
+
+    ``g' (-H)^{-1} g < tol`` with ``g`` the total score -- ``ml``'s default
+    ``nrtolerance(1e-5)``. Judge convergence here, after
+    :func:`ml_newton_polish`, rather than on the quasi-Newton run that only
+    supplied the start: BFGS often stops on a line-search failure short of
+    the optimum the polish then reaches, and reporting its flag said
+    ``converged=False`` for correct estimates (``sp.oprobit`` on the
+    Princelings replication, QJE 2019).
+    """
+    g = np.asarray(scores, dtype=float)
+    g = g.sum(axis=0) if g.ndim == 2 else g
+    if not np.all(np.isfinite(g)):
+        return False
+    try:
+        v = float(g @ np.linalg.solve(-np.asarray(H, dtype=float), g))
+    except np.linalg.LinAlgError:
+        return False
+    return bool(np.isfinite(v) and abs(v) < tol)
 
 
 def inverse_information(H: np.ndarray) -> np.ndarray:
