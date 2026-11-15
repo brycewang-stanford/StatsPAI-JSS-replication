@@ -46,7 +46,7 @@
     {
       "category": "generated_paper_audit_or_example_json",
       "path": "Paper-JSS/replication/results/editor_screening_checklist.json",
-      "size_bytes": 14158,
+      "size_bytes": 14155,
       "suffix": ".json"
     },
     {
@@ -159,7 +159,7 @@
     {
       "category": "generated_paper_audit_or_example_json",
       "path": "Paper-JSS/replication/results/experiment_triage.json",
-      "size_bytes": 8478,
+      "size_bytes": 8477,
       "suffix": ".json"
     },
     {
@@ -171,7 +171,7 @@
     {
       "category": "generated_paper_audit_or_example_json",
       "path": "Paper-JSS/replication/results/jss_full_audit.json",
-      "size_bytes": 324215,
+      "size_bytes": 324211,
       "suffix": ".json"
     },
     {
@@ -201,19 +201,19 @@
     {
       "category": "generated_paper_audit_or_example_json",
       "path": "Paper-JSS/replication/results/pdf_render_audit.json",
-      "size_bytes": 14769,
+      "size_bytes": 14752,
       "suffix": ".json"
     },
     {
       "category": "generated_paper_audit_or_example_json",
       "path": "Paper-JSS/replication/results/pdf_visual_check_protocol.json",
-      "size_bytes": 21369,
+      "size_bytes": 21453,
       "suffix": ".json"
     },
     {
       "category": "generated_paper_audit_or_example_json",
       "path": "Paper-JSS/replication/results/release_boundary_audit.json",
-      "size_bytes": 3083,
+      "size_bytes": 3042,
       "suffix": ".json"
     },
     {
@@ -231,7 +231,7 @@
     {
       "category": "generated_paper_audit_or_example_json",
       "path": "Paper-JSS/replication/results/reviewer_evidence_map.json",
-      "size_bytes": 31835,
+      "size_bytes": 31787,
       "suffix": ".json"
     },
     {
@@ -243,7 +243,7 @@
     {
       "category": "generated_paper_audit_or_example_json",
       "path": "Paper-JSS/replication/results/source_snapshot_manifest.json",
-      "size_bytes": 22260,
+      "size_bytes": 12416,
       "suffix": ".json"
     },
     {
@@ -261,7 +261,7 @@
     {
       "category": "generated_paper_audit_or_example_json",
       "path": "Paper-JSS/replication/results/submission_risk_ledger.json",
-      "size_bytes": 12481,
+      "size_bytes": 12439,
       "suffix": ".json"
     },
     {
@@ -16330,7 +16330,7 @@
     ],
     "lockfile_count": 1,
     "packaged_public_dataset_csv_count": 10,
-    "prospective_archive_file_count": 4826,
+    "prospective_archive_file_count": 4836,
     "public_original_extract_csv_count": 7,
     "reference_fixture_csv_count": 552,
     "same_byte_r_stata_fixture_csv_count": 94,
@@ -16341,7 +16341,7 @@
       ".json": 797,
       ".lock": 1
     },
-    "total_data_bytes": 96161798,
+    "total_data_bytes": 96151882,
     "unknown_category_count": 0
   },
   "unknown_category_paths": []

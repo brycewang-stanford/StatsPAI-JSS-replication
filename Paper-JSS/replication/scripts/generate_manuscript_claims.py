@@ -293,7 +293,19 @@ def _cross_language_source_split() -> dict[str, int]:
     track_a = sum(r.get("source") in {"track_a", "track_a_alias"} for r in cross)
     frozen = sum(r.get("source") == "reference_parity_frozen" for r in cross)
     assert track_a + frozen == len(cross), "unexpected cross-language source"
-    return {"ParityTrackACrossCount": track_a, "ParityFrozenCrossCount": frozen}
+    # A Track A module can back a symbol that is not ``certified`` (the tier
+    # also needs a stable API), so "N of the certified functions" needs its
+    # own count: the abstract once quoted the cross-language one.
+    track_a_certified = sum(
+        r.get("source") in {"track_a", "track_a_alias"}
+        and sp.describe_function(r["function"])["validation_status"] == "certified"
+        for r in cross
+    )
+    return {
+        "ParityTrackACrossCount": track_a,
+        "ParityTrackACertifiedCount": track_a_certified,
+        "ParityFrozenCrossCount": frozen,
+    }
 
 
 def _orig_parity_claims() -> dict[str, int]:

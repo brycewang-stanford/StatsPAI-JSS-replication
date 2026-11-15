@@ -83,25 +83,26 @@
         "validation_tier"
       ],
       "float_markers": [],
-      "heading_candidates": [
-        "1. Introduction Statistical packages increasingly publish evidence labels"
-      ],
+      "heading_candidates": [],
       "page": 1,
       "section_markers": [
-        "front_matter",
-        "introduction"
+        "front_matter"
       ],
-      "text_chars": 2236
+      "text_chars": 2025
     },
     {
       "boundary_markers": [],
       "float_markers": [
         "Figure 3"
       ],
-      "heading_candidates": [],
+      "heading_candidates": [
+        "1. Introduction Statistical packages increasingly publish evidence labels"
+      ],
       "page": 2,
-      "section_markers": [],
-      "text_chars": 4107
+      "section_markers": [
+        "introduction"
+      ],
+      "text_chars": 4040
     },
     {
       "boundary_markers": [],
@@ -113,7 +114,7 @@
       ],
       "page": 3,
       "section_markers": [],
-      "text_chars": 3118
+      "text_chars": 3122
     },
     {
       "boundary_markers": [],
@@ -123,7 +124,7 @@
       "heading_candidates": [],
       "page": 4,
       "section_markers": [],
-      "text_chars": 3199
+      "text_chars": 3472
     },
     {
       "boundary_markers": [
@@ -141,7 +142,7 @@
       "section_markers": [
         "software_architecture"
       ],
-      "text_chars": 2876
+      "text_chars": 2780
     },
     {
       "boundary_markers": [
@@ -152,12 +153,11 @@
       ],
       "heading_candidates": [
         "2.3. Family dispatchers Family dispatchers reduce method sprawl without hiding assumptions",
-        "2.4. Result objects and output Most estimators return eitherEconometricResults or CausalResult, ",
-        "2.5. Performance backbone The performance-critical path is high-dimensional fixed-effect (HDFE) "
+        "2.4. Result objects and output Most estimators return eitherEconometricResults or CausalResult, "
       ],
       "page": 6,
       "section_markers": [],
-      "text_chars": 3147
+      "text_chars": 3160
     },
     {
       "boundary_markers": [],
@@ -165,6 +165,7 @@
         "Listing 3"
       ],
       "heading_candidates": [
+        "2.5. Performance backbone The performance-critical path is high-dimensional fixed-effect (HDFE) ",
         "3. The agent-facing registry API StatsPAI exposes the surface aPython user calls to LLM agents",
         "3.1. Schemas and agent cards A tool-using agent needs a typed object with parameter names, types",
         "3.2. Typed errors and the MCP server Most estimator failures inherit fromStatsPAIError, and to_d"
@@ -173,7 +174,7 @@
       "section_markers": [
         "agent_registry_api"
       ],
-      "text_chars": 2805
+      "text_chars": 2659
     },
     {
       "boundary_markers": [],
@@ -188,7 +189,7 @@
       "section_markers": [
         "agent_interface_checks"
       ],
-      "text_chars": 3327
+      "text_chars": 3335
     },
     {
       "boundary_markers": [
@@ -196,32 +197,26 @@
       ],
       "float_markers": [
         "Table 2",
-        "Table 3",
+        "Table 3"
+      ],
+      "heading_candidates": [],
+      "page": 9,
+      "section_markers": [],
+      "text_chars": 2251
+    },
+    {
+      "boundary_markers": [],
+      "float_markers": [
         "Table 4"
       ],
       "heading_candidates": [
         "4. Worked examples The seven worked examples show how the package is used and test the validat"
       ],
-      "page": 9,
+      "page": 10,
       "section_markers": [
         "worked_examples"
       ],
-      "text_chars": 2340
-    },
-    {
-      "boundary_markers": [],
-      "float_markers": [
-        "Listing 1",
-        "Listing 4",
-        "Table 4"
-      ],
-      "heading_candidates": [
-        "4.1. Card (1995)",
-        "1. Card\u2019s published 0"
-      ],
-      "page": 10,
-      "section_markers": [],
-      "text_chars": 2997
+      "text_chars": 2812
     },
     {
       "boundary_markers": [],
@@ -230,10 +225,13 @@
         "Listing 4",
         "Table 11"
       ],
-      "heading_candidates": [],
+      "heading_candidates": [
+        "4.1. Card (1995)",
+        "1. Card\u2019s published 0"
+      ],
       "page": 11,
       "section_markers": [],
-      "text_chars": 2440
+      "text_chars": 2343
     },
     {
       "boundary_markers": [],
@@ -249,12 +247,11 @@
       ],
       "page": 12,
       "section_markers": [],
-      "text_chars": 2709
+      "text_chars": 2587
     },
     {
       "boundary_markers": [],
       "float_markers": [
-        "Figure 1",
         "Listing 6",
         "Listing 7",
         "Table 11",
@@ -265,60 +262,61 @@
       ],
       "page": 13,
       "section_markers": [],
-      "text_chars": 1649
+      "text_chars": 2473
     },
     {
       "boundary_markers": [],
       "float_markers": [
-        "Listing 7",
+        "Figure 1",
+        "Listing 6",
         "Table 11",
+        "Table 5",
         "Table 6"
       ],
       "heading_candidates": [],
       "page": 14,
       "section_markers": [],
-      "text_chars": 3155
-    },
-    {
-      "boundary_markers": [],
-      "float_markers": [
-        "Listing 7",
-        "Listing 8",
-        "Table 19",
-        "Table 6"
-      ],
-      "heading_candidates": [],
-      "page": 15,
-      "section_markers": [],
-      "text_chars": 2824
+      "text_chars": 2247
     },
     {
       "boundary_markers": [],
       "float_markers": [
         "Figure 2",
         "Listing 7",
-        "Listing 9"
+        "Listing 8",
+        "Table 19"
       ],
       "heading_candidates": [
-        "7. On the calibrated replica of the parity study, StatsPAI, did, and csdid agree on the simple",
-        "4.4. Regression discontinuity, matching, and a causal time series Listing 9 shows the calls of t"
+        "7. On the calibrated replica of the parity study, StatsPAI, did, and csdid agree on the simple"
       ],
-      "page": 16,
+      "page": 15,
       "section_markers": [],
-      "text_chars": 1828
+      "text_chars": 3246
     },
     {
       "boundary_markers": [],
       "float_markers": [
-        "Listing 10",
+        "Figure 2",
+        "Listing 7",
+        "Listing 8"
+      ],
+      "heading_candidates": [],
+      "page": 16,
+      "section_markers": [],
+      "text_chars": 1458
+    },
+    {
+      "boundary_markers": [],
+      "float_markers": [
         "Listing 9"
       ],
       "heading_candidates": [
+        "4.4. Regression discontinuity, matching, and a causal time series Listing 9 shows the calls of t",
         "4.5. Three ecosystems, one number"
       ],
       "page": 17,
       "section_markers": [],
-      "text_chars": 2775
+      "text_chars": 3216
     },
     {
       "boundary_markers": [],
@@ -326,14 +324,10 @@
         "Listing 10",
         "Table 7"
       ],
-      "heading_candidates": [
-        "5. Numerical parity and statistical validity The empirical claim of this paper is narrower tha"
-      ],
+      "heading_candidates": [],
       "page": 18,
-      "section_markers": [
-        "validation_evidence"
-      ],
-      "text_chars": 2957
+      "section_markers": [],
+      "text_chars": 2736
     },
     {
       "boundary_markers": [],
@@ -344,24 +338,27 @@
         "Table 9"
       ],
       "heading_candidates": [
-        "5.1. Twelve-estimator validation suite The references of Table 9 arelm with sandwich (Zeileis et"
+        "5. Numerical parity and statistical validity The empirical claim of this paper is narrower tha"
       ],
       "page": 19,
-      "section_markers": [],
-      "text_chars": 3588
+      "section_markers": [
+        "validation_evidence"
+      ],
+      "text_chars": 3711
     },
     {
       "boundary_markers": [],
       "float_markers": [
-        "Figure 3"
+        "Figure 3",
+        "Table 9"
       ],
       "heading_candidates": [
-        "5.2. Estimands and what agreement does not establish Numerical agreement does not establish iden",
-        "5.3. Numerical parity (Track A) The parity study runs each method three ways"
+        "5.1. Twelve-estimator validation suite The references of Table 9 arelm with sandwich (Zeileis et",
+        "5.2. Estimands and what agreement does not establish Numerical agreement does not establish iden"
       ],
       "page": 20,
       "section_markers": [],
-      "text_chars": 3047
+      "text_chars": 3075
     },
     {
       "boundary_markers": [],
@@ -370,10 +367,12 @@
         "Table 8",
         "Table 9"
       ],
-      "heading_candidates": [],
+      "heading_candidates": [
+        "5.3. Numerical parity (Track A) The parity study runs each method three ways"
+      ],
       "page": 21,
       "section_markers": [],
-      "text_chars": 2805
+      "text_chars": 2531
     },
     {
       "boundary_markers": [],
@@ -386,44 +385,43 @@
       ],
       "page": 22,
       "section_markers": [],
-      "text_chars": 3091
+      "text_chars": 3063
     },
     {
       "boundary_markers": [],
       "float_markers": [
         "Table 11"
       ],
-      "heading_candidates": [
-        "5.4. Evidence tiers and hard cases Evidence is attached to configurations and outputs"
-      ],
+      "heading_candidates": [],
       "page": 23,
       "section_markers": [],
-      "text_chars": 3265
+      "text_chars": 3526
     },
     {
       "boundary_markers": [],
       "float_markers": [
         "Listing 11",
-        "Listing 4",
         "Table 5"
       ],
-      "heading_candidates": [],
+      "heading_candidates": [
+        "5.4. Evidence tiers and hard cases Evidence is attached to configurations and outputs"
+      ],
       "page": 24,
       "section_markers": [],
-      "text_chars": 3602
+      "text_chars": 3558
     },
     {
       "boundary_markers": [],
       "float_markers": [
-        "Table 12",
-        "Table 5"
+        "Listing 4",
+        "Table 12"
       ],
       "heading_candidates": [
         "3. The engines\u2019 seed-to-seed standard deviations are of the same order, but we do not claim th"
       ],
       "page": 25,
       "section_markers": [],
-      "text_chars": 3652
+      "text_chars": 3648
     },
     {
       "boundary_markers": [],
@@ -437,7 +435,7 @@
       ],
       "page": 26,
       "section_markers": [],
-      "text_chars": 3928
+      "text_chars": 3915
     },
     {
       "boundary_markers": [],
@@ -450,7 +448,7 @@
       "heading_candidates": [],
       "page": 27,
       "section_markers": [],
-      "text_chars": 3339
+      "text_chars": 3803
     },
     {
       "boundary_markers": [],
@@ -460,7 +458,7 @@
       "heading_candidates": [],
       "page": 28,
       "section_markers": [],
-      "text_chars": 2929
+      "text_chars": 2271
     },
     {
       "boundary_markers": [],
@@ -473,7 +471,7 @@
       ],
       "page": 29,
       "section_markers": [],
-      "text_chars": 3281
+      "text_chars": 3183
     },
     {
       "boundary_markers": [],
@@ -481,26 +479,25 @@
         "Table 19"
       ],
       "heading_candidates": [
-        "5.8. Auditing the attachment, not only the number A parity study checks that two implementations",
-        "5.9. Correctness history and residual risk Appendix B lists the corrections that matter most, an"
+        "5.8. Auditing the attachment, not only the number A parity study checks that two implementations"
       ],
       "page": 30,
       "section_markers": [],
-      "text_chars": 3654
+      "text_chars": 3706
     },
     {
       "boundary_markers": [],
       "float_markers": [],
       "heading_candidates": [
+        "5.9. Correctness history and residual risk Appendix B lists the corrections that matter most, an",
         "6. Computational performance The timing study covers four estimators",
-        "6.1. Benchmark protocol A speed ratio compares two implementations only if both perform the same",
-        "5.1. Times are medians over repetitions after a warmup, with their interquartile range, on an ot"
+        "6.1. Benchmark protocol A speed ratio compares two implementations only if both perform the same"
       ],
       "page": 31,
       "section_markers": [
         "performance"
       ],
-      "text_chars": 3087
+      "text_chars": 3398
     },
     {
       "boundary_markers": [],
@@ -509,11 +506,12 @@
         "Table 16"
       ],
       "heading_candidates": [
+        "5.1. Times are medians over repetitions after a warmup, with their interquartile range, on an ot",
         "6.2. Measured performance results Table 16 reports the largest size of each benchmark and Figure"
       ],
       "page": 32,
       "section_markers": [],
-      "text_chars": 3278
+      "text_chars": 3181
     },
     {
       "boundary_markers": [],
@@ -521,15 +519,13 @@
         "Table 16"
       ],
       "heading_candidates": [
-        "7. Computational details StatsPAI installs from PyPI (Section 7",
-        "5.2. The packages behind the twelve-estimator suite arefixest 0",
-        "7.2. The"
+        "7. Computational details StatsPAI installs from PyPI (Section 7"
       ],
       "page": 33,
       "section_markers": [
         "computational_details"
       ],
-      "text_chars": 3190
+      "text_chars": 2980
     },
     {
       "boundary_markers": [],
@@ -538,11 +534,13 @@
         "Table 16"
       ],
       "heading_candidates": [
+        "5.2. The packages behind the twelve-estimator suite arefixest 0",
+        "7.2. The three-ecosystem worked example addsfect 2",
         "4.0. The lockfile and the per-row JSON provenance record exact versions for all 89 modules, incl"
       ],
       "page": 34,
       "section_markers": [],
-      "text_chars": 1895
+      "text_chars": 2119
     },
     {
       "boundary_markers": [],
@@ -553,24 +551,25 @@
         "7.1. Distribution and installation The package is distributed through PyPI (pip install statspai",
         "4.4. Because that port is GPL-3 licensed, it is an opt-in extra, not a dependency of the MIT-lic",
         "4.4. The test suite runs on Linux, macOS, and Windows in continuous integration",
-        "7.2. Reproducibility of this paper The evidence is rebuilt by one standalone script,Paper-JSS/re",
-        "8. Discussion The article\u2019s claim is about what a validation label in a broad statistical pack"
+        "7.2. Reproducibility of this paper The evidence is rebuilt by one standalone script,Paper-JSS/re"
       ],
       "page": 35,
-      "section_markers": [
-        "discussion"
-      ],
-      "text_chars": 3604
+      "section_markers": [],
+      "text_chars": 3730
     },
     {
       "boundary_markers": [],
       "float_markers": [
         "Table 17"
       ],
-      "heading_candidates": [],
+      "heading_candidates": [
+        "8. Discussion The article\u2019s claim is about what a validation label in a broad statistical pack"
+      ],
       "page": 36,
-      "section_markers": [],
-      "text_chars": 3518
+      "section_markers": [
+        "discussion"
+      ],
+      "text_chars": 3270
     },
     {
       "boundary_markers": [
@@ -579,10 +578,8 @@
       "float_markers": [],
       "heading_candidates": [],
       "page": 37,
-      "section_markers": [
-        "references"
-      ],
-      "text_chars": 2258
+      "section_markers": [],
+      "text_chars": 2573
     },
     {
       "boundary_markers": [],
@@ -591,16 +588,20 @@
         "6. URLhttps"
       ],
       "page": 38,
-      "section_markers": [],
-      "text_chars": 2624
+      "section_markers": [
+        "references"
+      ],
+      "text_chars": 2571
     },
     {
       "boundary_markers": [],
       "float_markers": [],
-      "heading_candidates": [],
+      "heading_candidates": [
+        "2.1. Bates D, M\u00e4chler M, Bolker B, Walker S (2015)"
+      ],
       "page": 39,
       "section_markers": [],
-      "text_chars": 2649
+      "text_chars": 2621
     },
     {
       "boundary_markers": [],
@@ -608,7 +609,7 @@
       "heading_candidates": [],
       "page": 40,
       "section_markers": [],
-      "text_chars": 2677
+      "text_chars": 2828
     },
     {
       "boundary_markers": [],
@@ -622,7 +623,7 @@
       ],
       "page": 41,
       "section_markers": [],
-      "text_chars": 2654
+      "text_chars": 2597
     },
     {
       "boundary_markers": [],
@@ -630,7 +631,7 @@
       "heading_candidates": [],
       "page": 42,
       "section_markers": [],
-      "text_chars": 3019
+      "text_chars": 3036
     },
     {
       "boundary_markers": [],
@@ -641,7 +642,7 @@
       ],
       "page": 43,
       "section_markers": [],
-      "text_chars": 2668
+      "text_chars": 2676
     },
     {
       "boundary_markers": [],
@@ -654,7 +655,7 @@
       ],
       "page": 44,
       "section_markers": [],
-      "text_chars": 2731
+      "text_chars": 2663
     },
     {
       "boundary_markers": [],
@@ -664,29 +665,30 @@
       "heading_candidates": [],
       "page": 45,
       "section_markers": [],
-      "text_chars": 3131
+      "text_chars": 2956
     },
     {
       "boundary_markers": [],
       "float_markers": [
         "Table 18"
       ],
-      "heading_candidates": [
-        "2. The ID is the module\u2019s two-digit prefix intests/r_parity/"
-      ],
+      "heading_candidates": [],
       "page": 46,
       "section_markers": [],
-      "text_chars": 3716
+      "text_chars": 3385
     },
     {
       "boundary_markers": [],
       "float_markers": [
+        "Table 18",
         "Table 19"
       ],
-      "heading_candidates": [],
+      "heading_candidates": [
+        "2. The ID is the module\u2019s two-digit prefix intests/r_parity/"
+      ],
       "page": 47,
       "section_markers": [],
-      "text_chars": 4280
+      "text_chars": 3766
     },
     {
       "boundary_markers": [],
@@ -698,7 +700,7 @@
       ],
       "page": 48,
       "section_markers": [],
-      "text_chars": 1917
+      "text_chars": 3326
     }
   ],
   "pdf_render_audit": "replication/results/pdf_render_audit.json",
@@ -724,8 +726,8 @@
     "packaged_pdf_member": "Paper-JSS/manuscript/main.pdf",
     "page_count": 48,
     "page_inventory_count": 48,
-    "page_inventory_float_marker_count": 76,
-    "page_inventory_min_text_chars": 1649,
+    "page_inventory_float_marker_count": 74,
+    "page_inventory_min_text_chars": 1458,
     "page_inventory_section_markers": [
       "agent_interface_checks",
       "agent_registry_api",

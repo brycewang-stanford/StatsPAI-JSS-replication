@@ -32,6 +32,12 @@
 %% lands inside the output block; \Needspace moves the whole transcript
 %% to the next page rather than splitting it.
 \usepackage{needspace}
+%% A heading could be left alone at the foot of a page (Section 4.1 was,
+%% with its first paragraph after a float on the next page). Every section
+%% and subsection heading therefore reserves room for a few lines of text.
+\usepackage{etoolbox}
+\pretocmd{\section}{\Needspace*{8\baselineskip}}{}{}
+\pretocmd{\subsection}{\Needspace*{5\baselineskip}}{}{}
 %% Float pages (e.g. the two DiD listings) start at the top and stack
 %% their floats with ordinary spacing, instead of LaTeX's default of
 %% centring them with stretched gaps.
@@ -138,7 +144,7 @@ to the source files on its path establishes which implementation ran in each
 of \RParityModuleCount{} modules compared with \proglang{R} implementations on
 identical data (\RParityStrictCount{} at same-data parity, with
 \proglang{Stata} references for \StataParityModuleCount{}). Those modules back
-\ParityTrackACrossCount{} of the \RegistryCertified{} functions the registry
+\ParityTrackACertifiedCount{} of the \RegistryCertified{} functions the registry
 labels \code{certified}. The others rest on stored reference results, each
 held by a test, with no finer record. Further tests hold the entry point a
 label credits and whether each automated check applies to a fit. Stochastic

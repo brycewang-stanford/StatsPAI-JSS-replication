@@ -26,7 +26,7 @@ Documented nonblocking risk identity: confirmed
 | `jss_formal_compliance_pass` | PASS | replication/results/jss_formal_compliance_audit.json status=PASS |
 | `archive_present` | PASS | build/statspai-jss-submission.zip |
 | `archive_manifest_present` | PASS | build/statspai-jss-submission-manifest.json |
-| `archive_within_50mb` | PASS | 45.13 MiB / 47.33 MB decimal |
+| `archive_within_50mb` | PASS | 45.19 MiB / 47.39 MB decimal |
 | `active_manuscript_sections_only` | PASS | archive manifest lists the ten active manuscript inputs |
 | `active_joss_artifacts_excluded` | PASS | active external-review artifacts are declared excluded from the JSS archive |
 | `archive_forbidden_members_absent` | PASS | no JOSS artifacts, local notes, main.md, or dormant full sections in archive |
@@ -39,22 +39,22 @@ Documented nonblocking risk identity: confirmed
 
 | Check | Detail |
 |---|---|
-| `clean_combined_worktree` | 28 hand-edited final-publication gate paths; 53 generated dirty paths |
+| `clean_combined_worktree` | 5 hand-edited final-publication gate paths; 32 generated dirty paths |
 | `source_paths_finalized` | 1 source/test/docs paths still dirty |
-| `paper_paths_finalized` | 27 Paper-JSS paths still dirty |
+| `paper_paths_finalized` | 4 Paper-JSS paths still dirty |
 
 ## Final Tagged-Cut Breakdown
 
 | Bucket | Count/detail |
 |---|---|
-| Hand-edited status counts | `{'??': 4, 'M': 24}` |
-| Generated status counts | `{'??': 3, 'M': 50}` |
+| Hand-edited status counts | `{'M': 5}` |
+| Generated status counts | `{'M': 32}` |
 | Package code/script paths | `0` |
 | Package docs paths | `0` |
 | Validation test/data paths | `1` |
-| Paper manuscript paths | `13` |
-| Paper replication paths | `10` |
-| Paper other paths | `4` |
+| Paper manuscript paths | `0` |
+| Paper replication paths | `1` |
+| Paper other paths | `3` |
 
 ## Final Tagged-Cut Runbook
 
@@ -72,7 +72,7 @@ Strict release guard: `python Paper-JSS/replication/scripts/source_snapshot_mani
 
 | Risk | Evidence | Next action |
 |---|---|---|
-| `final_tagged_release_cut_pending` | 28 final-release pending paths; source snapshot remains explicitly labelled | commit or intentionally exclude all hand-edited source and Paper-JSS paths; move accepted [Unreleased] changes into a dated CHANGELOG release entry; align pyproject.toml, src/statspai/__init__.py, and schema bundle versions; tag the exact package-source commit used by the JSS archive; re-run make submission-ready after the tag so manifests record a clean release snapshot |
+| `final_tagged_release_cut_pending` | 5 final-release pending paths; source snapshot remains explicitly labelled | commit or intentionally exclude all hand-edited source and Paper-JSS paths; move accepted [Unreleased] changes into a dated CHANGELOG release entry; align pyproject.toml, src/statspai/__init__.py, and schema bundle versions; tag the exact package-source commit used by the JSS archive; re-run make submission-ready after the tag so manifests record a clean release snapshot |
 | `registry_breadth_denominator_disclosed` | 981/1627 registry symbols are certified/validated; missing evidence paths=0 | Keep the validated-core framing and do not promote API-stable breadth without attached evidence notes. |
 | `stata_tier3_requires_license` | 85/85 frozen Stata modules audited without live Stata; licensed rerun protocol packaged | Keep Tier 3 optional and keep the Stata license boundary explicit; use stata_rerun_protocol.md for any licensed reviewer rerun and treat missing Stata as an optional-runtime skip, not a JSS upload blocker. |
 | `methodological_t4_row_disclosed` | 1/1 methodological/T4 rows classified; uncategorized=0 | Keep the T4 row as a disclosure unless a deterministic T2 bridge is added. |
@@ -81,8 +81,8 @@ Strict release guard: `python Paper-JSS/replication/scripts/source_snapshot_mani
 
 ## Archive Summary
 
-- Size: 45.13 MiB (47.33 MB decimal)
-- Files: 4830
+- Size: 45.19 MiB (47.39 MB decimal)
+- Files: 4840
 - Registry evidence files: 780
 - Active external-review artifacts present: []
 - Legacy manuscript sources present: []
@@ -91,7 +91,7 @@ Strict release guard: `python Paper-JSS/replication/scripts/source_snapshot_mani
 
 - Package/source/schema versions: 1.40.2 / 1.40.2 / 1.40.2
 - Package commit: 25a9407ee
-- Paper commit: 2914195
+- Paper commit: 1ef66db
 - Ready for final publication release: False
 - Strict release command: `python Paper-JSS/replication/scripts/source_snapshot_manifest.py --strict-release`
 

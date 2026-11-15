@@ -27,7 +27,7 @@
       "requirement": "upload-facing prose avoids defensive or casual reviewer-facing phrasing"
     },
     {
-      "evidence": "macro_counts={'proglang': 129, 'pkg': 176, 'code': 350}; thresholds={'proglang': 50, 'pkg': 80, 'code': 150}; failures=[]",
+      "evidence": "macro_counts={'proglang': 129, 'pkg': 176, 'code': 351}; thresholds={'proglang': 50, 'pkg': 80, 'code': 150}; failures=[]",
       "ok": true,
       "requirement": "active manuscript keeps JSS macro density"
     },
@@ -68,7 +68,7 @@
     "defensive_tone_hits": 0,
     "draft_marker_hits": 0,
     "macro_counts": {
-      "code": 350,
+      "code": 351,
       "pkg": 176,
       "proglang": 129
     },

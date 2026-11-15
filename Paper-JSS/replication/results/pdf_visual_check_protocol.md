@@ -45,54 +45,54 @@ This generated file does not certify that a human visual review has already been
 
 | Page | Text chars | Section markers | Float markers | Boundary markers |
 |---:|---:|---|---|---|
-| 1 | 2236 | front_matter, introduction | -- | validation_tier |
-| 2 | 4107 | -- | Figure 3 | -- |
-| 3 | 3118 | -- | Listing 1 | -- |
-| 4 | 3199 | -- | Table 1 | -- |
-| 5 | 2876 | software_architecture | Listing 2 | validation_tier |
-| 6 | 3147 | -- | Listing 2 | validation_tier |
-| 7 | 2805 | agent_registry_api | Listing 3 | -- |
-| 8 | 3327 | agent_interface_checks | Table 2 | -- |
-| 9 | 2340 | worked_examples | Table 2, Table 3, Table 4 | agent_claim_boundary |
-| 10 | 2997 | -- | Listing 1, Listing 4, Table 4 | -- |
-| 11 | 2440 | -- | Listing 1, Listing 4, Table 11 | -- |
-| 12 | 2709 | -- | Figure 1, Listing 1, Listing 5, Listing 6, Table 5 | -- |
-| 13 | 1649 | -- | Figure 1, Listing 6, Listing 7, Table 11, Table 5 | -- |
-| 14 | 3155 | -- | Listing 7, Table 11, Table 6 | -- |
-| 15 | 2824 | -- | Listing 7, Listing 8, Table 19, Table 6 | -- |
-| 16 | 1828 | -- | Figure 2, Listing 7, Listing 9 | -- |
-| 17 | 2775 | -- | Listing 10, Listing 9 | -- |
-| 18 | 2957 | validation_evidence | Listing 10, Table 7 | -- |
-| 19 | 3588 | -- | Figure 3, Table 7, Table 8, Table 9 | -- |
-| 20 | 3047 | -- | Figure 3 | -- |
-| 21 | 2805 | -- | Table 11, Table 8, Table 9 | -- |
-| 22 | 3091 | -- | Table 10, Table 11 | -- |
-| 23 | 3265 | -- | Table 11 | -- |
-| 24 | 3602 | -- | Listing 11, Listing 4, Table 5 | -- |
-| 25 | 3652 | -- | Table 12, Table 5 | -- |
-| 26 | 3928 | -- | Table 14, Table 5 | -- |
-| 27 | 3339 | -- | Table 13, Table 14, Table 15, Table 19 | -- |
-| 28 | 2929 | -- | Table 14 | -- |
-| 29 | 3281 | -- | Table 15 | -- |
-| 30 | 3654 | -- | Table 19 | -- |
-| 31 | 3087 | performance | -- | -- |
-| 32 | 3278 | -- | Figure 4, Table 16 | -- |
-| 33 | 3190 | computational_details | Table 16 | -- |
-| 34 | 1895 | -- | Figure 4, Table 16 | -- |
-| 35 | 3604 | discussion | Table 17 | -- |
-| 36 | 3518 | -- | Table 17 | -- |
-| 37 | 2258 | references | -- | agent_claim_boundary |
-| 38 | 2624 | -- | -- | -- |
-| 39 | 2649 | -- | -- | -- |
-| 40 | 2677 | -- | -- | -- |
-| 41 | 2654 | -- | -- | -- |
-| 42 | 3019 | -- | -- | -- |
-| 43 | 2668 | -- | -- | -- |
-| 44 | 2731 | -- | -- | -- |
-| 45 | 3131 | -- | Table 18 | -- |
-| 46 | 3716 | -- | Table 18 | -- |
-| 47 | 4280 | -- | Table 19 | -- |
-| 48 | 1917 | -- | Table 19 | -- |
+| 1 | 2025 | front_matter | -- | validation_tier |
+| 2 | 4040 | introduction | Figure 3 | -- |
+| 3 | 3122 | -- | Listing 1 | -- |
+| 4 | 3472 | -- | Table 1 | -- |
+| 5 | 2780 | software_architecture | Listing 2 | validation_tier |
+| 6 | 3160 | -- | Listing 2 | validation_tier |
+| 7 | 2659 | agent_registry_api | Listing 3 | -- |
+| 8 | 3335 | agent_interface_checks | Table 2 | -- |
+| 9 | 2251 | -- | Table 2, Table 3 | agent_claim_boundary |
+| 10 | 2812 | worked_examples | Table 4 | -- |
+| 11 | 2343 | -- | Listing 1, Listing 4, Table 11 | -- |
+| 12 | 2587 | -- | Figure 1, Listing 1, Listing 5, Listing 6, Table 5 | -- |
+| 13 | 2473 | -- | Listing 6, Listing 7, Table 11, Table 5 | -- |
+| 14 | 2247 | -- | Figure 1, Listing 6, Table 11, Table 5, Table 6 | -- |
+| 15 | 3246 | -- | Figure 2, Listing 7, Listing 8, Table 19 | -- |
+| 16 | 1458 | -- | Figure 2, Listing 7, Listing 8 | -- |
+| 17 | 3216 | -- | Listing 9 | -- |
+| 18 | 2736 | -- | Listing 10, Table 7 | -- |
+| 19 | 3711 | validation_evidence | Figure 3, Table 7, Table 8, Table 9 | -- |
+| 20 | 3075 | -- | Figure 3, Table 9 | -- |
+| 21 | 2531 | -- | Table 11, Table 8, Table 9 | -- |
+| 22 | 3063 | -- | Table 10, Table 11 | -- |
+| 23 | 3526 | -- | Table 11 | -- |
+| 24 | 3558 | -- | Listing 11, Table 5 | -- |
+| 25 | 3648 | -- | Listing 4, Table 12 | -- |
+| 26 | 3915 | -- | Table 14, Table 5 | -- |
+| 27 | 3803 | -- | Table 13, Table 14, Table 15, Table 19 | -- |
+| 28 | 2271 | -- | Table 14 | -- |
+| 29 | 3183 | -- | Table 15 | -- |
+| 30 | 3706 | -- | Table 19 | -- |
+| 31 | 3398 | performance | -- | -- |
+| 32 | 3181 | -- | Figure 4, Table 16 | -- |
+| 33 | 2980 | computational_details | Table 16 | -- |
+| 34 | 2119 | -- | Figure 4, Table 16 | -- |
+| 35 | 3730 | -- | Table 17 | -- |
+| 36 | 3270 | discussion | Table 17 | -- |
+| 37 | 2573 | -- | -- | agent_claim_boundary |
+| 38 | 2571 | references | -- | -- |
+| 39 | 2621 | -- | -- | -- |
+| 40 | 2828 | -- | -- | -- |
+| 41 | 2597 | -- | -- | -- |
+| 42 | 3036 | -- | -- | -- |
+| 43 | 2676 | -- | -- | -- |
+| 44 | 2663 | -- | -- | -- |
+| 45 | 2956 | -- | Table 18 | -- |
+| 46 | 3385 | -- | Table 18 | -- |
+| 47 | 3766 | -- | Table 18, Table 19 | -- |
+| 48 | 3326 | -- | Table 19 | -- |
 
 ## Metrics
 
@@ -106,9 +106,9 @@ This generated file does not certify that a human visual review has already been
 - `full_document_machine_scan_not_human_review`: `True`
 - `page_inventory_count`: `48`
 - `page_inventory_text_pages`: `48`
-- `page_inventory_min_text_chars`: `1649`
+- `page_inventory_min_text_chars`: `1458`
 - `page_inventory_section_markers`: `['agent_interface_checks', 'agent_registry_api', 'computational_details', 'discussion', 'front_matter', 'introduction', 'performance', 'references', 'software_architecture', 'validation_evidence', 'worked_examples']`
-- `page_inventory_float_marker_count`: `76`
+- `page_inventory_float_marker_count`: `74`
 - `manual_visual_check_required`: `True`
 - `manual_visual_check_status`: `PENDING_MANUAL_REVIEW`
 - `claimed_manual_acceptance`: `False`

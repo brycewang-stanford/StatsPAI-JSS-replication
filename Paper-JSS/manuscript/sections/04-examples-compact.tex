@@ -128,7 +128,7 @@ here they estimate an adjusted association. The DML interval also uses the defau
 learner, which under-covers on the design of Section~\ref{sec:track-b}
 (0.883 at nominal 0.95), so that column shows the interface and is not a
 recommended final estimate.
-Listing~\ref{lst:card-cate} summarises how that association varies.
+Listing~\ref{lst:card-cate} summarizes how that association varies.
 
 \Needspace*{12\baselineskip}
 \begin{lstlisting}[caption={Fitted conditional effects from the forest of
@@ -171,11 +171,12 @@ convention with no reference row on these data.
 Listing~\ref{lst:basque} runs row~1, and Figure~\ref{fig:basque-gap} draws
 its gap.
 
-\Needspace*{16\baselineskip}
+\Needspace*{17\baselineskip}
 \begin{lstlisting}[caption={The ADH specification on the original
 \code{Synth::basque} data (row~1 of Table~\ref{tab:basque-specs}): one
 special predictor per pre-treatment year, a single deterministic start for
 the search over \(V\), and no placebo runs.},label={lst:basque},captionpos=b]
+>>> import pandas as pd
 >>> basque = pd.read_csv("tests/orig_parity/data/03_basque_original.csv")
 >>> years = range(1955, 1970)
 >>> sc = sp.synth(basque, outcome = "gdppc", unit = "region",
