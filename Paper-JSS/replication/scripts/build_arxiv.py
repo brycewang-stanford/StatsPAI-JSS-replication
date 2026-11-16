@@ -235,6 +235,21 @@ def build(replication_note: str) -> None:
     # Full compile (with BibTeX) to produce the .bbl arXiv needs.
     _run(["latexmk", "-pdf", "-interaction=nonstopmode", "-halt-on-error", "main.tex"], STAGE)
     _check_log(STAGE / "main.log")
+    # jss.bst deletes every period from an author field, so the collective
+    # author "SciPy 1.0 Contributors" prints as "SciPy 10 Contributors".
+    # JSS repairs this in production; an arXiv version cannot be repaired
+    # later, so the shipped .bbl is corrected and the PDF rebuilt from it
+    # (pdfLaTeX only: latexmk would rerun BibTeX and undo the edit).
+    bbl = STAGE / "main.bbl"
+    bbl_text = bbl.read_text(encoding="utf-8")
+    wrong, right = "{SciPy 10 Contributors}", "{SciPy 1.0 Contributors}"
+    if bbl_text.count(wrong) != 1:
+        sys.exit(f"FAIL -- expected exactly one {wrong!r} in main.bbl, "
+                 f"found {bbl_text.count(wrong)}")
+    bbl.write_text(bbl_text.replace(wrong, right), encoding="utf-8")
+    for _ in range(3):
+        _run(["pdflatex", "-interaction=nonstopmode", "-halt-on-error", "main.tex"], STAGE)
+    _check_log(STAGE / "main.log")
 
     shipped = ["main.tex", "main.bbl", "jss.cls", "jss.bst"] + sorted(
         _flat_name(name) for name in found

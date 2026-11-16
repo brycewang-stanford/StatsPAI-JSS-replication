@@ -14,7 +14,7 @@ accompanies the manuscript. The package itself is developed at
 | StatsPAI version string | 1.40.2 |
 | StatsPAI source commit | [`25a9407ee8`](https://github.com/brycewang-stanford/StatsPAI/commit/25a9407ee88706a8e7dc8ba674005206b27888b6) |
 | Relation to release tag | `src/` is identical to release tag `v1.40.2` (PyPI 1.40.2) |
-| Manuscript sources commit | `5beec0e82a` (private manuscript repository) |
+| Manuscript sources commit | `42257dedd8` (private manuscript repository) |
 
 `src/statspai/` here is the source at that commit, and `pip install -e .`
 installs exactly it; use it rather than the PyPI wheel to reproduce the
@@ -25,7 +25,7 @@ paper.
 | Path | What it is |
 | --- | --- |
 | `Paper-JSS/manuscript/` | LaTeX source and PDF of the manuscript |
-| `preprint/statspai-arxiv.pdf` | arXiv edition of the manuscript (archived as `Paper-JSS/submissions/2026-11-15-arxiv-1.40.2/`) |
+| `preprint/statspai-arxiv.pdf` | arXiv edition of the manuscript (archived as `Paper-JSS/submissions/2026-11-16-arxiv-1.40.2/`) |
 | `Paper-JSS/replication/reproduce.py` | single-script, three-tier replication driver |
 | `Paper-JSS/replication/scripts/` | worked examples, figure/table generators, audits |
 | `Paper-JSS/replication/results/` | committed outputs, incl. the Tier-1 transcript |

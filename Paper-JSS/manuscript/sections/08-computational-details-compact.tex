@@ -46,7 +46,7 @@ stored fixtures sit outside that lockfile and are pinned in the fixtures:
 \pkg{WeightIt} 1.7.0 \citep{greifer2026weightit}, and \pkg{ShiftShareSE} 1.1.0
 \citep{kolesar2022shiftsharese}. The \proglang{Stata} comparisons use \proglang{Stata} 18 MP and record
 official/community command versions in
-\path{tests/stata_parity/STATA_ENVIRONMENT.md}. All \StataParityModuleCount{} Stata
+\path{tests/stata_parity/STATA_ENVIRONMENT.md}. All \StataParityModuleCount{} \proglang{Stata}
 modules and all \RParityModuleCount{} \proglang{R} modules reproduce their stored
 JSON outputs within the \(10^{-9}\) floor. \proglang{Stata} requires a licence,
 so the archive ships the stored results and matching do-files, and the paper
@@ -97,7 +97,7 @@ came from different runs. The \emph{\proglang{R} path} (\code{-{}-tier 2})
 adds the pinned \code{renv} environment and re-executes every
 \proglang{R} reference of the parity study on the stored data. (One module needs an archived release of its reference; the archive says which.) Auditing
 the parity claim at full strength requires this path. The \emph{\proglang{Stata} path} (\code{-{}-tier 3}) re-executes the
-\proglang{Stata} comparisons and requires a Stata licence.
+\proglang{Stata} comparisons and requires a \proglang{Stata} licence.
 
 Tier~1 was verified from a clean start. A fresh virtual environment was
 built from the lock and the \code{v\StatsPAIVersion{}} source, in an unpacked

@@ -134,7 +134,7 @@ function can carry T2 and T4 rows on different data.}
 7  & RD density test         & \code{sp.rddensity}       & \pkg{rddensity}; \code{rddensity} & RDsenate & A,D \\
 8  & Classical SCM           & \code{sp.synth}           & \pkg{Synth}; \code{synth} & Basque; unique DGP & A,C,D \\
 9  & Synthetic DID           & \code{sp.sdid}            & \pkg{synthdid}; \code{sdid} & California-99 & A,\(B\),D \\
-10 & DML PLR                 & \code{sp.dml}             & \pkg{DoubleML} & Card/401(k) & A,\(B\),C,D \\
+10 & DML PLR                 & \code{sp.dml}             & \pkg{DoubleML}; \code{ddml} & Card/401(k) & A,\(B\),C,D \\
 11 & Causal forest           & \code{sp.causal\_forest}  & \pkg{grf} & Clean-overlap DGP & A,\(B\),D \\
 12 & PSM                     & \code{sp.psm}             & \pkg{MatchIt}; \code{teffects} & NSW-DW & A,D \\
 \bottomrule
@@ -162,7 +162,8 @@ The references of Table~\ref{tab:decathlon} are \code{lm} with
 \citep{athey2019generalized}, and \pkg{MatchIt} \citep{ho2011matchit}, with
 the \proglang{Stata} commands \code{csdid} \citep{rios2022csdid},
 \code{sdid} \citep{clarke2024synthetic}, \code{eventstudyinteract}
-\citep{sun2021estimating}, and \code{ppmlhdfe} \citep{correia2020fast}.
+\citep{sun2021estimating}, \code{reghdfe} \citep{correia2017linear}, and
+\code{ddml} \citep{ahrens2024ddml}.
 
 \subsection{Estimands and what agreement does not establish}
 \label{sec:statistical-contracts}
@@ -194,8 +195,8 @@ DiD; modules 68, 69, 75, and 83 of Appendix~\ref{app:parity}). The study has \RP
 and \StataParityModuleCount{} carry a \proglang{Stata} reference. Each of
 the \NoStataModuleCount{} without one records a measured, command-level
 reason.
-The same file need not give the same doubles. \proglang{Python} now fits
-the correctly rounded parse, which is what \proglang{Stata} reads.
+The same file need not give the same doubles. The \proglang{Python} side
+parses each value with correct rounding, as \proglang{Stata} does.
 \proglang{R}'s \code{read.csv} differs in the last bit on about 2\% of
 values, a \(10^{-16}\) floor for \proglang{Python}--\proglang{R} agreement.
 The package's test suite adds 13{,}214 reference-recovery tests, 469 tests
@@ -265,7 +266,7 @@ A second set of results runs \statspai{} and the canonical \proglang{R}
 reference on the \emph{original} public extracts shipped by \proglang{R}
 packages. It holds \OrigParityModuleCount{} modules and
 \OrigParityRowCount{} statistic rows, including six that reproduce the
-NHEFS worked examples of Hern\'an and Robins' \emph{What If}.
+NHEFS worked examples of \emph{What If} \citep{hernan2020causal}.
 Table~\ref{tab:headline-parity} shows the most informative cases.
 
 \begin{table}[!ht]
@@ -288,7 +289,7 @@ regression with \pkg{statsmodels}.}
 \paragraph{Evidence is attached to configurations and outputs.}
 A tier is attached to a function, but every artifact exercises one
 configuration (a method variant, an inference option, a data condition,
-a code path) and compares only some outputs. A parity row that pins the LIML coefficient and its classical,
+a code path) and compares only some outputs. A parity row that pins the limited-information maximum likelihood (LIML) coefficient and its classical,
 HC1, and CR1 standard errors says nothing about the HC3 standard error
 of the same coefficient. For 40 entry points, among them the twelve suite estimators, the package
 therefore records, per artifact, the value it actually ran on every
@@ -341,7 +342,7 @@ coverage row run through that entry point (the previous row ran
 (SD), with
 coverage 0.979. The default now follows \pkg{fixest} (coverage 0.955,
 SE/SD 0.99).
-The record's limited-information maximum likelihood (LIML) row cited a module that runs \code{sp.liml}, which is a
+The record's LIML row cited a module that runs \code{sp.liml}, which is a
 separate code path from \code{sp.iv(method="liml")}. It now rests on a
 test that runs the latter on the same data. \code{sp.sun\_abraham}'s
 default aggregate, the equal-weighted average of post-treatment
@@ -501,7 +502,7 @@ under-covers on all six, from 0.890 down to 0.540, and its bias is always
 toward zero, between half a Monte Carlo SD and almost two. It under-covers
 even on step functions and interactions (0.816), the shape boosted trees fit
 best. Short-stacking covers between 0.940 and 0.950 on five designs. On the
-sixth, smooth interactions at \(n=2{,}000\), it covers 0.848 with a bias of
+sixth, heteroskedastic interactions at \(n=2{,}000\), it covers 0.848 with a bias of
 0.87 SD, because no learner in the default roster fits those interactions
 well. Stacking is therefore the better default and not a guarantee. In 52\%
 to 92\% of the draws the stacked estimate lies more than half a default
@@ -612,7 +613,7 @@ in the changes-in-changes command \code{cic} that touches one decile
 (\(6\times10^{-3}\)) and the ATT integrating it (\(1.2\times10^{-3}\)).
 
 Building the register found gaps that budgets had absorbed. The
-Oaxaca--Blinder SE sat 1.2\% from \proglang{Stata}'s under a budget
+Blinder--Oaxaca SE sat 1.2\% from \proglang{Stata}'s under a budget
 written for \proglang{R}'s bootstrap; it is classical versus HC1 group
 regressions and random versus fixed covariate means, and
 \code{oaxaca, vce(robust) fixed} matches to \(2\times10^{-14}\). A

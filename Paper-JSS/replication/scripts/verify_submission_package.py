@@ -136,6 +136,7 @@ EXPECTED_NO_DOI_BIB_KEYS = [
     "card1995using",
     "correia2017linear",
     "econml",
+    "hernan2020causal",
     "lalonde1986evaluating",
     "mcp2026specification",
     "nicholls2020riskbased",

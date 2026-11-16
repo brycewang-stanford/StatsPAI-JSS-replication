@@ -189,7 +189,7 @@
       "section_markers": [
         "agent_interface_checks"
       ],
-      "text_chars": 3335
+      "text_chars": 3366
     },
     {
       "boundary_markers": [
@@ -316,7 +316,7 @@
       ],
       "page": 17,
       "section_markers": [],
-      "text_chars": 3216
+      "text_chars": 3224
     },
     {
       "boundary_markers": [],
@@ -358,7 +358,7 @@
       ],
       "page": 20,
       "section_markers": [],
-      "text_chars": 3075
+      "text_chars": 3025
     },
     {
       "boundary_markers": [],
@@ -372,7 +372,7 @@
       ],
       "page": 21,
       "section_markers": [],
-      "text_chars": 2531
+      "text_chars": 2537
     },
     {
       "boundary_markers": [],
@@ -385,7 +385,7 @@
       ],
       "page": 22,
       "section_markers": [],
-      "text_chars": 3063
+      "text_chars": 3156
     },
     {
       "boundary_markers": [],
@@ -395,7 +395,7 @@
       "heading_candidates": [],
       "page": 23,
       "section_markers": [],
-      "text_chars": 3526
+      "text_chars": 3531
     },
     {
       "boundary_markers": [],
@@ -408,57 +408,58 @@
       ],
       "page": 24,
       "section_markers": [],
-      "text_chars": 3558
+      "text_chars": 3529
     },
     {
       "boundary_markers": [],
       "float_markers": [
         "Listing 4",
-        "Table 12"
+        "Table 12",
+        "Table 5"
       ],
       "heading_candidates": [
-        "3. The engines\u2019 seed-to-seed standard deviations are of the same order, but we do not claim th"
+        "3. The engines\u2019 seed-to-seed standard deviations are of the same order, but we do not claim th",
+        "2. A single tolerance over both facts would hide the sensitivity a practitioner needs to know "
       ],
       "page": 25,
       "section_markers": [],
-      "text_chars": 3648
+      "text_chars": 3878
     },
     {
       "boundary_markers": [],
       "float_markers": [
-        "Table 14",
-        "Table 5"
+        "Table 12",
+        "Table 14"
       ],
       "heading_candidates": [
-        "2. A single tolerance over both facts would hide the sensitivity a practitioner needs to know ",
         "5.5. Monte Carlo coverage (Track B) The coverage study checks 95% intervals on known DGPs, and i"
       ],
       "page": 26,
       "section_markers": [],
-      "text_chars": 3915
+      "text_chars": 3626
     },
     {
       "boundary_markers": [],
       "float_markers": [
         "Table 13",
         "Table 14",
-        "Table 15",
         "Table 19"
       ],
       "heading_candidates": [],
       "page": 27,
       "section_markers": [],
-      "text_chars": 3803
+      "text_chars": 3805
     },
     {
       "boundary_markers": [],
       "float_markers": [
-        "Table 14"
+        "Table 14",
+        "Table 15"
       ],
       "heading_candidates": [],
       "page": 28,
       "section_markers": [],
-      "text_chars": 2271
+      "text_chars": 2368
     },
     {
       "boundary_markers": [],
@@ -483,7 +484,7 @@
       ],
       "page": 30,
       "section_markers": [],
-      "text_chars": 3706
+      "text_chars": 3681
     },
     {
       "boundary_markers": [],
@@ -555,7 +556,7 @@
       ],
       "page": 35,
       "section_markers": [],
-      "text_chars": 3730
+      "text_chars": 3729
     },
     {
       "boundary_markers": [],
@@ -616,22 +617,24 @@
       "float_markers": [],
       "heading_candidates": [
         "7.0. Hainmueller J (2012)",
-        "2. Ho DE, Imai K, King G, Stuart EA (2011)",
+        "2. Hern\u00e1n MA, Robins JM (2020)",
+        "5. Ho DE, Imai K, King G, Stuart EA (2011)",
         "1.5. Kleiber C, Zeileis A (2008)",
-        "6. Koenker R (2025)",
-        "6.1. Koles\u00e1r M (2022)"
+        "6. Koenker R (2025)"
       ],
       "page": 41,
       "section_markers": [],
-      "text_chars": 2597
+      "text_chars": 2546
     },
     {
       "boundary_markers": [],
       "float_markers": [],
-      "heading_candidates": [],
+      "heading_candidates": [
+        "1.0. LaLonde RJ (1986)"
+      ],
       "page": 42,
       "section_markers": [],
-      "text_chars": 3036
+      "text_chars": 2976
     },
     {
       "boundary_markers": [],
@@ -642,7 +645,7 @@
       ],
       "page": 43,
       "section_markers": [],
-      "text_chars": 2676
+      "text_chars": 2691
     },
     {
       "boundary_markers": [],
@@ -650,12 +653,11 @@
       "heading_candidates": [
         "4. Sheppard K,et al",
         "7.0. Staiger D, Stock JH (1997)",
-        "2.4. Van Rossum G, Drake FL (2009)",
-        "2. Wager S, Athey S (2018)"
+        "2.4. Van Rossum G, Drake FL (2009)"
       ],
       "page": 44,
       "section_markers": [],
-      "text_chars": 2663
+      "text_chars": 2645
     },
     {
       "boundary_markers": [],
@@ -665,7 +667,7 @@
       "heading_candidates": [],
       "page": 45,
       "section_markers": [],
-      "text_chars": 2956
+      "text_chars": 2900
     },
     {
       "boundary_markers": [],
@@ -675,7 +677,7 @@
       "heading_candidates": [],
       "page": 46,
       "section_markers": [],
-      "text_chars": 3385
+      "text_chars": 3491
     },
     {
       "boundary_markers": [],
@@ -688,7 +690,7 @@
       ],
       "page": 47,
       "section_markers": [],
-      "text_chars": 3766
+      "text_chars": 3953
     },
     {
       "boundary_markers": [],
@@ -726,7 +728,7 @@
     "packaged_pdf_member": "Paper-JSS/manuscript/main.pdf",
     "page_count": 48,
     "page_inventory_count": 48,
-    "page_inventory_float_marker_count": 74,
+    "page_inventory_float_marker_count": 75,
     "page_inventory_min_text_chars": 1458,
     "page_inventory_section_markers": [
       "agent_interface_checks",

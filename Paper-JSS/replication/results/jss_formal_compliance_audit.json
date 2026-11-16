@@ -27,7 +27,7 @@
       "requirement": "rendered PDF page-sample sanity check passes"
     },
     {
-      "evidence": "active manuscript markup counts={'proglang': 156, 'pkg': 209, 'code': 529}; caption_label_failures=[].",
+      "evidence": "active manuscript markup counts={'proglang': 158, 'pkg': 209, 'code': 529}; caption_label_failures=[].",
       "ok": true,
       "requirement": "JSS markup macros and labelled floats are used"
     },
@@ -62,7 +62,7 @@
       "requirement": "reviewer output transcript for standalone replication script is included"
     },
     {
-      "evidence": "Tier-1 transcript reports 32/32 steps in 1.4 minutes; JSS asks for a short reviewer-verification path when full replication is heavier.",
+      "evidence": "Tier-1 transcript reports 32/32 steps in 2.8 minutes; JSS asks for a short reviewer-verification path when full replication is heavier.",
       "ok": true,
       "requirement": "short reviewer replication path completes within one hour"
     },
@@ -87,7 +87,7 @@
       "requirement": "platform dependencies and RNG seeds are disclosed"
     },
     {
-      "evidence": "cover-letter expected snippets=['48 pages', '32/32', '89-module R-parity', '85-module Stata bridge', '1,627 registered public functions', '1,627 public functions', '14,022 schema parameters', 'tagged 1.40.2 release', '13 PASS evidence cards', '5 suggested review routes', 'editor triage', 'statistical validation', 'quick reproduction', 'agent-interface review', 'limitations/release-boundary review', '4,840 files']; missing=[]; cover-letter archive-size disclosures=[(45.19, 47.39)]; expected=45.19 MiB (47.39 MB decimal); exact fixed-point match required.",
+      "evidence": "cover-letter expected snippets=['48 pages', '32/32', '89-module R-parity', '85-module Stata bridge', '1,627 registered public functions', '1,627 public functions', '14,022 schema parameters', 'tagged 1.40.2 release', '13 PASS evidence cards', '5 suggested review routes', 'editor triage', 'statistical validation', 'quick reproduction', 'agent-interface review', 'limitations/release-boundary review', '4,840 files']; missing=[]; cover-letter archive-size disclosures=[(45.2, 47.39)]; expected=45.20 MiB (47.39 MB decimal); exact fixed-point match required.",
       "ok": true,
       "requirement": "cover letter numeric summary is synchronized with generated audit artifacts"
     },
@@ -107,7 +107,7 @@
       "requirement": "active manuscript tables and figures map to generators and prose"
     },
     {
-      "evidence": "archive=45.19 MiB (47.39 MB decimal); files=4840; evidence_files=780",
+      "evidence": "archive=45.2 MiB (47.39 MB decimal); files=4840; evidence_files=780",
       "ok": true,
       "requirement": "JSS attachment size and archive source set are bounded"
     },
@@ -177,9 +177,9 @@
     "failure_count": 0,
     "full_document_failure_count": 0,
     "full_document_max_dark_ratio": 0.021028,
-    "full_document_max_white_ratio": 0.932829,
+    "full_document_max_white_ratio": 0.930309,
     "full_document_min_height": 1287,
-    "full_document_min_ink_ratio": 0.067171,
+    "full_document_min_ink_ratio": 0.069691,
     "full_document_min_width": 910,
     "full_document_rendered_page_count": 48,
     "max_dark_ratio": 0.021028,
@@ -208,11 +208,11 @@
     "pretending it is a strict R/Synth parity pass",
     "harshest reviewer"
   ],
-  "pdf_text_chars": 141653,
+  "pdf_text_chars": 141854,
   "status": "PASS",
   "tier1_transcript": {
     "complete": true,
-    "minutes": 1.4,
+    "minutes": 2.8,
     "passed": 32,
     "total": 32,
     "within_one_hour": true

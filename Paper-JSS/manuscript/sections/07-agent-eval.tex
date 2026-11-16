@@ -3,12 +3,12 @@
 This subsection reports only \emph{mechanical} and \emph{contractual} evidence
 that the agent-facing surface is correctly wired. Whether the interface
 improves an LLM agent's empirical work is a question that schema coverage
-cannot answer (Section~\ref{sec:agentbench-behavioural}).
+cannot answer, as the last paragraph of this subsection explains.
 
 \paragraph{Mechanical evidence.}\label{sec:agentbench-mechanical}
 
-Table~\ref{tab:schema-coverage} reports schema coverage. That
-$\RegistryTotal$ of $\RegistryTotal$ public functions emit a schema is high
+Table~\ref{tab:schema-coverage} reports schema coverage. All
+$\RegistryTotal$ public functions emit a schema, which holds
 by construction, since the registry pipes any typed signature into a JSON
 Schema. The stronger contract is that every parameter carries a non-empty
 description. This table is an internal completeness audit, not a ranking.

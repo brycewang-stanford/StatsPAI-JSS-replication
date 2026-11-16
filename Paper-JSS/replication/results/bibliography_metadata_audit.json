@@ -1,6 +1,6 @@
 {
   "active_archival_only_keys": [],
-  "active_cited_key_count": 101,
+  "active_cited_key_count": 102,
   "active_cited_keys": [
     "abadie2003economic",
     "abadie2010synthetic",
@@ -53,6 +53,7 @@
     "hainmueller2019much",
     "hansen2006optimal",
     "harris2020array",
+    "hernan2020causal",
     "ho2011matchit",
     "hunter2007matplotlib",
     "imai2014covariate",
@@ -130,7 +131,7 @@
     "manuscript/sections/appendix.tex",
     "manuscript/tables/appendix_b_parity.tex"
   ],
-  "archival_bib_entry_count": 60,
+  "archival_bib_entry_count": 59,
   "checks": [
     {
       "evidence": "missing=[]",
@@ -163,15 +164,15 @@
       "requirement": "no-DOI entries have manual verification reasons"
     },
     {
-      "evidence": "bbl_present=True; bibitems=101; active_citations=101",
+      "evidence": "bbl_present=True; bibitems=102; active_citations=102",
       "ok": true,
       "requirement": "compiled bibliography count matches active citations when main.bbl exists"
     }
   ],
   "compiled_bibliography": {
-    "bibitem_count": 101,
+    "bibitem_count": 102,
     "present": true,
-    "thebibliography_count": 101
+    "thebibliography_count": 102
   },
   "doi_entry_count": 86,
   "duplicate_keys": [],
@@ -181,7 +182,7 @@
   "failures": [],
   "field_failures": [],
   "generated_at_unix": 1780185600,
-  "locator_entry_count": 100,
+  "locator_entry_count": 101,
   "missing_no_doi_reasons": [],
   "no_doi_entries": [
     {
@@ -231,6 +232,14 @@
       "manual_verification": "Software repository citation; URL is rendered from the howpublished field rather than a DOI.",
       "reserved": false,
       "type": "misc"
+    },
+    {
+      "active_cited": true,
+      "has_locator": true,
+      "key": "hernan2020causal",
+      "manual_verification": "Book with no Crossref DOI (StatsPAI master annote, searched 2026-08-24). Authors, title, publisher, place and year follow the authors' own citation line at miguelhernan.org/whatifbook; the ISBN is listed for this title and first author at isbnsearch.org (both read 2026-11-16).",
+      "reserved": false,
+      "type": "book"
     },
     {
       "active_cited": true,
@@ -313,13 +322,13 @@
       "type": "book"
     }
   ],
-  "no_doi_entry_count": 16,
-  "no_doi_manual_verification_count": 16,
+  "no_doi_entry_count": 17,
+  "no_doi_manual_verification_count": 17,
   "reserved_entry_keys": [
     "brown2020language"
   ],
   "stale_no_doi_reasons": [],
   "status": "PASS",
-  "submission_bib_entry_count": 102,
+  "submission_bib_entry_count": 103,
   "url_entry_count": 16
 }

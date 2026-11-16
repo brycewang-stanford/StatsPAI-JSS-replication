@@ -88,6 +88,13 @@ NO_DOI_VERIFICATION = {
         "Software repository citation; URL is rendered from the howpublished "
         "field rather than a DOI."
     ),
+    "hernan2020causal": (
+        "Book with no Crossref DOI (StatsPAI master annote, searched "
+        "2026-08-24). Authors, title, publisher, place and year follow the "
+        "authors' own citation line at miguelhernan.org/whatifbook; the ISBN "
+        "is listed for this title and first author at isbnsearch.org (both "
+        "read 2026-11-16)."
+    ),
     "lalonde1986evaluating": (
         "American Economic Review 1986 article from the pre-routine-DOI era; "
         "journal, volume, issue, pages, and year are present, and no DOI is "

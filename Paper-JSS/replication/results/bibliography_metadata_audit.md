@@ -2,15 +2,15 @@
 
 Status: PASS
 Active TeX inputs: 23
-Active cited keys: 101
-Submission bibliography entries: 102
+Active cited keys: 102
+Submission bibliography entries: 103
 Reserved entries: 1 (brown2020language)
-Archival bibliography entries: 60
+Archival bibliography entries: 59
 Entries with DOI: 86
 Entries with URL field: 16
-Entries with DOI/URL/ISBN/eprint/howpublished locator: 100
-No-DOI entries with manual reasons: 16/16
-Compiled main.bbl bibitems: 101 (thebibliography=101)
+Entries with DOI/URL/ISBN/eprint/howpublished locator: 101
+No-DOI entries with manual reasons: 17/17
+Compiled main.bbl bibitems: 102 (thebibliography=102)
 
 ## Checks
 
@@ -22,7 +22,7 @@ Compiled main.bbl bibitems: 101 (thebibliography=101)
 | active citations are not archival-only | PASS | active_archival_only=[] |
 | submission bibliography entries keep required fields | PASS | field_failures=[] |
 | no-DOI entries have manual verification reasons | PASS | missing_reasons=[]; stale_reasons=[] |
-| compiled bibliography count matches active citations when main.bbl exists | PASS | bbl_present=True; bibitems=101; active_citations=101 |
+| compiled bibliography count matches active citations when main.bbl exists | PASS | bbl_present=True; bibitems=102; active_citations=102 |
 
 ## No-DOI Entries
 
@@ -34,6 +34,7 @@ Compiled main.bbl bibitems: 101 (thebibliography=101)
 | `card1995using` | active | yes | Book-chapter citation; booktitle, editors, publisher, pages, and year are present, and no DOI is expected. |
 | `correia2017linear` | active | no | Author-hosted working paper behind the reghdfe command; URL to the author's PDF is present, and no DOI is registered. |
 | `econml` | active | yes | Software repository citation; URL is rendered from the howpublished field rather than a DOI. |
+| `hernan2020causal` | active | yes | Book with no Crossref DOI (StatsPAI master annote, searched 2026-08-24). Authors, title, publisher, place and year follow the authors' own citation line at miguelhernan.org/whatifbook; the ISBN is listed for this title and first author at isbnsearch.org (both read 2026-11-16). |
 | `lalonde1986evaluating` | active | no | American Economic Review 1986 article from the pre-routine-DOI era; journal, volume, issue, pages, and year are present, and no DOI is fabricated. |
 | `mcp2026specification` | active | yes | Web specification, revision 2026-07-28; URL and access date are rendered, verified 2026-11-02 against the specification site. |
 | `nicholls2020riskbased` | active | yes | R Validation Hub white paper with no DOI, verified 2026-11-02 against the dated PDF and the project's white-paper page. |

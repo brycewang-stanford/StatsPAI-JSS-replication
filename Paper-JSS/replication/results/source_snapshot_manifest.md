@@ -5,14 +5,14 @@ Source `__version__`: `1.40.2`
 Committed schema-bundle version: `1.40.2`
 Package-source git commit: `25a9407ee`
 Package-source branch: `detached-or-unknown`
-Paper git commit: `1ef66db`
+Paper git commit: `22c250b`
 Paper branch: `main`
 Package-source tags at HEAD: `v1.40.2`
 Clean working tree: `False`
 Version-consistent inside source: `True`
 Ready for final publication release: `False`
 Unreleased CHANGELOG nonempty: `False`
-Final-publication gate blocker paths: `5` (source=1, paper=4, generated=32)
+Final-publication gate blocker paths: `6` (source=1, paper=5, generated=40)
 
 Interpretation:
 Source snapshot evidence; synchronize with a tagged release before final publication or keep these rows explicitly labelled as source-snapshot evidence.
@@ -24,21 +24,21 @@ Display path redactions:
 Active external-review filenames are omitted from the JSS source-snapshot gate, and retired external-review filenames are displayed under retired-external aliases.
 
 Final publication checklist:
-- FAIL `clean_combined_worktree` -- 5 hand-edited final-publication gate paths; 32 generated dirty paths
+- FAIL `clean_combined_worktree` -- 6 hand-edited final-publication gate paths; 40 generated dirty paths
 - PASS `package_tag_at_head` -- v1.40.2
 - PASS `versions_consistent` -- pyproject, __version__, and schema bundle agree
 - PASS `unreleased_changelog_finalized` -- 0 non-empty lines across 0 headings; 0 MIGRATION.md Unreleased sections
 - FAIL `source_paths_finalized` -- 1 source/test/docs paths still dirty
-- FAIL `paper_paths_finalized` -- 4 Paper-JSS paths still dirty
+- FAIL `paper_paths_finalized` -- 5 Paper-JSS paths still dirty
 
 Final-publication gate blocker breakdown:
-- Hand-edited status counts: `{'M': 5}`
-- Generated status counts: `{'M': 32}`
+- Hand-edited status counts: `{'M': 6}`
+- Generated status counts: `{'M': 40}`
 - Package code/script paths: `0`
 - Package docs paths: `0`
 - Validation test/data paths: `1`
 - Paper manuscript paths: `0`
-- Paper replication paths: `1`
+- Paper replication paths: `2`
 - Paper other paths: `3`
 
 Final-publication gate source paths:
@@ -48,11 +48,14 @@ Final-publication gate Paper-JSS paths:
 - `M Paper-JSS/README.md`
 - `M Paper-JSS/RELEASE-CHECKLIST.md`
 - `M Paper-JSS/cover-letter.md`
-- `M Paper-JSS/replication/scripts/jss_submission_package.py`
+- `M Paper-JSS/replication/scripts/bibliography_metadata_audit.py`
+- `M Paper-JSS/replication/scripts/verify_submission_package.py`
 
 Generated dirty paths:
+- `M Paper-JSS/manuscript/main.pdf`
+- `M Paper-JSS/replication/results/bibliography_metadata_audit.json`
+- `M Paper-JSS/replication/results/bibliography_metadata_audit.md`
 - `M Paper-JSS/replication/results/data_provenance_audit.json`
-- `M Paper-JSS/replication/results/data_provenance_audit.md`
 - `M Paper-JSS/replication/results/editor_screening_checklist.json`
 - `M Paper-JSS/replication/results/editor_screening_checklist.md`
 - `M Paper-JSS/replication/results/experiment_triage.json`
@@ -61,6 +64,12 @@ Generated dirty paths:
 - `M Paper-JSS/replication/results/jss_formal_compliance_audit.md`
 - `M Paper-JSS/replication/results/jss_full_audit.json`
 - `M Paper-JSS/replication/results/jss_full_audit.md`
+- `M Paper-JSS/replication/results/jss_house_style_audit.json`
+- `M Paper-JSS/replication/results/jss_house_style_audit.md`
+- `M Paper-JSS/replication/results/pdf_render_audit.json`
+- `M Paper-JSS/replication/results/pdf_render_audit.md`
+- `M Paper-JSS/replication/results/pdf_visual_check_protocol.json`
+- `M Paper-JSS/replication/results/pdf_visual_check_protocol.md`
 - `M Paper-JSS/replication/results/release_boundary_audit.json`
 - `M Paper-JSS/replication/results/release_boundary_audit.md`
 - `M Paper-JSS/replication/results/reproduce_tier1_output.txt`

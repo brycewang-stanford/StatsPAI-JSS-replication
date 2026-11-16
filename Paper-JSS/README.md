@@ -63,7 +63,7 @@ cd Paper-JSS
 make submission-ready PYTHON=../.venv/bin/python
 ```
 
-This audited packaging target runs `reproduce-jss-full` and then rebuilds `build/statspai-jss-submission.zip`, so the archive contains the latest audit, reproduction, source-snapshot, evidence-map, PDF-review, and Tier-1 transcript artifacts. It excludes repository metadata, caches, prior build products, local notes, active external-review artifacts, and historical or inactive manuscript drafts, leaving one authoritative English manuscript and reviewer package. The current package is 45.19 MiB (47.39 MB decimal) with 4,840 files, including 541 registry evidence files referenced by validation notes. Use `make submission-package` only when the audit artifacts are already current and you need a quick zip refresh.
+This audited packaging target runs `reproduce-jss-full` and then rebuilds `build/statspai-jss-submission.zip`, so the archive contains the latest audit, reproduction, source-snapshot, evidence-map, PDF-review, and Tier-1 transcript artifacts. It excludes repository metadata, caches, prior build products, local notes, active external-review artifacts, and historical or inactive manuscript drafts, leaving one authoritative English manuscript and reviewer package. The current package is 45.20 MiB (47.39 MB decimal) with 4,840 files, including 541 registry evidence files referenced by validation notes. Use `make submission-package` only when the audit artifacts are already current and you need a quick zip refresh.
 
 The generated root `README.md` inside the zip is a JSS-only release
 entry point. It routes reviewers to `Paper-JSS/README.md`, the manuscript

@@ -21,7 +21,7 @@
         "pdf_visual_protocol_manual_status": "PENDING_MANUAL_REVIEW",
         "pdf_visual_protocol_page_count": 48,
         "pdf_visual_protocol_page_inventory_count": 48,
-        "pdf_visual_protocol_page_inventory_float_markers": 74,
+        "pdf_visual_protocol_page_inventory_float_markers": 75,
         "pdf_visual_protocol_page_inventory_min_text_chars": 1458,
         "pdf_visual_protocol_page_inventory_text_pages": 48,
         "pdf_visual_protocol_recorded_by_protocol": false,
@@ -100,7 +100,7 @@
       "verification_gate": "make reproduce-tier1-transcript + make audit"
     },
     {
-      "answer": "The package is 45.19 MiB (47.39 MB decimal) with 4,840 files, under the 50 MB JSS limit, and excludes active external-review artifacts plus dormant manuscript drafts. The data-provenance report classifies archive data/result members and records zero forbidden raw-data members, zero private/credential path hits, and zero unknown categories.",
+      "answer": "The package is 45.20 MiB (47.39 MB decimal) with 4,840 files, under the 50 MB JSS limit, and excludes active external-review artifacts plus dormant manuscript drafts. The data-provenance report classifies archive data/result members and records zero forbidden raw-data members, zero private/credential path hits, and zero unknown categories.",
       "editor_check": "Is the upload archive bounded and review-lane clean?",
       "failures": [],
       "id": "archive_size_boundary",
@@ -118,7 +118,7 @@
         "file_count": 4840,
         "legacy_manuscript_sources_present": [],
         "size_mb_decimal": 47.39,
-        "size_mib": 45.19
+        "size_mib": 45.2
       },
       "primary_evidence": [
         "build/statspai-jss-submission-manifest.md",
@@ -168,14 +168,14 @@
       "verification_gate": "make reviewer-evidence-map + make verify-submission-package"
     },
     {
-      "answer": "The submission has 0 JSS upload blockers, 3 currently pending final tagged-cut checks, and 5 final tagged-release runbook steps explicitly listed as nonblocking. The source release path has 1 pending source/test/docs blockers, while 4 Paper-JSS finalization paths remain for the tagged release cut.",
+      "answer": "The submission has 0 JSS upload blockers, 3 currently pending final tagged-cut checks, and 5 final tagged-release runbook steps explicitly listed as nonblocking. The source release path has 1 pending source/test/docs blockers, while 5 Paper-JSS finalization paths remain for the tagged release cut.",
       "editor_check": "Is upload readiness separated from final release cutting?",
       "failures": [],
       "id": "final_release_boundary",
       "metrics": {
         "final_tagged_cut_pending_items": 3,
         "jss_upload_blockers": 0,
-        "paper_release_pending_paths": 4,
+        "paper_release_pending_paths": 5,
         "ready_for_final_publication": false,
         "runbook_step_count": 5,
         "source_release_pending_paths": 1,
@@ -274,7 +274,7 @@
     "archive_evidence_present": true,
     "archive_file_count": 4840,
     "archive_size_mb_decimal": 47.39,
-    "archive_size_mib": 45.19,
+    "archive_size_mib": 45.2,
     "documented_nonblocking_risk_count": 6,
     "documented_nonblocking_risk_ids": [
       "final_tagged_release_cut_pending",
@@ -318,7 +318,7 @@
     "jss_upload_blockers": 0,
     "manual_visual_spot_check_status": "PENDING_MANUAL_REVIEW",
     "page_count": 48,
-    "paper_release_pending_paths": 4,
+    "paper_release_pending_paths": 5,
     "pass_items": 11,
     "pdf_visual_protocol_checklist_items": 12,
     "pdf_visual_protocol_status": "PASS",

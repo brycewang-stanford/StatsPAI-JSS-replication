@@ -16,7 +16,7 @@
     {
       "category": "generated_paper_audit_or_example_json",
       "path": "Paper-JSS/replication/results/bibliography_metadata_audit.json",
-      "size_bytes": 10790,
+      "size_bytes": 11271,
       "suffix": ".json"
     },
     {
@@ -201,13 +201,13 @@
     {
       "category": "generated_paper_audit_or_example_json",
       "path": "Paper-JSS/replication/results/pdf_render_audit.json",
-      "size_bytes": 14752,
+      "size_bytes": 14763,
       "suffix": ".json"
     },
     {
       "category": "generated_paper_audit_or_example_json",
       "path": "Paper-JSS/replication/results/pdf_visual_check_protocol.json",
-      "size_bytes": 21453,
+      "size_bytes": 21484,
       "suffix": ".json"
     },
     {
@@ -243,7 +243,7 @@
     {
       "category": "generated_paper_audit_or_example_json",
       "path": "Paper-JSS/replication/results/source_snapshot_manifest.json",
-      "size_bytes": 12416,
+      "size_bytes": 14395,
       "suffix": ".json"
     },
     {
@@ -16341,7 +16341,7 @@
       ".json": 797,
       ".lock": 1
     },
-    "total_data_bytes": 96151882,
+    "total_data_bytes": 96154384,
     "unknown_category_count": 0
   },
   "unknown_category_paths": []

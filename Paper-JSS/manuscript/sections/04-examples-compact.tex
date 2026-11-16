@@ -236,7 +236,7 @@ returns a calibrated replica.
 % page break stranded the last argument line and the caption).
 \begin{lstlisting}[float=tb,caption={Callaway--Sant'Anna fit, simple and
 event-study aggregation, Rambachan--Roth bounds from the same fitted
-object, and the Goodman--Bacon decomposition of the two-way fixed-effects
+object, and the Goodman-Bacon decomposition of the two-way fixed-effects
 comparison weights.},label={lst:csdid},captionpos=b]
 import pandas as pd
 import statspai as sp
@@ -258,7 +258,7 @@ bd = sp.bacon_decomposition(mpdta, y = "lemp", treat = "post",
 \begin{lstlisting}[float=tb,caption={Output of
 Listing~\ref{lst:csdid}: the simple aggregate over all post-treatment
 periods, the effect at event time \(e=1\) with its Rambachan--Roth
-smoothness bounds, and the Goodman--Bacon weights. \code{M} bounds the
+smoothness bounds, and the Goodman-Bacon weights. \code{M} bounds the
 change in slope of the differential trend between consecutive periods
 (Equation~\ref{eq:delta-sd}); \code{rejects\_zero} is whether the robust
 confidence set excludes zero at that bound.},label={lst:csdid-output},captionpos=b]
@@ -377,7 +377,7 @@ with pointwise 95\% confidence intervals from the analytic standard errors.}
 
 \subsection{Regression discontinuity, matching, and a causal time series}\label{sec:ex-rd}\label{sec:ex-lalonde}\label{sec:ex-causal-impact}
 
-Listing~\ref{lst:other-calls} shows the calls of the remaining designs.
+Listing~\ref{lst:other-calls} shows the calls of the RD and matching examples.
 The RD data are the public \code{rdrobust::RDsenate} extract, a U.S.\
 Senate margin-of-victory sample with a sharp design in the style of
 \citet{lee2008randomized}. It is not Lee's House data, which we do not
