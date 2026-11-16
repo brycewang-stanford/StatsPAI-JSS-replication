@@ -442,24 +442,24 @@
       "boundary_markers": [],
       "float_markers": [
         "Table 13",
-        "Table 14",
-        "Table 19"
+        "Table 14"
       ],
       "heading_candidates": [],
       "page": 27,
       "section_markers": [],
-      "text_chars": 3805
+      "text_chars": 3766
     },
     {
       "boundary_markers": [],
       "float_markers": [
         "Table 14",
-        "Table 15"
+        "Table 15",
+        "Table 19"
       ],
       "heading_candidates": [],
       "page": 28,
       "section_markers": [],
-      "text_chars": 2368
+      "text_chars": 2737
     },
     {
       "boundary_markers": [],

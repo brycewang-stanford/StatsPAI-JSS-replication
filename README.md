@@ -14,7 +14,7 @@ accompanies the manuscript. The package itself is developed at
 | StatsPAI version string | 1.40.2 |
 | StatsPAI source commit | [`25a9407ee8`](https://github.com/brycewang-stanford/StatsPAI/commit/25a9407ee88706a8e7dc8ba674005206b27888b6) |
 | Relation to release tag | `src/` is identical to release tag `v1.40.2` (PyPI 1.40.2) |
-| Manuscript sources commit | `05406f14b0` (private manuscript repository) |
+| Manuscript sources commit | `eb934e6655` (private manuscript repository) |
 
 `src/statspai/` here is the source at that commit, and `pip install -e .`
 installs exactly it; use it rather than the PyPI wheel to reproduce the

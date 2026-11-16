@@ -138,6 +138,10 @@ ROOT_INCLUDE_FILES = [
     # cites entries verified after the tag, which this tag's bib does not hold.
     ROOT / "paper.bib",
     ROOT / "tests" / "conftest.py",
+    # Section 5.5 quotes this screen as the case where the default DML
+    # learner covers better than stacking; ship its script and result.
+    ROOT / "tests" / "reliability" / "dml_learners.py",
+    ROOT / "tests" / "reliability" / "dml_learners_results.json",
     ROOT / "tests" / "test_api_stable_evidence.py",
     ROOT / "tests" / "test_jss_reproduction_environment.py",
     ROOT / "tests" / "test_jss_formal_compliance.py",

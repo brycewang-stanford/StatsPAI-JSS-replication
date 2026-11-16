@@ -63,7 +63,7 @@ cd Paper-JSS
 make submission-ready PYTHON=../.venv/bin/python
 ```
 
-This audited packaging target runs `reproduce-jss-full` and then rebuilds `build/statspai-jss-submission.zip`, so the archive contains the latest audit, reproduction, source-snapshot, evidence-map, PDF-review, and Tier-1 transcript artifacts. It excludes repository metadata, caches, prior build products, local notes, active external-review artifacts, and historical or inactive manuscript drafts, leaving one authoritative English manuscript and reviewer package. The current package is 45.20 MiB (47.39 MB decimal) with 4,840 files, including 541 registry evidence files referenced by validation notes. Use `make submission-package` only when the audit artifacts are already current and you need a quick zip refresh.
+This audited packaging target runs `reproduce-jss-full` and then rebuilds `build/statspai-jss-submission.zip`, so the archive contains the latest audit, reproduction, source-snapshot, evidence-map, PDF-review, and Tier-1 transcript artifacts. It excludes repository metadata, caches, prior build products, local notes, active external-review artifacts, and historical or inactive manuscript drafts, leaving one authoritative English manuscript and reviewer package. The current package is 45.20 MiB (47.40 MB decimal) with 4,842 files, including 541 registry evidence files referenced by validation notes. Use `make submission-package` only when the audit artifacts are already current and you need a quick zip refresh.
 
 The generated root `README.md` inside the zip is a JSS-only release
 entry point. It routes reviewers to `Paper-JSS/README.md`, the manuscript
@@ -82,7 +82,7 @@ It also verifies the reproduction environment advertised in the cover letter: `r
 
 ## Data Provenance Audit
 
-The data provenance audit classifies prospective JSS archive data/result members with the same include/exclude rules as `jss_submission_package.py` and excludes `data_provenance_audit.json` from its own data counts. The current report covers 1,465 scoped data/result files and 667 CSV files: 10 packaged public dataset CSVs, 7 public original-data extract CSVs, 94 same-byte R/Stata fixture CSVs, and 552 reference fixture CSVs. It reports zero forbidden raw-data members, zero high-risk private/credential path hits, zero CSV parse failures, and zero unknown categories. This keeps original-data claims limited to public package extracts and documented public-data rows, keeps calibrated/synthetic fixtures separate from original-data extracts, and rejects raw binary/statistical data formats such as Stata, RDS, SAS, Excel, parquet, and feather files in the prospective archive.
+The data provenance audit classifies prospective JSS archive data/result members with the same include/exclude rules as `jss_submission_package.py` and excludes `data_provenance_audit.json` from its own data counts. The current report covers 1,466 scoped data/result files and 667 CSV files: 10 packaged public dataset CSVs, 7 public original-data extract CSVs, 94 same-byte R/Stata fixture CSVs, and 552 reference fixture CSVs. It reports zero forbidden raw-data members, zero high-risk private/credential path hits, zero CSV parse failures, and zero unknown categories. This keeps original-data claims limited to public package extracts and documented public-data rows, keeps calibrated/synthetic fixtures separate from original-data extracts, and rejects raw binary/statistical data formats such as Stata, RDS, SAS, Excel, parquet, and feather files in the prospective archive.
 
 ```bash
 cd Paper-JSS

@@ -100,7 +100,7 @@
       "verification_gate": "make reproduce-tier1-transcript + make audit"
     },
     {
-      "answer": "The package is 45.20 MiB (47.39 MB decimal) with 4,840 files, under the 50 MB JSS limit, and excludes active external-review artifacts plus dormant manuscript drafts. The data-provenance report classifies archive data/result members and records zero forbidden raw-data members, zero private/credential path hits, and zero unknown categories.",
+      "answer": "The package is 45.20 MiB (47.40 MB decimal) with 4,842 files, under the 50 MB JSS limit, and excludes active external-review artifacts plus dormant manuscript drafts. The data-provenance report classifies archive data/result members and records zero forbidden raw-data members, zero private/credential path hits, and zero unknown categories.",
       "editor_check": "Is the upload archive bounded and review-lane clean?",
       "failures": [],
       "id": "archive_size_boundary",
@@ -112,12 +112,12 @@
         "data_provenance_packaged_public_datasets": 10,
         "data_provenance_public_original_extracts": 7,
         "data_provenance_r_stata_fixture_csv": 94,
-        "data_provenance_scoped_data_files": 1465,
+        "data_provenance_scoped_data_files": 1466,
         "data_provenance_status": "PASS",
         "data_provenance_unknown_categories": 0,
-        "file_count": 4840,
+        "file_count": 4842,
         "legacy_manuscript_sources_present": [],
-        "size_mb_decimal": 47.39,
+        "size_mb_decimal": 47.4,
         "size_mib": 45.2
       },
       "primary_evidence": [
@@ -168,14 +168,14 @@
       "verification_gate": "make reviewer-evidence-map + make verify-submission-package"
     },
     {
-      "answer": "The submission has 0 JSS upload blockers, 2 currently pending final tagged-cut checks, and 5 final tagged-release runbook steps explicitly listed as nonblocking. The source release path has 1 pending source/test/docs blockers, while 0 Paper-JSS finalization paths remain for the tagged release cut.",
+      "answer": "The submission has 0 JSS upload blockers, 3 currently pending final tagged-cut checks, and 5 final tagged-release runbook steps explicitly listed as nonblocking. The source release path has 1 pending source/test/docs blockers, while 3 Paper-JSS finalization paths remain for the tagged release cut.",
       "editor_check": "Is upload readiness separated from final release cutting?",
       "failures": [],
       "id": "final_release_boundary",
       "metrics": {
-        "final_tagged_cut_pending_items": 2,
+        "final_tagged_cut_pending_items": 3,
         "jss_upload_blockers": 0,
-        "paper_release_pending_paths": 0,
+        "paper_release_pending_paths": 3,
         "ready_for_final_publication": false,
         "runbook_step_count": 5,
         "source_release_pending_paths": 1,
@@ -272,8 +272,8 @@
     "archive_evidence_paths_missing": 0,
     "archive_evidence_paths_resolved": 24,
     "archive_evidence_present": true,
-    "archive_file_count": 4840,
-    "archive_size_mb_decimal": 47.39,
+    "archive_file_count": 4842,
+    "archive_size_mb_decimal": 47.4,
     "archive_size_mib": 45.2,
     "documented_nonblocking_risk_count": 6,
     "documented_nonblocking_risk_ids": [
@@ -298,7 +298,7 @@
       "platform_dependency_boundary"
     ],
     "failed_items": 0,
-    "final_tagged_cut_pending_items": 2,
+    "final_tagged_cut_pending_items": 3,
     "final_tagged_cut_runbook_steps": 5,
     "item_count": 11,
     "item_identity_ok": true,
@@ -318,7 +318,7 @@
     "jss_upload_blockers": 0,
     "manual_visual_spot_check_status": "PENDING_MANUAL_REVIEW",
     "page_count": 48,
-    "paper_release_pending_paths": 0,
+    "paper_release_pending_paths": 3,
     "pass_items": 11,
     "pdf_visual_protocol_checklist_items": 12,
     "pdf_visual_protocol_status": "PASS",

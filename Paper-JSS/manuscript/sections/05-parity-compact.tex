@@ -504,11 +504,17 @@ even on step functions and interactions (0.816), the shape boosted trees fit
 best. Short-stacking covers between 0.940 and 0.950 on five designs. On the
 sixth, heteroskedastic interactions at \(n=2{,}000\), it covers 0.848 with a bias of
 0.87 SD, because no learner in the default roster fits those interactions
-well. Stacking is therefore the better default and not a guarantee. In 52\%
-to 92\% of the draws the stacked estimate lies more than half a default
-standard error from the default-learner one, so fitting both exposes the
-problem, and we recommend reporting both. The default learner is not a safe
-default, and we intend to replace it. Under the release rules of
+well. Stacking does better on these six designs and is not a guarantee. Nor
+is it better everywhere. A screen in the package's repository with smooth
+nonlinear confounding in ten covariates
+(\path{tests/reliability/dml_learners.py}, 300 draws) has gradient boosting
+covering 0.867 at \(n=500\) and 0.900 at \(n=2{,}000\), against 0.727 and
+0.870 for stacking. In 52\%
+to 92\% of the draws on the six designs the stacked estimate lies more than
+half a default standard error from the default-learner one, so fitting both
+exposes the problem, and we recommend reporting both. The default learner is
+not a safe default, and we intend to replace it; its replacement is not
+settled. Under the release rules of
 Section~\ref{sec:parity-gaps} that change is announced a release ahead, so
 release \StatsPAIVersion{} keeps gradient boosting, and a user of it should
 pass learners explicitly or call \code{sp.dml\_model\_averaging}.

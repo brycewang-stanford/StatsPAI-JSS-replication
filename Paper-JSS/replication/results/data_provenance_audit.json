@@ -46,7 +46,7 @@
     {
       "category": "generated_paper_audit_or_example_json",
       "path": "Paper-JSS/replication/results/editor_screening_checklist.json",
-      "size_bytes": 14155,
+      "size_bytes": 14153,
       "suffix": ".json"
     },
     {
@@ -165,13 +165,13 @@
     {
       "category": "generated_paper_audit_or_example_json",
       "path": "Paper-JSS/replication/results/jss_formal_compliance_audit.json",
-      "size_bytes": 9912,
+      "size_bytes": 9910,
       "suffix": ".json"
     },
     {
       "category": "generated_paper_audit_or_example_json",
       "path": "Paper-JSS/replication/results/jss_full_audit.json",
-      "size_bytes": 324211,
+      "size_bytes": 324206,
       "suffix": ".json"
     },
     {
@@ -231,7 +231,7 @@
     {
       "category": "generated_paper_audit_or_example_json",
       "path": "Paper-JSS/replication/results/reviewer_evidence_map.json",
-      "size_bytes": 31787,
+      "size_bytes": 31786,
       "suffix": ".json"
     },
     {
@@ -243,7 +243,7 @@
     {
       "category": "generated_paper_audit_or_example_json",
       "path": "Paper-JSS/replication/results/source_snapshot_manifest.json",
-      "size_bytes": 13031,
+      "size_bytes": 13199,
       "suffix": ".json"
     },
     {
@@ -261,7 +261,7 @@
     {
       "category": "generated_paper_audit_or_example_json",
       "path": "Paper-JSS/replication/results/submission_risk_ledger.json",
-      "size_bytes": 12439,
+      "size_bytes": 12437,
       "suffix": ".json"
     },
     {
@@ -15418,6 +15418,12 @@
       "suffix": ".csv"
     },
     {
+      "category": "other_generated_or_schema_json",
+      "path": "tests/reliability/dml_learners_results.json",
+      "size_bytes": 5332,
+      "suffix": ".json"
+    },
+    {
       "category": "same_byte_r_stata_fixture_csv",
       "columns": 4,
       "header_preview": [
@@ -16271,7 +16277,7 @@
       "generated_r_parity_result_json": 179,
       "generated_replication_result_csv": 4,
       "generated_stata_result_json": 85,
-      "other_generated_or_schema_json": 26,
+      "other_generated_or_schema_json": 27,
       "packaged_public_dataset_csv": 10,
       "public_original_extract_csv": 7,
       "reference_fixture_csv": 552,
@@ -16285,7 +16291,7 @@
     "forbidden_raw_member_count": 0,
     "generated_result_json_count": 343,
     "high_risk_path_hit_count": 0,
-    "json_file_count": 797,
+    "json_file_count": 798,
     "largest_data_files": [
       {
         "path": "src/statspai/schemas/agent_cards.json",
@@ -16330,18 +16336,18 @@
     ],
     "lockfile_count": 1,
     "packaged_public_dataset_csv_count": 10,
-    "prospective_archive_file_count": 4836,
+    "prospective_archive_file_count": 4838,
     "public_original_extract_csv_count": 7,
     "reference_fixture_csv_count": 552,
     "same_byte_r_stata_fixture_csv_count": 94,
-    "scoped_data_file_count": 1465,
+    "scoped_data_file_count": 1466,
     "self_audit_json_excluded_from_data_counts": true,
     "suffix_counts": {
       ".csv": 667,
-      ".json": 797,
+      ".json": 798,
       ".lock": 1
     },
-    "total_data_bytes": 96153014,
+    "total_data_bytes": 96158502,
     "unknown_category_count": 0
   },
   "unknown_category_paths": []

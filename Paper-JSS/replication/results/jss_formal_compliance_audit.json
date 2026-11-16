@@ -87,7 +87,7 @@
       "requirement": "platform dependencies and RNG seeds are disclosed"
     },
     {
-      "evidence": "cover-letter expected snippets=['48 pages', '32/32', '89-module R-parity', '85-module Stata bridge', '1,627 registered public functions', '1,627 public functions', '14,022 schema parameters', 'tagged 1.40.2 release', '13 PASS evidence cards', '5 suggested review routes', 'editor triage', 'statistical validation', 'quick reproduction', 'agent-interface review', 'limitations/release-boundary review', '4,840 files']; missing=[]; cover-letter archive-size disclosures=[(45.2, 47.39)]; expected=45.20 MiB (47.39 MB decimal); exact fixed-point match required.",
+      "evidence": "cover-letter expected snippets=['48 pages', '32/32', '89-module R-parity', '85-module Stata bridge', '1,627 registered public functions', '1,627 public functions', '14,022 schema parameters', 'tagged 1.40.2 release', '13 PASS evidence cards', '5 suggested review routes', 'editor triage', 'statistical validation', 'quick reproduction', 'agent-interface review', 'limitations/release-boundary review', '4,842 files']; missing=[]; cover-letter archive-size disclosures=[(45.2, 47.4)]; expected=45.20 MiB (47.40 MB decimal); exact fixed-point match required.",
       "ok": true,
       "requirement": "cover letter numeric summary is synchronized with generated audit artifacts"
     },
@@ -107,7 +107,7 @@
       "requirement": "active manuscript tables and figures map to generators and prose"
     },
     {
-      "evidence": "archive=45.2 MiB (47.39 MB decimal); files=4840; evidence_files=780",
+      "evidence": "archive=45.2 MiB (47.4 MB decimal); files=4842; evidence_files=780",
       "ok": true,
       "requirement": "JSS attachment size and archive source set are bounded"
     },
@@ -208,7 +208,7 @@
     "pretending it is a strict R/Synth parity pass",
     "harshest reviewer"
   ],
-  "pdf_text_chars": 142042,
+  "pdf_text_chars": 142372,
   "status": "PASS",
   "tier1_transcript": {
     "complete": true,

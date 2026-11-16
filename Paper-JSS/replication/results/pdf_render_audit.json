@@ -315,27 +315,27 @@
       "width": 910
     },
     {
-      "dark_ratio": 0.016121,
+      "dark_ratio": 0.015574,
       "failures": [],
       "height": 1287,
-      "ink_ratio": 0.112997,
+      "ink_ratio": 0.111472,
       "ok": true,
       "output": "",
       "page": 27,
       "pixel_count": 1171170,
-      "white_ratio": 0.887003,
+      "white_ratio": 0.888528,
       "width": 910
     },
     {
-      "dark_ratio": 0.011033,
+      "dark_ratio": 0.011759,
       "failures": [],
       "height": 1287,
-      "ink_ratio": 0.069888,
+      "ink_ratio": 0.080275,
       "ok": true,
       "output": "",
       "page": 28,
       "pixel_count": 1171170,
-      "white_ratio": 0.930112,
+      "white_ratio": 0.919725,
       "width": 910
     },
     {

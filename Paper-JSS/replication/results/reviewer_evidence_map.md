@@ -6,7 +6,7 @@ Suggested review routes: 5
 Expected card identity: confirmed
 Expected route identity: confirmed
 JSS upload blockers: 0
-Final tagged-cut pending items: 2
+Final tagged-cut pending items: 3
 Archive evidence paths: 40/40 resolved
 
 ## Suggested Review Routes
@@ -94,10 +94,10 @@ Archive evidence paths: 40/40 resolved
 
 ### archive_boundary
 - `jss_upload_blockers`: `0`
-- `archive_file_count`: `4840`
+- `archive_file_count`: `4842`
 - `archive_size_mib`: `45.2`
 - `data_provenance_status`: `PASS`
-- `data_provenance_scoped_data_files`: `1465`
+- `data_provenance_scoped_data_files`: `1466`
 - `data_provenance_csv_files`: `667`
 - `data_provenance_packaged_public_datasets`: `10`
 - `data_provenance_public_original_extracts`: `7`
@@ -118,7 +118,7 @@ Archive evidence paths: 40/40 resolved
 ### software_installability
 - `formal_checks`: `23`
 - `page_count`: `48`
-- `pdf_text_chars`: `142042`
+- `pdf_text_chars`: `142372`
 - `pdf_boundary_snippets`: `12`
 - `missing_pdf_boundary_snippets`: `[]`
 - `pdf_stale_prose_hits`: `[]`
@@ -185,17 +185,17 @@ Archive evidence paths: 40/40 resolved
 - `stata_reproduced_modules`: `85`
 
 ### final_cut_boundary
-- `final_tagged_cut_pending_items`: `2`
+- `final_tagged_cut_pending_items`: `3`
 - `final_tagged_cut_identity_ok`: `True`
-- `final_tagged_cut_check_ids`: `['clean_combined_worktree', 'source_paths_finalized']`
-- `final_tagged_cut_breakdown`: `{'generated_status_counts': {'M': 35}, 'hand_edited_status_counts': {'M': 1}, 'package_code_paths': 0, 'package_docs_paths': 0, 'paper_manuscript_paths': 0, 'paper_other_paths': 0, 'paper_replication_paths': 0, 'validation_test_paths': 1}`
+- `final_tagged_cut_check_ids`: `['clean_combined_worktree', 'source_paths_finalized', 'paper_paths_finalized']`
+- `final_tagged_cut_breakdown`: `{'generated_status_counts': {'M': 36}, 'hand_edited_status_counts': {'M': 4}, 'package_code_paths': 0, 'package_docs_paths': 0, 'paper_manuscript_paths': 0, 'paper_other_paths': 3, 'paper_replication_paths': 0, 'validation_test_paths': 1}`
 - `final_tagged_cut_runbook_step_count`: `5`
 - `strict_release_command`: `python Paper-JSS/replication/scripts/source_snapshot_manifest.py --strict-release`
 - `documented_nonblocking_risk_identity_ok`: `True`
 - `documented_nonblocking_risk_count`: `6`
 - `documented_nonblocking_risk_ids`: `['final_tagged_release_cut_pending', 'registry_breadth_denominator_disclosed', 'stata_tier3_requires_license', 'methodological_t4_row_disclosed', 'compact_text_may_feel_terse', 'agent_interface_value_boundary']`
 - `source_release_pending_paths`: `1`
-- `paper_release_pending_paths`: `0`
+- `paper_release_pending_paths`: `3`
 - `ready_for_final_publication`: `False`
 
 ## Final Tagged-Cut Runbook
@@ -214,7 +214,7 @@ Strict release guard: `python Paper-JSS/replication/scripts/source_snapshot_mani
 
 | Risk | Evidence | Next action |
 |---|---|---|
-| `final_tagged_release_cut_pending` | 1 final-release pending paths; source snapshot remains explicitly labelled | commit or intentionally exclude all hand-edited source and Paper-JSS paths; move accepted [Unreleased] changes into a dated CHANGELOG release entry; align pyproject.toml, src/statspai/__init__.py, and schema bundle versions; tag the exact package-source commit used by the JSS archive; re-run make submission-ready after the tag so manifests record a clean release snapshot |
+| `final_tagged_release_cut_pending` | 4 final-release pending paths; source snapshot remains explicitly labelled | commit or intentionally exclude all hand-edited source and Paper-JSS paths; move accepted [Unreleased] changes into a dated CHANGELOG release entry; align pyproject.toml, src/statspai/__init__.py, and schema bundle versions; tag the exact package-source commit used by the JSS archive; re-run make submission-ready after the tag so manifests record a clean release snapshot |
 | `registry_breadth_denominator_disclosed` | 981/1627 registry symbols are certified/validated; missing evidence paths=0 | Keep the validated-core framing and do not promote API-stable breadth without attached evidence notes. |
 | `stata_tier3_requires_license` | 85/85 frozen Stata modules audited without live Stata; licensed rerun protocol packaged | Keep Tier 3 optional and keep the Stata license boundary explicit; use stata_rerun_protocol.md for any licensed reviewer rerun and treat missing Stata as an optional-runtime skip, not a JSS upload blocker. |
 | `methodological_t4_row_disclosed` | 1/1 methodological/T4 rows classified; uncategorized=0 | Keep the T4 row as a disclosure unless a deterministic T2 bridge is added. |

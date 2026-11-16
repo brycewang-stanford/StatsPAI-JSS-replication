@@ -6,10 +6,10 @@ Prospective JSS archive data/result members, using the same include/exclude rule
 
 ## Summary
 
-- Prospective archive files: `4836`
-- Scoped data/result files: `1465`
+- Prospective archive files: `4838`
+- Scoped data/result files: `1466`
 - CSV files: `667`
-- JSON files: `797`
+- JSON files: `798`
 - Lockfiles: `1`
 - Packaged public dataset CSVs: `10`
 - Public original-data extract CSVs: `7`
@@ -40,7 +40,7 @@ Prospective JSS archive data/result members, using the same include/exclude rule
 | `generated_r_parity_result_json` | 179 |
 | `generated_replication_result_csv` | 4 |
 | `generated_stata_result_json` | 85 |
-| `other_generated_or_schema_json` | 26 |
+| `other_generated_or_schema_json` | 27 |
 | `packaged_public_dataset_csv` | 10 |
 | `public_original_extract_csv` | 7 |
 | `reference_fixture_csv` | 552 |
