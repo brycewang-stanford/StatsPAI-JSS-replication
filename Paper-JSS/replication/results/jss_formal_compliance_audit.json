@@ -62,7 +62,7 @@
       "requirement": "reviewer output transcript for standalone replication script is included"
     },
     {
-      "evidence": "Tier-1 transcript reports 32/32 steps in 2.8 minutes; JSS asks for a short reviewer-verification path when full replication is heavier.",
+      "evidence": "Tier-1 transcript reports 32/32 steps in 1.4 minutes; JSS asks for a short reviewer-verification path when full replication is heavier.",
       "ok": true,
       "requirement": "short reviewer replication path completes within one hour"
     },
@@ -208,11 +208,11 @@
     "pretending it is a strict R/Synth parity pass",
     "harshest reviewer"
   ],
-  "pdf_text_chars": 141854,
+  "pdf_text_chars": 142042,
   "status": "PASS",
   "tier1_transcript": {
     "complete": true,
-    "minutes": 2.8,
+    "minutes": 1.4,
     "passed": 32,
     "total": 32,
     "within_one_hour": true

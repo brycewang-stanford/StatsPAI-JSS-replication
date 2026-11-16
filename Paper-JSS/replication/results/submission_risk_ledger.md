@@ -5,7 +5,7 @@ Status: PASS
 Scope: JSS source-snapshot upload readiness. Final tagged-release readiness is tracked separately and is not treated as a JSS upload reproducibility failure when the source-snapshot boundary remains explicit.
 
 JSS upload blockers: 0
-Final tagged-cut pending items: 3
+Final tagged-cut pending items: 2
 Final tagged-cut check identity: confirmed
 Documented nonblocking risk identity: confirmed
 
@@ -32,29 +32,28 @@ Documented nonblocking risk identity: confirmed
 | `archive_forbidden_members_absent` | PASS | no JOSS artifacts, local notes, main.md, or dormant full sections in archive |
 | `versions_consistent_inside_source` | PASS | package=1.40.2; source=1.40.2; schema=1.40.2 |
 | `source_snapshot_submission_status_disclosed` | PASS | Audited source-snapshot submission archive; the failing final-publication release gate is a tag/changelog synchronization gate, not a JSS upload reproducibility failure. |
-| `final_tagged_release_blocker_identity` | PASS | expected_ordered_subset_of=['clean_combined_worktree', 'package_tag_at_head', 'unreleased_changelog_finalized', 'source_paths_finalized', 'paper_paths_finalized']; observed=['clean_combined_worktree', 'source_paths_finalized', 'paper_paths_finalized'] |
+| `final_tagged_release_blocker_identity` | PASS | expected_ordered_subset_of=['clean_combined_worktree', 'package_tag_at_head', 'unreleased_changelog_finalized', 'source_paths_finalized', 'paper_paths_finalized']; observed=['clean_combined_worktree', 'source_paths_finalized'] |
 | `documented_nonblocking_risk_identity` | PASS | expected=['final_tagged_release_cut_pending', 'registry_breadth_denominator_disclosed', 'stata_tier3_requires_license', 'methodological_t4_row_disclosed', 'compact_text_may_feel_terse', 'agent_interface_value_boundary']; observed=['final_tagged_release_cut_pending', 'registry_breadth_denominator_disclosed', 'stata_tier3_requires_license', 'methodological_t4_row_disclosed', 'compact_text_may_feel_terse', 'agent_interface_value_boundary'] |
 
 ## Final Tagged-Cut Pending Items
 
 | Check | Detail |
 |---|---|
-| `clean_combined_worktree` | 6 hand-edited final-publication gate paths; 40 generated dirty paths |
+| `clean_combined_worktree` | 1 hand-edited final-publication gate paths; 35 generated dirty paths |
 | `source_paths_finalized` | 1 source/test/docs paths still dirty |
-| `paper_paths_finalized` | 5 Paper-JSS paths still dirty |
 
 ## Final Tagged-Cut Breakdown
 
 | Bucket | Count/detail |
 |---|---|
-| Hand-edited status counts | `{'M': 6}` |
-| Generated status counts | `{'M': 40}` |
+| Hand-edited status counts | `{'M': 1}` |
+| Generated status counts | `{'M': 35}` |
 | Package code/script paths | `0` |
 | Package docs paths | `0` |
 | Validation test/data paths | `1` |
 | Paper manuscript paths | `0` |
-| Paper replication paths | `2` |
-| Paper other paths | `3` |
+| Paper replication paths | `0` |
+| Paper other paths | `0` |
 
 ## Final Tagged-Cut Runbook
 
@@ -72,7 +71,7 @@ Strict release guard: `python Paper-JSS/replication/scripts/source_snapshot_mani
 
 | Risk | Evidence | Next action |
 |---|---|---|
-| `final_tagged_release_cut_pending` | 6 final-release pending paths; source snapshot remains explicitly labelled | commit or intentionally exclude all hand-edited source and Paper-JSS paths; move accepted [Unreleased] changes into a dated CHANGELOG release entry; align pyproject.toml, src/statspai/__init__.py, and schema bundle versions; tag the exact package-source commit used by the JSS archive; re-run make submission-ready after the tag so manifests record a clean release snapshot |
+| `final_tagged_release_cut_pending` | 1 final-release pending paths; source snapshot remains explicitly labelled | commit or intentionally exclude all hand-edited source and Paper-JSS paths; move accepted [Unreleased] changes into a dated CHANGELOG release entry; align pyproject.toml, src/statspai/__init__.py, and schema bundle versions; tag the exact package-source commit used by the JSS archive; re-run make submission-ready after the tag so manifests record a clean release snapshot |
 | `registry_breadth_denominator_disclosed` | 981/1627 registry symbols are certified/validated; missing evidence paths=0 | Keep the validated-core framing and do not promote API-stable breadth without attached evidence notes. |
 | `stata_tier3_requires_license` | 85/85 frozen Stata modules audited without live Stata; licensed rerun protocol packaged | Keep Tier 3 optional and keep the Stata license boundary explicit; use stata_rerun_protocol.md for any licensed reviewer rerun and treat missing Stata as an optional-runtime skip, not a JSS upload blocker. |
 | `methodological_t4_row_disclosed` | 1/1 methodological/T4 rows classified; uncategorized=0 | Keep the T4 row as a disclosure unless a deterministic T2 bridge is added. |
@@ -91,7 +90,7 @@ Strict release guard: `python Paper-JSS/replication/scripts/source_snapshot_mani
 
 - Package/source/schema versions: 1.40.2 / 1.40.2 / 1.40.2
 - Package commit: 25a9407ee
-- Paper commit: 22c250b
+- Paper commit: 9b46d9b
 - Ready for final publication release: False
 - Strict release command: `python Paper-JSS/replication/scripts/source_snapshot_manifest.py --strict-release`
 

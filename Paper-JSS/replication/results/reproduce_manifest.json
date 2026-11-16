@@ -40,7 +40,7 @@
       "file": "manuscript/tables/appendix_b_parity.tex",
       "step": "gen_appendix_parity.py",
       "provenance": "re-tabulated from frozen artifacts",
-      "sha256": "68576e8c86b86727502d904091cb2d7fe13b3ea8e20999f2575d2f8d9dc38dc9"
+      "sha256": "05cded2610fc6755a964e525515074605c8717d622f4c7467bc3cf9c304f655c"
     },
     {
       "file": "manuscript/tables/headline_parity.tex",

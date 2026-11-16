@@ -124,7 +124,7 @@
       "heading_candidates": [],
       "page": 4,
       "section_markers": [],
-      "text_chars": 3472
+      "text_chars": 3500
     },
     {
       "boundary_markers": [
@@ -142,7 +142,7 @@
       "section_markers": [
         "software_architecture"
       ],
-      "text_chars": 2780
+      "text_chars": 2813
     },
     {
       "boundary_markers": [
@@ -157,7 +157,7 @@
       ],
       "page": 6,
       "section_markers": [],
-      "text_chars": 3160
+      "text_chars": 3220
     },
     {
       "boundary_markers": [],
@@ -526,7 +526,7 @@
       "section_markers": [
         "computational_details"
       ],
-      "text_chars": 2980
+      "text_chars": 2984
     },
     {
       "boundary_markers": [],
@@ -667,7 +667,7 @@
       "heading_candidates": [],
       "page": 45,
       "section_markers": [],
-      "text_chars": 2900
+      "text_chars": 2916
     },
     {
       "boundary_markers": [],
@@ -677,7 +677,7 @@
       "heading_candidates": [],
       "page": 46,
       "section_markers": [],
-      "text_chars": 3491
+      "text_chars": 3538
     },
     {
       "boundary_markers": [],

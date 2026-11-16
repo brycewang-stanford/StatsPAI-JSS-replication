@@ -48,9 +48,9 @@ This generated file does not certify that a human visual review has already been
 | 1 | 2025 | front_matter | -- | validation_tier |
 | 2 | 4040 | introduction | Figure 3 | -- |
 | 3 | 3122 | -- | Listing 1 | -- |
-| 4 | 3472 | -- | Table 1 | -- |
-| 5 | 2780 | software_architecture | Listing 2 | validation_tier |
-| 6 | 3160 | -- | Listing 2 | validation_tier |
+| 4 | 3500 | -- | Table 1 | -- |
+| 5 | 2813 | software_architecture | Listing 2 | validation_tier |
+| 6 | 3220 | -- | Listing 2 | validation_tier |
 | 7 | 2659 | agent_registry_api | Listing 3 | -- |
 | 8 | 3366 | agent_interface_checks | Table 2 | -- |
 | 9 | 2251 | -- | Table 2, Table 3 | agent_claim_boundary |
@@ -77,7 +77,7 @@ This generated file does not certify that a human visual review has already been
 | 30 | 3681 | -- | Table 19 | -- |
 | 31 | 3398 | performance | -- | -- |
 | 32 | 3181 | -- | Figure 4, Table 16 | -- |
-| 33 | 2980 | computational_details | Table 16 | -- |
+| 33 | 2984 | computational_details | Table 16 | -- |
 | 34 | 2119 | -- | Figure 4, Table 16 | -- |
 | 35 | 3729 | -- | Table 17 | -- |
 | 36 | 3270 | discussion | Table 17 | -- |
@@ -89,8 +89,8 @@ This generated file does not certify that a human visual review has already been
 | 42 | 2976 | -- | -- | -- |
 | 43 | 2691 | -- | -- | -- |
 | 44 | 2645 | -- | -- | -- |
-| 45 | 2900 | -- | Table 18 | -- |
-| 46 | 3491 | -- | Table 18 | -- |
+| 45 | 2916 | -- | Table 18 | -- |
+| 46 | 3538 | -- | Table 18 | -- |
 | 47 | 3953 | -- | Table 18, Table 19 | -- |
 | 48 | 3326 | -- | Table 19 | -- |
 

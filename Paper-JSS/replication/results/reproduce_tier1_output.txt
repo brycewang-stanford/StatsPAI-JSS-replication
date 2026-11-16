@@ -6,73 +6,73 @@ StatsPAI JSS replication -- Tier 1
 
 [Tier 1] worked examples (Sections 4, 7) -- replicas + fixtures
   -> ex01_card.py ...
-     ok (6.5s)
-  -> ex02_basque.py ...
-     ok (2.3s)
-  -> ex03_csdid.py ...
-     ok (7.9s)
-  -> ex04_lee.py ...
      ok (2.4s)
+  -> ex02_basque.py ...
+     ok (0.8s)
+  -> ex03_csdid.py ...
+     ok (3.2s)
+  -> ex04_lee.py ...
+     ok (1.4s)
   -> ex05_lalonde.py ...
-     ok (2.0s)
+     ok (1.7s)
   -> ex06_causal_impact.py ...
-     ok (2.0s)
+     ok (1.7s)
   -> ex07_agent_trace.py ...
-     ok (2.1s)
+     ok (1.6s)
   -> ex08_fect_interflex.py ...
-     ok (1.3s)
+     ok (1.0s)
 
 [Tier 1] figures, supplemental tables, registry inventory
   -> generate_figures.py ...
-     ok (2.5s)
+     ok (1.9s)
   -> gen_appendix_A.py ...
-     ok (7.8s)
+     ok (4.2s)
   -> gen_appendix_C.py ...
-     ok (12.3s)
+     ok (3.6s)
   -> generate_inventory.py ...
-     ok (11.1s)
+     ok (3.5s)
   -> manuscript claims (registry census) ...
-     ok (10.9s)
+     ok (5.2s)
   -> Track-A parity rollup ...
-     ok (0.2s)
+     ok (0.1s)
   -> gen_appendix_parity.py ...
      ok (0.0s)
   -> generate_headline_parity_table.py ...
      ok (0.0s)
   -> generate_track_b_tables.py ...
-     ok (0.4s)
+     ok (0.3s)
   -> generate_forest_seed_table.py ...
-     ok (0.4s)
+     ok (0.3s)
   -> generate_dml_designs_table.py ...
      ok (0.0s)
   -> Track-C performance artifacts ...
-     ok (0.9s)
+     ok (0.8s)
 
 [Tier 1] validation against TRUTH (no external language needed)
   -> causal-forest AIPW recovery ...
-     ok (6.0s)
+     ok (4.9s)
   -> evidence-design checks (review response) ...
-     ok (27.0s)
+     ok (12.2s)
   -> JSS headline-count guard ...
-     ok (24.4s)
+     ok (15.1s)
   -> methodological gap ledger ...
      ok (0.0s)
   -> frozen Stata bridge audit ...
      ok (0.0s)
   -> agent interface audit ...
-     ok (7.3s)
+     ok (4.8s)
   -> release boundary audit ...
-     ok (0.1s)
+     ok (0.0s)
   -> reproduction environment audit ...
      ok (0.1s)
   -> manuscript artifact audit ...
-     ok (0.2s)
+     ok (0.1s)
   -> manuscript listings execute ...
-     ok (30.0s)
+     ok (13.6s)
 
 [Tier 1] citation verifier
   -> verify_citations.py ...
-     ok (0.1s)
+     ok (0.0s)
 
 [Tier 1] manuscript inputs: what this run rebuilt, and how
   ok  manuscript/generated_claims.tex                            recomputed
@@ -93,40 +93,40 @@ StatsPAI JSS replication -- Tier 1
 ======================================================================
 SUMMARY
 ======================================================================
-  [PASS] ex01_card.py                                         6.5s
-  [PASS] ex02_basque.py                                       2.3s
-  [PASS] ex03_csdid.py                                        7.9s
-  [PASS] ex04_lee.py                                          2.4s
-  [PASS] ex05_lalonde.py                                      2.0s
-  [PASS] ex06_causal_impact.py                                2.0s
-  [PASS] ex07_agent_trace.py                                  2.1s
-  [PASS] ex08_fect_interflex.py                               1.3s
-  [PASS] generate_figures.py                                  2.5s
-  [PASS] gen_appendix_A.py                                    7.8s
-  [PASS] gen_appendix_C.py                                   12.3s
-  [PASS] generate_inventory.py                               11.1s
-  [PASS] manuscript claims (registry census)                 10.9s
-  [PASS] Track-A parity rollup                                0.2s
+  [PASS] ex01_card.py                                         2.4s
+  [PASS] ex02_basque.py                                       0.8s
+  [PASS] ex03_csdid.py                                        3.2s
+  [PASS] ex04_lee.py                                          1.4s
+  [PASS] ex05_lalonde.py                                      1.7s
+  [PASS] ex06_causal_impact.py                                1.7s
+  [PASS] ex07_agent_trace.py                                  1.6s
+  [PASS] ex08_fect_interflex.py                               1.0s
+  [PASS] generate_figures.py                                  1.9s
+  [PASS] gen_appendix_A.py                                    4.2s
+  [PASS] gen_appendix_C.py                                    3.6s
+  [PASS] generate_inventory.py                                3.5s
+  [PASS] manuscript claims (registry census)                  5.2s
+  [PASS] Track-A parity rollup                                0.1s
   [PASS] gen_appendix_parity.py                               0.0s
   [PASS] generate_headline_parity_table.py                    0.0s
-  [PASS] generate_track_b_tables.py                           0.4s
-  [PASS] generate_forest_seed_table.py                        0.4s
+  [PASS] generate_track_b_tables.py                           0.3s
+  [PASS] generate_forest_seed_table.py                        0.3s
   [PASS] generate_dml_designs_table.py                        0.0s
-  [PASS] Track-C performance artifacts                        0.9s
-  [PASS] causal-forest AIPW recovery                          6.0s
-  [PASS] evidence-design checks (review response)            27.0s
-  [PASS] JSS headline-count guard                            24.4s
+  [PASS] Track-C performance artifacts                        0.8s
+  [PASS] causal-forest AIPW recovery                          4.9s
+  [PASS] evidence-design checks (review response)            12.2s
+  [PASS] JSS headline-count guard                            15.1s
   [PASS] methodological gap ledger                            0.0s
   [PASS] frozen Stata bridge audit                            0.0s
-  [PASS] agent interface audit                                7.3s
-  [PASS] release boundary audit                               0.1s
+  [PASS] agent interface audit                                4.8s
+  [PASS] release boundary audit                               0.0s
   [PASS] reproduction environment audit                       0.1s
-  [PASS] manuscript artifact audit                            0.2s
-  [PASS] manuscript listings execute                         30.0s
-  [PASS] verify_citations.py                                  0.1s
+  [PASS] manuscript artifact audit                            0.1s
+  [PASS] manuscript listings execute                         13.6s
+  [PASS] verify_citations.py                                  0.0s
   [PASS] manuscript inputs all rebuilt                        0.0s
 ----------------------------------------------------------------------
-  32/32 steps passed in 2.8 min
+  32/32 steps passed in 1.4 min
   RESULT: OK -- all required steps reproduced.
   Tier 1 needs no R or Stata: it recomputes the examples, listings and census and re-tabulates the frozen parity, coverage and timing experiments.
   Track A/B/C experiments, the forest seed draws, and the provenance trace

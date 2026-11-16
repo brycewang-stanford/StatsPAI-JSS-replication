@@ -101,6 +101,27 @@ def _compact_cell(cell: str) -> str:
     return cell.replace("{\\footnotesize}", "").strip()
 
 
+#: Method names whose parenthetical is the only thing that tells two modules
+#: apart (two "GLMM logit" rows, two "Classical SCM" rows), or whose source
+#: spelling does not survive TeX. Keyed by the compacted name and the module
+#: prefix, so a renamed module fails loudly instead of losing its override.
+_METHOD_NAMES = {
+    ("07", "Classical SCM"): "Classical SCM, Basque replica",
+    ("52", "Classical SCM"): "Classical SCM, unique solution",
+    ("26", "GLMM logit"): "GLMM logit, Laplace",
+    ("27", "GLMM logit"): "GLMM logit, adaptive quadrature",
+    ("10", "Honest DiD bounds"): "Honest-DiD bounds",
+    ("81", r"dCDH 2020 DID\_M"): r"dCDH (2020) DID\(_M\)",
+}
+
+
+def _method_name(module: str, method: str) -> str:
+    prefix = re.search(r"\\code\{(\d+)", module)
+    name = _compact_cell(method)
+    key = (prefix.group(1) if prefix else "", name)
+    return _METHOD_NAMES.get(key, name)
+
+
 def _compact_row(row: str) -> str:
     cells = row.rstrip().rstrip("\\\\").split(" & ")
     if len(cells) != 5:
@@ -111,7 +132,7 @@ def _compact_row(row: str) -> str:
     elif "\\emph{" in vs_stata or "\\textit{" in vs_stata:
         vs_stata = "none"
     return (
-        f"{module} & {_compact_cell(method)} & {_compact_cell(vs_r)} & "
+        f"{module} & {_method_name(module, method)} & {_compact_cell(vs_r)} & "
         f"{_compact_cell(vs_stata)} & {verdict} \\\\"
     )
 
@@ -127,6 +148,16 @@ def _body_rows(text: str) -> list[str]:
     ]
     if not rows:
         raise RuntimeError(f"no data rows found in {SOURCE}")
+    renamed = sum(any(new in row for new in _METHOD_NAMES.values()) for row in rows)
+    if renamed != len(_METHOD_NAMES):
+        raise RuntimeError(
+            f"{len(_METHOD_NAMES) - renamed} method-name override(s) matched no "
+            f"row of {SOURCE}; a module was renamed or renumbered"
+        )
+    names = [row.split(" & ")[1] for row in rows]
+    repeated = sorted({n for n in names if names.count(n) > 1})
+    if repeated:
+        raise RuntimeError(f"appendix method names repeat: {repeated}")
     return rows
 
 

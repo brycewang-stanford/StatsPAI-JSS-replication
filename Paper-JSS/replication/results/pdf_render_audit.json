@@ -39,39 +39,39 @@
       "width": 910
     },
     {
-      "dark_ratio": 0.015759,
+      "dark_ratio": 0.015773,
       "failures": [],
       "height": 1287,
-      "ink_ratio": 0.104633,
+      "ink_ratio": 0.105169,
       "ok": true,
       "output": "",
       "page": 4,
       "pixel_count": 1171170,
-      "white_ratio": 0.895367,
+      "white_ratio": 0.894831,
       "width": 910
     },
     {
-      "dark_ratio": 0.013541,
+      "dark_ratio": 0.01356,
       "failures": [],
       "height": 1287,
-      "ink_ratio": 0.185496,
+      "ink_ratio": 0.177159,
       "ok": true,
       "output": "",
       "page": 5,
       "pixel_count": 1171170,
-      "white_ratio": 0.814504,
+      "white_ratio": 0.822841,
       "width": 910
     },
     {
-      "dark_ratio": 0.014376,
+      "dark_ratio": 0.014702,
       "failures": [],
       "height": 1287,
-      "ink_ratio": 0.165275,
+      "ink_ratio": 0.175818,
       "ok": true,
       "output": "",
       "page": 6,
       "pixel_count": 1171170,
-      "white_ratio": 0.834725,
+      "white_ratio": 0.824182,
       "width": 910
     },
     {
@@ -387,15 +387,15 @@
       "width": 910
     },
     {
-      "dark_ratio": 0.014335,
+      "dark_ratio": 0.014354,
       "failures": [],
       "height": 1287,
-      "ink_ratio": 0.089781,
+      "ink_ratio": 0.0899,
       "ok": true,
       "output": "",
       "page": 33,
       "pixel_count": 1171170,
-      "white_ratio": 0.910219,
+      "white_ratio": 0.9101,
       "width": 910
     },
     {
@@ -531,27 +531,27 @@
       "width": 910
     },
     {
-      "dark_ratio": 0.009896,
+      "dark_ratio": 0.00991,
       "failures": [],
       "height": 1287,
-      "ink_ratio": 0.079823,
+      "ink_ratio": 0.080168,
       "ok": true,
       "output": "",
       "page": 45,
       "pixel_count": 1171170,
-      "white_ratio": 0.920177,
+      "white_ratio": 0.919832,
       "width": 910
     },
     {
-      "dark_ratio": 0.007702,
+      "dark_ratio": 0.007751,
       "failures": [],
       "height": 1287,
-      "ink_ratio": 0.076127,
+      "ink_ratio": 0.077145,
       "ok": true,
       "output": "",
       "page": 46,
       "pixel_count": 1171170,
-      "white_ratio": 0.923873,
+      "white_ratio": 0.922855,
       "width": 910
     },
     {

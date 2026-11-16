@@ -26,30 +26,30 @@
   "status": "PASS",
   "summary": {
     "contains_unreleased_source_changes": true,
-    "generated_dirty_count": 40,
+    "generated_dirty_count": 35,
     "manuscript_version_macro": "1.40.2",
     "package_version": "1.40.2",
-    "paper_release_blocker_count": 5,
+    "paper_release_blocker_count": 0,
     "ready_for_final_publication": false,
     "release_blocker_breakdown": {
       "generated_status_counts": {
-        "M": 40
+        "M": 35
       },
       "hand_edited_status_counts": {
-        "M": 6
+        "M": 1
       },
       "package_code_paths": 0,
       "package_docs_paths": 0,
       "paper_manuscript_paths": 0,
-      "paper_other_paths": 3,
-      "paper_replication_paths": 2,
+      "paper_other_paths": 0,
+      "paper_replication_paths": 0,
       "validation_test_paths": 1
     },
-    "release_blocker_count": 6,
+    "release_blocker_count": 1,
     "release_gate_checks": [
       {
         "check": "clean_combined_worktree",
-        "detail": "6 hand-edited final-publication gate paths; 40 generated dirty paths",
+        "detail": "1 hand-edited final-publication gate paths; 35 generated dirty paths",
         "ok": false
       },
       {
@@ -74,8 +74,8 @@
       },
       {
         "check": "paper_paths_finalized",
-        "detail": "5 Paper-JSS paths still dirty",
-        "ok": false
+        "detail": "0 Paper-JSS paths still dirty",
+        "ok": true
       }
     ],
     "schema_bundle_version": "1.40.2",
