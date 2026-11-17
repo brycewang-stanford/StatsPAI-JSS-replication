@@ -513,8 +513,8 @@ covering 0.867 at \(n=500\) and 0.900 at \(n=2{,}000\), against 0.727 and
 to 92\% of the draws on the six designs the stacked estimate lies more than
 half a default standard error from the default-learner one, so fitting both
 exposes the problem, and we recommend reporting both. The default learner is
-not a safe default, and we intend to replace it; its replacement is not
-settled. Under the release rules of
+not a safe default, and we intend to replace it by short-stacking, which
+the screen above shows is not better on every design. Under the release rules of
 Section~\ref{sec:parity-gaps} that change is announced a release ahead, so
 release \StatsPAIVersion{} keeps gradient boosting, and a user of it should
 pass learners explicitly or call \code{sp.dml\_model\_averaging}.

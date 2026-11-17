@@ -201,7 +201,7 @@
     {
       "category": "generated_paper_audit_or_example_json",
       "path": "Paper-JSS/replication/results/pdf_render_audit.json",
-      "size_bytes": 14757,
+      "size_bytes": 14754,
       "suffix": ".json"
     },
     {
@@ -243,7 +243,7 @@
     {
       "category": "generated_paper_audit_or_example_json",
       "path": "Paper-JSS/replication/results/source_snapshot_manifest.json",
-      "size_bytes": 13199,
+      "size_bytes": 12431,
       "suffix": ".json"
     },
     {
@@ -16347,7 +16347,7 @@
       ".json": 798,
       ".lock": 1
     },
-    "total_data_bytes": 96158502,
+    "total_data_bytes": 96157731,
     "unknown_category_count": 0
   },
   "unknown_category_paths": []

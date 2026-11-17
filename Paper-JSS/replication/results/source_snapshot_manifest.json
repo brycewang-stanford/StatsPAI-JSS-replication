@@ -7,7 +7,7 @@
     "is_clean": false,
     "short_commit": "25a9407ee",
     "status_counts": {
-      "M": 40
+      "M": 34
     },
     "tags_at_head": [
       "v1.40.2"
@@ -19,11 +19,8 @@
     "displayed_generated_dirty_paths": [
       "M Paper-JSS/manuscript/main.pdf",
       "M Paper-JSS/replication/results/data_provenance_audit.json",
-      "M Paper-JSS/replication/results/data_provenance_audit.md",
       "M Paper-JSS/replication/results/editor_screening_checklist.json",
       "M Paper-JSS/replication/results/editor_screening_checklist.md",
-      "M Paper-JSS/replication/results/experiment_triage.json",
-      "M Paper-JSS/replication/results/experiment_triage.md",
       "M Paper-JSS/replication/results/jss_formal_compliance_audit.json",
       "M Paper-JSS/replication/results/jss_formal_compliance_audit.md",
       "M Paper-JSS/replication/results/jss_full_audit.json",
@@ -55,16 +52,10 @@
       "M tests/perf/results/perf_table.tex"
     ],
     "displayed_watched_dirty_paths": [
-      "M Paper-JSS/README.md",
-      "M Paper-JSS/RELEASE-CHECKLIST.md",
-      "M Paper-JSS/cover-letter.md",
       "M Paper-JSS/manuscript/main.pdf",
       "M Paper-JSS/replication/results/data_provenance_audit.json",
-      "M Paper-JSS/replication/results/data_provenance_audit.md",
       "M Paper-JSS/replication/results/editor_screening_checklist.json",
       "M Paper-JSS/replication/results/editor_screening_checklist.md",
-      "M Paper-JSS/replication/results/experiment_triage.json",
-      "M Paper-JSS/replication/results/experiment_triage.md",
       "M Paper-JSS/replication/results/jss_formal_compliance_audit.json",
       "M Paper-JSS/replication/results/jss_formal_compliance_audit.md",
       "M Paper-JSS/replication/results/jss_full_audit.json",
@@ -99,11 +90,8 @@
     "generated_dirty_paths": [
       "M Paper-JSS/manuscript/main.pdf",
       "M Paper-JSS/replication/results/data_provenance_audit.json",
-      "M Paper-JSS/replication/results/data_provenance_audit.md",
       "M Paper-JSS/replication/results/editor_screening_checklist.json",
       "M Paper-JSS/replication/results/editor_screening_checklist.md",
-      "M Paper-JSS/replication/results/experiment_triage.json",
-      "M Paper-JSS/replication/results/experiment_triage.md",
       "M Paper-JSS/replication/results/jss_formal_compliance_audit.json",
       "M Paper-JSS/replication/results/jss_formal_compliance_audit.md",
       "M Paper-JSS/replication/results/jss_full_audit.json",
@@ -135,25 +123,16 @@
       "M tests/perf/results/perf_table.tex"
     ],
     "hand_edited_dirty_paths": [
-      "M Paper-JSS/README.md",
-      "M Paper-JSS/RELEASE-CHECKLIST.md",
-      "M Paper-JSS/cover-letter.md",
       "M tests/perf/compare_perf.py"
     ],
     "interpretation": "Source snapshot evidence; synchronize with a tagged release before final publication or keep these rows explicitly labelled as source-snapshot evidence.",
     "is_tagged_release_snapshot": false,
     "submission_archive_status": "Audited source-snapshot submission archive; the failing final-publication release gate is a tag/changelog synchronization gate, not a JSS upload reproducibility failure.",
     "watched_dirty_paths": [
-      "M Paper-JSS/README.md",
-      "M Paper-JSS/RELEASE-CHECKLIST.md",
-      "M Paper-JSS/cover-letter.md",
       "M Paper-JSS/manuscript/main.pdf",
       "M Paper-JSS/replication/results/data_provenance_audit.json",
-      "M Paper-JSS/replication/results/data_provenance_audit.md",
       "M Paper-JSS/replication/results/editor_screening_checklist.json",
       "M Paper-JSS/replication/results/editor_screening_checklist.md",
-      "M Paper-JSS/replication/results/experiment_triage.json",
-      "M Paper-JSS/replication/results/experiment_triage.md",
       "M Paper-JSS/replication/results/jss_formal_compliance_audit.json",
       "M Paper-JSS/replication/results/jss_formal_compliance_audit.md",
       "M Paper-JSS/replication/results/jss_full_audit.json",
@@ -201,11 +180,11 @@
   "package_metadata_version": "1.40.2",
   "paper_git": {
     "branch": "main",
-    "commit": "6de339e8d575e41341fc31392a1098d0198cea16",
+    "commit": "472856fc5e37a5db2ed1c7284d67f3bc24931313",
     "is_clean": false,
-    "short_commit": "6de339e",
+    "short_commit": "472856f",
     "status_counts": {
-      "M": 26
+      "M": 20
     },
     "tags_at_head": []
   },
@@ -218,30 +197,30 @@
       "tag the exact package-source commit used by the JSS archive",
       "re-run make submission-ready after the tag so manifests record a clean release snapshot"
     ],
-    "generated_dirty_count": 36,
+    "generated_dirty_count": 33,
     "has_package_tag_at_head": true,
     "is_clean_combined_worktree": false,
-    "paper_release_blocker_count": 3,
+    "paper_release_blocker_count": 0,
     "ready_for_final_publication": false,
     "release_blocker_breakdown": {
       "generated_status_counts": {
-        "M": 36
+        "M": 33
       },
       "hand_edited_status_counts": {
-        "M": 4
+        "M": 1
       },
       "package_code_paths": 0,
       "package_docs_paths": 0,
       "paper_manuscript_paths": 0,
-      "paper_other_paths": 3,
+      "paper_other_paths": 0,
       "paper_replication_paths": 0,
       "validation_test_paths": 1
     },
-    "release_blocker_count": 4,
+    "release_blocker_count": 1,
     "release_gate_checks": [
       {
         "check": "clean_combined_worktree",
-        "detail": "4 hand-edited final-publication gate paths; 36 generated dirty paths",
+        "detail": "1 hand-edited final-publication gate paths; 33 generated dirty paths",
         "ok": false
       },
       {
@@ -266,8 +245,8 @@
       },
       {
         "check": "paper_paths_finalized",
-        "detail": "3 Paper-JSS paths still dirty",
-        "ok": false
+        "detail": "0 Paper-JSS paths still dirty",
+        "ok": true
       }
     ],
     "source_release_blocker_count": 1,
